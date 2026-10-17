@@ -1,6 +1,6 @@
 {
   "name": "patchbook",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "private": true,
   "description": "Keep your changes to an upstream repo, each with its intent, and keep pulling from upstream.",
   "type": "module",
