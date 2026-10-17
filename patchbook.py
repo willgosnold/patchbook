@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -234,6 +235,7 @@ class Book:
         here = Path(start or Path.cwd()).resolve()
         for d in (here, *here.parents):
             if (d / PB / "config.toml").exists():
+                install_hook(d)
                 return cls(d)
         raise Fail(f"no {PB}/config.toml here or above. Start one with `patchbook clone` or `patchbook init`.")
 
@@ -1538,6 +1540,79 @@ def cmd_upstream(args):
     return 0
 
 
+# Recording on commit
+
+
+HOOK_MARK = "# Installed by patchbook."
+
+
+def install_hook(root, verbose=False):
+    """Install the pre-commit hook, unless the repo already has a pre-commit hook of its own."""
+    path = Path(git("rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-commit", cwd=root))
+    if path.exists():
+        if HOOK_MARK not in path.read_text(errors="replace") and verbose:
+            print(f"patchbook: {path} is another tool's hook; add `patchbook hook run` to it to record on commit.",
+                  file=sys.stderr)
+        return
+    me = shlex.quote(str(Path(__file__).resolve()))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"""#!/bin/sh
+{HOOK_MARK} On each commit, it records hand edits to the build output in the
+# patchbook, rebuilds, and stages both. Skip it once with: PATCHBOOK_HOOK=0 git commit
+[ "$PATCHBOOK_HOOK" = 0 ] && exit 0
+if [ -f {me} ]; then exec {shlex.quote(sys.executable)} {me} hook run; fi
+if command -v patchbook >/dev/null; then exec patchbook hook run; fi
+echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
+""")
+    path.chmod(0o755)
+    print(f"patchbook: installed a pre-commit hook that records and builds on each commit", file=sys.stderr)
+
+
+def dirty(root):
+    """{path: blob id, or None if deleted} for every path git status lists."""
+    out = {}
+    entries = run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], root).decode().split("\0")
+    paths = []
+    for e in entries:
+        if len(e) > 3 and e[2] == " ":
+            paths.append(e[3:])
+    for path in paths:
+        f = root / path
+        out[path] = blob_oid(read_disk(f)[0]) if os.path.lexists(f) and not f.is_dir() else None
+    return out
+
+
+def cmd_hook(args):
+    if args.action == "install":
+        install_hook(Path(git("rev-parse", "--show-toplevel", cwd=Path.cwd())), verbose=True)
+        return 0
+    book = Book.find()
+    before = dirty(book.root)
+    a = assemble(book)
+    edited = hand_edits(book, a.out)
+    if edited:
+        cmd_record(argparse.Namespace(change=None, intent=os.environ.get("PATCHBOOK_INTENT")))
+        a = assemble(book)
+    if a.problems:
+        print(f"patchbook: {len(a.problems)} problems, so the output wasn't rebuilt. `patchbook status` lists them.",
+              file=sys.stderr)
+    else:
+        left = hand_edits(book, a.out)
+        if left:
+            raise Fail("couldn't record these hand edits:\n  " + "\n  ".join(left) +
+                       "\nMove them into the patchbook yourself, or skip the hook once with PATCHBOOK_HOOK=0.")
+        if a.out != book.current_output():
+            write_output(book, a.out)
+            print(f"patchbook: built from {book.pins()}", file=sys.stderr)
+    after = dirty(book.root)
+    out_rel = book.output_root().relative_to(book.root).as_posix()
+    stage = sorted({p for p in set(before) | set(after) if before.get(p) != after.get(p)} |
+                   {(f"{out_rel}/{p}" if out_rel != "." else p) for p in edited})
+    if stage:
+        git("add", "-A", "--", *stage, cwd=book.root)
+    return 0
+
+
 # Starting a patchbook, and following another upstream
 
 
@@ -1575,10 +1650,11 @@ def cmd_clone(args):
     book = Book(dest)
     book.write_lock(name, commit, git("rev-parse", "HEAD^{tree}", cwd=dest))
     write_build_lock(book, book.current_output())
-    git("add", PB, cwd=dest)
-    git("commit", "--quiet", "-m", f"Start a patchbook at upstream {commit[:7]}", cwd=dest)
+    install_hook(dest)
+    git("add", "-A", cwd=dest)
+    git("commit", "--quiet", "-m", f"Start a patchbook at upstream {commit[:7]}", cwd=dest, env=no_hook())
     print(f"cloned {args.url} into {dest}, pinned at {commit[:7]}.\n"
-          f"Make your changes, then `patchbook record <change> --intent '...'`.\n"
+          "Make your changes and commit: the hook records them in the patchbook and rebuilds.\n"
           f"To publish it: gh repo create <name> --private --source {dest} --push")
     return 0
 
@@ -1593,7 +1669,8 @@ def cmd_init(args):
                      (args.output_from, args.output_to))
         book = Book(root)
         sync_upstream(book, book.upstreams[0], args.branch, [])
-        print("Next: patchbook build")
+        install_hook(root)
+        print("Next: patchbook build, then commit.")
         return 0
     write_config(root, "fork", upstream_toml(name, args.upstream, args.path, args.branch, ""))
     if "upstream" not in git("remote", cwd=root).split():
@@ -1602,8 +1679,9 @@ def cmd_init(args):
     base = git("merge-base", "HEAD", "FETCH_HEAD", cwd=root)
     book = Book(root)
     book.write_lock(name, base, book.upstreams[0].tree_of(base))
+    install_hook(root)
     print(f"pinned upstream at {base[:7]}, where this repo branched from it.\n"
-          "Capture your existing changes with `patchbook record <change> --intent '...'`, then `patchbook build`.")
+          "Capture your existing changes with `patchbook record`, then `patchbook build`, and commit.")
     return 0
 
 
@@ -1625,6 +1703,10 @@ def cmd_track(args):
     where = f"{mount}/" if mount else "the root"
     print(f"Its files appear at {where} of the staged tree. Ship what you need with edits (move, copy), then build.")
     return 0
+
+
+def no_hook():
+    return {**os.environ, "PATCHBOOK_HOOK": "0"}
 
 
 def main():
@@ -1685,6 +1767,10 @@ def main():
     p.add_argument("change", nargs="?", help="the change to add them to (default: the model picks or names one)")
     p.add_argument("--intent", help="what the change is for (default: the model writes it)")
     p.set_defaults(func=cmd_record)
+
+    p = sub.add_parser("hook", help="install the pre-commit hook, or run it")
+    p.add_argument("action", choices=["install", "run"])
+    p.set_defaults(func=cmd_hook)
 
     p = sub.add_parser("provider", help="show or choose the model that writes intents: claude or codex")
     p.add_argument("name", nargs="?", choices=sorted(PROVIDERS))

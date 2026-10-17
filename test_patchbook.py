@@ -12,8 +12,8 @@ from pathlib import Path
 TOOL = Path(__file__).resolve().parent / "patchbook.py"
 
 
-def sh(*args, cwd, check=True):
-    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, check=check)
+def sh(*args, cwd, check=True, env=None):
+    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, check=check, env=env)
 
 
 class Repo:
@@ -47,7 +47,9 @@ class Case(unittest.TestCase):
         self.env = {**os.environ, "PATCHBOOK_HOME": str(self.tmp / "store"),
                     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
                     "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_GLOBAL": "/dev/null"}
-        os.environ.update({k: v for k, v in self.env.items() if k.startswith("GIT_")})
+        # Tests commit with git directly, so the hook stays off unless a test turns it on.
+        self.env.update(PATCHBOOK_HOOK="0", PATCHBOOK_SKILL="0")
+        os.environ.update({k: v for k, v in self.env.items() if k.startswith(("GIT_", "PATCHBOOK_"))})
         # A fake claude CLI that names the change and writes its intent, and keeps the prompt it got.
         bin_dir = self.tmp / "bin"
         bin_dir.mkdir()
@@ -158,6 +160,22 @@ class ForkTest(Case):
         self.fork.write("app.txt", self.fork.read("app.txt").replace("one", "ONE"))
         self.assertIn("(in shout)", self.pb("record", cwd=self.fork.path).stdout)  # no model needed
         self.assertFalse((self.tmp / "prompt.txt").exists())
+
+    def test_commit_records_and_builds(self):
+        self.assertIn("Installed by patchbook", (self.fork.path / ".git/hooks/pre-commit").read_text())
+        self.fork.write("app.txt", self.fork.read("app.txt").replace("two", "TWO"))
+        sh("git", "commit", "-qam", "shout", cwd=self.fork.path, env={**self.env, "PATCHBOOK_HOOK": "1"})
+        self.assertEqual(sh("git", "status", "--porcelain", cwd=self.fork.path).stdout, "")
+        files = sh("git", "show", "--name-only", "--format=", "HEAD", cwd=self.fork.path).stdout.split()
+        self.assertIn("app.txt", files)
+        self.assertIn(".patchbook/changes/shout/CHANGE.md", files)
+        self.assertIn(".patchbook/build.lock", files)
+        # A patchbook edit is built on commit too.
+        ours = self.fork.path / ".patchbook/changes/shout/ours/app.txt.pb"
+        ours.write_text(ours.read_text().replace("TWO", "Two"))
+        sh("git", "commit", "-qam", "soften", cwd=self.fork.path, env={**self.env, "PATCHBOOK_HOOK": "1"})
+        self.assertIn("Two", self.fork.read("app.txt"))
+        self.assertEqual(sh("git", "status", "--porcelain", cwd=self.fork.path).stdout, "")
 
     def test_build_refuses_to_overwrite_hand_edits(self):
         self.record_feature()

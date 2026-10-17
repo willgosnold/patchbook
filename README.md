@@ -34,14 +34,9 @@ Then install the update skill for agents, in the repo:
 npx skills add willgosnold/patchbook --skill patchbook-update
 ```
 
-**2. Change things.** Edit files the way you normally would, then:
+**2. Change things.** Edit files the way you normally would, including the built output, then commit as usual.
 
-```sh
-patchbook record
-patchbook build
-```
-
-`record` moves your edits into the patchbook. A model reads them, names the change and writes its intent: what the change does and why. The first time, patchbook asks whether to use Claude or Codex. Pass a name, or `--intent "..."`, to write them yourself. Commit and push as usual.
+A pre-commit hook moves your edits into the patchbook, rebuilds, and adds both to the commit. A model reads the edits, names the change and writes its intent: what the change does and why. The first time, patchbook asks whether to use Claude or Codex. To write the intent yourself, commit with `PATCHBOOK_INTENT="..." git commit`, or run `patchbook record <name> --intent "..."` first.
 
 The intent matters most. It's how an agent redoes your change later, if upstream rewrites the code underneath it.
 
@@ -55,7 +50,7 @@ patchbook sync && patchbook status && patchbook build
 
 ## Rules
 
-- Don't leave hand edits in the build output. Run `patchbook record` to keep them, or `patchbook build --force` to drop them.
+- Edits to the build output are kept only once they're recorded. The hook does that on commit; `patchbook build --force` drops them instead.
 - Every change has an intent.
 - `patchbook status` lists what's broken, and `patchbook build` won't run until it's fixed.
 
