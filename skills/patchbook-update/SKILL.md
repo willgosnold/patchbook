@@ -13,7 +13,7 @@ To read an upstream, use `patchbook upstream <name>`: `<name> <path>` prints a f
 
 ## 1. Check
 
-Run `uv tool upgrade patchbook` (ignore a failure if it wasn't installed with uv), then `patchbook check`.
+Run `patchbook check`.
 
 - Exit 0: no upstream has moved. If a scheduled task started this thread, clean up (below) and archive the thread with `t3_thread_organize` (`archive`) as your last action. Otherwise say so and stop.
 - Exit 10: continue. The JSON says which upstreams moved and which of their files changed.
