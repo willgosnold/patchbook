@@ -3,6 +3,7 @@
 // Also the commands that start a patchbook or follow another upstream, which use every other part.
 import { mkdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import pkg from "../package.json" with { type: "json" };
 import { cmdBuild, cmdScaffold, cmdStatus, writeBuildLock } from "./assemble.ts";
 import { cmdBlocks } from "./blocks.ts";
 import { Book, PB } from "./book.ts";
@@ -17,6 +18,9 @@ import { cmdConfig } from "./settings.ts";
 import { installSkill, SCHEDULE } from "./skill.ts";
 import { defaultName, cmdUpstream } from "./store.ts";
 import { cmdCheck, cmdSync, syncUpstream } from "./sync.ts";
+
+// The release build replaces process.env.PATCHBOOK_VERSION at compile time with --define.
+const VERSION = process.env.PATCHBOOK_VERSION ?? pkg.version;
 
 // Starting a patchbook, and following another upstream
 
@@ -287,7 +291,7 @@ function parserFor(name: string, c: Command): Parser {
 const TOP: Parser = {
   prog: "patchbook",
   positionals: [{ dest: "cmd", choices: Array.from(COMMANDS.keys()) }],
-  options: [],
+  options: [{ flag: "--version", help: "show the version and exit" }],
   description: DESCRIPTION,
   subcommands: COMMANDS,
 };
@@ -513,6 +517,7 @@ async function main(argv: readonly string[]): Promise<number> {
       if (c.explicit) throw error(TOP, `argument -h/--help: ignored explicit argument ${strRepr(c.explicit)}`);
       throw new Exit(0, helpText(TOP));
     }
+    if (c.kind === "option" && c.option.flag === "--version") throw new Exit(0, `patchbook ${VERSION}\n`);
     if (c.kind !== "positional") {
       extras.push(arg);
       continue;

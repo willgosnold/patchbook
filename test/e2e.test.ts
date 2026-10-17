@@ -155,6 +155,16 @@ function vendorTest(name: string, body: (t: VendorCase) => void): void {
   }, TIMEOUT);
 }
 
+test("test_version", () => {
+  const t = new Case();
+  try {
+    const out = t.pb(["--version"], { cwd: t.tmp }).stdout;
+    expect(out).toBe(`patchbook ${JSON.parse(read(join(import.meta.dir, "../package.json"))).version}\n`);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 describe("ForkTest", () => {
   forkTest("test_clone_keeps_history_and_pins", (t) => {
     const log = sh(["git", "log", "--oneline"], { cwd: t.fork.path }).stdout;
