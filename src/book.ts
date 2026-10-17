@@ -27,7 +27,7 @@ export interface Hooks {
   /** Change the output, path by path, before it's checked and written. */
   finish?(out: Map<string, { data: Uint8Array; mode: number }>): void;
   /** Problems with the output that the config can't express. */
-  check?(outputs: ReadonlyMap<string, Uint8Array>): Extract<Problem, { problem: "check" }>[];
+  check?(outputs: ReadonlyMap<string, Uint8Array>): Problem[];
 }
 
 const HOOKS = ["placeholder", "blockTerms", "finish", "check"] as const;
@@ -94,10 +94,8 @@ async function loadHooks(dir: string): Promise<Hooks> {
           const found = call(outputs);
           if (!isIterable(found)) throw hookFail(path, "check must return a list of problems");
           return Array.from(found, (p) => {
-            if (isTable(p) && p["problem"] === "check" && typeof p["file"] === "string" && typeof p["detail"] === "string") {
-              return { problem: "check", file: p["file"], detail: p["detail"] };
-            }
-            throw hookFail(path, `check returned ${JSON.stringify(p)}, not { problem: "check", file, detail }`);
+            if (isProblem(p)) return p;
+            throw hookFail(path, `check returned ${JSON.stringify(p)}, not a problem like { problem: "check", file, detail }`);
           });
         };
         break;
@@ -113,6 +111,11 @@ async function loadHooks(dir: string): Promise<Hooks> {
 /** Strings count: Python iterated one into its characters. */
 function isIterable(value: unknown): value is Iterable<unknown> {
   return typeof value === "string" || (typeof value === "object" && value !== null && Symbol.iterator in value);
+}
+
+/** Only the `problem` kind is checked. The rest of the fields are the hook's to get right, as in Python. */
+function isProblem(value: unknown): value is Problem {
+  return isTable(value) && typeof value["problem"] === "string";
 }
 
 /** A `[[check]]`: the output files it covers and the pattern a block mustn't match without an entry. */

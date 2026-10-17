@@ -536,6 +536,21 @@ describe("VendorTest", () => {
     expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout).toContain("needs an entry (a, b)");
   });
 
+  vendorTest("test_check_may_return_any_kind_of_problem", (t) => {
+    writeFileSync(join(t.repo.path, ".patchbook/hooks.ts"), dedent(`
+      export function check() {
+        return [
+          { detail: "out of order", file: "skills/hello/SKILL.md", problem: "check" },
+          { problem: "leak", file: "skills/hello/SKILL.md", line: 3, terms: ["from-hook"] },
+        ];
+      }
+    `));
+    const problems: Record<string, unknown>[] = JSON.parse(t.pb(["status", "--json"], { cwd: t.repo.path, code: 1 }).stdout).problems;
+    const keys = (problem: string) => Object.keys(problems.find((p) => p["problem"] === problem && p["file"] === "skills/hello/SKILL.md" && p["hash"] === undefined)!);
+    expect(keys("check")).toEqual(["detail", "file", "problem"]);
+    expect(keys("leak")).toEqual(["problem", "file", "line", "terms"]);
+  });
+
   vendorTest("test_absolute_output_folder_is_used_as_given", (t) => {
     const config = join(t.repo.path, ".patchbook/config.toml");
     writeFileSync(config, replace(read(config), 'to = "skills"', `to = "${join(t.repo.path, "skills")}"`));
