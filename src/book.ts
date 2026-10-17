@@ -110,8 +110,9 @@ async function loadHooks(dir: string): Promise<Hooks> {
   return hooks;
 }
 
+/** Strings count: Python iterated one into its characters. */
 function isIterable(value: unknown): value is Iterable<unknown> {
-  return typeof value === "object" && value !== null && Symbol.iterator in value;
+  return typeof value === "string" || (typeof value === "object" && value !== null && Symbol.iterator in value);
 }
 
 /** A `[[check]]`: the output files it covers and the pattern a block mustn't match without an entry. */

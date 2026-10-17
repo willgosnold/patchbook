@@ -526,6 +526,16 @@ describe("VendorTest", () => {
     expect(t.repo.read("skills/tool/SKILL.md")).toContain("Use the new tool.");
   });
 
+  vendorTest("test_block_terms_may_return_a_string", (t) => {
+    // Python iterated a string into its characters, and a set of them is what the block needs entries for.
+    writeFileSync(join(t.repo.path, ".patchbook/hooks.ts"), dedent(`
+      export function blockTerms(path: string, block: string) {
+        return block.includes("wave") ? "ba" : [];
+      }
+    `));
+    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout).toContain("needs an entry (a, b)");
+  });
+
   vendorTest("test_absolute_output_folder_is_used_as_given", (t) => {
     const config = join(t.repo.path, ".patchbook/config.toml");
     writeFileSync(config, replace(read(config), 'to = "skills"', `to = "${join(t.repo.path, "skills")}"`));
