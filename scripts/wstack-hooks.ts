@@ -19,7 +19,7 @@ export function placeholder(kind: string, name: string): string | null {
   if (kind !== "model") return null;
   const models: Record<string, string[]> = JSON.parse(readFileSync(join(ROOT, "models.json"), "utf8"));
   if (name.startsWith("_") || !Object.hasOwn(models, name)) return null;
-  return models[name].map((e) => `\`${e}\``).join(", ");
+  return (models[name] ?? []).map((e) => `\`${e}\``).join(", ");
 }
 
 const slash = new Map<string, RegExp>();
@@ -30,7 +30,7 @@ export function blockTerms(path: string, block: string, outputs: ReadonlySet<str
   const key = [...outputs].sort().join("\0");
   let re = slash.get(key);
   if (!re) {
-    const names = [...new Set([...outputs].filter((p) => p.endsWith("/SKILL.md")).map((p) => p.split("/")[0]))]
+    const names = [...new Set([...outputs].filter((p) => p.endsWith("/SKILL.md")).map((p) => p.slice(0, p.indexOf("/"))))]
       .sort((a, b) => b.length - a.length);
     re = slashSkill(names.map(escape).join("|"));
     slash.set(key, re);
@@ -48,7 +48,7 @@ export function check(outputs: ReadonlyMap<string, Uint8Array>): Problem[] {
     const parts = path.split("/");
     if (parts.length === 2 && parts[1] === "SKILL.md") {
       const m = /^name: (.*)$/m.exec(text(data));
-      if (!m || m[1].trim() !== parts[0])
+      if (!m || m[1]?.trim() !== parts[0])
         problems.push({ problem: "check", file: path,
           detail: "a skill's name must be its folder name (the skills CLI and Codex's $name use it)" });
     }
