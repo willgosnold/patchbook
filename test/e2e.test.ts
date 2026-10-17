@@ -181,6 +181,24 @@ test("test_clone_keeps_the_destination_it_was_given", () => {
   }
 }, TIMEOUT);
 
+test("test_clone_finishes_when_the_skill_cannot_be_installed", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write(".agents", "not a folder\n");
+    up.commit("start");
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const out = t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+    expect(out.stderr).toContain("patchbook: couldn't install the update skill");
+    const fork = join(t.tmp, "fork");
+    expect(sh(["git", "log", "--format=%s"], { cwd: fork }).stdout).toContain("Start a patchbook at upstream");
+    expect(sh(["git", "status", "--porcelain"], { cwd: fork }).stdout).toBe("");
+    expect(read(join(fork, ".agents"))).toBe("not a folder\n");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 describe("ForkTest", () => {
   forkTest("test_clone_keeps_history_and_pins", (t) => {
     const log = sh(["git", "log", "--oneline"], { cwd: t.fork.path }).stdout;

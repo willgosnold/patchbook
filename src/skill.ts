@@ -38,8 +38,15 @@ export function installSkill(book: Book): boolean {
   const known = agents.flatMap((a) => AGENTS.get(a) ?? []);
   if (!known.length) return false;
   const dir = join(book.root, ".agents", "skills", NAME);
-  mkdirs(dir);
-  writeText(join(dir, "SKILL.md"), skill);
-  for (const { link: folder } of known) if (folder) link(book.root, join(book.root, folder, NAME), dir);
+  try {
+    mkdirs(dir);
+    writeText(join(dir, "SKILL.md"), skill);
+    for (const { link: folder } of known) if (folder) link(book.root, join(book.root, folder, NAME), dir);
+  } catch (e) {
+    // A file where a folder should go, or a read-only repo, shouldn't stop `clone` or `init` from finishing.
+    if (!(e instanceof Error && "errno" in e)) throw e;
+    process.stderr.write(`patchbook: couldn't install the update skill: ${e.message}\n`);
+    return false;
+  }
   return true;
 }
