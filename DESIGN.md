@@ -105,7 +105,7 @@ An upstream block that matches a check and has no entry is **missing**. Output t
 
 ## Hooks
 
-`.patchbook/hooks.ts` is optional project code. It exports functions named for the hooks below, and patchbook calls each one by name. The exported `Hooks` type in `src/book.ts` has their signatures.
+`.patchbook/hooks.ts` is optional project code. It exports functions named for the hooks below, and patchbook calls each one by name. The exported `Hooks` type in `src/api.ts` has their signatures.
 
 | Hook | Called | Returns |
 | --- | --- | --- |

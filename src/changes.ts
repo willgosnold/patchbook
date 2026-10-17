@@ -1,7 +1,7 @@
 // Changes: a CHANGE.md with an intent and a list of edits, and the files those edits carry.
 import { appendFileSync, chmodSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import type { Problem } from "./assemble.ts";
+import type { Problem } from "./api.ts";
 import { Book } from "./book.ts";
 import { unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";

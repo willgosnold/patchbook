@@ -1,14 +1,14 @@
 // Block entries: a paragraph of an upstream file, keyed by the hash of its text, with its patched text.
 // Also the rules a block is checked against: [[check]] patterns, placeholders and the hooks.
 import { join } from "node:path";
-import type { InBlock, InOutput, Problem } from "./assemble.ts";
+import type { InBlock, InOutput, Nearest, Problem } from "./api.ts";
 import { Book, escape } from "./book.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { pjoin, readText } from "./lib/fs.ts";
 import { sha256 } from "./lib/hash.ts";
 import { loads } from "./lib/json.ts";
-import { length, type PyFloat, round2, S, sorted, str, strip, strRepr, W } from "./lib/py.ts";
+import { length, round2, S, sorted, str, strip, strRepr, W } from "./lib/py.ts";
 import { decode } from "./lib/text.ts";
 
 export const ENTRY_FIELDS = ["kind", "rules", "intent"] as const;
@@ -20,7 +20,6 @@ const ENTRY_HEAD = /^=== entry ([0-9a-f]{12})$/;
 export type Entry = { hash: string; kind: string; rules: string; intent: string; upstream: string; patched: string };
 /** A block with no entry, which an orphaned entry may have become. */
 export type Unmatched = { line: number; hash: string; upstream: string };
-export type Nearest = { line: number; hash: string; similarity: PyFloat };
 
 export function blockHash(block: string): string {
   return sha256(block).slice(0, 12);

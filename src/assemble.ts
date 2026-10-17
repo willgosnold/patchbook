@@ -1,8 +1,9 @@
 // Assembling the output from the pinned upstreams and the patchbook, and writing it.
 import { rmdirSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { InChange, InEdit, InOutput, Problem } from "./api.ts";
 import {
-  entriesPath, type Entry, formatEntry, leakScan, type Nearest, orphan, patchBlocks, readEntries, Rules, type Unmatched,
+  entriesPath, type Entry, formatEntry, leakScan, orphan, patchBlocks, readEntries, Rules, type Unmatched,
 } from "./blocks.ts";
 import { Book, under } from "./book.ts";
 import { type Change, editText, readChanges } from "./changes.ts";
@@ -14,28 +15,6 @@ import { git, spawn } from "./lib/proc.ts";
 import { floatRepr, ljust, rstrip, sorted, sortedBy, strip } from "./lib/py.ts";
 import { bytesEqual, decode, encode, isText } from "./lib/text.ts";
 import { pinned } from "./store.ts";
-
-type InFile = { file: string };
-type InEdit = { file: string; edit: string };
-type InChange = { file: string; change: string };
-export type InOutput = { file: string; output: string };
-export type InBlock = { file: string; output: string; line: number; hash: string };
-type Detail = { detail: string };
-
-/** What status reports, keyed on `problem`. Each kind has exactly the fields it's built with, in order. */
-export type Problem =
-  | ({ problem: "invalid" } & (InFile | InEdit | InChange | InOutput | InBlock) & Detail)
-  | ({ problem: "gone" } & (InEdit | InChange) & Detail)
-  | ({ problem: "stale" } & InChange & Detail)
-  | ({ problem: "conflict" } & (InFile | InChange) & Detail)
-  | ({ problem: "placeholder" } & (InOutput | InBlock) & Detail)
-  | ({ problem: "leak" } & ((InOutput & { line: number }) | InBlock) & { terms: string[] })
-  | ({ problem: "missing" } & InBlock & { terms: string[]; upstream: string })
-  | {
-    problem: "orphan"; file: string; hash: string; kind: string; rules: string; intent: string; upstream: string;
-    patched: string; nearest: Nearest[];
-  }
-  | ({ problem: "check" } & InFile & Detail);
 
 export function describe(p: Problem): string {
   let at = p.file + ("line" in p && p.line ? `:${p.line}` : "") + ("hash" in p && p.hash ? ` [${p.hash}]` : "");

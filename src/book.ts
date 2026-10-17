@@ -1,7 +1,7 @@
 // The repo, its config and its upstreams.
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Problem } from "./assemble.ts";
+import type { Hooks, Problem } from "./api.ts";
 import { installHook } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
@@ -16,18 +16,6 @@ export const PB = ".patchbook";
 
 export function under(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(prefix + "/");
-}
-
-/** What a repo's `.patchbook/hooks.ts` can export. Patchbook calls each by name. */
-export interface Hooks {
-  /** The value of `{{kind:name}}`, or null to look it up in the config's placeholder source. */
-  placeholder?(kind: string, name: string): string | null | undefined;
-  /** Text in a block that needs an entry, beyond what the config's `[[check]]` patterns find. */
-  blockTerms?(path: string, block: string, outputs: ReadonlySet<string>): Iterable<string>;
-  /** Change the output, path by path, before it's checked and written. */
-  finish?(out: Map<string, { data: Uint8Array; mode: number }>): void;
-  /** Problems with the output that the config can't express. */
-  check?(outputs: ReadonlyMap<string, Uint8Array>): Problem[];
 }
 
 const HOOKS = ["placeholder", "blockTerms", "finish", "check"] as const;
