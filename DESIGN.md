@@ -108,7 +108,23 @@ An upstream block that matches a check and has no entry is **missing**. Output t
 - `patchbook status [--json]` lists the problems, what sync merged on its own, and how much upstream changed in each file we touch.
 - `patchbook record [change] [--intent ...]` takes the output files edited by hand since the last build (per `build.lock`) and moves each edit into the patchbook. In a file with block entries, each changed paragraph updates its entry, or gets a new `policy` entry; a new paragraph joins the one before it, and a paragraph put back as upstream had it loses its entry. Other edits become `file`, `add` or `delete` edits based on the pinned upstream. An edit to a file that a change already owns goes to that change. For the other edits, a model reads their diff and writes the intent if you didn't. Without a change name, the model also picks one: an existing change the edits serve, or a new name.
 - A pre-commit hook does `record` and `build` on each commit, and stages what they change, so the usual loop is: edit, commit. Every patchbook command installs it in its repo if it's missing, so a fresh clone gets it on first use, and `patchbook hook install` installs it by hand. It leaves another tool's pre-commit hook alone. If the patchbook has problems, it records but doesn't build. `PATCHBOOK_HOOK=0 git commit` skips it once, and `PATCHBOOK_INTENT="..."` gives the intent instead of the model.
-- `patchbook provider [claude|codex]` shows or chooses the model that writes intents: Claude Haiku 5.5 at medium effort through the `claude` CLI, or GPT-6-Luna at high effort through `codex`. Until you choose, patchbook uses Claude if it's installed, otherwise Codex, and saves that choice in `~/.config/patchbook/config.toml`. An `[intent]` table there, or in a repo's config, can set `provider`, `model` and `effort`.
+- Intents are written by Claude Haiku 5.5 at medium effort through the `claude` CLI, or GPT-6-Luna at high effort through `codex`: Claude if it's installed, unless the settings choose.
+
+## Settings
+
+Each setting can be set in three places, and the most specific wins: an env var, for one command; the project's `.patchbook/config.toml`, shared with everyone who works on the repo; and the user's `~/.config/patchbook/config.toml`. `patchbook config` lists every setting, its value, and where the value came from. `patchbook config <name> <value>` sets one in the user config, `--project` sets it in the project's, and `--unset` removes it.
+
+| Setting | Env var | Default |
+| --- | --- | --- |
+| `intent.provider` | `PATCHBOOK_PROVIDER` | `claude` if installed, otherwise `codex` |
+| `intent.model` | `PATCHBOOK_MODEL` | the provider's |
+| `intent.effort` | `PATCHBOOK_EFFORT` | the provider's |
+| `hook.enabled` | `PATCHBOOK_HOOK` | `true` |
+| `start.install_skill` | `PATCHBOOK_SKILL` | `true` |
+| `start.agents` | | `["claude-code", "codex"]` |
+| `store.path` (user only) | `PATCHBOOK_HOME` | `~/.local/share/patchbook` |
+
+A model or effort set beside a different provider belongs to that provider, so it's skipped when another layer picks a different one.
 
 Problem kinds: missing, orphan, conflict, gone, stale, invalid, placeholder, leak, check.
 

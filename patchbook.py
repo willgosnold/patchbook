@@ -21,9 +21,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 PB = ".patchbook"
-# One store per user, shared by every repo that follows the same upstream.
-STORE = Path(os.environ.get("PATCHBOOK_HOME")
-             or Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "patchbook") / "upstreams"
 EXIT_MOVED = 10
 LINK = 0o120000
 
@@ -88,6 +85,131 @@ def under(path, prefix):
     return path == prefix or path.startswith(prefix + "/")
 
 
+# Settings
+
+
+USER_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "patchbook" / "config.toml"
+# name: (env var, default, where it can be set). The most specific wins: the env var, then the
+# project's .patchbook/config.toml, then the user's config, then the default.
+SETTINGS = {
+    "intent.provider": ("PATCHBOOK_PROVIDER", None, "claude or codex: the CLI that writes intents (default: claude if installed)"),
+    "intent.model": ("PATCHBOOK_MODEL", None, "the model that writes intents (default: the provider's)"),
+    "intent.effort": ("PATCHBOOK_EFFORT", None, "its reasoning effort (default: the provider's)"),
+    "hook.enabled": ("PATCHBOOK_HOOK", True, "record and build on each commit"),
+    "start.install_skill": ("PATCHBOOK_SKILL", True, "clone and init install the patchbook-update skill"),
+    "start.agents": (None, ["claude-code", "codex"], "the agents clone and init install the skill for"),
+    "store.path": ("PATCHBOOK_HOME", None, "where upstreams are kept (user config only)"),
+}
+USER_ONLY = {"store.path"}
+
+
+def read_toml(path):
+    return tomllib.loads(path.read_text()) if path.exists() else {}
+
+
+def lookup(config, name):
+    section, key = name.split(".")
+    return config.get(section, {}).get(key)
+
+
+def parse_value(name, raw):
+    default = SETTINGS[name][1]
+    if isinstance(default, bool):
+        if raw.lower() not in ("1", "0", "true", "false", "yes", "no", "on", "off"):
+            raise Fail(f"{name} is true or false, not {raw!r}")
+        return raw.lower() in ("1", "true", "yes", "on")
+    if isinstance(default, list):
+        return [v for v in re.split(r"[,\s]+", raw) if v]
+    return raw
+
+
+def setting(name, book=None):
+    """A setting's value and where it came from: env, project, user or default."""
+    env, default, _ = SETTINGS[name]
+    if env and os.environ.get(env) not in (None, ""):
+        return parse_value(name, os.environ[env]), "env"
+    if book is not None and name not in USER_ONLY and lookup(book.config, name) is not None:
+        return lookup(book.config, name), "project"
+    if lookup(read_toml(USER_CONFIG), name) is not None:
+        return lookup(read_toml(USER_CONFIG), name), "user"
+    return default, "default"
+
+
+def store_dir():
+    path = setting("store.path")[0]
+    base = Path(path).expanduser() if path else Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "patchbook"
+    return base / "upstreams"
+
+
+def toml_value(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, list):
+        return "[" + ", ".join(json.dumps(x) for x in v) + "]"
+    return json.dumps(v)
+
+
+def set_toml(path, name, value):
+    """Set or remove (value None) one key in a TOML file, keeping its other lines and comments."""
+    section, key = name.split(".")
+    lines = path.read_text().split("\n") if path.exists() else []
+    head = next((i for i, l in enumerate(lines) if l.strip() == f"[{section}]"), None)
+    if head is None:
+        if value is not None:
+            lines = (lines + [""] if lines and lines[-1].strip() else lines) + [f"[{section}]", f"{key} = {toml_value(value)}"]
+    else:
+        end = next((i for i in range(head + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+        at = next((i for i in range(head + 1, end) if re.match(rf"\s*{re.escape(key)}\s*=", lines[i])), None)
+        if at is not None:
+            if value is None:
+                del lines[at]
+            else:
+                lines[at] = f"{key} = {toml_value(value)}"
+        elif value is not None:
+            lines.insert(head + 1, f"{key} = {toml_value(value)}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines).rstrip("\n") + "\n")
+
+
+def cmd_config(args):
+    try:
+        book = Book.find()
+    except Fail:
+        book = None
+    if args.name and args.name not in SETTINGS:
+        raise Fail(f"no setting {args.name}. Settings: {', '.join(SETTINGS)}")
+    if args.project and args.name in USER_ONLY:
+        raise Fail(f"{args.name} can only be set in the user config")
+    if args.project and book is None:
+        raise Fail("--project needs a patchbook here or above")
+    path = book.dir / "config.toml" if args.project else USER_CONFIG
+    if args.unset:
+        set_toml(path, args.name, None)
+        return 0
+    if args.value is not None:
+        value = parse_value(args.name, args.value)
+        if args.name == "intent.provider" and value not in PROVIDERS:
+            raise Fail(f"intent.provider is one of {', '.join(PROVIDERS)}")
+        set_toml(path, args.name, value)
+        print(f"{args.name} = {toml_value(value)} in {path}")
+        return 0
+    if not args.name:
+        print(f"user config: {USER_CONFIG}" + (f"\nproject config: {book.dir / 'config.toml'}" if book else ""))
+    for name in [args.name] if args.name else SETTINGS:
+        value, source = setting(name, book)
+        if name.startswith("intent."):  # what will actually be used, defaults filled in
+            sources = {}
+            provider, model, effort = intent_settings(book, quiet=True, sources=sources)
+            value = {"intent.provider": provider, "intent.model": model, "intent.effort": effort}[name]
+            source = sources.get(name, "default")
+        if name == "store.path" and value is None:
+            value = str(store_dir().parent)
+        env = SETTINGS[name][0]
+        shown = toml_value(value) if value is not None else "(not set)"
+        print(f"{name:<20} {shown:<28} {source}" + (f"  [{env}]" if env and not args.name else ""))
+    return 0
+
+
 # The repo and its upstreams
 
 
@@ -124,7 +246,7 @@ class Upstream:
         if self.in_repo:
             return self.book.root
         readable = re.sub(r"[^A-Za-z0-9]+", "-", re.sub(r"^\w+://|\.git$", "", self.remote)).strip("-")[-60:]
-        d = STORE / f"{readable}-{hashlib.sha1(self.remote.encode()).hexdigest()[:8]}"
+        d = store_dir() / f"{readable}-{hashlib.sha1(self.remote.encode()).hexdigest()[:8]}"
         if not d.exists():
             d.parent.mkdir(parents=True, exist_ok=True)
             git("init", "--quiet", "--bare", str(d), cwd=d.parent)
@@ -1321,7 +1443,6 @@ PLACEHOLDER_HINT = re.compile(r"\{\{\w+:[^}]+\}\}")
 # Writing intents with a model
 
 
-USER_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "patchbook" / "config.toml"
 PROVIDERS = {
     "claude": {"model": "claude-haiku-5-5", "effort": "medium"},
     "codex": {"model": "gpt-6-luna", "effort": "high"},
@@ -1359,29 +1480,39 @@ def pending_diff(a, current, paths):
     return text[:40000] + ("\n[diff truncated]\n" if len(text) > 40000 else "")
 
 
-def provider_settings(book):
-    """The provider, model and effort for writing intents: the repo's [intent], then the user's, then a default."""
-    user = tomllib.loads(USER_CONFIG.read_text()).get("intent", {}) if USER_CONFIG.exists() else {}
-    repo = book.config.get("intent", {})
-    provider = repo.get("provider") or user.get("provider")
+def intent_settings(book, quiet=False, sources=None):
+    """The provider, model and effort for writing intents.
+
+    A model or effort set alongside a different provider is for that provider, so it's skipped.
+    """
+    provider, source = setting("intent.provider", book)
+    if sources is not None:
+        sources["intent.provider"] = source
     if not provider:
         found = [p for p in PROVIDERS if shutil.which(p)]
-        if not found:
+        if not found and not quiet:
             raise Fail("writing an intent needs the claude or codex CLI. Install one, or pass --intent.")
-        provider = found[0]
-        save_user_provider(provider)
+        provider = found[0] if found else "claude"
     if provider not in PROVIDERS:
-        raise Fail(f"provider must be one of {', '.join(PROVIDERS)}, not {provider!r}")
-    settings = {**PROVIDERS[provider], **{k: v for k, v in user.items() if k in ("model", "effort") and user.get("provider") == provider},
-                **{k: v for k, v in repo.items() if k in ("model", "effort")}}
-    return provider, settings["model"], settings["effort"]
-
-
-def save_user_provider(provider):
-    USER_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    USER_CONFIG.write_text(f'[intent]\nprovider = "{provider}"\n')
-    print(f"patchbook: writing intents with {provider} (saved in {USER_CONFIG}; change with `patchbook provider`)",
-          file=sys.stderr)
+        raise Fail(f"intent.provider is one of {', '.join(PROVIDERS)}, not {provider!r}")
+    layers = [("env", None), ("project", book.config if book else {}), ("user", read_toml(USER_CONFIG))]
+    chosen = dict(PROVIDERS[provider])
+    for key in ("model", "effort"):
+        for source, config in layers:
+            if source == "env":
+                value = os.environ.get(SETTINGS[f"intent.{key}"][0])
+            else:
+                if source == "project" and book is None:
+                    continue
+                value = lookup(config, f"intent.{key}")
+                if value and lookup(config, "intent.provider") not in (None, provider):
+                    value = None
+            if value:
+                chosen[key] = value
+                if sources is not None:
+                    sources[f"intent.{key}"] = source
+                break
+    return provider, chosen["model"], chosen["effort"]
 
 
 def ask_model(provider, model, effort, prompt):
@@ -1399,7 +1530,7 @@ def ask_model(provider, model, effort, prompt):
 
 def write_intent(book, changes, diff, name=None, named=True):
     """Ask the chosen model for the change's name and intent. Returns (name, intent)."""
-    provider, model, effort = provider_settings(book)
+    provider, model, effort = intent_settings(book)
     listed = "\n".join(f"{c.name}: {c.intent}" for c in changes.values()) or "(none yet)"
     if not named:
         name = "paragraphs"
@@ -1424,19 +1555,6 @@ def write_intent(book, changes, diff, name=None, named=True):
     if chosen in changes and named:
         intent = changes[chosen].intent
     return (chosen if named else None), intent
-
-
-def cmd_provider(args):
-    if args.name:
-        if args.name not in PROVIDERS:
-            raise Fail(f"provider must be one of {', '.join(PROVIDERS)}")
-        save_user_provider(args.name)
-        return 0
-    user = tomllib.loads(USER_CONFIG.read_text()).get("intent", {}) if USER_CONFIG.exists() else {}
-    provider = user.get("provider")
-    print(f"{provider}: {PROVIDERS[provider]['model']} at {PROVIDERS[provider]['effort']} effort" if provider
-          else "not chosen yet; patchbook uses claude if it's installed, otherwise codex")
-    return 0
 
 
 # Show, blocks, scaffold
@@ -1582,6 +1700,8 @@ def cmd_hook(args):
         install_hook(Path(git("rev-parse", "--show-toplevel", cwd=Path.cwd())), verbose=True)
         return 0
     book = Book.find()
+    if not setting("hook.enabled", book)[0]:
+        return 0
     before = dirty(book.root)
     a = assemble(book)
     edited = hand_edits(book, a.out)
@@ -1608,17 +1728,17 @@ def cmd_hook(args):
     return 0
 
 
-SKILL = ["npx", "-y", "skills", "add", "willgosnold/patchbook", "--skill", "patchbook-update",
-         "-a", "claude-code", "-a", "codex", "-y"]
+SKILL = ["npx", "-y", "skills", "add", "willgosnold/patchbook", "--skill", "patchbook-update", "-y"]
 SCHEDULE = 'To keep up with upstream, add a daily T3 scheduled task in this project: "Use the patchbook-update skill."'
 
 
-def install_skill(root):
+def install_skill(book):
     """Install the update skill for agents in the repo. Returns whether it did."""
-    if os.environ.get("PATCHBOOK_SKILL") == "0":
+    if not setting("start.install_skill", book)[0]:
         return False
-    if not shutil.which("npx") or subprocess.run(SKILL, cwd=root, capture_output=True).returncode != 0:
-        print(f"patchbook: couldn't install the update skill. Run it yourself: {shlex.join(SKILL)}", file=sys.stderr)
+    cmd = SKILL + [x for agent in setting("start.agents", book)[0] for x in ("-a", agent)]
+    if not shutil.which("npx") or subprocess.run(cmd, cwd=book.root, capture_output=True).returncode != 0:
+        print(f"patchbook: couldn't install the update skill. Run it yourself: {shlex.join(cmd)}", file=sys.stderr)
         return False
     return True
 
@@ -1661,7 +1781,7 @@ def cmd_clone(args):
     book.write_lock(name, commit, git("rev-parse", "HEAD^{tree}", cwd=dest))
     write_build_lock(book, book.current_output())
     install_hook(dest)
-    if install_skill(dest):
+    if install_skill(book):
         os.chdir(dest)
         cmd_record(argparse.Namespace(change="patchbook-update-skill", intent=(
             "Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.")))
@@ -1685,7 +1805,7 @@ def cmd_init(args):
         book = Book(root)
         sync_upstream(book, book.upstreams[0], args.branch, [])
         install_hook(root)
-        install_skill(root)
+        install_skill(book)
         print(f"Next: patchbook build, then commit.\n{SCHEDULE}")
         return 0
     write_config(root, "fork", upstream_toml(name, args.upstream, args.path, args.branch, ""))
@@ -1696,7 +1816,7 @@ def cmd_init(args):
     book = Book(root)
     book.write_lock(name, base, book.upstreams[0].tree_of(base))
     install_hook(root)
-    install_skill(root)
+    install_skill(book)
     print(f"pinned upstream at {base[:7]}, where this repo branched from it.\n"
           "Capture your existing changes with `patchbook record`, then `patchbook build`, and commit.\n" + SCHEDULE)
     return 0
@@ -1789,9 +1909,12 @@ def main():
     p.add_argument("action", choices=["install", "run"])
     p.set_defaults(func=cmd_hook)
 
-    p = sub.add_parser("provider", help="show or choose the model that writes intents: claude or codex")
-    p.add_argument("name", nargs="?", choices=sorted(PROVIDERS))
-    p.set_defaults(func=cmd_provider)
+    p = sub.add_parser("config", help="show settings and where each comes from, or set one")
+    p.add_argument("name", nargs="?", help="a setting, such as intent.provider")
+    p.add_argument("value", nargs="?")
+    p.add_argument("--project", action="store_true", help="set it in this project's .patchbook/config.toml, not yours")
+    p.add_argument("--unset", action="store_true", help="remove it, so the next layer's value applies")
+    p.set_defaults(func=cmd_config)
 
     p = sub.add_parser("show", help="print a change, with its file edits as diffs")
     p.add_argument("change")

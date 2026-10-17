@@ -151,7 +151,6 @@ class ForkTest(Case):
         self.assertIn("intent: Shout the second line.", change)
         self.assertIn("- file app.txt", change)
         self.assertIn("+TWO", (self.tmp / "prompt.txt").read_text())
-        self.assertIn('provider = "claude"', (self.tmp / "config/patchbook/config.toml").read_text())
         self.fork.write("app.txt", self.fork.read("app.txt").replace("three", "THREE"))
         self.pb("record", cwd=self.fork.path)  # the model picks shout again, so its intent stays
         self.assertEqual((self.fork.path / ".patchbook/changes/shout/CHANGE.md").read_text().count("intent:"), 1)
@@ -176,6 +175,38 @@ class ForkTest(Case):
         sh("git", "commit", "-qam", "soften", cwd=self.fork.path, env={**self.env, "PATCHBOOK_HOOK": "1"})
         self.assertIn("Two", self.fork.read("app.txt"))
         self.assertEqual(sh("git", "status", "--porcelain", cwd=self.fork.path).stdout, "")
+
+    def config(self, *args, env=None):
+        self.env.update(env or {})
+        out = self.pb("config", *args, cwd=self.fork.path).stdout
+        for k in env or {}:
+            del self.env[k]
+        return out
+
+    def test_settings_layer(self):
+        project = self.fork.path / ".patchbook/config.toml"
+        project.write_text("# my settings\n" + project.read_text())
+        self.assertRegex(self.config("intent.provider"), r'"claude" .*default')
+        self.config("intent.provider", "codex")
+        self.config("intent.model", "gpt-6-sol")
+        self.assertRegex(self.config("intent.model"), r'"gpt-6-sol" .*user')
+        # The project picks another provider, so the user's codex model doesn't apply.
+        self.config("--project", "intent.provider", "claude")
+        self.assertRegex(self.config("intent.provider"), r'"claude" .*project')
+        self.assertRegex(self.config("intent.model"), r'"claude-haiku-5-5" .*default')
+        self.assertIn("# my settings", project.read_text())
+        # An env var beats both.
+        self.assertRegex(self.config("intent.provider", env={"PATCHBOOK_PROVIDER": "codex"}), r'"codex" .*env')
+        self.config("--project", "--unset", "intent.provider")
+        self.assertIn('"gpt-6-sol"', self.config("intent.model"))
+        self.assertIn("can only be set in the user config", self.pb("config", "--project", "store.path", "/x",
+                                                                    cwd=self.fork.path, code=1).stderr)
+
+    def test_hook_off_in_the_project(self):
+        self.config("--project", "hook.enabled", "false")
+        self.fork.write("app.txt", self.fork.read("app.txt").replace("two", "TWO"))
+        sh("git", "commit", "-qam", "shout", cwd=self.fork.path, env={**self.env, "PATCHBOOK_HOOK": ""})
+        self.assertFalse((self.fork.path / ".patchbook/changes/shout").exists())
 
     def test_build_refuses_to_overwrite_hand_edits(self):
         self.record_feature()
