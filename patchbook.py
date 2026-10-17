@@ -85,7 +85,111 @@ def under(path, prefix):
     return path == prefix or path.startswith(prefix + "/")
 
 
-# The repo and its upstream
+# The repo and its upstreams
+
+
+def default_name(remote, path):
+    tail = path.rstrip("/").rsplit("/", 1)[-1] if path else remote.rstrip("/").rsplit("/", 1)[-1]
+    return tail.removesuffix(".git") or "upstream"
+
+
+class Upstream:
+    """One upstream repo, or a folder of one, mounted at a folder of the staged tree."""
+
+    def __init__(self, book, spec, legacy):
+        self.book = book
+        self.remote = spec["remote"]
+        self.path = spec.get("path", "").strip("/")
+        self.branch = spec.get("branch", "main")
+        self.name = spec.get("name") or default_name(self.remote, self.path)
+        self.mount = spec.get("mount", "" if legacy else self.name).strip("/")
+        self.vendor = book.root / spec["vendor"] if spec.get("vendor") else None
+        self.remote_name = spec.get("remote_name", "upstream")
+        # A fork's own upstream is the repo itself. The others are fetched into a cache.
+        self.in_repo = book.layout == "fork" and self.mount == ""
+
+    def key(self, rel):
+        return f"{self.mount}/{rel}" if self.mount else rel
+
+    def mounted(self, files):
+        return {self.key(p): v for p, v in files.items()}
+
+    def pin(self):
+        return self.book.lock().get(self.name) or {}
+
+    def git_dir(self):
+        if self.in_repo:
+            return self.book.root
+        d = CACHE / hashlib.sha1(self.remote.encode()).hexdigest()[:16]
+        if not d.exists():
+            d.parent.mkdir(parents=True, exist_ok=True)
+            git("init", "--quiet", "--bare", str(d), cwd=d.parent)
+        return d
+
+    def source(self):
+        return self.remote_name if self.in_repo else self.remote
+
+    def fetch(self, ref):
+        depth = [] if self.in_repo else ["--depth=1"]
+        git("fetch", "--quiet", *depth, self.source(), ref, cwd=self.git_dir())
+        return git("rev-parse", "FETCH_HEAD^{commit}", cwd=self.git_dir())
+
+    def have(self, commit):
+        found = subprocess.run(["git", "cat-file", "-e", f"{commit}^{{commit}}"], cwd=self.git_dir(), capture_output=True)
+        if found.returncode != 0:
+            self.fetch(commit)
+
+    def tree_of(self, commit):
+        spec = f"{commit}:{self.path}" if self.path else f"{commit}^{{tree}}"
+        return git("rev-parse", spec, cwd=self.git_dir())
+
+    def head(self):
+        out = git("ls-remote", self.source(), f"refs/heads/{self.branch}", cwd=self.git_dir())
+        if not out:
+            raise Fail(f"upstream {self.name} has no branch {self.branch}")
+        return out.split()[0]
+
+    def files(self, commit):
+        """{path: (bytes, mode)} for upstream's files at a commit, relative to the upstream path."""
+        self.have(commit)
+        gd = self.git_dir()
+        args = ["ls-tree", "-r", "-z", "--full-tree", commit]
+        if self.path:
+            args += ["--", self.path]
+        listing = run(["git", *args], gd).decode()
+        entries = []
+        for item in filter(None, listing.split("\0")):
+            meta, path = item.split("\t", 1)
+            mode, kind, oid = meta.split()
+            if kind != "blob":
+                continue  # submodules are not copied
+            rel = path[len(self.path) + 1:] if self.path else path
+            entries.append((rel, int(mode, 8), oid))
+        blobs = read_blobs(gd, [oid for _, _, oid in entries])
+        return {rel: (blobs[oid], norm_mode(mode)) for rel, mode, oid in entries}
+
+    def vendor_tree(self):
+        """Hash the vendored copy as git would commit it, and read its files."""
+        rel = self.vendor.relative_to(self.book.root).as_posix()
+        files = index_files(self.book.root, rel)
+        tree = files.pop(None)
+        return {p[len(rel) + 1:]: v for p, v in files.items()}, tree
+
+    def staged(self):
+        """Upstream's files at the pin, mounted. A vendored copy must match the pin exactly."""
+        pin = self.pin()
+        if not pin.get("tree"):
+            raise Fail(f"upstream {self.name} has no pin yet. Run: patchbook sync {self.name}")
+        if self.vendor:
+            files, tree = self.vendor_tree()
+            if tree != pin["tree"]:
+                raise Fail(
+                    f"{self.vendor.relative_to(self.book.root)} (tree {tree[:7]}) differs from the pin (tree {pin['tree'][:7]}). "
+                    "Never edit the vendored copy. Record the change in the patchbook, or run sync."
+                )
+        else:
+            files = self.files(pin["commit"])
+        return self.mounted(files)
 
 
 class Book:
@@ -96,17 +200,31 @@ class Book:
         self.layout = self.config.get("layout", "fork")
         if self.layout not in ("vendor", "fork"):
             raise Fail(f"layout must be vendor or fork, not {self.layout!r}")
-        up = self.config["upstream"]
-        self.remote = up["remote"]
-        self.path = up.get("path", "").strip("/")
-        self.branch = up.get("branch", "main")
-        self.remote_name = up.get("remote_name", "upstream")
+        raw = self.config.get("upstream")
+        if not raw:
+            raise Fail("config.toml has no [[upstream]]")
+        self.legacy = isinstance(raw, dict)
+        self.upstreams = [Upstream(self, spec, self.legacy) for spec in ([raw] if self.legacy else raw)]
+        self._check_mounts()
         if self.layout == "vendor":
-            self.vendor = root / up["vendor"]
             out = self.config.get("output", {})
             self.out_from = out.get("from", "").strip("/")
             self.out_dir = root / out["to"]
         self.hooks = self._load_hooks()
+
+    def _check_mounts(self):
+        names = [u.name for u in self.upstreams]
+        if len(set(names)) != len(names):
+            raise Fail("two upstreams share a name")
+        roots = [u for u in self.upstreams if not u.mount]
+        if len(roots) > 1:
+            raise Fail("only one upstream can mount at the root")
+        if self.layout == "fork" and not roots:
+            raise Fail("a fork needs its own upstream mounted at the root (mount = \"\")")
+        for a in self.upstreams:
+            for b in self.upstreams:
+                if a is not b and a.mount and under(b.mount, a.mount):
+                    raise Fail(f"upstreams {a.name} and {b.name} mount at overlapping folders")
 
     @classmethod
     def find(cls, start=None):
@@ -128,87 +246,45 @@ class Book:
     def hook(self, name):
         return getattr(self.hooks, name, None) if self.hooks else None
 
-    # The lock
+    def upstream(self, name):
+        for u in self.upstreams:
+            if u.name == name:
+                return u
+        raise Fail(f"no upstream called {name}; there are: {', '.join(u.name for u in self.upstreams)}")
+
+    def upstream_for(self, path):
+        """The upstream a staged path belongs to: the deepest mount it is under."""
+        found = [u for u in self.upstreams if not u.mount or under(path, u.mount)]
+        return max(found, key=lambda u: len(u.mount)) if found else None
+
+    # The lock: {upstream name: {commit, tree}}
 
     def lock(self):
-        return json.loads((self.dir / "upstream.lock").read_text())
+        path = self.dir / "upstream.lock"
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text())
+        if "commit" in data:  # one upstream, from before upstreams had names
+            return {self.upstreams[0].name: data}
+        return data
 
-    def write_lock(self, commit, tree):
-        (self.dir / "upstream.lock").write_text(json.dumps({"commit": commit, "tree": tree}, indent=2) + "\n")
+    def write_lock(self, name, commit, tree):
+        data = self.lock()
+        data[name] = {"commit": commit, "tree": tree}
+        (self.dir / "upstream.lock").write_text(json.dumps(dict(sorted(data.items())), indent=2) + "\n")
 
-    # Git access to upstream: the fork itself, or a cache for a vendored copy
-
-    def git_dir(self):
-        if self.layout == "fork":
-            return self.root
-        d = CACHE / hashlib.sha1(self.remote.encode()).hexdigest()[:16]
-        if not d.exists():
-            d.parent.mkdir(parents=True, exist_ok=True)
-            git("init", "--quiet", "--bare", str(d), cwd=d.parent)
-        return d
-
-    def source(self):
-        return self.remote_name if self.layout == "fork" else self.remote
-
-    def fetch(self, ref):
-        gd = self.git_dir()
-        depth = [] if self.layout == "fork" else ["--depth=1"]
-        git("fetch", "--quiet", *depth, self.source(), ref, cwd=gd)
-        return git("rev-parse", "FETCH_HEAD^{commit}", cwd=gd)
-
-    def have(self, commit):
-        found = subprocess.run(["git", "cat-file", "-e", f"{commit}^{{commit}}"], cwd=self.git_dir(), capture_output=True)
-        if found.returncode != 0:
-            self.fetch(commit)
-
-    def tree_of(self, commit):
-        spec = f"{commit}:{self.path}" if self.path else f"{commit}^{{tree}}"
-        return git("rev-parse", spec, cwd=self.git_dir())
-
-    def head(self):
-        out = git("ls-remote", self.source(), f"refs/heads/{self.branch}", cwd=self.git_dir())
-        if not out:
-            raise Fail(f"upstream has no branch {self.branch}")
-        return out.split()[0]
-
-    def upstream_files(self, commit):
-        """{path: (bytes, mode)} for upstream's files at a commit, relative to the upstream path."""
-        self.have(commit)
-        gd = self.git_dir()
-        args = ["ls-tree", "-r", "-z", "--full-tree", commit]
-        if self.path:
-            args += ["--", self.path]
-        listing = run(["git", *args], gd).decode()
-        entries = []
-        for item in filter(None, listing.split("\0")):
-            meta, path = item.split("\t", 1)
-            mode, kind, oid = meta.split()
-            if kind != "blob":
-                continue  # submodules are not copied
-            rel = path[len(self.path) + 1:] if self.path else path
-            entries.append((rel, int(mode, 8), oid))
-        blobs = read_blobs(gd, [oid for _, _, oid in entries])
-        return {rel: (blobs[oid], norm_mode(mode)) for rel, mode, oid in entries}
-
-    def vendor_tree(self):
-        """Hash the vendored copy as git would commit it, and read its files."""
-        files = index_files(self.root, self.vendor.relative_to(self.root).as_posix())
-        prefix = self.vendor.relative_to(self.root).as_posix() + "/"
-        tree = files.pop(None)
-        return {p[len(prefix):]: v for p, v in files.items()}, tree
+    def pins(self):
+        return ", ".join(f"{name} {pin['commit'][:7]}" for name, pin in sorted(self.lock().items()))
 
     def staged_upstream(self):
-        """Upstream's files at the pin. A vendored copy must match the pin exactly."""
-        lock = self.lock()
-        if self.layout == "vendor":
-            files, tree = self.vendor_tree()
-            if tree != lock["tree"]:
-                raise Fail(
-                    f"{self.vendor.relative_to(self.root)} (tree {tree[:7]}) differs from the pin (tree {lock['tree'][:7]}). "
-                    "Never edit the vendored copy. Record the change in the patchbook, or run sync."
-                )
-            return files
-        return self.upstream_files(lock["commit"])
+        staged = {}
+        for u in self.upstreams:
+            files = u.staged()
+            clash = next((p for p in files if p in staged), None)
+            if clash:
+                raise Fail(f"{clash} comes from two upstreams; give {u.name} its own mount")
+            staged.update(files)
+        return staged
 
     # The output on disk
 
@@ -222,13 +298,15 @@ class Book:
             return {}
         rel = root.relative_to(self.root).as_posix() if root != self.root else ""
         args = ["ls-files", "-z", "-co", "--exclude-standard"] + (["--", rel] if rel else [])
+        # In a fork the output is the repo root, minus the patchbook and any vendored copies.
+        kept = [PB] + [u.vendor.relative_to(self.root).as_posix() for u in self.upstreams if u.vendor]
         out = {}
         for path in filter(None, git(*args, cwd=self.root).split("\0")):
             p = self.root / path
             if not os.path.lexists(p):
                 continue
             key = path[len(rel) + 1:] if rel else path
-            if self.layout == "fork" and under(key, PB):
+            if self.layout == "fork" and any(under(key, k) for k in kept):
                 continue
             out[key] = read_disk(p)
         return out
@@ -832,26 +910,27 @@ def cmd_build(args):
         raise Fail(f"these output files changed since the last build:\n  {shown}\n"
                    "Move the edits into the patchbook with `patchbook record`, or pass --force to discard them.")
     write_output(book, a.out)
-    lock = book.lock()
-    print(f"built {len(a.out)} files from {lock['commit'][:7]} with {a.applied} edits")
+    print(f"built {len(a.out)} files from {book.pins()} with {a.applied} edits")
     if args.commit:
-        commit_build(book, lock)
+        commit_build(book)
     return 0
 
 
-def commit_build(book, lock):
+def commit_build(book):
     root = book.root
     git("add", "-A", cwd=root)
     tree = git("write-tree", cwd=root)
     parents = ["-p", "HEAD"]
-    if book.layout == "fork":
-        ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", lock["commit"], "HEAD"], cwd=root).returncode == 0
+    own = next((u for u in book.upstreams if u.in_repo), None)
+    if own:
+        commit = own.pin()["commit"]
+        ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", commit, "HEAD"], cwd=root).returncode == 0
         if not ancestor:
-            parents += ["-p", lock["commit"]]
+            parents += ["-p", commit]
     if git("rev-parse", "HEAD^{tree}", cwd=root) == tree and len(parents) == 2:
         print("nothing to commit")
         return
-    message = f"Build from upstream {lock['commit'][:7]}"
+    message = f"Build from upstream {book.pins()}"
     commit = git("commit-tree", tree, *parents, "-m", message, cwd=root)
     git("update-ref", "HEAD", commit, cwd=root)
     print(f"committed {commit[:7]}: {message}")
@@ -863,11 +942,10 @@ def commit_build(book, lock):
 def cmd_status(args):
     book = Book.find()
     a = assemble(book)
-    lock = book.lock()
     last_sync = book.dir / "last-sync.json"
     report = json.loads(last_sync.read_text()) if last_sync.exists() else None
     if args.json:
-        print(json.dumps({"upstream": lock["commit"], "applied": a.applied, "problems": a.problems,
+        print(json.dumps({"upstreams": book.lock(), "applied": a.applied, "problems": a.problems,
                           "last_sync": report}, indent=2))
     else:
         for p in a.problems:
@@ -876,7 +954,7 @@ def cmd_status(args):
         for p in a.problems:
             counts[p["problem"]] = counts.get(p["problem"], 0) + 1
         summary = ", ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "no problems"
-        print(f"{a.applied} edits apply at {lock['commit'][:7]}; {summary}")
+        print(f"{a.applied} edits apply at {book.pins()}; {summary}")
     return 1 if a.problems else 0
 
 
@@ -885,15 +963,19 @@ def cmd_status(args):
 
 def cmd_check(args):
     book = Book.find()
-    lock = book.lock()
-    head = book.head()
-    result = {"pinned": lock["commit"], "head": head, "moved": False, "files": []}
-    if head != lock["commit"]:
-        book.fetch(head)
-        if book.tree_of(head) != lock["tree"]:
-            old, new = book.upstream_files(lock["commit"]), book.upstream_files(head)
-            result["moved"] = True
-            result["files"] = upstream_delta(old, new)
+    result = {"moved": False, "upstreams": {}}
+    for u in book.upstreams:
+        pin = u.pin()
+        head = u.head()
+        r = {"pinned": pin.get("commit"), "head": head, "moved": False, "files": []}
+        if head != pin.get("commit"):
+            u.fetch(head)
+            if u.tree_of(head) != pin.get("tree"):
+                old = u.mounted(u.files(pin["commit"])) if pin.get("tree") else {}
+                r["moved"] = True
+                r["files"] = upstream_delta(old, u.mounted(u.files(head)))
+        result["upstreams"][u.name] = r
+        result["moved"] = result["moved"] or r["moved"]
     print(json.dumps(result, indent=2))
     return EXIT_MOVED if result["moved"] else 0
 
@@ -926,31 +1008,51 @@ def merge_file(ours, base, theirs):
 
 def cmd_sync(args):
     book = Book.find()
-    lock = book.lock()
-    commit = book.fetch(args.ref or book.branch)
-    tree = book.tree_of(commit)
-    if tree == lock["tree"]:
-        print(f"upstream at {commit[:7]} matches the pin (tree {tree[:7]}). Nothing to do.")
-        return 0
-    old = book.upstream_files(lock["commit"]) if lock["tree"] else {}
-    new = book.upstream_files(commit)
+    if args.ref and not args.name and len(book.upstreams) > 1:
+        raise Fail("name the upstream to sync to a ref: patchbook sync <name> <ref>")
+    targets = [book.upstream(args.name)] if args.name else book.upstreams
     problems = []
     changes = read_changes(book, problems)
-    report = {"from": lock["commit"], "to": commit, "upstream": upstream_delta(old, new),
+    reports = {}
+    for u in targets:
+        report = sync_upstream(book, u, args.ref, changes)
+        if report:
+            reports[u.name] = report
+    if reports:
+        (book.dir / "last-sync.json").write_text(json.dumps({"upstreams": reports}, indent=2) + "\n")
+        print("Next: patchbook status")
+    return 0
+
+
+def sync_upstream(book, u, ref, changes):
+    """Move one upstream's pin and carry every change on its files forward. Returns the report, or None."""
+    pin = u.pin()
+    commit = u.fetch(ref or u.branch)
+    tree = u.tree_of(commit)
+    if tree == pin.get("tree"):
+        print(f"{u.name}: upstream at {commit[:7]} matches the pin (tree {tree[:7]}). Nothing to do.")
+        return None
+    raw = u.files(commit)
+    old = u.mounted(u.files(pin["commit"])) if pin.get("tree") else {}
+    new = u.mounted(raw)
+    report = {"from": pin.get("commit"), "to": commit, "upstream": upstream_delta(old, new),
               "merged": [], "conflicts": [], "gone": [], "replaced_upstream_changed": []}
 
-    if book.layout == "vendor":
-        if book.vendor.exists():
-            shutil.rmtree(book.vendor)
-        for p, (data, mode) in new.items():
-            write_disk(book.vendor / p, data, mode)
-        _, actual = book.vendor_tree()
+    if u.vendor:
+        if u.vendor.exists():
+            shutil.rmtree(u.vendor)
+        for p, (data, mode) in raw.items():
+            write_disk(u.vendor / p, data, mode)
+        _, actual = u.vendor_tree()
         if actual != tree:
-            raise Fail(f"the vendored copy hashes to {actual}, not upstream's {tree}. Does a .gitignore hide upstream files?")
+            raise Fail(f"the vendored copy of {u.name} hashes to {actual}, not upstream's {tree}. "
+                       "Does a .gitignore hide upstream files?")
 
     added = [p for p in new if p not in old]
     for c in changes:
         for e in c.edits:
+            if book.upstream_for(e.path) is not u:
+                continue
             if e.kind == "replace" and e.path in old and old.get(e.path) != new.get(e.path):
                 report["replaced_upstream_changed"].append(f"{c.name}: {e.path}")
             if e.kind != "file":
@@ -972,12 +1074,11 @@ def cmd_sync(args):
             key = "conflicts" if conflicts else "merged"
             report[key].append({"change": c.name, "path": e.path, **({"count": conflicts} if conflicts else {})})
 
-    book.write_lock(commit, tree)
-    (book.dir / "last-sync.json").write_text(json.dumps(report, indent=2) + "\n")
-    print(f"pinned upstream {commit[:7]}: {len(report['upstream'])} upstream files changed, "
+    book.write_lock(u.name, commit, tree)
+    print(f"{u.name}: pinned {commit[:7]}. {len(report['upstream'])} upstream files changed, "
           f"{len(report['merged'])} of ours merged cleanly, {len(report['conflicts'])} conflicts, "
-          f"{len(report['gone'])} gone. Next: patchbook status")
-    return 0
+          f"{len(report['gone'])} gone.")
+    return report
 
 
 # Record
@@ -1115,19 +1216,26 @@ def cmd_scaffold(args):
     return 0
 
 
-# Starting a patchbook
+# Starting a patchbook, and following another upstream
 
 
-def write_config(root, layout, remote, path, branch, vendor=None, out_from=None, out_to=None):
-    d = root / PB
-    d.mkdir(exist_ok=True)
-    lines = [f'layout = "{layout}"', "", "[upstream]", f'remote = "{remote}"']
+def upstream_toml(name, remote, path, branch, mount, vendor=None):
+    lines = ["[[upstream]]", f'name = "{name}"', f'remote = "{remote}"']
     if path:
         lines.append(f'path = "{path}"')
-    lines.append(f'branch = "{branch}"')
+    lines += [f'branch = "{branch}"', f'mount = "{mount}"']
     if vendor:
-        lines += [f'vendor = "{vendor}"', "", "[output]", f'from = "{out_from or ""}"', f'to = "{out_to}"']
-    (d / "config.toml").write_text("\n".join(lines) + "\n")
+        lines.append(f'vendor = "{vendor}"')
+    return "\n".join(lines) + "\n"
+
+
+def write_config(root, layout, upstream, output=None):
+    d = root / PB
+    d.mkdir(exist_ok=True)
+    text = f'layout = "{layout}"\n\n' + upstream
+    if output:
+        text += f'\n[output]\nfrom = "{output[0]}"\nto = "{output[1]}"\n'
+    (d / "config.toml").write_text(text)
     (d / "series").write_text("")
     (d / "retired.md").write_text("# Retired changes\n\nChanges dropped because upstream made them unnecessary or impossible, and why.\n")
 
@@ -1140,9 +1248,10 @@ def cmd_clone(args):
     git(*clone, args.url, str(dest), cwd=dest.parent)
     branch = git("branch", "--show-current", cwd=dest)
     commit = git("rev-parse", "HEAD", cwd=dest)
-    write_config(dest, "fork", args.url, "", branch)
+    name = default_name(args.url, "")
+    write_config(dest, "fork", upstream_toml(name, args.url, "", branch, ""))
     book = Book(dest)
-    book.write_lock(commit, git("rev-parse", "HEAD^{tree}", cwd=dest))
+    book.write_lock(name, commit, git("rev-parse", "HEAD^{tree}", cwd=dest))
     write_build_lock(book, book.current_output())
     git("add", PB, cwd=dest)
     git("commit", "--quiet", "-m", f"Start a patchbook at upstream {commit[:7]}", cwd=dest)
@@ -1155,26 +1264,46 @@ def cmd_clone(args):
 def cmd_init(args):
     root = Path(git("rev-parse", "--show-toplevel", cwd=Path.cwd()))
     if (root / PB / "config.toml").exists():
-        raise Fail(f"{root} already has a patchbook")
+        raise Fail(f"{root} already has a patchbook. To follow another upstream: patchbook track")
+    name = args.name or default_name(args.upstream, args.path)
     if args.vendor:
         if not args.output_to:
             raise Fail("--vendor needs --output-to, the folder the build writes")
-        write_config(root, "vendor", args.upstream, args.path, args.branch, args.vendor, args.output_from, args.output_to)
+        write_config(root, "vendor", upstream_toml(name, args.upstream, args.path, args.branch, "", args.vendor),
+                     (args.output_from, args.output_to))
         book = Book(root)
-        book.write_lock("0" * 40, "")
-        args.ref = args.branch
-        cmd_sync(args)
+        sync_upstream(book, book.upstreams[0], args.branch, [])
         print("Next: patchbook build")
         return 0
-    write_config(root, "fork", args.upstream, args.path, args.branch)
-    if git("remote", cwd=root).split().count("upstream") == 0:
+    write_config(root, "fork", upstream_toml(name, args.upstream, args.path, args.branch, ""))
+    if "upstream" not in git("remote", cwd=root).split():
         git("remote", "add", "upstream", args.upstream, cwd=root)
     git("fetch", "--quiet", "upstream", args.branch, cwd=root)
     base = git("merge-base", "HEAD", "FETCH_HEAD", cwd=root)
     book = Book(root)
-    book.write_lock(base, book.tree_of(base))
+    book.write_lock(name, base, book.upstreams[0].tree_of(base))
     print(f"pinned upstream at {base[:7]}, where this repo branched from it.\n"
           "Capture your existing changes with `patchbook record <change> --intent '...'`, then `patchbook build`.")
+    return 0
+
+
+def cmd_track(args):
+    """Follow one more upstream, mounted at its own folder of the staged tree."""
+    book = Book.find()
+    if any(u.name == args.name for u in book.upstreams):
+        raise Fail(f"already following an upstream called {args.name}")
+    config = book.dir / "config.toml"
+    text = config.read_text()
+    if book.legacy:  # name the first upstream, keeping it at the root
+        first = book.upstreams[0]
+        text = re.sub(r"^\[upstream\]$", f'[[upstream]]\nname = "{first.name}"\nmount = ""', text, count=1, flags=re.MULTILINE)
+        book.write_lock(first.name, **book.lock()[first.name])
+    mount = args.name if args.mount is None else args.mount
+    config.write_text(text.rstrip("\n") + "\n\n" + upstream_toml(args.name, args.url, args.path, args.branch, mount, args.vendor))
+    book = Book(book.root)
+    sync_upstream(book, book.upstream(args.name), args.branch, [])
+    where = f"{mount}/" if mount else "the root"
+    print(f"Its files appear at {where} of the staged tree. Ship what you need with edits (move, copy), then build.")
     return 0
 
 
@@ -1190,6 +1319,7 @@ def main():
 
     p = sub.add_parser("init", help="start a patchbook in this repo")
     p.add_argument("--upstream", required=True, help="upstream's git URL")
+    p.add_argument("--name", help="what to call it (default: the last part of --path or the URL)")
     p.add_argument("--branch", default="main")
     p.add_argument("--path", default="", help="the upstream folder to follow, if not the whole repo")
     p.add_argument("--vendor", help="vendor layout: copy upstream into this folder")
@@ -1197,18 +1327,28 @@ def main():
     p.add_argument("--output-to", help="vendor layout: the folder the build writes")
     p.set_defaults(func=cmd_init)
 
-    p = sub.add_parser("check", help="has upstream moved? exits 10 if so")
+    p = sub.add_parser("track", help="follow another upstream, mounted at its own folder")
+    p.add_argument("name")
+    p.add_argument("url")
+    p.add_argument("--branch", default="main")
+    p.add_argument("--path", default="", help="the upstream folder to follow, if not the whole repo")
+    p.add_argument("--mount", help="the staged folder its files appear under (default: its name)")
+    p.add_argument("--vendor", help="also keep a byte-for-byte copy in this folder")
+    p.set_defaults(func=cmd_track)
+
+    p = sub.add_parser("check", help="has any upstream moved? exits 10 if so")
     p.set_defaults(func=cmd_check)
 
-    p = sub.add_parser("sync", help="move the pin to an upstream ref and carry every change forward")
-    p.add_argument("ref", nargs="?")
+    p = sub.add_parser("sync", help="move the pins to upstream and carry every change forward")
+    p.add_argument("name", nargs="?", help="only this upstream")
+    p.add_argument("ref", nargs="?", help="a branch, tag or commit (default: the upstream's branch)")
     p.set_defaults(func=cmd_sync)
 
     p = sub.add_parser("status", help="list what is broken")
     p.add_argument("--json", action="store_true", help="machine-readable, with block text")
     p.set_defaults(func=cmd_status)
 
-    p = sub.add_parser("build", help="apply the patchbook to the pinned upstream and write the output")
+    p = sub.add_parser("build", help="apply the patchbook to the pinned upstreams and write the output")
     p.add_argument("--force", action="store_true", help="overwrite output files edited since the last build")
     p.add_argument("--commit", action="store_true", help="commit the result; in a fork, as a merge of upstream")
     p.set_defaults(func=cmd_build)
@@ -1223,7 +1363,7 @@ def main():
     p.set_defaults(func=cmd_show)
 
     p = sub.add_parser("blocks", help="print an upstream file's blocks with their hashes")
-    p.add_argument("file")
+    p.add_argument("file", help="its staged path, such as skills/arena/SKILL.md")
     p.set_defaults(func=cmd_blocks)
 
     p = sub.add_parser("scaffold", help="append skeleton block entries for missing blocks")

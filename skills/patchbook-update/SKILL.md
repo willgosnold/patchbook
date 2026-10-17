@@ -1,11 +1,11 @@
 ---
 name: patchbook-update
-description: Pull upstream into a repo that keeps its changes in a patchbook (.patchbook/), repair what broke from each change's intent, test, review, merge and deploy, and ask the user only when it can't decide. Use when a scheduled task or the user says to update a patchbook repo, or for /patchbook-update or $patchbook-update.
+description: Pull upstreams into a repo that keeps its changes in a patchbook (.patchbook/), repair what broke from each change's intent, test, review, merge and deploy, and ask the user only when it can't decide. Use when a scheduled task or the user says to update a patchbook repo, or for /patchbook-update or $patchbook-update.
 ---
 
 # Patchbook update
 
-This repo keeps its changes to an upstream repo in `.patchbook/`. Read `.patchbook/config.toml` and the guide it names (`guide`) before you change anything. `patchbook --help` lists the commands. The `patchbook` repo's `DESIGN.md` explains the model.
+This repo keeps its changes to one or more upstream repos in `.patchbook/`. Read `.patchbook/config.toml` and the guide it names (`guide`) before you change anything. `patchbook --help` lists the commands. The `patchbook` repo's `DESIGN.md` explains the model.
 
 Never edit the vendored copy or the build output by hand. Change the patchbook, then build.
 
@@ -13,20 +13,24 @@ Never edit the vendored copy or the build output by hand. Change the patchbook, 
 
 Run `uv tool upgrade patchbook` (ignore a failure if it wasn't installed with uv), then `patchbook check`.
 
-- Exit 0: upstream hasn't moved. If a scheduled task started this thread, archive it with `t3_thread_organize` (`archive`) and stop. Otherwise say so and stop.
-- Exit 10: continue.
+- Exit 0: no upstream has moved. If a scheduled task started this thread, clean up (below) and archive the thread with `t3_thread_organize` (`archive`) as your last action. Otherwise say so and stop.
+- Exit 10: continue. The JSON says which upstreams moved and which of their files changed.
 - Anything else: report the error and stop, leaving the thread for the user.
 
-## 2. Sync on a branch
+## 2. Sync on this thread's branch
 
-1. The checkout must be on the main branch, clean, and up to date with `origin` (`git pull --ff-only`). If it isn't, stop and ask.
-2. Create a branch, `patchbook/upstream-<short sha>`.
-3. Run `patchbook sync` and commit everything it changed as "Sync upstream to <short sha>".
-4. Read `.patchbook/last-sync.json` (what upstream changed and what merged on its own) and `patchbook status --json` (what broke).
+T3 gives each run its own worktree and branch. Work there.
+
+1. Find the main branch and the main checkout. Shell variables don't last between commands, so note both values:
+   - `MAIN_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##')`
+   - `MAIN_CHECKOUT=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')`
+2. Run `git fetch origin && git rebase origin/$MAIN_BRANCH`. The branch must have no commits of its own yet. If this thread is in the main checkout instead of a worktree, create a branch, `patchbook/upstream-<date>`, first.
+3. Run `patchbook sync`. It moves every upstream that moved. Commit everything it changed as "Sync upstream <name> to <short sha>", naming each upstream.
+4. Read `.patchbook/last-sync.json` (per upstream: what changed and what merged on its own) and `patchbook status --json` (what broke).
 
 ## 3. Repair
 
-Fix each problem from the change's intent and the guide. Keep upstream's new behaviour wherever the intent allows.
+Fix each problem from the change's intent and the guide. Keep upstream's new behaviour wherever the intent allows. Paths are staged paths: an upstream that isn't mounted at the root has its files under its mount folder.
 
 | Problem | What to do |
 | --- | --- |
@@ -52,7 +56,7 @@ Start a reviewer with `delegate_task`, on this thread's model and effort (omit `
 - the guide's path;
 - each repaired or retired change, with its intent;
 - the upstream changes from the sync report;
-- `git diff main...HEAD -- .patchbook`;
+- `git diff origin/$MAIN_BRANCH...HEAD -- .patchbook`;
 - the test results.
 
 Ask it, per change: does the result meet the intent on upstream's new text, does it change anything beyond the intent, and did upstream add anything that should have been handled. It answers pass or fail, with reasons. On a fail, fix what it found and start a new review round, with the earlier findings in the brief. Stop after two rounds.
@@ -66,12 +70,26 @@ Ask the user instead of merging when:
 - the review fails twice;
 - a test fails and you can't fix it.
 
-To ask, push the branch, open a pull request and link it with `link_pull_request`, then end with one short message that names the decision. Leave the thread active.
+To ask, push the branch (`git push -u origin HEAD`), open a pull request against `$MAIN_BRANCH` and link it with `link_pull_request`, then end with one short message that names the decision. Keep the worktree, since the pull request needs it, and leave the thread active.
 
 Otherwise:
 
-1. Merge to the main branch: `git checkout <main> && git merge --ff-only <branch>`. If main moved, rebase the branch first and build again.
-2. Push the main branch, then delete the branch.
-3. Run the config's `[deploy]` command from the repo root, and report its output.
-4. Reply in a few lines: the upstream range, what merged on its own, what you repaired and how, what you retired, and the test, review and deploy results.
-5. Settle the thread with `t3_thread_organize` (`settle`).
+1. Run `git fetch origin && git rebase origin/$MAIN_BRANCH`. If that brought in new commits, build and test again.
+2. Push to the main branch: `git push origin HEAD:$MAIN_BRANCH`.
+3. Fast-forward the main checkout, if it is on `$MAIN_BRANCH` and clean: `git -C "$MAIN_CHECKOUT" pull --ff-only`.
+4. Run the config's `[deploy]` command from this worktree's root, and report its output.
+5. Reply in a few lines: each upstream's range, what merged on its own, what you repaired and how, what you retired, and the test, review and deploy results.
+6. Clean up (below), then settle the thread with `t3_thread_organize` (`settle`) as your last action.
+
+## Clean up
+
+Remove this run's worktree and branch, unless you stopped to ask:
+
+```sh
+HERE=$(git rev-parse --show-toplevel)
+BRANCH=$(git branch --show-current)
+MAIN_CHECKOUT=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')
+if [ "$HERE" != "$MAIN_CHECKOUT" ]; then
+  cd "$MAIN_CHECKOUT" && git worktree remove --force "$HERE" && git branch -D "$BRANCH"
+fi
+```

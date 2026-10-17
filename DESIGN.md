@@ -9,14 +9,20 @@ First user: [wstack](https://github.com/willgosnold/wstack), which rewrites Laur
 A repo uses one of two layouts.
 
 - **vendor.** The repo holds a byte-for-byte copy of upstream in a folder, and the build writes its output to another folder. Use it when you ship something derived from upstream. wstack copies pstack into `vendor/pstack/` and builds `skills/`.
-- **fork.** The repo is upstream plus a `patchbook/` folder. The build writes the patched tree over the repo root, leaving `patchbook/` and any paths the config marks as your own. Upstream's files in the tree are build output. To change them, edit them in place, then run `patchbook record` to move the edit into the patchbook.
+- **fork.** The repo is upstream plus a `.patchbook/` folder. The build writes the patched tree over the repo root, leaving `.patchbook/` and any vendored copies alone. Upstream's files in the tree are build output. To change them, edit them in place, then run `patchbook record` to move the edit into the patchbook.
+
+## Several upstreams
+
+A patchbook can follow any number of upstreams. Each has a name and a mount, the folder of the staged tree its files appear under. One upstream may mount at the root. In a fork, that is the fork's own upstream. Every path in an edit, a block entry, or a check is a staged path, so `move extra/skills/tool -> skills/tool` ships one skill from an upstream mounted at `extra`.
+
+`patchbook track <name> <url>` follows another upstream. `check` reports each one, and `sync` moves every pin, or one with `sync <name>`. An upstream can keep a vendored copy in the repo (`vendor`). Without one, the tool reads the pinned upstream from git.
 
 ## Files
 
 ```
 patchbook/
-  config.toml            upstream, layout, output, checks, test, deploy
-  upstream.lock          the pinned commit and tree hash
+  config.toml            upstreams, layout, output, checks, test, deploy
+  upstream.lock          each upstream's pinned commit and tree hash
   series                 change names, in the order the build applies them
   changes/<name>/
     CHANGE.md            the intent and the list of edits
@@ -89,8 +95,8 @@ An upstream block that matches a check and has no entry is **missing**. Output t
 
 ## Sync
 
-- `patchbook check` compares upstream's head with the pin. It exits 0 when up to date and 10 when upstream has moved, and prints JSON.
-- `patchbook sync [ref]` fetches the ref and updates the pin and, in the vendor layout, the vendored copy. Then it carries every change forward:
+- `patchbook check` compares each upstream's head with its pin. It exits 0 when all are up to date and 10 when any has moved, and prints JSON.
+- `patchbook sync [name] [ref]` fetches each upstream (or the named one, at a ref) and updates its pin and its vendored copy, if it keeps one. Then it carries every change on that upstream's files forward:
   - **file edits**: `git merge-file` with base, ours, and the new upstream file. A clean merge updates ours and sets base to the new upstream file. A conflict leaves markers in ours and reports **conflict**. A file upstream deleted or moved reports **gone**, with likely new paths.
   - **block entries**: an entry whose paragraph changed reports **orphan**, with the nearest new paragraphs.
 - `patchbook status [--json]` lists the problems, what sync merged on its own, and how much upstream changed in each file we touch.
@@ -102,12 +108,12 @@ Problem kinds: missing, orphan, conflict, gone, stale, invalid, placeholder, lea
 
 This repo ships a `patchbook-update` skill (`npx skills add willgosnold/patchbook`). Each adapted repo has a daily T3 scheduled task that starts a fresh thread with "Use the patchbook-update skill." The skill:
 
-1. Runs `patchbook check`. If upstream hasn't moved, it archives the thread and stops.
-2. Makes a branch, runs `patchbook sync`, and commits the sync on its own.
+1. Runs `patchbook check`. If no upstream has moved, it removes its worktree, archives the thread, and stops.
+2. Works on the branch of the worktree T3 made for the thread, rebased onto `origin/main`. Runs `patchbook sync` and commits the sync on its own.
 3. Resolves each problem from the change's intent and the repo's guide (`guide` in the config). One commit per change.
 4. Builds, then runs the config's `test`, which is a command or an instruction file for the agent.
 5. Starts a review in a fresh subagent on the same model. The reviewer gets each intent, the upstream change, and our result, and says per change whether the result meets the intent. At most two rounds.
-6. Merges to the main branch, pushes, runs the config's `deploy`, and settles the thread with a short summary.
+6. Pushes its branch to `main`, runs the config's `deploy`, removes its worktree, and settles the thread with a short summary.
 
 It stops and asks instead of merging when:
 
@@ -116,7 +122,7 @@ It stops and asks instead of merging when:
 - the review rejects a change twice;
 - a test fails and it can't fix it.
 
-Then it opens a pull request without merging, and leaves the thread in your inbox with the question.
+Then it opens a pull request without merging, keeps its worktree for the pull request, and leaves the thread in your inbox with the question.
 
 ## Config
 
@@ -124,29 +130,33 @@ wstack's, as an example:
 
 ```toml
 layout = "vendor"
-guide = "patchbook/patch.md"
+guide = ".patchbook/patch.md"
 
-[upstream]
+[[upstream]]
+name = "pstack"
 remote = "https://github.com/cursor/plugins.git"
 path = "pstack"
 branch = "main"
+mount = ""              # at the root of the staged tree
 vendor = "vendor/pstack"
 
 [output]
-from = "skills"      # the staged folder that ships
+from = "skills"         # the staged folder that ships
 to = "skills"
 
-[placeholders]
-model = { file = "models.json" }
-snippet = { file = "patchbook/snippets.md" }
+[placeholders.model]    # filled by hooks.py from models.json
+
+[placeholders.snippet]
+file = ".patchbook/snippets.md"
+format = "sections"
 
 [[check]]
 name = "cursor-terms"
 files = ["**/*.md"]
-pattern = '...'
+pattern = '''...'''
 
 [test]
-instructions = "patchbook/testing.md"
+instructions = ".patchbook/testing.md"
 
 [deploy]
 command = "tools/update-projects.sh"
@@ -155,16 +165,3 @@ command = "tools/update-projects.sh"
 ## Tool
 
 One Python file, Python 3.11 or newer (for `tomllib`), plus git. No other dependencies. Install with `uv tool install git+ssh://git@github.com/willgosnold/patchbook`.
-
-## Moving wstack onto it
-
-- `patchbook/entries/` becomes `patchbook/blocks/`.
-- The block entries on scripts (`check-plan.mjs`, `check-plan.test.ts`, `worktree-audit.sh`) become `file` edits.
-- The four steps hardcoded in `tools/wstack.py` become config and edits:
-  - the `pstack` support skill becomes `add skills/pstack/SKILL.md`, `move agents -> skills/pstack/agents`, and `copy LICENSE -> skills/pstack/LICENSE`;
-  - the `name` renames become block entries;
-  - the `.gitignore` files become `add` edits;
-  - shipping only `skills/` becomes `[output]`.
-- The Cursor-term list becomes a check, and the `/name` rule a hook.
-- The sandbox checks become `patchbook/testing.md`.
-- Updating projects becomes `tools/update-projects.sh`.

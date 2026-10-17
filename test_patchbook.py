@@ -106,7 +106,7 @@ class ForkTest(Case):
         check = self.pb("check", cwd=self.fork.path, code=10)
         self.assertIn("changed app.txt", check.stdout)
         self.pb("sync", cwd=self.fork.path)
-        report = json.loads((self.fork.path / ".patchbook/last-sync.json").read_text())
+        report = json.loads((self.fork.path / ".patchbook/last-sync.json").read_text())["upstreams"]["upstream"]
         self.assertEqual([m["path"] for m in report["merged"]], ["app.txt"])
         self.pb("build", "--commit", cwd=self.fork.path)
         text = self.fork.read("app.txt")
@@ -130,7 +130,7 @@ class ForkTest(Case):
         self.up.write("src/app.txt", "moved\n")
         self.up.commit("move")
         self.pb("sync", cwd=self.fork.path)
-        report = json.loads((self.fork.path / ".patchbook/last-sync.json").read_text())
+        report = json.loads((self.fork.path / ".patchbook/last-sync.json").read_text())["upstreams"]["upstream"]
         self.assertEqual(report["gone"][0]["maybe"][0], "src/app.txt")
         self.assertIn("gone", self.pb("status", cwd=self.fork.path, code=1).stdout)
 
@@ -144,6 +144,24 @@ class ForkTest(Case):
     def test_exec_bit_survives(self):
         self.record_feature()
         self.assertTrue(os.access(self.fork.path / "bin/run.sh", os.X_OK))
+
+
+    def test_fork_tracks_a_second_upstream(self):
+        lib = Repo(self.tmp / "lib")
+        lib.write("src/lib.txt", "v1\n")
+        lib.commit("lib")
+        self.pb("track", "lib", str(lib.path), "--path", "src", cwd=self.fork.path)
+        self.pb("build", "--commit", cwd=self.fork.path)
+        self.assertEqual(self.fork.read("lib/lib.txt"), "v1\n")
+        lib.write("src/lib.txt", "v2\n")
+        lib.commit("lib v2")
+        check = json.loads(self.pb("check", cwd=self.fork.path, code=10).stdout)
+        self.assertTrue(check["upstreams"]["lib"]["moved"])
+        self.assertFalse(check["upstreams"]["upstream"]["moved"])
+        self.pb("sync", "lib", cwd=self.fork.path)
+        self.pb("build", cwd=self.fork.path)
+        self.assertEqual(self.fork.read("lib/lib.txt"), "v2\n")
+        self.assertEqual(self.fork.read("app.txt").split()[1], "two")
 
 
 class VendorTest(Case):
@@ -248,6 +266,46 @@ class VendorTest(Case):
         self.up.commit("elsewhere")
         out = json.loads(self.pb("check", cwd=self.repo.path).stdout)
         self.assertFalse(out["moved"])
+
+    def test_two_upstreams(self):
+        self.test_missing_scaffold_patch_build()
+        extra = Repo(self.tmp / "extra")
+        extra.write("skills/tool/SKILL.md", "---\nname: tool\n---\n\nUse the tool.\n")
+        extra.write("skills/unwanted/SKILL.md", "---\nname: unwanted\n---\n")
+        extra.commit("extra")
+        self.pb("track", "extra", str(extra.path), "--vendor", "vendor/extra", cwd=self.repo.path)
+        self.assertTrue((self.repo.path / "vendor/extra/skills/tool/SKILL.md").exists())
+        change = self.repo.path / ".patchbook/changes/ship-tool"
+        change.mkdir(parents=True)
+        (change / "CHANGE.md").write_text("# ship-tool\n\nintent: Ship extra's tool skill.\n\nedits:\n- move extra/skills/tool -> skills/tool\n")
+        (self.repo.path / ".patchbook/series").write_text("ship-tool\n")
+        self.pb("build", cwd=self.repo.path)
+        self.assertIn("Use the tool.", self.repo.read("skills/tool/SKILL.md"))
+        self.assertFalse((self.repo.path / "skills/unwanted").exists())
+        lock = json.loads((self.repo.path / ".patchbook/upstream.lock").read_text())
+        self.assertEqual(sorted(lock), ["extra", "plugin"])
+        extra.write("skills/tool/SKILL.md", "---\nname: tool\n---\n\nUse the new tool.\n")
+        extra.commit("v2")
+        check = json.loads(self.pb("check", cwd=self.repo.path, code=10).stdout)
+        self.assertEqual(check["upstreams"]["extra"]["files"], ["changed extra/skills/tool/SKILL.md"])
+        self.pb("sync", cwd=self.repo.path)
+        self.pb("build", cwd=self.repo.path)
+        self.assertIn("Use the new tool.", self.repo.read("skills/tool/SKILL.md"))
+
+    def test_single_upstream_config_still_reads(self):
+        self.test_missing_scaffold_patch_build()
+        config = self.repo.path / ".patchbook/config.toml"
+        text = config.read_text().replace("[[upstream]]\nname = \"plugin\"\n", "[upstream]\n").replace('mount = ""\n', "")
+        config.write_text(text)
+        lock = self.repo.path / ".patchbook/upstream.lock"
+        lock.write_text(json.dumps(json.loads(lock.read_text())["plugin"]))
+        self.assertIn("at plugin", self.pb("status", cwd=self.repo.path).stdout)
+        extra = Repo(self.tmp / "extra")
+        extra.write("a.md", "a\n")
+        extra.commit("a")
+        self.pb("track", "extra", str(extra.path), cwd=self.repo.path)
+        self.assertIn("[[upstream]]\nname = \"plugin\"", config.read_text())
+        self.pb("status", cwd=self.repo.path)
 
 
 if __name__ == "__main__":
