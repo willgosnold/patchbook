@@ -5,42 +5,48 @@ import { assemble, handEdits, writeOutput } from "./assemble.ts";
 import { Book } from "./book.ts";
 import { cmdRecord } from "./record.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isDir, lexists, mkdirs, readDisk, readTextReplace, relative, resolve, sameFile, writeText } from "./lib/fs.ts";
+import { exists, type File, isDir, lexists, mkdirs, readDisk, readTextReplace, relative, sameFile, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { git, run } from "./lib/proc.ts";
-import { length, quote, slice, sorted } from "./lib/py.ts";
+import { length, slice, sorted } from "./lib/py.ts";
 import { decode } from "./lib/text.ts";
 import { setting } from "./settings.ts";
 
-export const HOOK_MARK = "# Installed by patchbook.";
+// Bump the version when the script changes, so patchbook rewrites the hooks older versions wrote.
+const HOOK_VERSION = 2;
+/** The start of a script patchbook wrote, with its version. Before v2 the marker had none. */
+const OURS = /^#!\/bin\/sh\n# Installed by patchbook(?: v(\d+))?\./;
 
-/** How the hook runs this patchbook: the compiled binary, or bun with this script. */
-function self(): string[] {
-  const script = resolve(Bun.main);
-  return script.startsWith("/$bunfs/") ? [process.execPath] : [process.execPath, script];
-}
-
-/** Install the pre-commit hook, unless the repo already has a pre-commit hook of its own. */
-export function installHook(root: string, verbose = false): void {
-  const path = git(["rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-commit"], { cwd: root });
-  if (exists(path)) {
-    if (!readTextReplace(path).includes(HOOK_MARK) && verbose) {
-      process.stderr.write(`patchbook: ${path} is another tool's hook; add \`patchbook hook run\` to it to record on commit.\n`);
-    }
-    return;
-  }
-  const me = self();
-  mkdirs(dirname(path));
-  writeText(path, `#!/bin/sh
-${HOOK_MARK} On each commit, it records hand edits to the build output in the
+const SCRIPT = `#!/bin/sh
+# Installed by patchbook v${HOOK_VERSION}. On each commit, it records hand edits to the build output in the
 # patchbook, rebuilds, and stages both. Skip it once with: PATCHBOOK_HOOK=0 git commit
 [ "$PATCHBOOK_HOOK" = 0 ] && exit 0
-if [ -f ${quote(me.at(-1)!)} ]; then exec ${me.map(quote).join(" ")} hook run; fi
 if command -v patchbook >/dev/null; then exec patchbook hook run; fi
 echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
-`);
+`;
+
+function writeHook(path: string): void {
+  mkdirs(dirname(path));
+  writeText(path, SCRIPT);
   chmodSync(path, 0o755);
-  process.stderr.write("patchbook: installed a pre-commit hook that records and builds on each commit\n");
+}
+
+/** Install the pre-commit hook, or rewrite one an older patchbook wrote. Another tool's hook is left alone. */
+export function installHook(root: string, verbose = false): void {
+  const path = git(["rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-commit"], { cwd: root });
+  if (!exists(path)) {
+    writeHook(path);
+    process.stderr.write("patchbook: installed a pre-commit hook that records and builds on each commit\n");
+    return;
+  }
+  const text = readTextReplace(path);
+  const ours = OURS.exec(text);
+  if (ours && Number(ours[1] ?? 1) < HOOK_VERSION) {
+    writeHook(path);
+    process.stderr.write(`patchbook: updated ${path} to run patchbook from PATH\n`);
+  } else if (!text.includes("Installed by patchbook") && verbose) {
+    process.stderr.write(`patchbook: ${path} is another tool's hook; add \`patchbook hook run\` to it to record on commit.\n`);
+  }
 }
 
 /** {path: blob id, or null if deleted} for every path git status lists. */
