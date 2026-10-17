@@ -1368,11 +1368,6 @@ def provider_settings(book):
         found = [p for p in PROVIDERS if shutil.which(p)]
         if not found:
             raise Fail("writing an intent needs the claude or codex CLI. Install one, or pass --intent.")
-        if len(found) > 1 and sys.stdin.isatty():
-            answer = input("Write intents with claude or codex? [claude] ").strip() or "claude"
-            if answer not in PROVIDERS:
-                raise Fail(f"unknown provider {answer!r}")
-            found = [answer]
         provider = found[0]
         save_user_provider(provider)
     if provider not in PROVIDERS:
@@ -1440,7 +1435,7 @@ def cmd_provider(args):
     user = tomllib.loads(USER_CONFIG.read_text()).get("intent", {}) if USER_CONFIG.exists() else {}
     provider = user.get("provider")
     print(f"{provider}: {PROVIDERS[provider]['model']} at {PROVIDERS[provider]['effort']} effort" if provider
-          else "not chosen yet; patchbook asks the first time it writes an intent")
+          else "not chosen yet; patchbook uses claude if it's installed, otherwise codex")
     return 0
 
 

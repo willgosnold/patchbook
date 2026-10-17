@@ -32,7 +32,7 @@ Both install a pre-commit hook and the `patchbook-update` skill for agents, in t
 
 **2. Change things.** Edit files the way you normally would, including the built output, then commit as usual.
 
-A pre-commit hook moves your edits into the patchbook, rebuilds, and adds both to the commit. A model reads the edits, names the change and writes its intent: what the change does and why. The first time, patchbook asks whether to use Claude or Codex. To write the intent yourself, commit with `PATCHBOOK_INTENT="..." git commit`, or run `patchbook record <name> --intent "..."` first.
+A pre-commit hook moves your edits into the patchbook, rebuilds, and adds both to the commit. A model reads the edits, names the change and writes its intent: what the change does and why. It uses Claude if it's installed, otherwise Codex; `patchbook provider codex` switches. To write the intent yourself, commit with `PATCHBOOK_INTENT="..." git commit`, or run `patchbook record <name> --intent "..."` first.
 
 The intent matters most. It's how an agent redoes your change later, if upstream rewrites the code underneath it.
 
