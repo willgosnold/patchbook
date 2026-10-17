@@ -3,7 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Case, Repo, dedent, jsonDumps, lstrip, mkdirNew, partitionHead, replace, sh, words } from "./helpers";
+import { Case, Repo, dedent, lstrip, mkdirNew, partitionHead, replace, sh, words } from "./helpers";
 
 const TIMEOUT = 120_000;
 
@@ -454,19 +454,10 @@ describe("VendorTest", () => {
     expect(t.repo.read("skills/tool/SKILL.md")).toContain("Use the new tool.");
   });
 
-  vendorTest("test_single_upstream_config_still_reads", (t) => {
+  vendorTest("test_single_upstream_table_is_rejected", (t) => {
     t.missingScaffoldPatchBuild();
     const config = join(t.repo.path, ".patchbook/config.toml");
-    const text = replace(replace(read(config), '[[upstream]]\nname = "plugin"\n', "[upstream]\n"), 'mount = ""\n', "");
-    writeFileSync(config, text);
-    const lock = join(t.repo.path, ".patchbook/upstream.lock");
-    writeFileSync(lock, jsonDumps(JSON.parse(read(lock)).plugin));
-    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("at plugin");
-    const extra = new Repo(join(t.tmp, "extra"));
-    extra.write("a.md", "a\n");
-    extra.commit("a");
-    t.pb(["track", "extra", extra.path], { cwd: t.repo.path });
-    expect(read(config)).toContain('[[upstream]]\nname = "plugin"');
-    t.pb(["status"], { cwd: t.repo.path });
+    writeFileSync(config, replace(read(config), '[[upstream]]\nname = "plugin"\n', "[upstream]\n"));
+    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stderr).toContain("Use [[upstream]] with a name");
   });
 });

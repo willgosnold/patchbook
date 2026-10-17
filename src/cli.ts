@@ -103,19 +103,8 @@ async function cmdTrack(args: { name: string; url: string; branch: string; path:
   let book = await Book.find();
   if (book.upstreams.some((u) => u.name === args.name)) throw new Fail(`already following an upstream called ${args.name}`);
   const config = join(book.dir, "config.toml");
-  let text = readText(config);
-  if (book.legacy) { // name the first upstream, keeping it at the root
-    const first = book.upstreams[0]!;
-    const lines = text.split("\n");
-    const at = lines.indexOf("[upstream]");
-    if (at !== -1) lines.splice(at, 1, "[[upstream]]", `name = "${first.name}"`, 'mount = ""');
-    text = lines.join("\n");
-    const pin = first.pin();
-    if (pin.commit === undefined || pin.tree === undefined) throw new Fail(`upstream.lock has no commit and tree for ${first.name}`);
-    book.writeLock(first.name, pin.commit, pin.tree);
-  }
   const mount = args.mount ?? args.name;
-  writeText(config, rstrip(text, "\n") + "\n\n" + upstreamToml(args.name, args.url, args.path, args.branch, mount, args.vendor));
+  writeText(config, rstrip(readText(config), "\n") + "\n\n" + upstreamToml(args.name, args.url, args.path, args.branch, mount, args.vendor));
   book = await Book.open(book.root);
   syncUpstream(book, book.upstream(args.name), args.branch, []);
   const where = mount ? `${mount}/` : "the root";

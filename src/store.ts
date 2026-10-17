@@ -38,13 +38,13 @@ export class Upstream {
   readonly vendor: string | null;
   readonly remoteName: string;
 
-  constructor(readonly book: Book, spec: Table, legacy: boolean) {
+  constructor(readonly book: Book, spec: Table) {
     if (!Object.hasOwn(spec, "remote")) throw new Fail("an [[upstream]] needs a remote");
     this.remote = field(spec, "remote", "");
     this.path = strip(field(spec, "path", ""), "/");
     this.branch = field(spec, "branch", "main");
     this.name = field(spec, "name", "") || defaultName(this.remote, this.path);
-    this.mount = strip(field(spec, "mount", legacy ? "" : this.name), "/");
+    this.mount = strip(field(spec, "mount", this.name), "/");
     const vendor = field(spec, "vendor", "");
     this.vendor = vendor ? pjoin(book.root, vendor) : null;
     this.remoteName = field(spec, "remote_name", "upstream");

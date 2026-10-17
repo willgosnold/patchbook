@@ -152,7 +152,6 @@ export class Book {
   readonly dir: string;
   readonly config: Table;
   readonly layout: Layout;
-  readonly legacy: boolean;
   readonly upstreams: Upstream[];
   readonly checks: Check[] = [];
   /** `[[check]]` patterns that don't compile, reported by every build and status. */
@@ -163,19 +162,16 @@ export class Book {
   private constructor(readonly root: string) {
     this.dir = join(root, PB);
     this.config = parseToml(readText(join(this.dir, "config.toml")), join(this.dir, "config.toml"));
-    const configured = Object.hasOwn(this.config, "layout") ? this.config["layout"] : "fork";
-    const kind = configured === "vendor" ? "folder" : configured;
+    const kind = Object.hasOwn(this.config, "layout") ? this.config["layout"] : "fork";
     if (kind !== "folder" && kind !== "fork") {
       throw new Fail(`layout must be folder or fork, not ${typeof kind === "string" ? strRepr(kind) : JSON.stringify(kind)}`);
     }
     const raw = this.config["upstream"];
-    if (!raw || (Array.isArray(raw) && raw.length === 0) || (isTable(raw) && Object.keys(raw).length === 0)) {
-      throw new Fail("config.toml has no [[upstream]]");
-    }
-    this.legacy = isTable(raw);
-    this.upstreams = (Array.isArray(raw) ? raw : [raw]).map((spec) => {
+    if (isTable(raw)) throw new Fail("config.toml has a single [upstream] table. Use [[upstream]] with a name instead.");
+    if (!Array.isArray(raw) || raw.length === 0) throw new Fail("config.toml has no [[upstream]]");
+    this.upstreams = raw.map((spec) => {
       if (!isTable(spec)) throw new Fail("config.toml: each [[upstream]] is a table");
-      return new Upstream(this, spec, this.legacy);
+      return new Upstream(this, spec);
     });
     this.checkMounts(kind);
     if (kind === "folder") {
@@ -266,7 +262,6 @@ export class Book {
     if (!exists(path)) return new Map();
     const data = loads(readText(path));
     if (!(data instanceof Map)) throw new Fail(`${path} isn't a JSON object`);
-    if (data.has("commit")) return new Map([[this.upstreams[0]!.name, data]]); // one upstream, from before upstreams had names
     return data;
   }
 
