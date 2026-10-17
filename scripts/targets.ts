@@ -14,9 +14,7 @@ export interface Target {
 
 export const BIN_NAME = "patchbook";
 
-// `patchbook-*` rather than an `@patchbook/*` scope: the scope needs an npm org
-// that someone has to create first, and every name below was free when checked.
-export const NPM_PREFIX = "patchbook-";
+export const NPM_PREFIX = "@patchbook/";
 
 export const TARGETS: readonly Target[] = [
   { id: "linux-x64", bun: "bun-linux-x64", os: "linux", cpu: "x64", libc: "glibc", ext: "" },
