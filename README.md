@@ -1,26 +1,73 @@
 # patchbook
 
-Keep your changes to someone else's repo, each with its intent, and keep pulling from upstream. A build applies the changes to a pinned upstream commit. When upstream moves, an agent redoes the changes that broke from their intent, and asks you only when it can't decide.
+Keep your own version of someone else's repo, with every change written down along with why you made it, so you can keep taking their updates without redoing your work by hand.
 
-See [DESIGN.md](DESIGN.md) for the model.
+A build applies your changes to a pinned upstream commit. When upstream moves, an agent redoes the changes that broke from their intent, and asks you only when it can't decide. See [DESIGN.md](DESIGN.md) for the model.
 
 ## Install
 
-```sh
-uv tool install git+ssh://git@github.com/willgosnold/patchbook      # the CLI
-npx skills add willgosnold/patchbook --skill patchbook-update       # in each adapted repo, for agents
-```
-
-## Start
+Once per machine:
 
 ```sh
-patchbook clone <upstream url> [dir]                     # fork a repo, keeping its history
-patchbook init --upstream <url> \
-  --output-from <folder> --output-to <folder>            # or build from it into a folder of this repo
-patchbook track <name> <url>                             # follow another upstream
+uv tool install git+ssh://git@github.com/willgosnold/patchbook
 ```
 
-Then change things, `patchbook record <change> --intent '...'`, and `patchbook build`. To keep up with upstream, a daily T3 scheduled task in the repo runs: "Use the patchbook-update skill."
+You also need git, Python 3.11 or newer, and the `claude` or `codex` CLI, which patchbook uses to write intents.
+
+## Quick start
+
+**1. Start.** To change a repo directly, fork it:
+
+```sh
+patchbook clone https://github.com/pingdotgg/t3code
+```
+
+Or, to build something from a repo into a folder of your own repo, as wstack does with pstack:
+
+```sh
+patchbook init --upstream <url> --path <folder> --output-to <folder>
+```
+
+Then install the update skill for agents, in the repo:
+
+```sh
+npx skills add willgosnold/patchbook --skill patchbook-update
+```
+
+**2. Change things.** Edit files the way you normally would, then:
+
+```sh
+patchbook record
+patchbook build
+```
+
+`record` moves your edits into the patchbook. A model reads them, names the change and writes its intent: what the change does and why. The first time, patchbook asks whether to use Claude or Codex. Pass a name, or `--intent "..."`, to write them yourself. Commit and push as usual.
+
+The intent matters most. It's how an agent redoes your change later, if upstream rewrites the code underneath it.
+
+**3. Keep up with upstream.** Add a daily T3 scheduled task in the repo with the prompt "Use the patchbook-update skill." Most days nothing has changed and the run tidies up after itself. When upstream moves, it pulls the new version, redoes any change that broke from its intent, tests, reviews its own work, then merges and deploys. It only comes to you when it can't decide.
+
+To update by hand instead:
+
+```sh
+patchbook sync && patchbook status && patchbook build
+```
+
+## Rules
+
+- Don't leave hand edits in the build output. Run `patchbook record` to keep them, or `patchbook build --force` to drop them.
+- Every change has an intent.
+- `patchbook status` lists what's broken, and `patchbook build` won't run until it's fixed.
+
+## More
+
+```sh
+patchbook track <name> <url>        # follow another upstream
+patchbook upstream <name> [path]    # read an upstream at its pin; --diff shows its last change
+patchbook show <change>             # a change as a diff
+patchbook provider [claude|codex]   # choose the model that writes intents
+patchbook --help
+```
 
 Tests: `python3 -m unittest test_patchbook`.
 
