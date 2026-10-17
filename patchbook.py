@@ -1093,16 +1093,23 @@ def cmd_record(args):
     current = book.current_output()
     problems = []
     changes = {c.name: c for c in read_changes(book, problems)}
-    target = changes.get(args.change)
-    if target is None:
-        if not args.intent:
-            raise Fail(f"{args.change} is a new change; give it --intent")
-        target = Change(args.change, book.dir / "changes" / args.change, args.intent)
-    elif args.intent:
-        target.intent = args.intent
     file_owner = {e.path: c for c in changes.values() for e in c.edits if e.kind == "file"}
     has_blocks = {p.relative_to(book.dir / "blocks").as_posix()[: -len(".entries")]
                   for p in (book.dir / "blocks").rglob("*.entries")}
+    # Edits to files a change already owns go to that change. The rest go to the one being recorded.
+    new = [p for p in sorted(set(current) | set(a.out)) if current.get(p) != a.out.get(p) and (
+        a.out.get(p) is None or (a.sources[p][0] != "ours" and a.sources[p][1] not in has_blocks
+                                 and (current.get(p) is None or a.sources[p][1] not in file_owner)))]
+    name, intent = args.change, args.intent
+    if new and (not name or (name not in changes and not intent)):
+        name, intent = write_intent(book, changes, pending_diff(a, current, new), name)
+        print(f"{name}: {intent}" if name not in changes else f"adding to {name}")
+    name = name or "unnamed"
+    target = changes.get(name)
+    if target is None:
+        target = Change(name, book.dir / "changes" / name, intent)
+    elif args.intent:
+        target.intent = args.intent
     prefix = book.out_from + "/" if book.layout == "folder" and book.out_from else ""
     touched, notes = {target.name: target}, []
 
@@ -1160,6 +1167,128 @@ def cmd_record(args):
 
 
 PLACEHOLDER_HINT = re.compile(r"\{\{\w+:[^}]+\}\}")
+
+
+# Writing intents with a model
+
+
+USER_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "patchbook" / "config.toml"
+PROVIDERS = {
+    "claude": {"model": "claude-haiku-5-5", "effort": "medium"},
+    "codex": {"model": "gpt-6-luna", "effort": "high"},
+}
+INTENT_PROMPT = """You name and describe a change someone made to their copy of an upstream repo.
+The change is kept as a patch over upstream. When upstream changes, an agent redoes the change from
+its intent alone, so the intent must say what the change does and why, in one or two plain
+sentences, without line numbers or code. Don't describe upstream.
+
+Existing changes, one per line as `name: intent`:
+{changes}
+
+{instruction}
+
+Reply with only a JSON object: {{"change": "<name>", "intent": "<intent>"}}
+
+The edits, as diffs from what the patchbook builds to what is on disk now:
+{diff}
+"""
+
+
+def pending_diff(a, current, paths):
+    """The edits on disk to these output paths, as one text for a model to read."""
+    parts = []
+    for p in paths:
+        now, built = current.get(p), a.out.get(p)
+        old = built[0] if built else b""
+        new = now[0] if now else b""
+        if not (is_text(old) and is_text(new)):
+            parts.append(f"binary file {p} {'added' if not built else 'deleted' if not now else 'changed'}\n")
+            continue
+        parts.extend(difflib.unified_diff(old.decode().splitlines(keepends=True), new.decode().splitlines(keepends=True),
+                                          f"built/{p}" if built else "/dev/null", f"disk/{p}" if now else "/dev/null"))
+    text = "".join(parts)
+    return text[:40000] + ("\n[diff truncated]\n" if len(text) > 40000 else "")
+
+
+def provider_settings(book):
+    """The provider, model and effort for writing intents: the repo's [intent], then the user's, then a default."""
+    user = tomllib.loads(USER_CONFIG.read_text()).get("intent", {}) if USER_CONFIG.exists() else {}
+    repo = book.config.get("intent", {})
+    provider = repo.get("provider") or user.get("provider")
+    if not provider:
+        found = [p for p in PROVIDERS if shutil.which(p)]
+        if not found:
+            raise Fail("writing an intent needs the claude or codex CLI. Install one, or pass --intent.")
+        if len(found) > 1 and sys.stdin.isatty():
+            answer = input("Write intents with claude or codex? [claude] ").strip() or "claude"
+            if answer not in PROVIDERS:
+                raise Fail(f"unknown provider {answer!r}")
+            found = [answer]
+        provider = found[0]
+        save_user_provider(provider)
+    if provider not in PROVIDERS:
+        raise Fail(f"provider must be one of {', '.join(PROVIDERS)}, not {provider!r}")
+    settings = {**PROVIDERS[provider], **{k: v for k, v in user.items() if k in ("model", "effort") and user.get("provider") == provider},
+                **{k: v for k, v in repo.items() if k in ("model", "effort")}}
+    return provider, settings["model"], settings["effort"]
+
+
+def save_user_provider(provider):
+    USER_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    USER_CONFIG.write_text(f'[intent]\nprovider = "{provider}"\n')
+    print(f"patchbook: writing intents with {provider} (saved in {USER_CONFIG}; change with `patchbook provider`)",
+          file=sys.stderr)
+
+
+def ask_model(provider, model, effort, prompt):
+    with tempfile.TemporaryDirectory() as tmp:
+        if provider == "claude":
+            cmd = ["claude", "-p", "--model", model, "--effort", effort]
+        else:
+            cmd = ["codex", "exec", "-m", model, "-c", f"model_reasoning_effort={effort}",
+                   "--skip-git-repo-check", "-s", "read-only", "-C", tmp, "-"]
+        result = subprocess.run(cmd, cwd=tmp, input=prompt.encode(), capture_output=True)
+    if result.returncode != 0:
+        raise Fail(f"{provider} failed: {result.stderr.decode(errors='replace').strip()[-500:]}. Pass --intent instead.")
+    return result.stdout.decode(errors="replace")
+
+
+def write_intent(book, changes, diff, name=None):
+    """Ask the chosen model for the change's name and intent. Returns (name, intent)."""
+    provider, model, effort = provider_settings(book)
+    listed = "\n".join(f"{c.name}: {c.intent}" for c in changes.values()) or "(none yet)"
+    if name:
+        instruction = f"The change is new and called {name}. Write its intent, and reply with that name."
+    else:
+        instruction = ("If these edits serve the purpose of one existing change, reply with that change's name and "
+                       "its intent unchanged. Otherwise give a new short kebab-case name and write its intent.")
+    reply = ask_model(provider, model, effort, INTENT_PROMPT.format(changes=listed, instruction=instruction, diff=diff))
+    m = re.search(r"\{.*\}", reply, re.DOTALL)
+    try:
+        answer = json.loads(m.group(0)) if m else {}
+    except json.JSONDecodeError:
+        answer = {}
+    chosen, intent = answer.get("change", ""), " ".join(str(answer.get("intent", "")).split())
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", chosen or "") or not intent:
+        raise Fail(f"{provider} didn't return a usable name and intent:\n{reply.strip()[:500]}\nPass a name and --intent instead.")
+    if name and chosen != name:
+        chosen = name
+    if chosen in changes:
+        intent = changes[chosen].intent
+    return chosen, intent
+
+
+def cmd_provider(args):
+    if args.name:
+        if args.name not in PROVIDERS:
+            raise Fail(f"provider must be one of {', '.join(PROVIDERS)}")
+        save_user_provider(args.name)
+        return 0
+    user = tomllib.loads(USER_CONFIG.read_text()).get("intent", {}) if USER_CONFIG.exists() else {}
+    provider = user.get("provider")
+    print(f"{provider}: {PROVIDERS[provider]['model']} at {PROVIDERS[provider]['effort']} effort" if provider
+          else "not chosen yet; patchbook asks the first time it writes an intent")
+    return 0
 
 
 # Show, blocks, scaffold
@@ -1402,9 +1531,13 @@ def main():
     p.set_defaults(func=cmd_build)
 
     p = sub.add_parser("record", help="move edits made to the output into a change")
-    p.add_argument("change")
-    p.add_argument("--intent")
+    p.add_argument("change", nargs="?", help="the change to add them to (default: the model picks or names one)")
+    p.add_argument("--intent", help="what the change is for (default: the model writes it)")
     p.set_defaults(func=cmd_record)
+
+    p = sub.add_parser("provider", help="show or choose the model that writes intents: claude or codex")
+    p.add_argument("name", nargs="?", choices=sorted(PROVIDERS))
+    p.set_defaults(func=cmd_provider)
 
     p = sub.add_parser("show", help="print a change, with its file edits as diffs")
     p.add_argument("change")

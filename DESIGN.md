@@ -106,7 +106,8 @@ An upstream block that matches a check and has no entry is **missing**. Output t
   - **file edits**: `git merge-file` with base, ours, and the new upstream file. A clean merge updates ours and sets base to the new upstream file. A conflict leaves markers in ours and reports **conflict**. A file upstream deleted or moved reports **gone**, with likely new paths.
   - **block entries**: an entry whose paragraph changed reports **orphan**, with the nearest new paragraphs.
 - `patchbook status [--json]` lists the problems, what sync merged on its own, and how much upstream changed in each file we touch.
-- `patchbook record [change]` compares the working output with a fresh build and moves each difference into a change, as `file` or `add` edits based on the pinned upstream. A new change needs an intent.
+- `patchbook record [change] [--intent ...]` compares the working output with a fresh build and moves each difference into a change, as `file` or `add` edits based on the pinned upstream. An edit to a file that a change already owns goes to that change. For the other edits, a model reads their diff and writes the intent if you didn't. Without a change name, the model also picks one: an existing change the edits serve, or a new name.
+- `patchbook provider [claude|codex]` shows or chooses the model that writes intents: Claude Haiku 5.5 at medium effort through the `claude` CLI, or GPT-6-Luna at high effort through `codex`. patchbook asks the first time, if both are installed, and saves the choice in `~/.config/patchbook/config.toml`. An `[intent]` table there, or in a repo's config, can set `provider`, `model` and `effort`.
 
 Problem kinds: missing, orphan, conflict, gone, stale, invalid, placeholder, leak, check.
 

@@ -48,6 +48,13 @@ class Case(unittest.TestCase):
                     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
                     "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_GLOBAL": "/dev/null"}
         os.environ.update({k: v for k, v in self.env.items() if k.startswith("GIT_")})
+        # A fake claude CLI that names the change and writes its intent, and keeps the prompt it got.
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        fake = bin_dir / "claude"
+        fake.write_text(f"#!/bin/sh\ncat > {self.tmp}/prompt.txt\necho \'Sure. {{\"change\": \"shout\", \"intent\": \"Shout the second line.\"}}\'\n")
+        fake.chmod(0o755)
+        self.env.update(PATH=f"{bin_dir}:{os.environ['PATH']}", XDG_CONFIG_HOME=str(self.tmp / "config"))
 
     def pb(self, *args, cwd, code=0):
         r = subprocess.run([sys.executable, str(TOOL), *args], cwd=cwd, capture_output=True, text=True, env=self.env)
@@ -133,6 +140,24 @@ class ForkTest(Case):
         report = json.loads((self.fork.path / ".patchbook/last-sync.json").read_text())["upstreams"]["upstream"]
         self.assertEqual(report["gone"][0]["maybe"][0], "src/app.txt")
         self.assertIn("gone", self.pb("status", cwd=self.fork.path, code=1).stdout)
+
+    def test_record_writes_the_name_and_intent(self):
+        self.fork.write("app.txt", self.fork.read("app.txt").replace("two", "TWO"))
+        out = self.pb("record", cwd=self.fork.path)
+        self.assertIn("shout: Shout the second line.", out.stdout)
+        change = (self.fork.path / ".patchbook/changes/shout/CHANGE.md").read_text()
+        self.assertIn("intent: Shout the second line.", change)
+        self.assertIn("- file app.txt", change)
+        self.assertIn("+TWO", (self.tmp / "prompt.txt").read_text())
+        self.assertIn('provider = "claude"', (self.tmp / "config/patchbook/config.toml").read_text())
+        self.fork.write("app.txt", self.fork.read("app.txt").replace("three", "THREE"))
+        self.pb("record", cwd=self.fork.path)  # the model picks shout again, so its intent stays
+        self.assertEqual((self.fork.path / ".patchbook/changes/shout/CHANGE.md").read_text().count("intent:"), 1)
+        self.assertIn("THREE", self.pb("show", "shout", cwd=self.fork.path).stdout)
+        (self.tmp / "prompt.txt").unlink()
+        self.fork.write("app.txt", self.fork.read("app.txt").replace("one", "ONE"))
+        self.assertIn("(in shout)", self.pb("record", cwd=self.fork.path).stdout)  # no model needed
+        self.assertFalse((self.tmp / "prompt.txt").exists())
 
     def test_build_refuses_to_overwrite_hand_edits(self):
         self.record_feature()
