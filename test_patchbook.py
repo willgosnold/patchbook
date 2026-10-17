@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -10,6 +11,8 @@ import unittest
 from pathlib import Path
 
 TOOL = Path(__file__).resolve().parent / "patchbook.py"
+# The implementation under test, as a command line. Defaults to the Python one.
+CMD = shlex.split(os.environ.get("PATCHBOOK_CMD") or shlex.join([sys.executable, str(TOOL)]))
 
 
 def sh(*args, cwd, check=True, env=None):
@@ -56,10 +59,14 @@ class Case(unittest.TestCase):
         fake = bin_dir / "claude"
         fake.write_text(f"#!/bin/sh\ncat > {self.tmp}/prompt.txt\necho \'Sure. {{\"change\": \"shout\", \"intent\": \"Shout the second line.\"}}\'\n")
         fake.chmod(0o755)
+        # The pre-commit hook runs `patchbook` from PATH.
+        shim = bin_dir / "patchbook"
+        shim.write_text(f"#!/bin/sh\nexec {shlex.join(CMD)} \"$@\"\n")
+        shim.chmod(0o755)
         self.env.update(PATH=f"{bin_dir}:{os.environ['PATH']}", XDG_CONFIG_HOME=str(self.tmp / "config"))
 
     def pb(self, *args, cwd, code=0):
-        r = subprocess.run([sys.executable, str(TOOL), *args], cwd=cwd, capture_output=True, text=True, env=self.env)
+        r = subprocess.run([*CMD, *args], cwd=cwd, capture_output=True, text=True, env=self.env)
         if code is not None:
             self.assertEqual(r.returncode, code, f"patchbook {' '.join(args)}\n{r.stdout}\n{r.stderr}")
         return r
