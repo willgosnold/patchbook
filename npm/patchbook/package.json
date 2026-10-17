@@ -1,0 +1,23 @@
+{
+  "name": "patchbook",
+  "version": "0.0.0",
+  "description": "Keep your changes to an upstream repo, each with its intent, and keep pulling from upstream.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/willgosnold/patchbook.git"
+  },
+  "homepage": "https://github.com/willgosnold/patchbook#readme",
+  "bugs": {
+    "url": "https://github.com/willgosnold/patchbook/issues"
+  },
+  "bin": {
+    "patchbook": "bin/patchbook.js"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
