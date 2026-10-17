@@ -29,6 +29,12 @@ const main = JSON.parse(readFileSync(join(source, "package.json"), "utf8"));
 const mainDir = join(out, "patchbook");
 cpSync(source, mainDir, { recursive: true });
 copyFileSync("LICENSE", join(mainDir, "LICENSE"));
+const tsc = Bun.spawnSync(
+  ["node_modules/.bin/tsc", "--ignoreConfig", "src/api.ts", "--declaration", "--emitDeclarationOnly",
+    "--strict", "--target", "esnext", "--outDir", mainDir],
+  { stdout: "inherit", stderr: "inherit" },
+);
+if (tsc.exitCode !== 0) throw new Error("tsc couldn't write api.d.ts");
 writeJson(join(mainDir, "package.json"), {
   ...main,
   version,

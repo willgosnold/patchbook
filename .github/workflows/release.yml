@@ -140,6 +140,7 @@ jobs:
         with:
           name: darwin-signed
           path: dist/release
+      - run: bun install --frozen-lockfile
       - name: Stage the packages
         run: bun scripts/gen-npm-packages.ts --version "$VERSION"
         env:

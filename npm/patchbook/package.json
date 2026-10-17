@@ -11,11 +11,13 @@
   "bugs": {
     "url": "https://github.com/willgosnold/patchbook/issues"
   },
+  "types": "api.d.ts",
   "bin": {
     "patchbook": "bin/patchbook.js"
   },
   "files": [
     "bin",
+    "api.d.ts",
     "README.md"
   ],
   "engines": {
