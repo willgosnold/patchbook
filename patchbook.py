@@ -794,15 +794,23 @@ def leak_scan(rules, out_path, text, problems, where):
             problems.append({"problem": "leak", **where, "line": start + 1, "terms": terms})
 
 
-def patch_blocks(rules, out_path, rel, text, entries, used, unmatched, problems):
+def patch_blocks(rules, out_path, rel, text, entries, used, unmatched, problems, owners=None):
+    """Swap each block that has an entry for its patched text. If owners is a list, it gets, for each
+    output line, the index of the upstream block it came from, or None for the lines between blocks."""
     lines = text.split("\n")
     spans = block_spans(lines)
     out, prev, applied = [], 0, 0
+
+    def emit(chunk, owner):
+        out.extend(chunk)
+        if owners is not None:
+            owners.extend([owner] * len(chunk))
+
     for i, (start, end) in enumerate(spans):
         block = "\n".join(lines[start:end])
         h = block_hash(block)
         where = {"file": rel, "output": out_path, "line": start + 1, "hash": h}
-        out.extend(lines[prev:start])
+        emit(lines[prev:start], None)
         prev = end
         entry = entries.get(h)
         if entry is None:
@@ -810,7 +818,7 @@ def patch_blocks(rules, out_path, rel, text, entries, used, unmatched, problems)
             terms = rules.terms(out_path, block)
             if terms:
                 problems.append({"problem": "missing", **where, "terms": terms, "upstream": block})
-            out.extend(lines[start:end])
+            emit(lines[start:end], i)
             continue
         used.add(h)
         error = check_entry(entry)
@@ -823,10 +831,10 @@ def patch_blocks(rules, out_path, rel, text, entries, used, unmatched, problems)
             if terms:
                 problems.append({"problem": "leak", **where, "terms": terms})
         if patched:
-            out.extend(patched.split("\n"))
+            emit(patched.split("\n"), i)
         elif i + 1 < len(spans):
             prev = spans[i + 1][0]  # drop the blank lines after a deleted block
-    out.extend(lines[prev:])
+    emit(lines[prev:], None)
     return "\n".join(out), applied
 
 
@@ -1096,27 +1104,61 @@ def cmd_record(args):
     file_owner = {e.path: c for c in changes.values() for e in c.edits if e.kind == "file"}
     has_blocks = {p.relative_to(book.dir / "blocks").as_posix()[: -len(".entries")]
                   for p in (book.dir / "blocks").rglob("*.entries")}
-    # Edits to files a change already owns go to that change. The rest go to the one being recorded.
-    new = [p for p in sorted(set(current) | set(a.out)) if current.get(p) != a.out.get(p) and (
-        a.out.get(p) is None or (a.sources[p][0] != "ours" and a.sources[p][1] not in has_blocks
-                                 and (current.get(p) is None or a.sources[p][1] not in file_owner)))]
+    prefix = book.out_from + "/" if book.layout == "folder" and book.out_from else ""
+    # Only files edited by hand since the last build. Others differ because the patchbook changed.
+    edited = hand_edits(book, a.out)
+    if not edited:
+        print("no hand edits to the output since the last build; nothing to record")
+        return 0
+
+    # Sort the edits. Paragraph edits update block entries. Edits to files a change already owns go
+    # to that change. The rest go to the change being recorded.
+    rules = Rules(book, set(a.sources))
+    new, paragraphs, notes = [], {}, []
+    for p in edited:
+        now, built, src = current.get(p), a.out.get(p), a.sources.get(p)
+        if built is None or (src[0] == "up" and src[1] not in has_blocks and (now is None or src[1] not in file_owner)):
+            new.append(p)
+        elif src[0] == "up" and src[1] in has_blocks and now is not None:
+            plan = plan_paragraphs(book, rules, src[1], p, a.upstream[src[1]][0].decode(), built[0], now[0])
+            if isinstance(plan, str):
+                notes.append(f"skipped  {p}: {plan}")
+            else:
+                paragraphs[p] = plan
+
     name, intent = args.change, args.intent
-    if new and (not name or (name not in changes and not intent)):
-        name, intent = write_intent(book, changes, pending_diff(a, current, new), name)
-        print(f"{name}: {intent}" if name not in changes else f"adding to {name}")
+    needs_intent = any(e["intent"] is None for plan in paragraphs.values() for e in plan["entries"].values())
+    named = bool(new)
+    if (named and (not name or (name not in changes and not intent))) or (needs_intent and not intent and not
+                                                                           (name in changes)):
+        diff = pending_diff(a, current, new) + "".join(
+            "".join(difflib.unified_diff((e["upstream"] + "\n").splitlines(True), (e["patched"] + "\n").splitlines(True),
+                                         f"upstream/{p}", f"disk/{p}"))
+            for p, plan in paragraphs.items() for e in plan["entries"].values() if e["intent"] is None)
+        name, intent = write_intent(book, changes, diff, name, named)
+        print(f"{name}: {intent}" if named and name not in changes else f"adding to {name}" if named else f"intent: {intent}")
+    elif needs_intent and not intent:
+        intent = changes[name].intent
+    for p, plan in paragraphs.items():
+        for e in plan["entries"].values():
+            if e["intent"] is None:
+                e["intent"] = intent
+        save_paragraphs(book, plan)
+        notes.extend(f"entry    {p} [{h}] {what}" for h, what in plan["notes"])
+
     name = name or "unnamed"
     target = changes.get(name)
     if target is None:
         target = Change(name, book.dir / "changes" / name, intent)
     elif args.intent:
         target.intent = args.intent
-    prefix = book.out_from + "/" if book.layout == "folder" and book.out_from else ""
-    touched, notes = {target.name: target}, []
+    touched = {target.name: target}
 
-    for p in sorted(set(current) | set(a.out)):
-        now, built = current.get(p), a.out.get(p)
-        if now == built:
+    for p in edited:
+        if p in paragraphs or (a.sources.get(p) and a.sources[p][0] == "up" and a.sources[p][1] in has_blocks
+                               and current.get(p) is not None):
             continue
+        now, built = current.get(p), a.out.get(p)
         src = a.sources.get(p)
         if built is None:
             target.edits.append(Edit("add", prefix + p))
@@ -1142,9 +1184,6 @@ def cmd_record(args):
             notes.append(f"update   {p} (in {c.name})")
         else:
             rel = src[1]
-            if rel in has_blocks:
-                notes.append(f"skipped  {p}: it has block entries; edit those instead")
-                continue
             c = file_owner.get(rel, target)
             if rel not in file_owner:
                 c.edits.append(Edit("file", rel))
@@ -1153,9 +1192,6 @@ def cmd_record(args):
             touched[c.name] = c
             notes.append(f"file     {p}" + (f" (in {c.name})" if c is not target else ""))
 
-    if not notes:
-        print("the output matches the patchbook; nothing to record")
-        return 0
     for c in touched.values():
         if c.edits or c is not target:
             save_change(c)
@@ -1163,7 +1199,113 @@ def cmd_record(args):
         with (book.dir / "series").open("a") as f:
             f.write(target.name + "\n")
     print("\n".join(notes))
+    # The recorded output is now what the patchbook builds, so it no longer counts as a hand edit.
+    lock = read_build_lock(book)
+    if lock is not None:
+        after = assemble(book).out
+        for p in edited:
+            if p in after and current.get(p) == after[p]:
+                lock[p] = blob_oid(after[p][0])
+            elif p not in after and p not in current:
+                lock.pop(p, None)
+        build_lock_path(book).write_text("".join(f"{oid} {p}\n" for p, oid in sorted(lock.items())))
     return 0
+
+
+def plan_paragraphs(book, rules, rel, out_path, upstream_text, built, now):
+    """Work out the block entry updates that make the build produce `now` for a file with block entries.
+
+    Returns {"path", "entries", "notes"}, where entries is the whole new set (an intent of None means
+    the entry still needs one), or a reason the edit can't be recorded this way.
+    """
+    if not (is_text(built) and is_text(now)):
+        return "it isn't text"
+    entries = read_entries(entries_path(book, rel))
+    lines = upstream_text.split("\n")
+    spans = block_spans(lines)
+    owners = []
+    text, _ = patch_blocks(rules, out_path, rel, upstream_text, entries, set(), [], [], owners)
+    if text.encode() != built:
+        return "a hook changes it after its block entries apply; edit the entries directly"
+    old, new = text.split("\n"), now.decode().split("\n")
+    every = difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes()
+    ops = [op for op in every if op[0] != "equal"]
+
+    # Each edit belongs to the blocks whose lines it touches, or, between blocks, to the block before it.
+    blame = []
+    for tag, i1, i2, j1, j2 in ops:
+        inside = {owners[k] for k in range(i1, i2) if owners[k] is not None}
+        if not inside:
+            before = next((owners[k] for k in range(i1 - 1, -1, -1) if owners[k] is not None), None)
+            after = next((owners[k] for k in range(i2, len(owners)) if owners[k] is not None), None)
+            inside = {before if before is not None else after} - {None}
+        if not inside:
+            return "it has no blocks to attach the edit to"
+        blame.append((inside, i1, i2, j1, j2))
+    touched = sorted(set().union(*(b[0] for b in blame)))
+
+    # Neighbouring touched blocks form one group: the first block takes the group's new text.
+    groups, shown = [], [k for k in range(len(spans)) if k in owners]
+    for k in touched:
+        if groups and shown.index(k) == shown.index(groups[-1][-1]) + 1:
+            groups[-1].append(k)
+        else:
+            groups.append([k])
+    result = dict(entries)
+    notes = []
+    for group in groups:
+        mine = [b for b in blame if b[0] & set(group)]
+        own = [n for n, o in enumerate(owners) if o in group]
+        bs, be = min([own[0]] + [b[1] for b in mine]), max([own[-1] + 1] + [b[2] for b in mine])
+        js = min([map_line(every, bs, len(new))] + [b[3] for b in mine])
+        je = max([map_line(every, be, len(new))] + [b[4] for b in mine])
+        chunk = new[js:je]
+        while chunk and not chunk[0].strip():
+            chunk.pop(0)
+        while chunk and not chunk[-1].strip():
+            chunk.pop()
+        for k, piece in zip(group, ["\n".join(chunk)] + [""] * (len(group) - 1)):
+            upstream = "\n".join(lines[spans[k][0]:spans[k][1]])
+            h = block_hash(upstream)
+            entry = entries.get(h)
+            if entry:  # keep its placeholders where their values still appear
+                for m in PLACEHOLDER_HINT.finditer(entry["patched"]):
+                    value = rules.expand(m.group(0), [], {})
+                    if value != m.group(0) and value in piece:
+                        piece = piece.replace(value, m.group(0))
+            if piece == upstream and (not entry or entry["kind"] != "keep"):
+                if entry:
+                    del result[h]
+                    notes.append((h, "removed: the paragraph is upstream's again"))
+                continue
+            if entry and entry["kind"] != "keep":
+                result[h] = {**entry, "patched": piece}
+                notes.append((h, "updated"))
+            else:
+                result[h] = {"hash": h, "kind": "policy", "rules": "", "intent": None, "upstream": upstream, "patched": piece}
+                notes.append((h, "added"))
+
+    check, _ = patch_blocks(rules, out_path, rel, upstream_text, {h: {**e, "intent": e["intent"] or "-"} for h, e in result.items()},
+                            set(), [], [])
+    if check.encode() != now:
+        return "the edit doesn't map onto whole paragraphs; edit its block entries directly"
+    return {"path": entries_path(book, rel), "entries": result, "notes": notes}
+
+
+def map_line(ops, i, end):
+    """The line of the new text that line i of the old text lines up with."""
+    for tag, i1, i2, j1, j2 in ops:
+        if i1 <= i < i2:
+            return j1 + (i - i1) if tag == "equal" else j1
+    return end
+
+
+def save_paragraphs(book, plan):
+    path = plan["path"]
+    if plan["entries"]:
+        path.write_text("\n".join(format_entry(e) for e in plan["entries"].values()))
+    elif path.exists():
+        path.unlink()
 
 
 PLACEHOLDER_HINT = re.compile(r"\{\{\w+:[^}]+\}\}")
@@ -1253,11 +1395,15 @@ def ask_model(provider, model, effort, prompt):
     return result.stdout.decode(errors="replace")
 
 
-def write_intent(book, changes, diff, name=None):
+def write_intent(book, changes, diff, name=None, named=True):
     """Ask the chosen model for the change's name and intent. Returns (name, intent)."""
     provider, model, effort = provider_settings(book)
     listed = "\n".join(f"{c.name}: {c.intent}" for c in changes.values()) or "(none yet)"
-    if name:
+    if not named:
+        name = "paragraphs"
+        instruction = ("These edits rewrite paragraphs in place; each changed paragraph keeps this intent. "
+                       "Write the intent, and reply with the name paragraphs.")
+    elif name:
         instruction = f"The change is new and called {name}. Write its intent, and reply with that name."
     else:
         instruction = ("If these edits serve the purpose of one existing change, reply with that change's name and "
@@ -1273,9 +1419,9 @@ def write_intent(book, changes, diff, name=None):
         raise Fail(f"{provider} didn't return a usable name and intent:\n{reply.strip()[:500]}\nPass a name and --intent instead.")
     if name and chosen != name:
         chosen = name
-    if chosen in changes:
+    if chosen in changes and named:
         intent = changes[chosen].intent
-    return chosen, intent
+    return (chosen if named else None), intent
 
 
 def cmd_provider(args):

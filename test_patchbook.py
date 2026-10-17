@@ -269,6 +269,43 @@ class VendorTest(Case):
         self.pb("build", cwd=self.repo.path)
         self.assertEqual(self.repo.read("skills/hello/notes.txt"), "added by hand\n")
 
+    def record_edit(self, old, new, *args):
+        skill = "skills/hello/SKILL.md"
+        self.repo.write(skill, self.repo.read(skill).replace(old, new))
+        out = self.pb("record", *args, cwd=self.repo.path).stdout
+        edited = self.repo.read(skill)
+        self.pb("build", cwd=self.repo.path)  # no --force: the edit is recorded
+        self.assertEqual(self.repo.read(skill), edited)
+        self.assertNotIn("problem", self.pb("status", cwd=self.repo.path).stdout.replace("no problems", ""))
+        return out
+
+    def test_record_paragraph_edits(self):
+        entries = self.test_missing_scaffold_patch_build()
+        # A patched paragraph keeps its placeholder and its intent, with no model call.
+        out = self.record_edit("Say hello in T3.", "Say hello in T3. Smile.")
+        self.assertIn("updated", out)
+        self.assertIn("--- patched\n{{snippet:greet}} Smile.", entries.read_text())
+        self.assertFalse((self.tmp / "prompt.txt").exists())
+        # An upstream paragraph gets a new entry, with the model's intent.
+        out = self.record_edit("Then wave.", "Then wave twice.")
+        self.assertIn("intent: Shout the second line.", out)
+        self.assertIn("--- upstream\nThen wave.\n--- patched\nThen wave twice.", entries.read_text())
+        self.assertIn("kind: policy", entries.read_text())
+        # A new paragraph joins the one before it.
+        self.record_edit("# Hello\n", "# Hello\n\nHi first.\n", "--intent", "Greet first.")
+        self.assertIn("--- patched\n# Hello\n\nHi first.", entries.read_text())
+        # A deleted paragraph, and one put back as upstream had it.
+        self.record_edit("Then wave twice.\n", "", "--intent", "No waving.")
+        self.assertIn("--- upstream\nThen wave.\n--- patched\n\n", entries.read_text())
+        self.record_edit("# Hello\n\nHi first.\n", "# Hello\n")
+        self.assertNotIn("Hi first.", entries.read_text())
+
+    def test_record_ignores_output_the_patchbook_changed(self):
+        entries = self.test_missing_scaffold_patch_build()
+        entries.write_text(entries.read_text().replace("{{snippet:greet}}", "Say hi in T3."))
+        self.assertIn("nothing to record", self.pb("record", cwd=self.repo.path).stdout)
+        self.assertIn("Say hi in T3.", entries.read_text())
+
     def test_upstream_rewords_a_patched_block(self):
         self.test_missing_scaffold_patch_build()
         self.repo.commit("built")
