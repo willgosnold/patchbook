@@ -397,14 +397,19 @@ class Change:
 
     def write(self, side, path, data, mode=None):
         p = self.content(side, path)
+        if mode == LINK or (mode is None and p.is_symlink()):  # a symlink is stored as one
+            write_disk(p, data, LINK)
+            return
         p.parent.mkdir(parents=True, exist_ok=True)
+        if p.is_symlink():
+            p.unlink()
         p.write_bytes(data)
         if mode in (0o644, 0o755):
             p.chmod(mode)
 
     def drop(self, side, path):
         p = self.content(side, path)
-        if p.exists():
+        if os.path.lexists(p):
             p.unlink()
 
 
@@ -762,7 +767,7 @@ def assemble(book):
         else:
             c = by_name[src[1]]
             data = c.read("ours", src[2])
-            mode = upstream[src[2]][1] if src[2] in upstream else norm_mode(os.stat(c.content("ours", src[2])).st_mode)
+            mode = upstream[src[2]][1] if src[2] in upstream else read_disk(c.content("ours", src[2]))[1]
             where = {"file": f"changes/{c.name}", "output": out_path}
             if is_text(data):
                 text = rules.expand(data.decode(), problems, where)

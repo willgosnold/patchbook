@@ -166,6 +166,14 @@ class ForkTest(Case):
         self.pb("build", "--force", cwd=self.fork.path)
         self.assertIn("TWO", self.fork.read("app.txt"))
 
+    def test_added_symlink_stays_a_symlink(self):
+        (self.fork.path / "link").symlink_to("app.txt")
+        self.pb("record", "link", "--intent", "Link to the app.", cwd=self.fork.path)
+        (self.fork.path / "link").unlink()
+        self.pb("build", "--force", cwd=self.fork.path)
+        self.assertTrue((self.fork.path / "link").is_symlink())
+        self.assertEqual(os.readlink(self.fork.path / "link"), "app.txt")
+
     def test_exec_bit_survives(self):
         self.record_feature()
         self.assertTrue(os.access(self.fork.path / "bin/run.sh", os.X_OK))
