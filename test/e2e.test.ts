@@ -257,6 +257,34 @@ describe("ForkTest", () => {
     expect(sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout).toBe("");
   });
 
+  // What the Python version wrote, with the paths of the interpreter and script that installed it.
+  const pythonHook = (extra = "") => `#!/bin/sh
+# Installed by patchbook. On each commit, it records hand edits to the build output in the
+# patchbook, rebuilds, and stages both. Skip it once with: PATCHBOOK_HOOK=0 git commit
+[ "$PATCHBOOK_HOOK" = 0 ] && exit 0
+${extra}if [ -f '/opt/my tools/patchbook.py' ]; then exec /usr/bin/python3 '/opt/my tools/patchbook.py' hook run; fi
+if command -v patchbook >/dev/null; then exec patchbook hook run; fi
+echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
+`;
+
+  forkTest("test_hook_from_the_python_version_is_rewritten", (t) => {
+    const hook = join(t.fork.path, ".git/hooks/pre-commit");
+    writeFileSync(hook, pythonHook());
+    expect(t.pb(["status", "--json"], { cwd: t.fork.path }).stderr).toContain("to run patchbook from PATH");
+    expect(read(hook)).not.toContain("/opt/my tools");
+    expect(read(hook)).toContain("command -v patchbook");
+  });
+
+  forkTest("test_hook_someone_added_lines_to_is_left_alone", (t) => {
+    const hook = join(t.fork.path, ".git/hooks/pre-commit");
+    const edited = pythonHook("other-tool --check || exit $?\n");
+    writeFileSync(hook, edited);
+    expect(t.pb(["status", "--json"], { cwd: t.fork.path }).stderr).not.toContain("patchbook:");
+    expect(read(hook)).toBe(edited);
+    expect(t.pb(["hook", "install"], { cwd: t.fork.path }).stderr).toContain("is another tool's hook; add `patchbook hook run`");
+    expect(read(hook)).toBe(edited);
+  });
+
   forkTest("test_settings_layer", (t) => {
     const project = join(t.fork.path, ".patchbook/config.toml");
     writeFileSync(project, "# my settings\n" + read(project));

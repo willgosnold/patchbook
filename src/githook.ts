@@ -12,18 +12,25 @@ import { length, slice, sorted } from "./lib/py.ts";
 import { decode } from "./lib/text.ts";
 import { setting } from "./settings.ts";
 
-// Bump the version when the script changes, so patchbook rewrites the hooks older versions wrote.
-const HOOK_VERSION = 2;
-/** The start of a script patchbook wrote, with its version. Before v2 the marker had none. */
-const OURS = /^#!\/bin\/sh\n# Installed by patchbook(?: v(\d+))?\./;
-
 const SCRIPT = `#!/bin/sh
-# Installed by patchbook v${HOOK_VERSION}. On each commit, it records hand edits to the build output in the
+# Installed by patchbook v2. On each commit, it records hand edits to the build output in the
 # patchbook, rebuilds, and stages both. Skip it once with: PATCHBOOK_HOOK=0 git commit
 [ "$PATCHBOOK_HOOK" = 0 ] && exit 0
 if command -v patchbook >/dev/null; then exec patchbook hook run; fi
 echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
 `;
+
+/** One word of `shlex.quote` output: bare, or in single quotes, with `'"'"'` standing for a quote. */
+const WORD = `(?:[^\\s'"]+|'[^']*'|"'")+`;
+/** The hook the Python version wrote, which embedded the paths of its interpreter and script. Anything else was edited. */
+const PYTHON_HOOK = new RegExp(`^#!/bin/sh
+# Installed by patchbook\\. On each commit, it records hand edits to the build output in the
+# patchbook, rebuilds, and stages both\\. Skip it once with: PATCHBOOK_HOOK=0 git commit
+\\[ "\\$PATCHBOOK_HOOK" = 0 \\] && exit 0
+if \\[ -f ${WORD} \\]; then exec ${WORD} ${WORD} hook run; fi
+if command -v patchbook >/dev/null; then exec patchbook hook run; fi
+echo "patchbook isn't installed, so this commit doesn't record hand edits\\." >&2
+$`);
 
 function writeHook(path: string): void {
   mkdirs(dirname(path));
@@ -31,7 +38,7 @@ function writeHook(path: string): void {
   chmodSync(path, 0o755);
 }
 
-/** Install the pre-commit hook, or rewrite one an older patchbook wrote. Another tool's hook is left alone. */
+/** Install the pre-commit hook, or rewrite the stock one the Python version wrote. Any other hook is left alone, edited or not ours. */
 export function installHook(root: string, verbose = false): void {
   const path = git(["rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-commit"], { cwd: root });
   if (!exists(path)) {
@@ -40,11 +47,10 @@ export function installHook(root: string, verbose = false): void {
     return;
   }
   const text = readTextReplace(path);
-  const ours = OURS.exec(text);
-  if (ours && Number(ours[1] ?? 1) < HOOK_VERSION) {
+  if (PYTHON_HOOK.test(text)) {
     writeHook(path);
     process.stderr.write(`patchbook: updated ${path} to run patchbook from PATH\n`);
-  } else if (!text.includes("Installed by patchbook") && verbose) {
+  } else if (text !== SCRIPT && verbose) {
     process.stderr.write(`patchbook: ${path} is another tool's hook; add \`patchbook hook run\` to it to record on commit.\n`);
   }
 }
