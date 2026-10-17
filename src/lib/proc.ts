@@ -1,0 +1,40 @@
+// subprocess.run on Bun.spawnSync. Node's spawnSync fails with ENOBUFS above 1 MB of output by
+// default, and `git cat-file --batch` on a real upstream is already past that.
+import { Fail } from "./fail.ts";
+import { strip } from "./py.ts";
+import { decode, decodeReplace } from "./text.ts";
+
+export type Env = Record<string, string | undefined>;
+export type SpawnOptions = { cwd?: string; input?: Uint8Array; env?: Env; capture?: boolean };
+/** A finished process. `code` is null when a signal killed it. */
+export type Finished = { code: number | null; stdout: Uint8Array; stderr: Uint8Array };
+
+/** Run a command to the end. Without capture, it writes to our stdout and stderr. */
+export function spawn(args: readonly string[], { cwd, input, env, capture = true }: SpawnOptions = {}): Finished {
+  const result = Bun.spawnSync({
+    cmd: [...args],
+    stdin: input ?? "inherit",
+    stdout: capture ? "pipe" : "inherit",
+    stderr: capture ? "pipe" : "inherit",
+    ...(cwd === undefined ? {} : { cwd }),
+    ...(env === undefined ? {} : { env }),
+  });
+  const empty = new Uint8Array();
+  return { code: result.exitCode, stdout: result.stdout ?? empty, stderr: result.stderr ?? empty };
+}
+
+/** Run a command and return its stdout, failing if it exits non-zero. */
+export function run(args: readonly string[], options: SpawnOptions & { check?: boolean } = {}): Uint8Array {
+  const result = spawn(args, options);
+  if ((options.check ?? true) && result.code !== 0) {
+    throw new Fail(`${args.join(" ")} failed:\n${strip(decodeReplace(result.stderr))}`);
+  }
+  return result.stdout;
+}
+
+export function git(args: readonly string[], options: SpawnOptions & { check?: boolean } = {}): string {
+  return strip(decode(run(["git", ...args], options)));
+}
+
+/** `shutil.which`. */
+export const which = (name: string): string | null => Bun.which(name);
