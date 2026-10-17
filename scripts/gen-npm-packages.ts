@@ -28,6 +28,7 @@ rmSync(out, { recursive: true, force: true });
 const main = JSON.parse(readFileSync(join(source, "package.json"), "utf8"));
 const mainDir = join(out, "patchbook");
 cpSync(source, mainDir, { recursive: true });
+copyFileSync("LICENSE", join(mainDir, "LICENSE"));
 writeJson(join(mainDir, "package.json"), {
   ...main,
   version,
@@ -45,10 +46,12 @@ for (const t of TARGETS) {
   copyFileSync(join(release, assetName(t)), binary);
   // npm keeps a file's mode only when it is executable on disk, so make sure it is.
   chmodSync(binary, 0o755);
+  copyFileSync("LICENSE", join(dir, "LICENSE"));
   writeJson(join(dir, "package.json"), {
     name: npmName(t),
     version,
     description: `The patchbook binary for ${t.id}. Install \`patchbook\` instead.`,
+    license: main.license,
     repository: main.repository,
     homepage: main.homepage,
     bugs: main.bugs,
