@@ -45,8 +45,7 @@ function writeConfig(root: string, layout: "fork" | "folder", upstream: string, 
 const noHook = () => ({ ...process.env, PATCHBOOK_HOOK: "0" });
 
 async function cmdClone(args: { url: string; dir: string | null; branch: string | null }) {
-  const named = args.dir || basename(rstrip(args.url, "/"));
-  const dest = resolve(named.endsWith(".git") ? named.slice(0, -4) : named);
+  const dest = resolve(args.dir || basename(rstrip(args.url, "/")).replace(/\.git$/, ""));
   if (exists(dest)) throw new Fail(`${dest} already exists`);
   const clone = ["clone", "--quiet", "--origin", "upstream", ...(args.branch ? ["--branch", args.branch] : [])];
   git([...clone, args.url, dest], { cwd: dirname(dest) });

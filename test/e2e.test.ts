@@ -165,6 +165,22 @@ test("test_version", () => {
   }
 }, TIMEOUT);
 
+test("test_clone_keeps_the_destination_it_was_given", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream.git"));
+    up.write("a.txt", "a\n");
+    up.commit("start");
+    t.pb(["clone", up.path, "work.git"], { cwd: t.tmp });
+    expect(existsSync(join(t.tmp, "work.git/.patchbook/config.toml"))).toBe(true);
+    expect(existsSync(join(t.tmp, "work"))).toBe(false);
+    t.pb(["clone", up.path], { cwd: t.tmp }); // the default name drops the .git
+    expect(existsSync(join(t.tmp, "upstream/.patchbook/config.toml"))).toBe(true);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 describe("ForkTest", () => {
   forkTest("test_clone_keeps_history_and_pins", (t) => {
     const log = sh(["git", "log", "--oneline"], { cwd: t.fork.path }).stdout;
