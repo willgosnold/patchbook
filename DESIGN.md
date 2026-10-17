@@ -15,7 +15,9 @@ A repo uses one of two layouts.
 
 A patchbook can follow any number of upstreams. Each has a name and a mount, the folder of the staged tree its files appear under. One upstream may mount at the root. In a fork, that is the fork's own upstream. Every path in an edit, a block entry, or a check is a staged path, so `move extra/skills/tool -> skills/tool` ships one skill from an upstream mounted at `extra`.
 
-`patchbook track <name> <url>` follows another upstream. `check` reports each one, and `sync` moves every pin, or one with `sync <name>`. ## The upstream store
+`patchbook track <name> <url>` follows another upstream. `check` reports each one, and `sync` moves every pin, or one with `sync <name>`.
+
+## The upstream store
 
 A repo holds only what it changed. Each upstream lives once per user, in the store (`~/.local/share/patchbook/upstreams/`, or `$PATCHBOOK_HOME/upstreams/`), as a git repo with each pinned commit fetched. Every repo that follows the same upstream shares it. A fork's own upstream is the fork's history, so it needs no store.
 
@@ -36,7 +38,7 @@ patchbook/
     ours/<path>.pb       our full version of that file
   blocks/<path>.entries  paragraph edits, for prose
   retired.md             changes dropped, and why
-  hooks.py               optional project code: placeholders, custom checks, final steps
+  hooks.ts               optional project code: placeholders, custom checks, final steps
 ```
 
 Every stored copy ends in `.pb`. Without the suffix, tools that find files by name would treat stored copies as real ones. A test runner would run a stored `foo.test.ts`, and the `skills` CLI would install a stored `SKILL.md`.
@@ -80,7 +82,7 @@ One owner per path: a path has at most one `file` edit or one set of block entri
 1. Stage upstream at the pin.
 2. Apply content edits on upstream paths: block entries, then `file` edits in series order. A `file` edit whose base differs from the staged upstream file is **stale**, since sync should have merged it.
 3. Apply structural edits in series order: add, replace, delete, move, copy.
-4. Run the hooks: fill placeholders, then `finish(output)`.
+4. Run the hooks: fill placeholders, then `finish(out)`.
 5. Run the checks on the output.
 6. Write the output: the configured folder (folder layout), or the repo root (fork).
 
@@ -97,7 +99,26 @@ files = ["**/*.md"]
 pattern = '\bCursor\b|\bTask\b|subagent_type'
 ```
 
-An upstream block that matches a check and has no entry is **missing**. Output that matches is a **leak**. `hooks.py` can define `check(output)` for anything a pattern can't express. wstack uses it to require `$name` beside `/name`, and each skill's `name` to equal its folder.
+A pattern is a JavaScript regular expression, compiled with the `u` flag. `\b` and `\w` are ASCII-only, so `\w` doesn't match `é`. Use `\p{L}` to match any letter.
+
+An upstream block that matches a check and has no entry is **missing**. Output that matches is a **leak**. The `check` hook (below) covers anything a pattern can't express. wstack uses it to require `$name` beside `/name`, and each skill's `name` to equal its folder.
+
+## Hooks
+
+`.patchbook/hooks.ts` is optional project code. It exports functions named for the hooks below, and patchbook calls each one by name. The exported `Hooks` type in `src/api.ts` has their signatures.
+
+| Hook | Called | Returns |
+| --- | --- | --- |
+| `placeholder(kind, name)` | For each `{{kind:name}}` in the output, for a `kind` that has a `[placeholders.<kind>]` table. | The text to put there, or null to look it up in that table's `file`. |
+| `blockTerms(path, block, outputs)` | For each upstream paragraph, with its output path and the set of all output paths. | Terms in the paragraph that need an entry, as if a `[[check]]` pattern had matched them. |
+| `finish(out)` | After placeholders, before the checks. | Nothing. It changes `out`, a map from path to `{ data, mode }`, in place. |
+| `check(outputs)` | After the `[[check]]` patterns. | A list of `{ problem: "check", file, detail }`. |
+
+An export with any other name is an error, with a suggestion if the name is close to a hook (`blockterms` gets "did you mean `blockTerms`?"). Patchbook also checks what each hook returns, and fails with a message when it's the wrong shape.
+
+Hooks run on Bun, inside the `patchbook` binary, so running one needs no separate Bun or Node install. A hook can import built-ins and the packages the repo has in `node_modules`, and no others.
+
+Patchbook doesn't read a `hooks.py` from the Python version. It stops and asks you to port the file. The hooks keep their names, except `block_terms`, which is now `blockTerms`.
 
 ## Sync
 
@@ -107,7 +128,7 @@ An upstream block that matches a check and has no entry is **missing**. Output t
   - **block entries**: an entry whose paragraph changed reports **orphan**, with the nearest new paragraphs.
 - `patchbook status [--json]` lists the problems, what sync merged on its own, and how much upstream changed in each file we touch.
 - `patchbook record [change] [--intent ...]` takes the output files edited by hand since the last build (per `build.lock`) and moves each edit into the patchbook. In a file with block entries, each changed paragraph updates its entry, or gets a new `policy` entry; a new paragraph joins the one before it, and a paragraph put back as upstream had it loses its entry. Other edits become `file`, `add` or `delete` edits based on the pinned upstream. An edit to a file that a change already owns goes to that change. For the other edits, a model reads their diff and writes the intent if you didn't. Without a change name, the model also picks one: an existing change the edits serve, or a new name.
-- A pre-commit hook does `record` and `build` on each commit, and stages what they change, so the usual loop is: edit, commit. Every patchbook command installs it in its repo if it's missing, so a fresh clone gets it on first use, and `patchbook hook install` installs it by hand. It leaves another tool's pre-commit hook alone. If the patchbook has problems, it records but doesn't build. `PATCHBOOK_HOOK=0 git commit` skips it once, and `PATCHBOOK_INTENT="..."` gives the intent instead of the model.
+- A pre-commit hook does `record` and `build` on each commit, and stages what they change, so the usual loop is: edit, commit. The hook is a short script that runs `patchbook hook run` from `PATH`, so upgrading patchbook upgrades the hook. If `patchbook` isn't on `PATH`, it says so and lets the commit through. Every patchbook command installs it in its repo if it's missing, so a fresh clone gets it on first use, and `patchbook hook install` installs it by hand. It leaves another tool's pre-commit hook alone. If the patchbook has problems, it records but doesn't build. `PATCHBOOK_HOOK=0 git commit` skips it once, and `PATCHBOOK_INTENT="..."` gives the intent instead of the model.
 - Intents are written by Claude Haiku 5.5 at medium effort through the `claude` CLI, or GPT-6-Luna at high effort through `codex`: Claude if it's installed, unless the settings choose.
 
 ## Settings
@@ -130,9 +151,9 @@ Problem kinds: missing, orphan, conflict, gone, stale, invalid, placeholder, lea
 
 ## The update skill
 
-This repo ships a `patchbook-update` skill. `patchbook clone` and `init` install it in the repo with the skills CLI; in a fork, `clone` records it as the `patchbook-update-skill` change, since anything not upstream is a change. Each adapted repo has a daily T3 scheduled task that starts a fresh thread with "Use the patchbook-update skill." The skill:
+This repo ships a `patchbook-update` skill, built into the `patchbook` binary. `patchbook clone` and `init` write it to `.agents/skills/patchbook-update/`, which Codex reads, and link `.claude/skills/patchbook-update` to it for Claude Code (`start.agents` chooses the agents). In a fork, `clone` records it as the `patchbook-update-skill` change, since anything not upstream is a change. Each adapted repo has a daily T3 scheduled task that starts a fresh thread with "Use the patchbook-update skill." The skill:
 
-1. Runs `patchbook check`. If no upstream has moved, it removes its worktree, archives the thread, and stops.
+1. Upgrades patchbook the way it was installed, if it can tell, then runs `patchbook check`. If no upstream has moved, it removes its worktree, archives the thread, and stops.
 2. Works on the branch of the worktree T3 made for the thread, rebased onto `origin/main`. Runs `patchbook sync` and commits the sync on its own.
 3. Resolves each problem from the change's intent and the repo's guide (`guide` in the config). One commit per change.
 4. Builds, then runs the config's `test`, which is a command or an instruction file for the agent.
@@ -167,7 +188,7 @@ mount = ""              # at the root of the staged tree
 from = "skills"         # the staged folder that ships
 to = "skills"
 
-[placeholders.model]    # filled by hooks.py from models.json
+[placeholders.model]    # filled by hooks.ts from models.json
 
 [placeholders.snippet]
 file = ".patchbook/snippets.md"
@@ -187,4 +208,8 @@ command = "tools/update-projects.sh"
 
 ## Tool
 
-One Python file, Python 3.11 or newer (for `tomllib`), plus git. No other dependencies. Install with `uv tool install git+ssh://git@github.com/willgosnold/patchbook`.
+TypeScript on Bun, shipped as one compiled binary, `patchbook`. The binary carries the Bun runtime, so running it needs no Bun, Node, or package manager. It has no npm dependencies at run time.
+
+It depends on git, which it uses for merges (`git merge-file`) and the store, and on the `claude` or `codex` CLI to write intents. A repo's `hooks.ts` runs on the binary's Bun.
+
+`patchbook --version` prints the version. The release build sets it with `bun build --define`, and a build from source reports the `version` in `package.json`.

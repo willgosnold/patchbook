@@ -1,0 +1,19 @@
+{
+  "name": "patchbook",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Keep your changes to an upstream repo, each with its intent, and keep pulling from upstream.",
+  "type": "module",
+  "bin": {
+    "patchbook": "src/cli.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig src/cli.ts --outfile dist/patchbook"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "typescript": "^7.0.2"
+  }
+}

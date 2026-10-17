@@ -6,13 +6,18 @@ A build applies your changes to a pinned upstream commit. When upstream moves, a
 
 ## Install
 
-Once per machine:
+Build from source. You need [Bun](https://bun.sh):
 
 ```sh
-uv tool install git+ssh://git@github.com/willgosnold/patchbook
+git clone git@github.com:willgosnold/patchbook.git
+cd patchbook
+bun install
+bun run build
 ```
 
-You also need git, Python 3.11 or newer, and the `claude` or `codex` CLI, which patchbook uses to write intents.
+Then put `dist/patchbook` on your PATH. The binary carries its own runtime, so Bun is needed only to build it.
+
+Patchbook runs git, and the `claude` or `codex` CLI to write intents, so you need both.
 
 ## Quick start
 
@@ -28,7 +33,7 @@ Or, to build something from a repo into a folder of your own repo, as wstack doe
 patchbook init --upstream <url> --path <folder> --output-to <folder>
 ```
 
-Both install a pre-commit hook and the `patchbook-update` skill for agents, in the repo.
+Both install a pre-commit hook in the repo, and write the `patchbook-update` skill for agents to `.agents/skills/patchbook-update/`, with a `.claude/skills` link for Claude Code.
 
 **2. Change things.** Edit files the way you normally would, including the built output, then commit as usual.
 
@@ -60,6 +65,6 @@ patchbook config [name] [value]     # settings: yours, or the project's with --p
 patchbook --help
 ```
 
-Tests: `python3 -m unittest test_patchbook`.
+Tests: `bun test`. Typecheck: `bun run typecheck`.
 
 Used by [wstack](https://github.com/willgosnold/wstack).
