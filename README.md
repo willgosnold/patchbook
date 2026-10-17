@@ -28,11 +28,7 @@ Or, to build something from a repo into a folder of your own repo, as wstack doe
 patchbook init --upstream <url> --path <folder> --output-to <folder>
 ```
 
-Then install the update skill for agents, in the repo:
-
-```sh
-npx skills add willgosnold/patchbook --skill patchbook-update
-```
+Both install a pre-commit hook and the `patchbook-update` skill for agents, in the repo.
 
 **2. Change things.** Edit files the way you normally would, including the built output, then commit as usual.
 

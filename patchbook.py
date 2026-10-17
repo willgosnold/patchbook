@@ -1613,6 +1613,21 @@ def cmd_hook(args):
     return 0
 
 
+SKILL = ["npx", "-y", "skills", "add", "willgosnold/patchbook", "--skill", "patchbook-update",
+         "-a", "claude-code", "-a", "codex", "-y"]
+SCHEDULE = 'To keep up with upstream, add a daily T3 scheduled task in this project: "Use the patchbook-update skill."'
+
+
+def install_skill(root):
+    """Install the update skill for agents in the repo. Returns whether it did."""
+    if os.environ.get("PATCHBOOK_SKILL") == "0":
+        return False
+    if not shutil.which("npx") or subprocess.run(SKILL, cwd=root, capture_output=True).returncode != 0:
+        print(f"patchbook: couldn't install the update skill. Run it yourself: {shlex.join(SKILL)}", file=sys.stderr)
+        return False
+    return True
+
+
 # Starting a patchbook, and following another upstream
 
 
@@ -1651,10 +1666,15 @@ def cmd_clone(args):
     book.write_lock(name, commit, git("rev-parse", "HEAD^{tree}", cwd=dest))
     write_build_lock(book, book.current_output())
     install_hook(dest)
+    if install_skill(dest):
+        os.chdir(dest)
+        cmd_record(argparse.Namespace(change="patchbook-update-skill", intent=(
+            "Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.")))
     git("add", "-A", cwd=dest)
     git("commit", "--quiet", "-m", f"Start a patchbook at upstream {commit[:7]}", cwd=dest, env=no_hook())
     print(f"cloned {args.url} into {dest}, pinned at {commit[:7]}.\n"
           "Make your changes and commit: the hook records them in the patchbook and rebuilds.\n"
+          f"{SCHEDULE}\n"
           f"To publish it: gh repo create <name> --private --source {dest} --push")
     return 0
 
@@ -1670,7 +1690,8 @@ def cmd_init(args):
         book = Book(root)
         sync_upstream(book, book.upstreams[0], args.branch, [])
         install_hook(root)
-        print("Next: patchbook build, then commit.")
+        install_skill(root)
+        print(f"Next: patchbook build, then commit.\n{SCHEDULE}")
         return 0
     write_config(root, "fork", upstream_toml(name, args.upstream, args.path, args.branch, ""))
     if "upstream" not in git("remote", cwd=root).split():
@@ -1680,8 +1701,9 @@ def cmd_init(args):
     book = Book(root)
     book.write_lock(name, base, book.upstreams[0].tree_of(base))
     install_hook(root)
+    install_skill(root)
     print(f"pinned upstream at {base[:7]}, where this repo branched from it.\n"
-          "Capture your existing changes with `patchbook record`, then `patchbook build`, and commit.")
+          "Capture your existing changes with `patchbook record`, then `patchbook build`, and commit.\n" + SCHEDULE)
     return 0
 
 

@@ -114,7 +114,7 @@ Problem kinds: missing, orphan, conflict, gone, stale, invalid, placeholder, lea
 
 ## The update skill
 
-This repo ships a `patchbook-update` skill (`npx skills add willgosnold/patchbook`). Each adapted repo has a daily T3 scheduled task that starts a fresh thread with "Use the patchbook-update skill." The skill:
+This repo ships a `patchbook-update` skill. `patchbook clone` and `init` install it in the repo with the skills CLI; in a fork, `clone` records it as the `patchbook-update-skill` change, since anything not upstream is a change. Each adapted repo has a daily T3 scheduled task that starts a fresh thread with "Use the patchbook-update skill." The skill:
 
 1. Runs `patchbook check`. If no upstream has moved, it removes its worktree, archives the thread, and stops.
 2. Works on the branch of the worktree T3 made for the thread, rebased onto `origin/main`. Runs `patchbook sync` and commits the sync on its own.
