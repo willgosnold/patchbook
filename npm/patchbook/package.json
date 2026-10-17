@@ -1,0 +1,26 @@
+{
+  "name": "patchbook",
+  "version": "0.0.0",
+  "description": "Keep your changes to an upstream repo, each with its intent, and keep pulling from upstream.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/willgosnold/patchbook.git"
+  },
+  "homepage": "https://github.com/willgosnold/patchbook#readme",
+  "bugs": {
+    "url": "https://github.com/willgosnold/patchbook/issues"
+  },
+  "types": "api.d.ts",
+  "bin": {
+    "patchbook": "bin/patchbook.js"
+  },
+  "files": [
+    "bin",
+    "api.d.ts",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

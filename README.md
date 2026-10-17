@@ -6,7 +6,19 @@ A build applies your changes to a pinned upstream commit. When upstream moves, a
 
 ## Install
 
-Build from source. You need [Bun](https://bun.sh):
+With npm, which installs the binary for your platform:
+
+```sh
+npm install -g patchbook
+```
+
+Or download the binary from the latest [GitHub release](https://github.com/willgosnold/patchbook/releases) with the install script. It checks the checksum and installs to `~/.local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/willgosnold/patchbook/main/install.sh | sh
+```
+
+Or build from source with [Bun](https://bun.sh), and put `dist/patchbook` on your PATH:
 
 ```sh
 git clone git@github.com:willgosnold/patchbook.git
@@ -15,9 +27,9 @@ bun install
 bun run build
 ```
 
-Then put `dist/patchbook` on your PATH. The binary carries its own runtime, so Bun is needed only to build it.
+The binary carries its own runtime, so Bun and Node are needed only to build it or to install it with npm.
 
-Patchbook runs git, and the `claude` or `codex` CLI to write intents, so you need both.
+Patchbook runs git, and the `claude` or `codex` CLI to write intents, so you need git and one of those.
 
 ## Quick start
 
