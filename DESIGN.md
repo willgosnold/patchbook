@@ -8,14 +8,20 @@ First user: [wstack](https://github.com/willgosnold/wstack), which rewrites Laur
 
 A repo uses one of two layouts.
 
-- **vendor.** The repo holds a byte-for-byte copy of upstream in a folder, and the build writes its output to another folder. Use it when you ship something derived from upstream. wstack copies pstack into `vendor/pstack/` and builds `skills/`.
+- **folder.** The build writes its output to a folder of the repo. Use it when you ship something derived from upstream. wstack builds `skills/` from pstack.
 - **fork.** The repo is upstream plus a `.patchbook/` folder. The build writes the patched tree over the repo root, leaving `.patchbook/` and any vendored copies alone. Upstream's files in the tree are build output. To change them, edit them in place, then run `patchbook record` to move the edit into the patchbook.
 
 ## Several upstreams
 
 A patchbook can follow any number of upstreams. Each has a name and a mount, the folder of the staged tree its files appear under. One upstream may mount at the root. In a fork, that is the fork's own upstream. Every path in an edit, a block entry, or a check is a staged path, so `move extra/skills/tool -> skills/tool` ships one skill from an upstream mounted at `extra`.
 
-`patchbook track <name> <url>` follows another upstream. `check` reports each one, and `sync` moves every pin, or one with `sync <name>`. An upstream can keep a vendored copy in the repo (`vendor`). Without one, the tool reads the pinned upstream from git.
+`patchbook track <name> <url>` follows another upstream. `check` reports each one, and `sync` moves every pin, or one with `sync <name>`. ## The upstream store
+
+A repo holds only what it changed. Each upstream lives once per user, in the store (`~/.local/share/patchbook/upstreams/`, or `$PATCHBOOK_HOME/upstreams/`), as a git repo with each pinned commit fetched. Every repo that follows the same upstream shares it. A fork's own upstream is the fork's history, so it needs no store.
+
+The store is data, not a cache: it is the only local copy of the unchanged upstream files. If it is lost, the tool fetches each pin again by commit. That fails only if upstream deleted the commit, which is the case for keeping a vendored copy: set `vendor = "<folder>"` on an upstream, and sync keeps a byte-for-byte copy in the repo, which the build checks against the pin.
+
+`patchbook upstream <name>` reads an upstream at its pin. It lists the files, prints one (`upstream <name> <path>`), writes them all to a folder (`--export <dir>`), or shows what upstream changed in the last sync (`--diff`).
 
 ## Files
 
@@ -76,7 +82,7 @@ One owner per path: a path has at most one `file` edit or one set of block entri
 3. Apply structural edits in series order: add, replace, delete, move, copy.
 4. Run the hooks: fill placeholders, then `finish(output)`.
 5. Run the checks on the output.
-6. Write the output: the configured folder (vendor), or the repo root (fork).
+6. Write the output: the configured folder (folder layout), or the repo root (fork).
 
 The build fails on any problem and writes nothing. A build at an unchanged pin leaves `git status` clean.
 
@@ -96,7 +102,7 @@ An upstream block that matches a check and has no entry is **missing**. Output t
 ## Sync
 
 - `patchbook check` compares each upstream's head with its pin. It exits 0 when all are up to date and 10 when any has moved, and prints JSON.
-- `patchbook sync [name] [ref]` fetches each upstream (or the named one, at a ref) and updates its pin and its vendored copy, if it keeps one. Then it carries every change on that upstream's files forward:
+- `patchbook sync [name] [ref]` fetches each upstream (or the named one, at a ref) into the store, and updates its pin and its vendored copy, if it keeps one. Then it carries every change on that upstream's files forward:
   - **file edits**: `git merge-file` with base, ours, and the new upstream file. A clean merge updates ours and sets base to the new upstream file. A conflict leaves markers in ours and reports **conflict**. A file upstream deleted or moved reports **gone**, with likely new paths.
   - **block entries**: an entry whose paragraph changed reports **orphan**, with the nearest new paragraphs.
 - `patchbook status [--json]` lists the problems, what sync merged on its own, and how much upstream changed in each file we touch.
@@ -129,7 +135,7 @@ Then it opens a pull request without merging, keeps its worktree for the pull re
 wstack's, as an example:
 
 ```toml
-layout = "vendor"
+layout = "folder"
 guide = ".patchbook/patch.md"
 
 [[upstream]]
@@ -138,7 +144,6 @@ remote = "https://github.com/cursor/plugins.git"
 path = "pstack"
 branch = "main"
 mount = ""              # at the root of the staged tree
-vendor = "vendor/pstack"
 
 [output]
 from = "skills"         # the staged folder that ships

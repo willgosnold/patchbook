@@ -20,7 +20,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 PB = ".patchbook"
-CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "patchbook"
+# One store per user, shared by every repo that follows the same upstream.
+STORE = Path(os.environ.get("PATCHBOOK_HOME")
+             or Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "patchbook") / "upstreams"
 EXIT_MOVED = 10
 LINK = 0o120000
 
@@ -120,7 +122,8 @@ class Upstream:
     def git_dir(self):
         if self.in_repo:
             return self.book.root
-        d = CACHE / hashlib.sha1(self.remote.encode()).hexdigest()[:16]
+        readable = re.sub(r"[^A-Za-z0-9]+", "-", re.sub(r"^\w+://|\.git$", "", self.remote)).strip("-")[-60:]
+        d = STORE / f"{readable}-{hashlib.sha1(self.remote.encode()).hexdigest()[:8]}"
         if not d.exists():
             d.parent.mkdir(parents=True, exist_ok=True)
             git("init", "--quiet", "--bare", str(d), cwd=d.parent)
@@ -197,16 +200,16 @@ class Book:
         self.root = root
         self.dir = root / PB
         self.config = tomllib.loads((self.dir / "config.toml").read_text())
-        self.layout = self.config.get("layout", "fork")
-        if self.layout not in ("vendor", "fork"):
-            raise Fail(f"layout must be vendor or fork, not {self.layout!r}")
+        self.layout = {"vendor": "folder"}.get(self.config.get("layout", "fork"), self.config.get("layout", "fork"))
+        if self.layout not in ("folder", "fork"):
+            raise Fail(f"layout must be folder or fork, not {self.layout!r}")
         raw = self.config.get("upstream")
         if not raw:
             raise Fail("config.toml has no [[upstream]]")
         self.legacy = isinstance(raw, dict)
         self.upstreams = [Upstream(self, spec, self.legacy) for spec in ([raw] if self.legacy else raw)]
         self._check_mounts()
-        if self.layout == "vendor":
+        if self.layout == "folder":
             out = self.config.get("output", {})
             self.out_from = out.get("from", "").strip("/")
             self.out_dir = root / out["to"]
@@ -289,7 +292,7 @@ class Book:
     # The output on disk
 
     def output_root(self):
-        return self.out_dir if self.layout == "vendor" else self.root
+        return self.out_dir if self.layout == "folder" else self.root
 
     def current_output(self):
         """{output path: (bytes, mode)} as it is on disk now: tracked files and untracked ones git doesn't ignore."""
@@ -729,7 +732,7 @@ def assemble(book):
         blocks[rel] = read_entries(p)
 
     staged = apply_structure(changes, upstream, problems)
-    if book.layout == "vendor":
+    if book.layout == "folder":
         prefix = book.out_from
         selected = {(p[len(prefix) + 1:] if prefix else p): s for p, s in staged.items() if not prefix or p.startswith(prefix + "/")}
     else:
@@ -1100,7 +1103,7 @@ def cmd_record(args):
     file_owner = {e.path: c for c in changes.values() for e in c.edits if e.kind == "file"}
     has_blocks = {p.relative_to(book.dir / "blocks").as_posix()[: -len(".entries")]
                   for p in (book.dir / "blocks").rglob("*.entries")}
-    prefix = book.out_from + "/" if book.layout == "vendor" and book.out_from else ""
+    prefix = book.out_from + "/" if book.layout == "folder" and book.out_from else ""
     touched, notes = {target.name: target}, []
 
     for p in sorted(set(current) | set(a.out)):
@@ -1216,6 +1219,45 @@ def cmd_scaffold(args):
     return 0
 
 
+# Reading an upstream
+
+
+def cmd_upstream(args):
+    """Read an upstream at its pin, from the store: list its files, print one, export them, or diff the last sync."""
+    book = Book.find()
+    u = book.upstream(args.name)
+    pin = u.pin()
+    if not pin.get("tree"):
+        raise Fail(f"upstream {u.name} has no pin yet. Run: patchbook sync {u.name}")
+    if args.diff or args.since:
+        last = book.dir / "last-sync.json"
+        report = json.loads(last.read_text()).get("upstreams", {}).get(u.name, {}) if last.exists() else {}
+        old = args.since or report.get("from")
+        if not old:
+            raise Fail(f"no earlier pin of {u.name} to compare with; pass --since <commit>")
+        u.have(old)
+        u.have(pin["commit"])
+        where = "/".join(p for p in (u.path, args.path) if p)
+        relative = [f"--relative={u.path}/"] if u.path else []
+        sys.stdout.write(run(["git", "diff", "--no-color", *relative, old, pin["commit"], "--", *([where] if where else [])],
+                             u.git_dir()).decode(errors="replace"))
+        return 0
+    files = u.files(pin["commit"])
+    if args.export:
+        dest = Path(args.export).resolve()
+        for path, (data, mode) in files.items():
+            write_disk(dest / path, data, mode)
+        print(f"wrote {len(files)} files of {u.name} at {pin['commit'][:7]} to {dest}")
+        return 0
+    if args.path:
+        if args.path not in files:
+            raise Fail(f"{u.name} has no {args.path} at {pin['commit'][:7]}")
+        sys.stdout.buffer.write(files[args.path][0])
+        return 0
+    print("\n".join(sorted(files)))
+    return 0
+
+
 # Starting a patchbook, and following another upstream
 
 
@@ -1266,10 +1308,8 @@ def cmd_init(args):
     if (root / PB / "config.toml").exists():
         raise Fail(f"{root} already has a patchbook. To follow another upstream: patchbook track")
     name = args.name or default_name(args.upstream, args.path)
-    if args.vendor:
-        if not args.output_to:
-            raise Fail("--vendor needs --output-to, the folder the build writes")
-        write_config(root, "vendor", upstream_toml(name, args.upstream, args.path, args.branch, "", args.vendor),
+    if args.output_to:
+        write_config(root, "folder", upstream_toml(name, args.upstream, args.path, args.branch, "", args.vendor),
                      (args.output_from, args.output_to))
         book = Book(root)
         sync_upstream(book, book.upstreams[0], args.branch, [])
@@ -1322,9 +1362,9 @@ def main():
     p.add_argument("--name", help="what to call it (default: the last part of --path or the URL)")
     p.add_argument("--branch", default="main")
     p.add_argument("--path", default="", help="the upstream folder to follow, if not the whole repo")
-    p.add_argument("--vendor", help="vendor layout: copy upstream into this folder")
-    p.add_argument("--output-from", default="", help="vendor layout: the staged folder that ships")
-    p.add_argument("--output-to", help="vendor layout: the folder the build writes")
+    p.add_argument("--output-to", help="build into this folder instead of over the repo (the folder layout)")
+    p.add_argument("--output-from", default="", help="folder layout: the staged folder that ships")
+    p.add_argument("--vendor", help="also keep a byte-for-byte copy of upstream in this folder")
     p.set_defaults(func=cmd_init)
 
     p = sub.add_parser("track", help="follow another upstream, mounted at its own folder")
@@ -1335,6 +1375,14 @@ def main():
     p.add_argument("--mount", help="the staged folder its files appear under (default: its name)")
     p.add_argument("--vendor", help="also keep a byte-for-byte copy in this folder")
     p.set_defaults(func=cmd_track)
+
+    p = sub.add_parser("upstream", help="read an upstream at its pin: list, print, export, or diff the last sync")
+    p.add_argument("name")
+    p.add_argument("path", nargs="?", help="a path inside the upstream, as upstream has it")
+    p.add_argument("--diff", action="store_true", help="what upstream changed in the last sync")
+    p.add_argument("--since", help="what upstream changed since this commit")
+    p.add_argument("--export", metavar="DIR", help="write every file at the pin into DIR")
+    p.set_defaults(func=cmd_upstream)
 
     p = sub.add_parser("check", help="has any upstream moved? exits 10 if so")
     p.set_defaults(func=cmd_check)

@@ -15,8 +15,9 @@ npx skills add willgosnold/patchbook --skill patchbook-update       # in each ad
 
 ```sh
 patchbook clone <upstream url> [dir]                     # fork a repo, keeping its history
-patchbook init --upstream <url> --vendor vendor/<name> \
-  --output-from <folder> --output-to <folder>            # or vendor it into an existing repo
+patchbook init --upstream <url> \
+  --output-from <folder> --output-to <folder>            # or build from it into a folder of this repo
+patchbook track <name> <url>                             # follow another upstream
 ```
 
 Then change things, `patchbook record <change> --intent '...'`, and `patchbook build`. To keep up with upstream, a daily T3 scheduled task in the repo runs: "Use the patchbook-update skill."

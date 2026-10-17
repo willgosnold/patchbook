@@ -7,7 +7,9 @@ description: Pull upstreams into a repo that keeps its changes in a patchbook (.
 
 This repo keeps its changes to one or more upstream repos in `.patchbook/`. Read `.patchbook/config.toml` and the guide it names (`guide`) before you change anything. `patchbook --help` lists the commands. The `patchbook` repo's `DESIGN.md` explains the model.
 
-Never edit the vendored copy or the build output by hand. Change the patchbook, then build.
+Never edit the build output, or a vendored copy, by hand. Change the patchbook, then build.
+
+To read an upstream, use `patchbook upstream <name>`: `<name> <path>` prints a file at the pin, `--diff` shows what upstream changed in the last sync, and `--export <dir>` writes it all out for searching.
 
 ## 1. Check
 

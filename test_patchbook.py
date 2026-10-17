@@ -44,7 +44,7 @@ class Repo:
 class Case(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
-        self.env = {**os.environ, "XDG_CACHE_HOME": str(self.tmp / "cache"),
+        self.env = {**os.environ, "PATCHBOOK_HOME": str(self.tmp / "store"),
                     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
                     "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_GLOBAL": "/dev/null"}
         os.environ.update({k: v for k, v in self.env.items() if k.startswith("GIT_")})
@@ -186,7 +186,7 @@ class VendorTest(Case):
         self.repo = Repo(self.tmp / "adapted")
         self.repo.write("README.md", "mine\n")
         self.repo.commit("start")
-        self.pb("init", "--upstream", str(self.up.path), "--path", "plugin", "--vendor", "vendor/plugin",
+        self.pb("init", "--upstream", str(self.up.path), "--path", "plugin",
                 "--output-from", "skills", "--output-to", "skills", cwd=self.repo.path)
         config = self.repo.path / ".patchbook/config.toml"
         config.write_text(config.read_text() + textwrap.dedent('''
@@ -257,8 +257,30 @@ class VendorTest(Case):
         self.assertIn("missing", status)
         self.assertRegex(status, r"nearest new blocks: line 7 \[[0-9a-f]{12}\] 0\.9")
 
+    def test_no_copy_of_upstream_in_the_repo(self):
+        self.assertFalse((self.repo.path / "vendor").exists())
+        self.assertIn('layout = "folder"', (self.repo.path / ".patchbook/config.toml").read_text())
+        self.assertEqual(len(list((self.tmp / "store/upstreams").iterdir())), 1)
+
+    def test_reading_upstream(self):
+        files = self.pb("upstream", "plugin", cwd=self.repo.path).stdout.split()
+        self.assertEqual(files, ["README.md", "agents/helper.md", "skills/hello/SKILL.md"])
+        self.assertEqual(self.pb("upstream", "plugin", "README.md", cwd=self.repo.path).stdout, "For Cursor users.\n")
+        self.pb("upstream", "plugin", "--export", str(self.tmp / "out"), cwd=self.repo.path)
+        self.assertTrue((self.tmp / "out/agents/helper.md").exists())
+        self.up.write("plugin/README.md", "For everyone.\n")
+        self.up.commit("readme")
+        self.pb("sync", cwd=self.repo.path)
+        diff = self.pb("upstream", "plugin", "--diff", cwd=self.repo.path).stdout
+        self.assertIn("-For Cursor users.", diff)
+        self.assertIn("a/README.md", diff)
+
     def test_vendor_copy_is_guarded(self):
-        self.repo.write("vendor/plugin/README.md", "edited\n")
+        extra = Repo(self.tmp / "extra")
+        extra.write("a.md", "a\n")
+        extra.commit("a")
+        self.pb("track", "extra", str(extra.path), "--vendor", "vendor/extra", cwd=self.repo.path)
+        self.repo.write("vendor/extra/a.md", "edited\n")
         self.assertIn("Never edit the vendored copy", self.pb("status", cwd=self.repo.path, code=1).stderr)
 
     def test_other_upstream_paths_do_not_move_the_pin(self):
