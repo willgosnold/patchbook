@@ -26,9 +26,9 @@ export function sameFile(a: File | undefined, b: File | undefined): boolean {
   return a.mode === b.mode && bytesEqual(a.data, b.data);
 }
 
-/** `Path(a) / b`: joined and normalised, with no trailing slash. */
+/** `Path(a) / b`: joined and normalised, with no trailing slash. An absolute part drops the ones before it. */
 export function pjoin(...parts: string[]): string {
-  const p = join(...parts);
+  const p = join(...parts.slice(Math.max(0, parts.findLastIndex((part) => part.startsWith("/")))));
   return p.length > 1 && p.endsWith("/") ? p.slice(0, -1) : p;
 }
 

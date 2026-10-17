@@ -5,7 +5,7 @@ import type { InBlock, InOutput, Problem } from "./assemble.ts";
 import { Book, escape } from "./book.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { readText } from "./lib/fs.ts";
+import { pjoin, readText } from "./lib/fs.ts";
 import { sha256 } from "./lib/hash.ts";
 import { loads } from "./lib/json.ts";
 import { length, type PyFloat, round2, S, sorted, str, strip, strRepr, W } from "./lib/py.ts";
@@ -152,7 +152,7 @@ export class Rules {
     values = new Map();
     const spec = this.book.placeholders.get(kind);
     if (spec?.file != null) {
-      const text = readText(join(this.book.root, spec.file));
+      const text = readText(pjoin(this.book.root, spec.file));
       if (spec.format === "sections") {
         const lines = new Map<string, string[]>();
         let name: string | null = null;

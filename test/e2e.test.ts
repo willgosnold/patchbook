@@ -492,6 +492,21 @@ describe("VendorTest", () => {
     expect(t.repo.read("skills/tool/SKILL.md")).toContain("Use the new tool.");
   });
 
+  vendorTest("test_absolute_output_folder_is_used_as_given", (t) => {
+    const config = join(t.repo.path, ".patchbook/config.toml");
+    writeFileSync(config, replace(read(config), 'to = "skills"', `to = "${join(t.repo.path, "skills")}"`));
+    t.missingScaffoldPatchBuild();
+    expect(existsSync(join(t.repo.path, t.repo.path))).toBe(false);
+  });
+
+  vendorTest("test_absolute_placeholder_file_is_used_as_given", (t) => {
+    const snippets = join(t.tmp, "snippets.md");
+    writeFileSync(snippets, t.repo.read(".patchbook/snippets.md"));
+    const config = join(t.repo.path, ".patchbook/config.toml");
+    writeFileSync(config, replace(read(config), 'file = ".patchbook/snippets.md"', `file = "${snippets}"`));
+    t.missingScaffoldPatchBuild();
+  });
+
   vendorTest("test_single_upstream_table_is_rejected", (t) => {
     t.missingScaffoldPatchBuild();
     const config = join(t.repo.path, ".patchbook/config.toml");
