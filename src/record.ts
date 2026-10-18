@@ -128,24 +128,25 @@ export type Snapshot = {
 };
 
 export function classify(s: Snapshot, paths: readonly string[]): Edited[] {
-  const into = new Map(paths.map((p) => [p, recordedInto(s, p)]));
-  const sharers = new Map<string, string[]>();
-  for (const [p, copy] of into) if (copy) sharers.set(copy.key, [...(sharers.get(copy.key) ?? []), p]);
+  const shared = new Map(paths.map((p) => [p, sharedSource(s, p)]));
+  const units = Map.groupBy(paths.filter((p) => shared.get(p)), (p) => unitKey(shared.get(p)!));
   return paths.map((path) => {
-    const copy = into.get(path);
-    const others = copy ? sharers.get(copy.key)!.filter((p) => p !== path) : [];
-    if (!copy || !others.length) return classifyOne(s, path);
-    return { kind: "skip", path, reason: `${copy.said} also builds ${others.join(", ")}, which this record changes too; ${copy.fix}` };
+    const src = shared.get(path);
+    const others = src ? units.get(unitKey(src))!.filter((p) => p !== path) : [];
+    if (!src || !others.length) return classifyOne(s, path);
+    const from = src.kind === "ours" ? `its copy in ${src.change}` : `upstream's ${src.path}`;
+    const fix = src.kind === "ours" ? `edit ${src.change} directly` : "edit only one of them";
+    return { kind: "skip", path, reason: `${from} also builds ${others.join(", ")}, which this record changes too; ${fix}` };
   });
 }
 
-function recordedInto(s: Snapshot, path: string): { key: string; said: string; fix: string } | null {
+function sharedSource(s: Snapshot, path: string): Source | null {
   const src = s.out.has(path) ? s.sources.get(path) : undefined;
   const deleted = !s.current.has(path);
-  if (src?.kind === "ours") return { key: `changes/${src.change}/${src.path}`, said: `its copy in ${src.change}`, fix: "edit that copy directly" };
-  if (src?.kind === "up" && !deleted) return { key: `upstream/${src.path}`, said: `upstream's ${src.path}`, fix: "edit only one of them" };
-  return null;
+  return src && (src.kind === "ours" || !deleted) ? src : null;
 }
+
+const unitKey = (src: Source) => (src.kind === "ours" ? `ours ${src.change} ${src.path}` : `up ${src.path}`);
 
 function classifyOne(s: Snapshot, path: string): Edited {
   const now = s.current.get(path);

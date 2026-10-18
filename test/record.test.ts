@@ -97,8 +97,8 @@ test("outputs built from one ours copy are all skipped when more than one is edi
   const w = twins([["new.md", ours(added, "skills/new.md")], ["new2.md", ours(added, "skills/new.md")], ["new3.md", ours(added, "skills/new.md")]],
     { "new.md": "a", "new2.md": null, "new3.md": "built" });
   expect(classify(w, ["new.md", "new2.md"])).toEqual([
-    { kind: "skip", path: "new.md", reason: "its copy in added also builds new2.md, which this record changes too; edit that copy directly" },
-    { kind: "skip", path: "new2.md", reason: "its copy in added also builds new.md, which this record changes too; edit that copy directly" },
+    { kind: "skip", path: "new.md", reason: "its copy in added also builds new2.md, which this record changes too; edit added directly" },
+    { kind: "skip", path: "new2.md", reason: "its copy in added also builds new.md, which this record changes too; edit added directly" },
   ]);
   expect(classify(w, ["new.md"])).toMatchObject([{ kind: "update-ours", path: "new.md" }]);
 });

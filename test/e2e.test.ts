@@ -5417,6 +5417,21 @@ describe("ForkTest", () => {
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
 
+  forkTest("test_record_skips_two_outputs_that_share_one_upstream_file_when_both_are_edited", (t) => {
+    mkdirSync(join(t.fork.path, ".patchbook/changes/twin"), { recursive: true });
+    writeFileSync(join(t.fork.path, ".patchbook/changes/twin/CHANGE.md"), "# twin\n\nintent: Two guides.\n\nedits:\n- copy docs/guide.md -> docs/guide2.md\n");
+    const series = join(t.fork.path, ".patchbook/series");
+    writeFileSync(series, (existsSync(series) ? read(series) : "") + "twin\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.write("docs/guide.md", "a guide!\n");
+    t.fork.write("docs/guide2.md", "a second guide\n");
+    const skip = (path: string, other: string) =>
+      `skipped  ${path}: upstream's docs/guide.md also builds ${other}, which this record changes too; edit only one of them\n`;
+    expect(t.pb(["record", "--intent", "Shout."], { cwd: t.fork.path }).stdout)
+      .toBe(skip("docs/guide.md", "docs/guide2.md") + skip("docs/guide2.md", "docs/guide.md"));
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
   forkTest("test_commit_records_and_builds", (t) => {
     expect(read(join(t.fork.path, ".git/hooks/pre-commit"))).toContain("Installed by patchbook");
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
@@ -8570,7 +8585,7 @@ describe("VendorTest", () => {
     return join(changes, "holder/ours/skills/hello/tpl.md.pb");
   };
   const shared = (path: string, other: string) =>
-    `skipped  ${path}: its copy in holder also builds ${other}, which this record changes too; edit that copy directly\n`;
+    `skipped  ${path}: its copy in holder also builds ${other}, which this record changes too; edit holder directly\n`;
 
   vendorTest("test_record_skips_two_outputs_that_share_one_copy_when_both_are_edited", (t) => {
     t.missingScaffoldPatchBuild();
@@ -8597,13 +8612,13 @@ describe("VendorTest", () => {
     const lock = join(t.repo.path, ".patchbook/build.lock");
     chmodSync(lock, 0o444);
     try {
-      const r = t.pb(["record", "notes", "--intent", "Add notes."], { cwd: t.repo.path, code: 1 });
-      expect(r.stdout).toBe("add      hello/notes.txt\n");
+      const r = t.pb(["record", "--intent", "Add notes."], { cwd: t.repo.path, code: 1 });
+      expect(r.stdout).toBe("add-notes: Add notes.\nadd      hello/notes.txt\n");
       expect(r.stderr).toContain("permission denied");
     } finally {
       chmodSync(lock, 0o644);
     }
-    expect(read(join(t.repo.path, ".patchbook/changes/notes/CHANGE.md"))).toContain("- add skills/hello/notes.txt");
+    expect(read(join(t.repo.path, ".patchbook/changes/add-notes/CHANGE.md"))).toContain("- add skills/hello/notes.txt");
   });
 
   vendorTest("test_record_ignores_output_the_patchbook_changed", (t) => {
