@@ -1,7 +1,7 @@
 // Has an upstream moved, and moving the pins: carrying every change forward with git merge-file.
-import { chmodSync, lstatSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
 import { Book } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
@@ -221,19 +221,22 @@ const journal = (book: Book, u: Upstream) => join(book.dir, `sync-${encodeURICom
 
 const spell = (pin: Pin) => `${pin.commit ?? ""} ${pin.tree ?? ""}`;
 
-/** `to` is the lock that marks the sync finished. A rewrite under an unmoved pin writes no lock, so its `to` is "", which no lock spells. */
-type Journal = { from: string; to: string; added: string; vendor: string; copy: boolean };
+/** `to` is the lock that marks the sync finished, or "" for a rewrite under an unmoved pin, which no lock does. `made` is the highest folder the sync makes for a vendored copy that was not there, or "". */
+type Journal = { from: string; to: string; added: string; vendor: string; copy: boolean; made: string };
 
 function begin(book: Book, u: Upstream, from: Pin, to: Required<Pin> | null): void {
   const j = journal(book, u);
   mkdirs(j);
   writeText(join(j, ".gitignore"), "*\n");
+  let made = u.vendor && !lexists(u.vendor) ? u.vendor : "";
+  while (made && !lexists(dirname(made))) made = dirname(made);
   const record: Journal = {
     from: spell(from),
     to: to ? spell(to) : "",
     added: to && !u.kept(to.commit) ? to.commit : "",
     vendor: u.vendor ? relative(book.root, u.vendor) : "",
     copy: u.vendor !== null && lexists(u.vendor),
+    made: made && relative(book.root, made),
   };
   writeText(join(j, "pin.tmp"), JSON.stringify(record));
   renameSync(join(j, "pin.tmp"), join(j, "pin"));
@@ -277,7 +280,7 @@ function recover(book: Book, u: Upstream): void {
     } catch {
       throw stuck(book, u, "its record can't be read");
     }
-    const { from, to, added, vendor: path, copy } = record;
+    const { from, to, added, vendor: path, copy, made } = record;
     const now = locked(u);
     const wrote = lexists(join(j, "lock"));
     const torn = now === null && wrote;
@@ -302,12 +305,22 @@ function recover(book: Book, u: Upstream): void {
     const old = join(j, "old");
     const newCopy = lexists(old) || !copy;
     if (newCopy) takeVendor(vendor, null);
+    if (vendor && made) unmake(vendor, join(book.root, made));
     if (vendor && lexists(old)) {
       mkdirs(dirname(vendor));
       renameSync(old, vendor);
     }
   }
   drop(j);
+}
+
+/** Remove the empty folders above a vendored copy, up to the highest one its sync made. */
+function unmake(vendor: string, made: string): void {
+  for (let dir = dirname(vendor); dir === made || dir.startsWith(made + sep); dir = dirname(dir)) {
+    if (!lexists(dir)) continue;
+    if (readdirSync(dir).length) return;
+    rmdirSync(dir);
+  }
 }
 
 function stuck(book: Book, u: Upstream, why: string): Fail {
