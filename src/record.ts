@@ -9,7 +9,7 @@ import { appendSeries, CHANGE_NAME, Change, notAChangeName, readChanges, readSer
 import { installHookOrWarn } from "./githook.ts";
 import { nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
-import { Fail } from "./lib/fail.ts";
+import { Fail, Partway } from "./lib/fail.ts";
 import { exists, type File, LINK, type Mode, sameFile, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { replace, splitlines, strip } from "./lib/py.ts";
@@ -261,25 +261,31 @@ export function record(book: Book, change: string | null, intent: string | null,
 
   const touched = new Map<string, Change>(target ? [[target.name, target]] : []);
   const notes: string[] = [];
-  for (const e of edits) {
-    const done = row(e).apply(e, { target, intent: naming.intent });
-    if (done.touched) touched.set(done.touched.name, done.touched);
-    notes.push(...done.notes);
-  }
-  for (const c of touched.values()) if (c.edits.length || c !== target) saveChange(c);
-  if (target?.edits.length && !readSeries(book).includes(target.name)) appendSeries(book, target.name);
-  // The recorded output is now what the patchbook builds, so it no longer counts as a hand edit.
-  const lock = readBuildLock(book);
-  if (lock !== null) {
-    const after = assemble(book).out;
-    for (const p of edited) {
-      const built = after.get(p);
-      if (built !== undefined && sameFile(current.get(p), built, book.tracksExecBit())) lock.set(p, blobOid(built.data));
-      else if (built === undefined && !current.has(p)) lock.delete(p);
+  let text = naming.said !== null ? naming.said + "\n" : "";
+  try {
+    for (const e of edits) {
+      const done = row(e).apply(e, { target, intent: naming.intent });
+      if (done.touched) touched.set(done.touched.name, done.touched);
+      notes.push(...done.notes);
     }
-    writeBuildLines(book, lock);
+    for (const c of touched.values()) if (c.edits.length || c !== target) saveChange(c);
+    if (target?.edits.length && !readSeries(book).includes(target.name)) appendSeries(book, target.name);
+    text += notes.join("\n") + "\n";
+    // The recorded output is now what the patchbook builds, so it no longer counts as a hand edit.
+    const lock = readBuildLock(book);
+    if (lock !== null) {
+      const after = assemble(book).out;
+      for (const p of edited) {
+        const built = after.get(p);
+        if (built !== undefined && sameFile(current.get(p), built, book.tracksExecBit())) lock.set(p, blobOid(built.data));
+        else if (built === undefined && !current.has(p)) lock.delete(p);
+      }
+      writeBuildLines(book, lock);
+    }
+  } catch (error) {
+    throw new Partway(text, error);
   }
-  return { text: (naming.said !== null ? naming.said + "\n" : "") + notes.join("\n") + "\n" };
+  return { text };
 }
 
 /** An upstream link keeps its type in the build, so a regular file over it would be written back as a link. */

@@ -8591,6 +8591,19 @@ describe("VendorTest", () => {
     expect(read(join(t.repo.path, ".patchbook/changes/holder/CHANGE.md"))).toContain("- add skills/hello/tpl.md");
   });
 
+  vendorTest("test_record_that_cannot_update_the_build_lock_still_says_what_it_saved", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.repo.write("skills/hello/notes.txt", "added by hand\n");
+    const lock = join(t.repo.path, ".patchbook/build.lock");
+    chmodSync(lock, 0o444);
+    try {
+      expect(t.pb(["record", "notes", "--intent", "Add notes."], { cwd: t.repo.path, code: 1 }).stdout).toBe("add      hello/notes.txt\n");
+    } finally {
+      chmodSync(lock, 0o644);
+    }
+    expect(read(join(t.repo.path, ".patchbook/changes/notes/CHANGE.md"))).toContain("- add skills/hello/notes.txt");
+  });
+
   vendorTest("test_record_ignores_output_the_patchbook_changed", (t) => {
     const entries = t.missingScaffoldPatchBuild();
     writeFileSync(entries, replace(read(entries), "{{snippet:greet}}", "Say hi in T3."));
