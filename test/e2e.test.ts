@@ -4256,7 +4256,7 @@ describe("ReadOnlyLockTest", () => {
         t.cleanup();
       }
     }, TIMEOUT);
-  const refused = (lock: string) => `patchbook: couldn't write ${lock}: permission denied\n`;
+  const refused = (lock: string) => `patchbook: couldn't write ${realpathSync(lock)}: permission denied\n`;
 
   lockTest("test_sync_names_the_lock_when_it_cannot_write_it", (t, lock) => {
     t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
