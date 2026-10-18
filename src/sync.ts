@@ -171,8 +171,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     }
   }
 
-  const j = journal(book, u);
-  journaled(book, u, pin, { commit, tree }, () => {
+  journaled(book, u, pin, { commit, tree }, (j) => {
     u.keep(commit);
     takeVendor(u.vendor, join(j, "old"));
     if (u.vendor) writeVendor(u, u.vendor, raw, tree);
@@ -189,20 +188,21 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   return report;
 }
 
-function journaled(book: Book, u: Upstream, from: Pin, to: Required<Pin> | null, write: () => void): void {
+function journaled(book: Book, u: Upstream, from: Pin, to: Required<Pin> | null, write: (j: string) => void): void {
+  const j = journal(book, u);
   try {
     begin(book, u, from, to);
-    write();
+    write(j);
   } catch (e) {
     recover(book, u);
     throw e;
   }
-  drop(journal(book, u));
+  drop(j);
 }
 
 function rewriteVendor(book: Book, u: Upstream, vendor: string, pin: Pin, raw: ReadonlyMap<string, File>, tree: string): void {
-  journaled(book, u, pin, null, () => {
-    takeVendor(vendor, join(journal(book, u), "old"));
+  journaled(book, u, pin, null, (j) => {
+    takeVendor(vendor, join(j, "old"));
     writeVendor(u, vendor, raw, tree);
   });
 }
