@@ -7407,6 +7407,23 @@ exec '${Bun.which("git")}' "$@"
       t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
       expect(tree(t.repo.path)).toEqual({ ...before, ".gitignore": "*.log\n" });
     });
+
+    forkTest("test_a_failed_sync_of_the_forks_own_upstream_drops_its_ref_though_an_upstream_on_that_remote_pins_the_commit", (t) => {
+      t.pb(["track", "mirror", t.up.path], { cwd: t.fork.path });
+      t.fork.commit("track mirror");
+      t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+      const head = t.up.commit("v2");
+      t.pb(["sync", "mirror"], { cwd: t.fork.path });
+      const lock = join(t.fork.path, ".patchbook/upstream.lock");
+      chmodSync(lock, 0o444);
+      try {
+        t.pb(["sync", "upstream"], { cwd: t.fork.path, code: 1 });
+      } finally {
+        chmodSync(lock, 0o644);
+      }
+      expect(pinRefs(t, head)).toBe(1);
+      expect(sh(["git", "rev-parse", "--verify", "--quiet", `refs/pins/${head}`], { cwd: t.fork.path, check: false }).code).not.toBe(0);
+    });
   });
 
   for (const [when, call] of [["checks_the_new_copy", "write-tree --prefix=vendor/extra/"], ["keeps_the_new_commit", "update-ref refs/pins/"]] as const) {

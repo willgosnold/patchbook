@@ -301,7 +301,7 @@ function stuck(book: Book, u: Upstream, why: string): Fail {
 }
 
 function release(book: Book, u: Upstream, added: string): void {
-  if (added && !book.upstreams.some((o) => !o.inRepo && o.remote === u.remote && o.pin().commit === added)) u.unkeep(added);
+  if (added && !book.upstreams.some((o) => o.inRepo === u.inRepo && o.remote === u.remote && o.pin().commit === added)) u.unkeep(added);
 }
 
 function putBack(p: string, was: File): void {
