@@ -754,6 +754,12 @@ describe("ForkTest", () => {
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
 
+  forkTest("test_record_names_a_change_from_the_first_four_words_of_an_intent", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "--intent", "One two three four five six."], { cwd: t.fork.path });
+    expect(changeNames(t)).toEqual(["one-two-three-four"]);
+  });
+
   forkTest("test_commit_with_a_blank_intent_asks_the_model", (t) => {
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
     sh(["git", "commit", "-qam", "shout"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "  \n\t " } });
