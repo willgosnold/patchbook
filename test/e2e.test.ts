@@ -1,7 +1,7 @@
 // End-to-end tests: each one builds a throwaway upstream repo and drives the CLI against it.
 
 import { describe, expect, test } from "bun:test";
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { Case, Repo, dedent, lstrip, mkdirNew, partitionHead, replace, sh, words } from "./helpers";
 
@@ -1057,6 +1057,30 @@ describe("VendorTest", () => {
     const diff = t.pb(["upstream", "plugin", "--diff"], { cwd: t.repo.path }).stdout;
     expect(diff).toContain("-For Cursor users.");
     expect(diff).toContain("a/README.md");
+  });
+
+  vendorTest("test_sync_pins_the_head_when_another_fetch_lands_in_the_store", (t) => {
+    t.up.write("plugin/README.md", "For others.\n");
+    const older = t.up.commit("older");
+    t.up.write("plugin/README.md", "For everyone.\n");
+    const head = t.up.commit("head");
+    const bin = join(t.tmp, "bin/git");
+    const raced = join(t.tmp, "raced");
+    writeFileSync(bin, `#!/bin/sh
+if [ "$1" = fetch ] && [ ! -e '${raced}' ]; then
+  : > '${raced}'
+  '${Bun.which("git")}' "$@" || exit $?
+  exec '${Bun.which("git")}' fetch --quiet --depth=1 '${t.up.path}' ${older}
+fi
+exec '${Bun.which("git")}' "$@"
+`);
+    chmodSync(bin, 0o755);
+    t.pb(["sync"], { cwd: t.repo.path });
+    expect(existsSync(raced)).toBe(true);
+    expect(pinOf(t)).toBe(head);
+    const store = join(t.tmp, "store/upstreams", readdirSync(join(t.tmp, "store/upstreams"))[0]!);
+    expect(sh(["git", "for-each-ref", "refs/patchbook"], { cwd: store }).stdout).toBe("");
+    expect(sh(["git", "for-each-ref", "refs/tags"], { cwd: store }).stdout).toBe("");
   });
 
   vendorTest("test_store_keeps_pinned_commits_through_gc", (t) => {
