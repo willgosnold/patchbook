@@ -173,7 +173,7 @@ This repo ships a `patchbook-update` skill, built into the `patchbook` binary. `
 3. Resolves each problem from the change's intent and the repo's guide (`guide` in the config). One commit per change.
 4. Builds, then runs the config's `test`, which is a command or an instruction file for the agent.
 5. Starts a review in a fresh subagent, on another provider's model when T3 can run one, otherwise on the same model. The reviewer gets each intent, the upstream change, and our result, and says per change whether the result meets the intent. At most two rounds.
-6. If `patchbook status` exits 0, and the sync was clean or the test command exited 0 on the commit it pushes, pushes its branch to `main`, runs the config's `deploy`, removes its worktree, and settles the thread with a short summary. The sync was clean when no upstream's report has `replaced_upstream_changed`, step 3 found nothing to handle, and nothing came after the sync commit but build output, or in from a rebase.
+6. If `patchbook status` exits 0, and the sync was clean or the test command exited 0 on the commit it pushes, pushes its branch to `main`, runs the config's `deploy`, removes its worktree, and settles the thread with a short summary. The sync was clean when every upstream's report has an empty `replaced_upstream_changed`, step 3 found nothing to handle, and nothing came after the sync commit but files the build wrote, or in from a rebase.
 
 It stops and asks instead of merging when:
 
