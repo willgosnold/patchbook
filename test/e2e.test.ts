@@ -628,6 +628,29 @@ test("test_skill_install_does_not_call_it_current_when_a_folder_is_in_the_way", 
   }
 }, TIMEOUT);
 
+test("test_skill_install_goes_ahead_when_a_sync_left_a_conflict", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const fork = skillFork(t);
+    const up = new Repo(join(t.tmp, "upstream"));
+    fork.write("app.txt", "ONE\ntwo\n");
+    t.pb(["record", "shout-one", "--intent", "Shout the first line."], { cwd: fork.path });
+    fork.write(SKILL_FILE, STALE_SKILL);
+    t.pb(["record", "patchbook-update-skill"], { cwd: fork.path });
+    fork.commit("mine");
+    up.write("app.txt", "uno\ntwo\n");
+    up.commit("upstream changes line one");
+    t.pb(["sync"], { cwd: fork.path });
+    expect(t.pb(["status"], { cwd: fork.path, code: 1 }).stdout).toContain("conflict");
+
+    t.pb(["skill", "install"], { cwd: fork.path });
+    expect(fork.read(SKILL_FILE)).toBe(SKILL_COPY);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("test_skill_install_says_why_when_start_agents_is_empty", () => {
   const t = new Case();
   try {
