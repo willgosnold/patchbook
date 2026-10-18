@@ -367,7 +367,7 @@ test("test_skill_install_in_a_fork_refuses_when_other_edits_are_waiting_to_be_re
     const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
     expect(out.stderr).toContain(SKILL_FILE);
     expect(out.stderr).toContain("app.txt");
-    expect(out.stderr).toContain("Commit them");
+    expect(out.stderr).toContain("patchbook record");
     expect(tree(fork.path)).toEqual(before);
   } finally {
     t.cleanup();
@@ -432,6 +432,211 @@ test("test_skill_install_fails_when_no_agent_can_be_installed_for", () => {
     const none = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
     expect(none.stderr).toContain("can't install the skill for cursor");
     expect(none.stderr).toContain("the update skill was not installed");
+    expect(existsSync(join(fork.path, ".agents"))).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+const SKILL_INTENT = "Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.";
+
+function initFork(t: Case, edit = false): Repo {
+  const up = new Repo(join(t.tmp, "upstream"));
+  up.write("app.txt", "one\ntwo\n");
+  up.commit("start");
+  sh(["git", "clone", "-q", up.path, join(t.tmp, "mine")], { cwd: t.tmp });
+  const mine = new Repo(join(t.tmp, "mine"));
+  if (edit) {
+    mine.write("app.txt", "one\nTWO\n");
+    mine.commit("mine");
+  }
+  t.pb(["init", "--upstream", up.path], { cwd: mine.path });
+  return mine;
+}
+
+const modelWasAsked = (t: Case): boolean => existsSync(join(t.tmp, "prompt.txt"));
+
+test("test_init_in_a_fork_records_the_skill_so_install_finds_it_current", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const mine = initFork(t);
+    expect(mine.read(".patchbook/series")).toBe("patchbook-update-skill\n");
+    expect(t.pb(["show", "patchbook-update-skill"], { cwd: mine.path }).stdout).toContain(SKILL_INTENT);
+    expect(t.pb(["status"], { cwd: mine.path }).stdout).toContain("no problems");
+    expect(t.pb(["skill", "install"], { cwd: mine.path }).stdout).toBe("the update skill is already current\n");
+    expect(modelWasAsked(t)).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_init_in_a_fork_leaves_the_skill_unrecorded_when_other_edits_are_waiting", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const mine = initFork(t, true);
+    expect(mine.read(".patchbook/series")).toBe("");
+    const out = t.pb(["skill", "install"], { cwd: mine.path, code: 1 });
+    expect(out.stderr).toContain("app.txt");
+    expect(modelWasAsked(t)).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_records_a_skill_that_an_older_init_left_unrecorded", () => {
+  const t = new Case();
+  try {
+    const mine = initFork(t);
+    mine.write(SKILL_FILE, SKILL_COPY);
+    mkdirSync(join(mine.path, ".claude/skills"), { recursive: true });
+    symlinkSync("../../.agents/skills/patchbook-update", join(mine.path, SKILL_LINK));
+    expect(mine.read(".patchbook/series")).toBe("");
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    t.pb(["skill", "install"], { cwd: mine.path });
+    expect(mine.read(".patchbook/series")).toBe("patchbook-update-skill\n");
+    expect(t.pb(["show", "patchbook-update-skill"], { cwd: mine.path }).stdout).toContain(SKILL_INTENT);
+    expect(t.pb(["status"], { cwd: mine.path }).stdout).toContain("no problems");
+    expect(modelWasAsked(t)).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_refuses_when_the_change_is_missing_from_the_series", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const fork = skillFork(t);
+    fork.write(SKILL_FILE, STALE_SKILL);
+    t.pb(["record"], { cwd: fork.path });
+    writeFileSync(join(fork.path, ".patchbook/series"), "");
+    fork.commit("an older skill, and an empty series");
+    rmSync(join(t.tmp, "prompt.txt"), { force: true });
+    const before = tree(fork.path);
+    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain("patchbook-update-skill is not in the series");
+    expect(modelWasAsked(t)).toBe(false);
+    expect(tree(fork.path)).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_in_the_folder_layout_refuses_to_replace_an_uncommitted_edit", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("a.md", "a\n");
+    up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    repo.write("README.md", "mine\n");
+    repo.commit("start");
+    t.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: repo.path });
+    repo.write(SKILL_FILE, "My own guidance.\n");
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const before = tree(repo.path);
+    const out = t.pb(["skill", "install"], { cwd: repo.path, code: 1 });
+    expect(out.stderr).toContain(SKILL_FILE);
+    expect(repo.read(SKILL_FILE)).toBe("My own guidance.\n");
+    expect(tree(repo.path)).toEqual(before);
+
+    repo.commit("my guidance");
+    t.pb(["skill", "install"], { cwd: repo.path });
+    expect(repo.read(SKILL_FILE)).toBe(SKILL_COPY);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_names_record_first_when_the_link_was_deleted", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const fork = skillFork(t);
+    unlinkSync(join(fork.path, SKILL_LINK));
+    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain(SKILL_LINK);
+    const record = out.stderr.indexOf("patchbook record");
+    expect(record).toBeGreaterThan(-1);
+    expect(record).toBeLessThan(out.stderr.indexOf("commit"));
+
+    t.pb(["record"], { cwd: fork.path });
+    expect(t.pb(["skill", "install"], { cwd: fork.path }).stdout).toContain(`wrote ${SKILL_LINK}`);
+    expect(isSymlink(join(fork.path, SKILL_LINK))).toBe(true);
+    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_that_cannot_make_the_link_leaves_the_stale_skill_alone", () => {
+  if (process.getuid?.() === 0) return;
+  const t = new Case();
+  const skills = join(t.tmp, "fork/.claude/skills");
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const fork = skillFork(t);
+    fork.write(SKILL_FILE, STALE_SKILL);
+    t.pb(["record"], { cwd: fork.path });
+    unlinkSync(join(fork.path, SKILL_LINK));
+    t.pb(["record"], { cwd: fork.path });
+    fork.commit("an older skill, and no link");
+    mkdirSync(skills, { recursive: true });
+    chmodSync(skills, 0o555);
+
+    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain("couldn't install the update skill");
+    expect(out.stderr).toContain("the update skill was not installed");
+    expect(fork.read(SKILL_FILE)).toBe(STALE_SKILL);
+    expect(sh(["git", "status", "--porcelain"], { cwd: fork.path }).stdout).toBe("");
+
+    chmodSync(skills, 0o755);
+    t.pb(["skill", "install"], { cwd: fork.path });
+    expect(fork.read(SKILL_FILE)).toBe(SKILL_COPY);
+    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+  } finally {
+    if (existsSync(skills)) chmodSync(skills, 0o755);
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_does_not_call_it_current_when_a_folder_is_in_the_way", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("a.md", "a\n");
+    up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    repo.write("README.md", "mine\n");
+    repo.commit("start");
+    t.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: repo.path });
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    t.pb(["skill", "install"], { cwd: repo.path });
+    rmSync(join(repo.path, SKILL_LINK));
+    repo.write(`${SKILL_LINK}/SKILL.md`, "Mine.\n");
+    repo.commit("a skill folder of my own");
+
+    const out = t.pb(["skill", "install"], { cwd: repo.path, code: 1 });
+    expect(out.stdout).not.toContain("already current");
+    expect(out.stderr).toContain(`${SKILL_LINK} is a folder`);
+    expect(out.stderr).toContain(`the update skill was not installed at ${SKILL_LINK}`);
+    expect(repo.read(`${SKILL_LINK}/SKILL.md`)).toBe("Mine.\n");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_says_why_when_start_agents_is_empty", () => {
+  const t = new Case();
+  try {
+    const fork = skillFork(t);
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    t.pb(["config", "start.agents", "", "--project"], { cwd: fork.path });
+    fork.commit("settings");
+    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain("start.agents is empty");
     expect(existsSync(join(fork.path, ".agents"))).toBe(false);
   } finally {
     t.cleanup();
