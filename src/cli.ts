@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import pkg from "../package.json" with { type: "json" };
 import { cmdBuild, cmdScaffold, cmdStatus, writeBuildLock } from "./assemble.ts";
 import { cmdBlocks } from "./blocks.ts";
-import { Book, PB } from "./book.ts";
+import { Book, noticeLeftOut, PB } from "./book.ts";
 import { cmdShow } from "./changes.ts";
 import { cmdHook, installHook } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
@@ -33,10 +33,11 @@ function upstreamToml(name: string, remote: string, path: string, branch: string
 }
 
 function writeConfig(root: string, layout: "fork" | "folder", upstream: string, output?: [string, string]): void {
-  const d = join(root, PB);
-  mkdirSync(d, { recursive: true });
   let text = `layout = "${layout}"\n\n` + upstream;
   if (output) text += `\n[output]\nfrom = "${output[0]}"\nto = "${output[1]}"\n`;
+  Book.validate(root, text);
+  const d = join(root, PB);
+  mkdirSync(d, { recursive: true });
   writeText(join(d, "config.toml"), text);
   writeText(join(d, "series"), "");
   writeText(join(d, "retired.md"), "# Retired changes\n\nChanges dropped because upstream made them unnecessary or impossible, and why.\n");
@@ -110,7 +111,9 @@ async function cmdTrack(args: { name: string; url: string; branch: string; path:
   if (book.upstreams.some((u) => u.name === args.name)) throw new Fail(`already following an upstream called ${args.name}`);
   const config = join(book.dir, "config.toml");
   const mount = args.mount ?? args.name;
-  writeText(config, rstrip(readText(config), "\n") + "\n\n" + upstreamToml(args.name, args.url, args.path, args.branch, mount, args.vendor));
+  const text = rstrip(readText(config), "\n") + "\n\n" + upstreamToml(args.name, args.url, args.path, args.branch, mount, args.vendor);
+  Book.validate(book.root, text);
+  writeText(config, text);
   book = await Book.open(book.root);
   syncUpstream(book, book.upstream(args.name), args.branch, []);
   const where = mount ? `${mount}/` : "the root";
@@ -536,7 +539,9 @@ async function main(argv: readonly string[]): Promise<number> {
   const [name, c] = command;
   const values = parse(parserFor(name, c), argv.slice(i + 1), extras);
   if (extras.length) throw error(TOP, `unrecognized arguments: ${extras.join(" ")}`);
-  return c.run(new Args(values));
+  const code = await c.run(new Args(values));
+  noticeLeftOut();
+  return code;
 }
 
 try {
