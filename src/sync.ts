@@ -3,12 +3,12 @@ import { chmodSync, lstatSync, mkdtempSync, readdirSync, readFileSync, renameSyn
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
-import { Book } from "./book.ts";
+import { Book, unsafeVendor } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isSymlink, LINK, lexists, mkdirs, readDisk, readText, readTextReplace, sameFile, writeDisk, writeText } from "./lib/fs.ts";
+import { exists, type File, isSymlink, LINK, lexists, mkdirs, pjoin, readDisk, readText, readTextReplace, sameFile, writeDisk, writeText } from "./lib/fs.ts";
 import { dumps, JsonError, loads } from "./lib/json.ts";
 import { spawn } from "./lib/proc.ts";
 import { sorted } from "./lib/py.ts";
@@ -294,6 +294,9 @@ function recover(book: Book, u: Upstream): void {
       throw stuck(book, u, "its record can't be read");
     }
     const { from, to, rewrite, added, vendor: path, copy, made } = record;
+    const vendor = path ? pjoin(book.root, path) : null;
+    const unsafe = vendor && unsafeVendor(book.root, vendor);
+    if (unsafe) throw stuck(book, u, `its record names the vendor folder ${JSON.stringify(path)}, which ${unsafe}`);
     const now = locked(u);
     const wrote = lexists(join(j, "lock"));
     const torn = now === null && wrote;
@@ -314,7 +317,6 @@ function recover(book: Book, u: Upstream): void {
       else rmSync(join(book.dir, "upstream.lock"), { force: true });
     }
     release(book, u, added);
-    const vendor = path ? join(book.root, path) : null;
     const old = join(j, "old");
     const newCopy = lexists(old) || !copy;
     if (newCopy) takeVendor(vendor, null);

@@ -1,5 +1,5 @@
 // The repo, its config and its upstreams.
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Hooks, Problem } from "./api.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
@@ -190,6 +190,16 @@ function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly str
   return rel;
 }
 
+/** Why a sync must never replace `vendor` (an absolute path), or null. Links above it are resolved, but not the last name: a sync moves or deletes a link there, never what it points to. */
+export function unsafeVendor(root: string, vendor: string): string | null {
+  const rel = relative(resolve(root), join(resolve(dirname(vendor)), basename(vendor)));
+  if (rel === ".") return "is the repo root";
+  if (under(rel, "..")) return "is outside the repo";
+  if (under(rel, PB)) return `is inside ${PB}`;
+  if (rel.split("/").some((segment) => segment.toLowerCase() === GIT)) return `is inside ${GIT}`;
+  return null;
+}
+
 /** `**` matches any number of folders, `*` and `?` stay within one. */
 export function globRe(pattern: string): RegExp {
   const chars = Array.from(pattern);
@@ -314,6 +324,10 @@ export class Book {
         throw new Fail(
           `the vendored copy of ${a.name} (${shown(vendored)}) overlaps the folder ${a.name} builds into (${shown(own)}). ${written} Change ${change}.`,
         );
+      }
+      const unsafe = unsafeVendor(this.root, a.vendor);
+      if (unsafe) {
+        throw new Fail(`the vendored copy of ${a.name} (${vendored || "."}) ${unsafe}. Every sync replaces it. Change vendor for ${a.name} to a folder inside the repo, other than ${PB} and ${GIT}.`);
       }
       for (const b of this.upstreams.slice(0, this.upstreams.indexOf(a))) {
         const other = b.vendor ? this.folderOf(b.vendor) : null;
