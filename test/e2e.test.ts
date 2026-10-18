@@ -7766,6 +7766,131 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
 });
 
 describe("VendorTest", () => {
+  class FolderCase extends Case {
+    readonly repo: Repo;
+
+    constructor() {
+      super();
+      const up = new Repo(join(this.tmp, "upstream"));
+      up.write("app.txt", "one\n");
+      up.commit("start");
+      this.repo = new Repo(join(this.tmp, "repo"));
+      this.repo.write("README.md", "mine\n");
+      this.repo.commit("start");
+      this.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: this.repo.path });
+    }
+  }
+  const folderTest = (name: string, body: (t: FolderCase) => void): void => {
+    test(name, () => {
+      const t = new FolderCase();
+      try {
+        body(t);
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+  };
+  const trackExtra = (t: FolderCase, vendor: string): void => {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "one\n");
+    extra.write("lib/b.md", "bee\n");
+    extra.commit("start");
+    t.pb(["track", "extra", extra.path, "--vendor", vendor], { cwd: t.repo.path });
+    t.pb(["build"], { cwd: t.repo.path });
+  };
+  const gitIn = (t: FolderCase, args: string[], env: Record<string, string> = {}): string =>
+    sh(["git", ...args], { cwd: t.repo.path, env: { ...t.env, ...env } }).stdout;
+  const hookedCommit = (t: FolderCase, args: string[]) =>
+    sh(["git", "commit", ...args], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1" }, check: false });
+  const inHead = (t: FolderCase, dir: string): string[] =>
+    gitIn(t, ["ls-tree", "-r", "--name-only", "HEAD"]).split("\n").filter((p) => p.startsWith(`${dir}/`));
+  const pinnedFiles = (dir: string): string[] => [`${dir}/a.md`, `${dir}/lib/b.md`];
+  /** Commit everything but the vendored copy, so HEAD and the index hold no copy while the disk does. */
+  const commitWithoutCopy = (t: FolderCase, vendor: string): void => {
+    gitIn(t, ["add", "-A"]);
+    gitIn(t, ["--literal-pathspecs", "rm", "-rq", "--cached", "--", vendor]);
+    gitIn(t, ["commit", "-qm", "setup"]);
+  };
+
+  folderTest("test_a_partial_commit_records_only_what_the_user_named", (t) => {
+    trackExtra(t, "vendor/extra");
+    commitWithoutCopy(t, "vendor/extra");
+    t.repo.write("kept.txt", "kept\n");
+    t.repo.write("other.txt", "other\n");
+    gitIn(t, ["add", "kept.txt", "other.txt"]);
+    const commit = hookedCommit(t, ["-qm", "partial", "--", "kept.txt"]);
+    expect(commit.code).toBe(0);
+    expect(gitIn(t, ["show", "--name-only", "--format=", "HEAD"]).trim()).toBe("kept.txt");
+    expect(gitIn(t, ["diff", "--cached", "--name-only"]).trim()).toBe("other.txt");
+    expect(gitIn(t, ["ls-files", "--others", "--exclude-standard", "vendor"]).trim().split("\n")).toEqual(pinnedFiles("vendor/extra"));
+  });
+
+  for (const [vendor, sibling, change] of [["x*", "xylo.txt", "edit"], ["lib/ex*", "lib/ex-notes.md", "delete"]] as const) {
+    folderTest(`test_the_hook_touches_only_the_vendor_folder_when_its_name_has_a_glob_${change}`, (t) => {
+      t.repo.write(sibling, "notes\n");
+      trackExtra(t, vendor);
+      commitWithoutCopy(t, vendor);
+      if (change === "edit") t.repo.write(sibling, "notes, edited\n");
+      else t.repo.rm(sibling);
+      t.repo.write("note.txt", "a note\n");
+      gitIn(t, ["add", "note.txt"]);
+      const commit = hookedCommit(t, ["-qm", "note"]);
+      expect(commit.stderr).not.toContain("failed");
+      expect(commit.code).toBe(0);
+      expect(inHead(t, vendor)).toEqual(pinnedFiles(vendor));
+      expect(gitIn(t, ["show", `HEAD:${sibling}`])).toBe("notes\n");
+      expect(gitIn(t, ["status", "--short", "--", sibling]).trim()).toBe(change === "edit" ? `M ${sibling}` : `D ${sibling}`);
+    });
+  }
+
+  folderTest("test_a_commit_never_records_a_tracked_ignored_file_inside_the_vendored_copy", (t) => {
+    t.repo.write(".gitignore", "*.log\n");
+    trackExtra(t, "vendor/extra");
+    t.repo.write("vendor/extra/x.log", "log\n");
+    gitIn(t, ["add", "-A"]);
+    gitIn(t, ["add", "-f", "vendor/extra/x.log"]);
+    gitIn(t, ["commit", "-qm", "setup"]);
+    t.repo.write("vendor/extra/x.log", "log, edited\n");
+    t.repo.write("note.txt", "a note\n");
+    gitIn(t, ["add", "note.txt"]);
+    expect(hookedCommit(t, ["-qm", "note"]).code).toBe(0);
+    expect(inHead(t, "vendor/extra")).toEqual(pinnedFiles("vendor/extra"));
+    expect(gitIn(t, ["status", "--short", "vendor"]).trim()).toBe("");
+  });
+
+  folderTest("test_a_commit_after_the_advised_sync_replaces_a_file_the_index_holds_at_the_vendor_path", (t) => {
+    trackExtra(t, "vendor/extra");
+    rmSync(join(t.repo.path, "vendor/extra"), { recursive: true });
+    t.repo.write("vendor/extra", "a file\n");
+    gitIn(t, ["add", "-A"]);
+    gitIn(t, ["commit", "-qm", "a file in the way"]);
+    rmSync(join(t.repo.path, "vendor/extra"));
+    t.pb(["sync", "extra"], { cwd: t.repo.path });
+    t.repo.write("note.txt", "a note\n");
+    gitIn(t, ["add", "note.txt"]);
+    const commit = hookedCommit(t, ["-qm", "put the copy back"]);
+    expect(commit.stderr).toBe("");
+    expect(commit.code).toBe(0);
+    expect(inHead(t, "vendor/extra")).toEqual(pinnedFiles("vendor/extra"));
+    expect(gitIn(t, ["status", "--short"]).trim()).toBe("");
+  });
+
+  folderTest("test_the_hook_stages_the_vendored_copy_and_leaves_an_unstaged_edit_elsewhere_unstaged", (t) => {
+    trackExtra(t, "vendor/extra");
+    t.repo.write("README.md", "mine\n");
+    gitIn(t, ["add", "-A"]);
+    gitIn(t, ["commit", "-qm", "setup"]);
+    t.repo.write("README.md", "edited, not staged\n");
+    t.repo.write("mine.txt", "the user's staged change\n");
+    gitIn(t, ["add", "mine.txt"]);
+    gitIn(t, ["rm", "-rq", "--cached", "vendor/extra"]);
+    expect(hookedCommit(t, ["-qm", "mine"]).code).toBe(0);
+    expect(inHead(t, "vendor/extra")).toEqual(pinnedFiles("vendor/extra"));
+    expect(gitIn(t, ["show", "--name-only", "--format=", "HEAD"]).trim().split("\n").filter((p) => !p.startsWith("vendor/"))).toEqual(["mine.txt"]);
+    expect(gitIn(t, ["show", "HEAD:README.md"])).toBe("mine\n");
+    expect(gitIn(t, ["status", "--short"]).trim()).toBe("M README.md");
+  });
+
   vendorTest("test_missing_scaffold_patch_build", (t) => {
     t.missingScaffoldPatchBuild();
   });
