@@ -5389,6 +5389,32 @@ describe("ForkTest", () => {
     expect(read(join(t.fork.path, ".patchbook/changes/unnamed/CHANGE.md"))).not.toContain("second line too");
   });
 
+  forkTest("test_record_with_no_name_treats_a_change_named_unnamed_like_any_other", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("extra.txt", "ours\n");
+    t.pb(["record", "unnamed", "--intent", "Shout and add extra.txt."], { cwd: t.fork.path });
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE"));
+    t.fork.rm("extra.txt");
+    expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe("file     app.txt (in unnamed)\nunadd    extra.txt (from unnamed)\n");
+    const change = read(join(t.fork.path, ".patchbook/changes/unnamed/CHANGE.md"));
+    expect(change).toContain("- file app.txt");
+    expect(change).not.toContain("- add extra.txt");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_reads_a_copy_shared_by_two_outputs_before_writing_either", (t) => {
+    t.fork.write("extra.txt", "ours\n");
+    t.pb(["record", "feature", "--intent", "Add extra.txt."], { cwd: t.fork.path });
+    mkdirSync(join(t.fork.path, ".patchbook/changes/twin"));
+    writeFileSync(join(t.fork.path, ".patchbook/changes/twin/CHANGE.md"), "# twin\n\nintent: Copy extra.txt.\n\nedits:\n- copy extra.txt -> extra2.txt\n");
+    writeFileSync(join(t.fork.path, ".patchbook/series"), read(join(t.fork.path, ".patchbook/series")) + "twin\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.write("extra.txt", "ours {{snippet:v}}\n");
+    t.fork.write("extra2.txt", "plain\n");
+    expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe("update   extra.txt (in feature)\nupdate   extra2.txt (in feature)\n");
+    expect(read(join(t.fork.path, ".patchbook/changes/feature/ours/extra.txt.pb"))).toBe("plain\n");
+  });
+
   forkTest("test_commit_records_and_builds", (t) => {
     expect(read(join(t.fork.path, ".git/hooks/pre-commit"))).toContain("Installed by patchbook");
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
@@ -8463,20 +8489,20 @@ describe("VendorTest", () => {
     expect(read(join(t.repo.path, ".patchbook/changes/unnamed/CHANGE.md"))).not.toContain("Wave twice.");
   });
 
-  vendorTest("test_record_with_no_name_or_intent_adds_to_the_change_named_unnamed", (t) => {
+  vendorTest("test_record_deleting_a_file_with_block_entries_with_no_name_or_intent_asks_the_model", (t) => {
     t.missingScaffoldPatchBuild();
     t.repo.write("skills/hello/notes.txt", "added by hand\n");
     t.pb(["record", "unnamed", "--intent", "Add notes."], { cwd: t.repo.path });
     unlinkSync(join(t.repo.path, "skills/hello/SKILL.md"));
-    t.pb(["record"], { cwd: t.repo.path });
+    expect(t.pb(["record"], { cwd: t.repo.path }).stdout).toBe("shout: Shout the second line.\ndelete   hello/SKILL.md\n");
+    expect(read(join(t.tmp, "prompt.txt"))).toContain("hello/SKILL.md");
+    expect(read(join(t.repo.path, ".patchbook/changes/shout/CHANGE.md"))).toContain("- delete skills/hello/SKILL.md");
     const kept = read(join(t.repo.path, ".patchbook/changes/unnamed/CHANGE.md"));
     expect(kept).toContain("intent: Add notes.");
-    expect(kept).toContain("- add skills/hello/notes.txt");
-    expect(kept).toContain("- delete skills/hello/SKILL.md");
-    expect(readdirSync(join(t.repo.path, ".patchbook/changes"))).toEqual(["unnamed"]);
+    expect(kept).not.toContain("delete");
   });
 
-  vendorTest("test_record_deleting_a_file_with_block_entries_keeps_the_change_named_unnamed", (t) => {
+  vendorTest("test_record_deleting_a_file_with_block_entries_names_the_change_from_the_intent", (t) => {
     t.missingScaffoldPatchBuild();
     t.repo.write("skills/hello/notes.txt", "added by hand\n");
     t.pb(["record", "unnamed", "--intent", "Add notes."], { cwd: t.repo.path });
@@ -8485,7 +8511,46 @@ describe("VendorTest", () => {
     const kept = read(join(t.repo.path, ".patchbook/changes/unnamed/CHANGE.md"));
     expect(kept).toContain("intent: Add notes.");
     expect(kept).toContain("- add skills/hello/notes.txt");
-    expect(read(join(t.repo.path, ".patchbook/changes/unnamed-2/CHANGE.md"))).toContain("- delete skills/hello/SKILL.md");
+    const dropped = read(join(t.repo.path, ".patchbook/changes/drop-the-skill/CHANGE.md"));
+    expect(dropped).toContain("intent: Drop the skill.");
+    expect(dropped).toContain("- delete skills/hello/SKILL.md");
+  });
+
+  vendorTest("test_record_notes_come_in_path_order", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.repo.write("skills/hello/AGENTS.md", "added by hand\n");
+    const out = t.recordEdit("Then wave.", "Then wave twice.", "--intent", "Wave twice.");
+    expect(out).toMatch(/^wave-twice: Wave twice\.\nadd {6}hello\/AGENTS\.md\nentry {4}hello\/SKILL\.md \[[0-9a-f]{12}\] added\n$/);
+  });
+
+  vendorTest("test_record_of_a_file_a_hook_made_fails_before_writing_block_entries", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    writeFileSync(join(t.repo.path, ".patchbook/hooks.ts"), dedent(`
+      export const finish = (out: Map<string, { data: Uint8Array; mode: number }>) => {
+        out.set("z/gen.md", { data: new TextEncoder().encode("gen\\n"), mode: 0o644 });
+      };
+    `));
+    t.pb(["build"], { cwd: t.repo.path });
+    const before = read(entries);
+    t.repo.write("skills/z/gen.md", "gen edited\n");
+    t.repo.write("skills/hello/SKILL.md", replace(t.repo.read("skills/hello/SKILL.md"), "Then wave.", "Then wave twice."));
+    expect(t.pb(["record", "--intent", "Wave twice."], { cwd: t.repo.path, code: 1 }).stderr).toContain("z/gen.md is built from nothing");
+    expect(read(entries)).toBe(before);
+  });
+
+  vendorTest("test_record_adds_a_file_with_block_entries_that_a_hook_leaves_out_and_was_put_back", (t) => {
+    t.missingScaffoldPatchBuild();
+    const skill = t.repo.read("skills/hello/SKILL.md");
+    writeFileSync(join(t.repo.path, ".patchbook/hooks.ts"), dedent(`
+      export const finish = (out: Map<string, { data: Uint8Array; mode: number }>) => {
+        out.delete("hello/SKILL.md");
+      };
+    `));
+    t.pb(["build"], { cwd: t.repo.path });
+    expect(existsSync(join(t.repo.path, "skills/hello/SKILL.md"))).toBe(false);
+    t.repo.write("skills/hello/SKILL.md", skill);
+    expect(t.pb(["record", "--intent", "Keep the skill."], { cwd: t.repo.path }).stdout).toBe("keep-the-skill: Keep the skill.\nadd      hello/SKILL.md\n");
+    expect(read(join(t.repo.path, ".patchbook/changes/keep-the-skill/CHANGE.md"))).toContain("- add skills/hello/SKILL.md");
   });
 
   vendorTest("test_record_ignores_output_the_patchbook_changed", (t) => {

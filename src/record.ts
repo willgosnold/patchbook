@@ -2,7 +2,7 @@
 import { unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { Problem } from "./api.ts";
-import { assemble, describe, handEdits, readBuildLock, writeBuildLines } from "./assemble.ts";
+import { assemble, type Assembly, blockFiles, describe, handEdits, readBuildLock, type Source, writeBuildLines } from "./assemble.ts";
 import { blockHash, blockSpans, type Entry, entriesPath, formatEntry, patchBlocks, PLACEHOLDER_HINT, readEntries, Rules } from "./blocks.ts";
 import { Book } from "./book.ts";
 import { appendSeries, CHANGE_NAME, Change, notAChangeName, readChanges, readSeries, saveChange } from "./changes.ts";
@@ -10,7 +10,7 @@ import { installHookOrWarn } from "./githook.ts";
 import { nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, LINK, type Mode, rglob, sameFile, writeText } from "./lib/fs.ts";
+import { exists, type File, LINK, type Mode, sameFile, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { replace, splitlines, strip } from "./lib/py.ts";
 import { bytesEqual, decode, decodeReplace, encode, isText } from "./lib/text.ts";
@@ -25,6 +25,222 @@ function recordedMode(now: Mode, built: Mode): Mode | undefined {
   return built === LINK ? 0o644 : undefined;
 }
 
+/** The add or replace copy in a change that an output was built from. `staged` is the copy's path, which a move keeps. */
+type Copy = { change: Change; staged: string };
+
+/** Where a file edit goes: to the change that already has a `file` edit on it, or onto the recorded change as a new one. */
+type Destination = { kind: "owned"; change: Change } | { kind: "recorded"; base: File };
+
+/** What each kind of edit carries besides its output path, so that applying it reads nothing else. */
+type Data = {
+  /** Not built, on disk. `staged` is the path in the patchbook, with `[output] from` in front. */
+  "add": { staged: string; now: File };
+  /** Built from upstream, gone from disk. */
+  "delete-upstream": { staged: string };
+  /** Built from a change's add, gone from disk. */
+  "unadd": Copy;
+  /** Built from a change's replace, gone from disk. */
+  "unreplace": Copy;
+  /** Built from a change's add or replace, changed on disk. */
+  "update-ours": Copy & { now: File; built: File };
+  /** Built from upstream with no block entries, changed on disk. `rel` is the upstream path. */
+  "file-edit": { rel: string; now: File; to: Destination };
+  /** Built from upstream with block entries that the edit maps onto. */
+  "paragraph-edit": { plan: Plan };
+  /** Can't be recorded, for `reason`. */
+  "skip": { reason: string };
+};
+
+type Kind = keyof Data;
+/** One edited output path, classified. */
+export type Edited<K extends Kind = Kind> = { [P in K]: { kind: P; path: string } & Data[P] }[K];
+
+/** What an edit needs from the recording: a change name and intent, because it puts a new edit on the recorded change,
+ * and the new block entries that still need an intent. */
+type Need = { name: boolean; drafts: readonly Draft[] };
+const NOTHING: Need = { name: false, drafts: [] };
+const NAME: Need = { name: true, drafts: [] };
+
+/** The recorded change, or null when nothing needs a name and none was given, and the intent for new block entries. */
+type Recording = { target: Change | null; intent: string | null };
+/** The change an edit wrote to, to be saved, and its notes. */
+type Done = { touched: Change | null; notes: readonly string[] };
+
+type Row<K extends Kind> = { needs(e: Edited<K>): Need; apply(e: Edited<K>, r: Recording): Done };
+
+/** What each kind needs and how it is recorded. */
+const KINDS: { readonly [K in Kind]: Row<K> } = {
+  "add": {
+    needs: () => NAME,
+    apply: (e, r) => {
+      const c = r.target!;
+      c.edits.push({ kind: "add", path: e.staged });
+      c.write("ours", e.staged, e.now.data, e.now.mode);
+      return { touched: c, notes: [`add      ${e.path}`] };
+    },
+  },
+  "delete-upstream": {
+    needs: () => NAME,
+    apply: (e, r) => {
+      const c = r.target!;
+      c.edits.push({ kind: "delete", path: e.staged });
+      return { touched: c, notes: [`delete   ${e.path}`] };
+    },
+  },
+  "unadd": { needs: () => NOTHING, apply: unadd },
+  "unreplace": { needs: () => NOTHING, apply: unadd },
+  "update-ours": {
+    needs: () => NOTHING,
+    apply: (e) => {
+      e.change.write("ours", e.staged, e.now.data, recordedMode(e.now.mode, e.built.mode));
+      return { touched: e.change, notes: [`update   ${e.path} (in ${e.change.name})`] };
+    },
+  },
+  "file-edit": {
+    needs: (e) => (e.to.kind === "recorded" ? NAME : NOTHING),
+    apply: (e, r) => {
+      const c = e.to.kind === "owned" ? e.to.change : r.target!;
+      if (e.to.kind === "recorded") {
+        c.edits.push({ kind: "file", path: e.rel });
+        c.write("base", e.rel, e.to.base.data);
+      }
+      c.write("ours", e.rel, e.now.data);
+      return { touched: c, notes: [`file     ${e.path}` + (c !== r.target ? ` (in ${c.name})` : "")] };
+    },
+  },
+  "paragraph-edit": {
+    needs: (e) => ({ name: false, drafts: Array.from(e.plan.entries.values()).filter((d) => d.intent === null) }),
+    apply: (e, r) => {
+      for (const d of e.plan.entries.values()) d.intent ??= r.intent;
+      saveParagraphs(e.plan);
+      return { touched: null, notes: e.plan.notes.map(([h, what]) => `entry    ${e.path} [${h}] ${what}`) };
+    },
+  },
+  "skip": { needs: () => NOTHING, apply: (e) => ({ touched: null, notes: [`skipped  ${e.path}: ${e.reason}`] }) },
+};
+
+const row = <K extends Kind>(e: Edited<K>): Row<K> => KINDS[e.kind];
+
+export const needOf = (e: Edited): Need => row(e).needs(e);
+
+function unadd(e: Edited<"unadd" | "unreplace">): Done {
+  e.change.edits = e.change.edits.filter((x) => !(x.kind === "add" && x.path === e.staged));
+  e.change.drop("ours", e.staged);
+  return { touched: e.change, notes: [`unadd    ${e.path} (from ${e.change.name})`] };
+}
+
+/** What classifying reads, all of it before anything is written. */
+export type Snapshot = {
+  out: ReadonlyMap<string, File>;
+  sources: ReadonlyMap<string, Source>;
+  upstream: ReadonlyMap<string, File>;
+  current: ReadonlyMap<string, File>;
+  changes: ReadonlyMap<string, Change>;
+  /** Upstream path to the change with a `file` edit on it, the last in series order. */
+  owners: ReadonlyMap<string, Change>;
+  /** Upstream paths with block entries. */
+  blocks: ReadonlySet<string>;
+  /** `[output] from` and a slash in a folder layout, else empty. */
+  prefix: string;
+  /** The block entry updates that make the build produce `now`, or why the edit can't be recorded that way. */
+  plan(rel: string, path: string, built: File, now: File): Plan | string;
+};
+
+/** The kind of one edited output path. Nothing else decides a kind. */
+export function classify(s: Snapshot, path: string): Edited {
+  const now = s.current.get(path);
+  const built = s.out.get(path);
+  const src = s.sources.get(path);
+  if (built === undefined) {
+    if (now === undefined) throw new Error(`${path} is neither built nor on disk`);
+    return { kind: "add", path, staged: s.prefix + path, now };
+  }
+  if (src === undefined) throw new Error(`${path} is built from nothing`);
+  if (src.kind === "ours") {
+    const change = s.changes.get(src.change)!;
+    const copy = { path, change, staged: src.path };
+    if (now === undefined) return { kind: change.edits.some((e) => e.kind === "add" && e.path === src.path) ? "unadd" : "unreplace", ...copy };
+    if (decodeReplace(change.read("ours", src.path) ?? new Uint8Array()).search(PLACEHOLDER_HINT) !== -1) {
+      return { kind: "skip", path, reason: `its copy in ${change.name} uses placeholders; edit that copy directly` };
+    }
+    return { kind: "update-ours", ...copy, now, built };
+  }
+  if (now === undefined) return { kind: "delete-upstream", path, staged: s.prefix + path };
+  if (s.blocks.has(src.path)) {
+    const plan = s.plan(src.path, path, built, now);
+    return typeof plan === "string" ? { kind: "skip", path, reason: plan } : { kind: "paragraph-edit", path, plan };
+  }
+  const owner = s.owners.get(src.path);
+  const to: Destination = owner ? { kind: "owned", change: owner } : { kind: "recorded", base: s.upstream.get(src.path)! };
+  return { kind: "file-edit", path, rel: src.path, now, to };
+}
+
+function snapshot(book: Book, a: Assembly, current: ReadonlyMap<string, File>, changes: ReadonlyMap<string, Change>): Snapshot {
+  const owners = new Map<string, Change>();
+  for (const c of changes.values()) for (const e of c.edits) if (e.kind === "file") owners.set(e.path, c);
+  const rules = new Rules(book, new Set(a.sources.keys()));
+  return {
+    out: a.out, sources: a.sources, upstream: a.upstream, current, changes, owners,
+    blocks: new Set(blockFiles(book)),
+    prefix: book.layout.kind === "folder" && book.layout.from ? book.layout.from + "/" : "",
+    plan: (rel, path, built, now) => planParagraphs(book, rules, rel, path, decode(a.upstream.get(rel)!.data), built.data, now.data),
+  };
+}
+
+/** What the edits need, in edited order: the paths that need a name, whose diffs the model reads first, and the new
+ * block entries that need an intent, each with its output path. */
+type Asked = { fresh: string[]; drafts: [string, Draft][] };
+
+function asked(edits: readonly Edited[]): Asked {
+  const ask: Asked = { fresh: [], drafts: [] };
+  for (const e of edits) {
+    const need = needOf(e);
+    if (need.name) ask.fresh.push(e.path);
+    for (const d of need.drafts) ask.drafts.push([e.path, d]);
+  }
+  return ask;
+}
+
+/** The change name and intent a recording uses, and the line it prints about them, if any. */
+type Naming = { name: string | null; intent: string | null; said: string | null };
+
+/** `write` asks the model, which happens only when what was given doesn't settle the name and intent. A given intent
+ * is always kept (#4). When anything needs a name, the result has one. */
+function nameAndIntent(
+  ask: Asked, name: string | null, given: string | null, changes: ReadonlyMap<string, Change>,
+  write: (name: string | null, named: boolean) => [string | null, string | null],
+): Naming {
+  if (name && !CHANGE_NAME.test(name)) throw new Fail(notAChangeName(name));
+  const named = ask.fresh.length > 0;
+  const needsIntent = ask.drafts.length > 0;
+  const known = name !== null && changes.has(name);
+  if (named && !name && given) {
+    const derived = nameFromIntent(given, changes);
+    return { name: derived, intent: given, said: `${derived}: ${given}` };
+  }
+  if (named ? !name || (!known && !given) : needsIntent && !given && !known) {
+    const [chosen, intent] = write(name, named);
+    const said = !named ? `intent: ${intent}` : chosen !== null && changes.has(chosen) ? `adding to ${chosen}` : `${chosen}: ${intent}`;
+    return { name: chosen, intent, said };
+  }
+  // Here, new entries with no intent given means `name` is an existing change, and they take its intent.
+  return { name, intent: given ?? (needsIntent ? changes.get(name!)!.intent : null), said: null };
+}
+
+function modelDiff(a: Assembly, current: ReadonlyMap<string, File>, ask: Asked): string {
+  return pendingDiff(a, current, ask.fresh) + ask.drafts
+    .map(([p, e]) => unifiedDiff(splitlines(e.upstream + "\n", true), splitlines(e.patched + "\n", true), `upstream/${p}`, `disk/${p}`))
+    .join("");
+}
+
+/** The recorded change: none without a name, else the existing change, whose intent a given one replaces, or a new one. */
+function targetOf(book: Book, changes: ReadonlyMap<string, Change>, n: Naming, given: string | null): Change | null {
+  if (!n.name) return null;
+  const existing = changes.get(n.name);
+  if (existing && given) existing.intent = given;
+  return existing ?? new Change(n.name, join(book.dir, "changes", n.name), n.intent);
+}
+
 /** What a recording printed. */
 export type RecordResult = { text: string };
 
@@ -37,128 +253,33 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
 
 /** Move the hand edits to the output into the patchbook, under the change and intent given, if any. */
 export function record(book: Book, change: string | null, intent: string | null, opts: { current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean } = {}): RecordResult {
-  let text = "";
   const problems: Problem[] = [];
   const changes = new Map(readChanges(book, problems).map((c) => [c.name, c]));
   const badName = problems.find((p) => p.file === "series" && "refuse" in p);
   if (badName) throw new Fail(`refusing to record: ${describe(badName)}\nRename it to lowercase letters, digits and dashes in series and changes/ first.`);
   const a = assemble(book);
   const current = opts.current ?? book.currentOutput();
-  const fileOwner = new Map<string, Change>();
-  for (const c of changes.values()) for (const e of c.edits) if (e.kind === "file") fileOwner.set(e.path, c);
-  const hasBlocks = new Set(rglob(join(book.dir, "blocks"), ".entries").map((p) => p.slice(0, -".entries".length)));
-  const prefix = book.layout.kind === "folder" && book.layout.from ? book.layout.from + "/" : "";
   // Only files edited by hand since the last build. Others differ because the patchbook changed.
   const edited = (opts.edits ?? handEdits(book, a.out, current)).filter(opts.only ?? (() => true));
   if (!edited.length) return { text: "no hand edits to the output since the last build; nothing to record\n" };
   refuseLinkTurnedFile(a, current, edited);
-  const blocked = (p: string) => {
-    const src = a.sources.get(p);
-    return src?.kind === "up" && hasBlocks.has(src.path) && current.has(p);
-  };
+  const s = snapshot(book, a, current, changes);
+  const edits = edited.map((p) => classify(s, p));
 
-  // Sort the edits. Paragraph edits update block entries. Edits to files a change already owns go
-  // to that change. The rest go to the change being recorded.
-  const rules = new Rules(book, new Set(a.sources.keys()));
-  const fresh: string[] = [];
-  const paragraphs = new Map<string, Plan>();
-  const notes: string[] = [];
-  for (const p of edited) {
-    const now = current.get(p);
-    const built = a.out.get(p);
-    const src = a.sources.get(p);
-    if (built === undefined || (src?.kind === "up" && !hasBlocks.has(src.path) && (now === undefined || !fileOwner.has(src.path)))) {
-      fresh.push(p);
-    } else if (src?.kind === "up" && now !== undefined && blocked(p)) {
-      const upstream = decode(a.upstream.get(src.path)!.data);
-      const plan = planParagraphs(book, rules, src.path, p, upstream, built.data, now.data);
-      if (typeof plan === "string") notes.push(`skipped  ${p}: ${plan}`);
-      else paragraphs.set(p, plan);
-    }
-  }
-
-  const asked = change || null;
-  if (asked !== null && !CHANGE_NAME.test(asked)) throw new Fail(notAChangeName(asked));
-  let name = asked;
   const given = intent === null ? null : oneLine(intent) || null;
-  intent = given;
-  const pending = Array.from(paragraphs, ([p, plan]) => Array.from(plan.entries.values(), (e) => [p, e] as const)).flat()
-    .filter(([, e]) => e.intent === null);
-  const needsIntent = pending.length > 0;
-  const named = fresh.length > 0;
-  if (named && !name && intent) {
-    name = nameFromIntent(intent, changes);
-    text += `${name}: ${intent}\n`;
-  }
-  if ((named && (!name || (!changes.has(name) && !intent))) || (needsIntent && !intent && !(name !== null && changes.has(name)))) {
-    const diff = pendingDiff(a, current, fresh) + pending
-      .map(([p, e]) => unifiedDiff(splitlines(e.upstream + "\n", true), splitlines(e.patched + "\n", true), `upstream/${p}`, `disk/${p}`))
-      .join("");
-    [name, intent] = writeIntent(book, changes, diff, name, named);
-    const known = name !== null && changes.has(name);
-    text += (named && !known ? `${name}: ${intent}` : named ? `adding to ${name}` : `intent: ${intent}`) + "\n";
-  } else if (needsIntent && !intent) intent = changes.get(name!)!.intent;
-  for (const [p, plan] of paragraphs) {
-    for (const e of plan.entries.values()) e.intent ??= intent;
-    saveParagraphs(plan);
-    notes.push(...plan.notes.map(([h, what]) => `entry    ${p} [${h}] ${what}`));
-  }
+  const ask = asked(edits);
+  const naming = nameAndIntent(ask, change, given, changes, (n, named) => writeIntent(book, changes, modelDiff(a, current, ask), n, named));
+  const target = targetOf(book, changes, naming, given);
 
-  let chosen = name || "unnamed";
-  if (!name && given) for (let n = 2; changes.has(chosen); n++) chosen = `unnamed-${n}`;
-  const existing = changes.get(chosen);
-  const target = existing ?? new Change(chosen, join(book.dir, "changes", chosen), intent);
-  if (existing && given) target.intent = given;
-  const touched = new Map([[target.name, target]]);
-
-  for (const p of edited) {
-    if (paragraphs.has(p) || blocked(p)) continue;
-    const now = current.get(p);
-    const built = a.out.get(p);
-    const src = a.sources.get(p);
-    if (built === undefined) {
-      if (now === undefined) throw new Error(`${p} is neither built nor on disk`);
-      target.edits.push({ kind: "add", path: prefix + p });
-      target.write("ours", prefix + p, now.data, now.mode);
-      notes.push(`add      ${p}`);
-    } else if (src === undefined) {
-      throw new Error(`${p} is built from nothing`);
-    } else if (now === undefined) {
-      if (src.kind === "ours") {
-        const c = changes.get(src.change)!;
-        c.edits = c.edits.filter((e) => !(e.kind === "add" && e.path === src.path));
-        c.drop("ours", src.path);
-        touched.set(c.name, c);
-        notes.push(`unadd    ${p} (from ${c.name})`);
-      } else {
-        target.edits.push({ kind: "delete", path: prefix + p });
-        notes.push(`delete   ${p}`);
-      }
-    } else if (src.kind === "ours") {
-      const c = changes.get(src.change)!;
-      if (decodeReplace(c.read("ours", src.path) ?? new Uint8Array()).search(PLACEHOLDER_HINT) !== -1) {
-        notes.push(`skipped  ${p}: its copy in ${c.name} uses placeholders; edit that copy directly`);
-        continue;
-      }
-      c.write("ours", src.path, now.data, recordedMode(now.mode, built.mode));
-      touched.set(c.name, c);
-      notes.push(`update   ${p} (in ${c.name})`);
-    } else {
-      const rel = src.path;
-      const c = fileOwner.get(rel) ?? target;
-      if (!fileOwner.has(rel)) {
-        c.edits.push({ kind: "file", path: rel });
-        c.write("base", rel, a.upstream.get(rel)!.data);
-      }
-      c.write("ours", rel, now.data);
-      touched.set(c.name, c);
-      notes.push(`file     ${p}` + (c !== target ? ` (in ${c.name})` : ""));
-    }
+  const touched = new Map<string, Change>(target ? [[target.name, target]] : []);
+  const notes: string[] = [];
+  for (const e of edits) {
+    const done = row(e).apply(e, { target, intent: naming.intent });
+    if (done.touched) touched.set(done.touched.name, done.touched);
+    notes.push(...done.notes);
   }
-
   for (const c of touched.values()) if (c.edits.length || c !== target) saveChange(c);
-  if (target.edits.length && !readSeries(book).includes(target.name)) appendSeries(book, target.name);
-  text += notes.join("\n") + "\n";
+  if (target?.edits.length && !readSeries(book).includes(target.name)) appendSeries(book, target.name);
   // The recorded output is now what the patchbook builds, so it no longer counts as a hand edit.
   const lock = readBuildLock(book);
   if (lock !== null) {
@@ -170,7 +291,7 @@ export function record(book: Book, change: string | null, intent: string | null,
     }
     writeBuildLines(book, lock);
   }
-  return { text };
+  return { text: (naming.said !== null ? naming.said + "\n" : "") + notes.join("\n") + "\n" };
 }
 
 /** An upstream link keeps its type in the build, so a regular file over it would be written back as a link. */
