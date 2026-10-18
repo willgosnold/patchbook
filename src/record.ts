@@ -156,6 +156,7 @@ function classifyOne(s: Snapshot, path: string): Edited {
   const src = s.sources.get(path);
   if (built === undefined) {
     if (now === undefined) throw new Error(`${path} is neither built nor on disk`);
+    if (src !== undefined) return { kind: "skip", path, reason: "a hook leaves it out of the build; change the hook to keep it" };
     return { kind: "add", path, staged: s.prefix + path, now };
   }
   if (src === undefined) throw new Error(`${path} is built from nothing`);

@@ -5402,6 +5402,21 @@ describe("ForkTest", () => {
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
 
+  forkTest("test_record_skips_a_file_that_a_hook_leaves_out_and_was_put_back", (t) => {
+    writeFileSync(join(t.fork.path, ".patchbook/hooks.ts"), dedent(`
+      export const finish = (out: Map<string, { data: Uint8Array; mode: number }>) => {
+        out.delete("docs/guide.md");
+      };
+    `));
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(existsSync(join(t.fork.path, "docs/guide.md"))).toBe(false);
+    t.fork.write("docs/guide.md", "a guide\n");
+    expect(t.pb(["record", "--intent", "Keep the guide."], { cwd: t.fork.path }).stdout)
+      .toBe("skipped  docs/guide.md: a hook leaves it out of the build; change the hook to keep it\n");
+    expect(existsSync(join(t.fork.path, ".patchbook/changes/keep-the-guide"))).toBe(false);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
   forkTest("test_commit_records_and_builds", (t) => {
     expect(read(join(t.fork.path, ".git/hooks/pre-commit"))).toContain("Installed by patchbook");
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
@@ -8525,7 +8540,7 @@ describe("VendorTest", () => {
     expect(read(entries)).toBe(before);
   });
 
-  vendorTest("test_record_adds_a_file_with_block_entries_that_a_hook_leaves_out_and_was_put_back", (t) => {
+  vendorTest("test_record_skips_a_file_with_block_entries_that_a_hook_leaves_out_and_was_put_back", (t) => {
     t.missingScaffoldPatchBuild();
     const skill = t.repo.read("skills/hello/SKILL.md");
     writeFileSync(join(t.repo.path, ".patchbook/hooks.ts"), dedent(`
@@ -8536,8 +8551,10 @@ describe("VendorTest", () => {
     t.pb(["build"], { cwd: t.repo.path });
     expect(existsSync(join(t.repo.path, "skills/hello/SKILL.md"))).toBe(false);
     t.repo.write("skills/hello/SKILL.md", skill);
-    expect(t.pb(["record", "--intent", "Keep the skill."], { cwd: t.repo.path }).stdout).toBe("keep-the-skill: Keep the skill.\nadd      hello/SKILL.md\n");
-    expect(read(join(t.repo.path, ".patchbook/changes/keep-the-skill/CHANGE.md"))).toContain("- add skills/hello/SKILL.md");
+    expect(t.pb(["record", "--intent", "Keep the skill."], { cwd: t.repo.path }).stdout)
+      .toBe("skipped  hello/SKILL.md: a hook leaves it out of the build; change the hook to keep it\n");
+    expect(existsSync(join(t.repo.path, ".patchbook/changes/keep-the-skill"))).toBe(false);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
   });
 
   const holderAndTwin = (t: VendorCase, copy: string): string => {
