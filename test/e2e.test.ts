@@ -5426,7 +5426,7 @@ describe("ForkTest", () => {
     t.fork.write("docs/guide.md", "a guide!\n");
     t.fork.write("docs/guide2.md", "a second guide\n");
     const skip = (path: string, other: string) =>
-      `skipped  ${path}: upstream's docs/guide.md also builds ${other}, which this record changes too; edit only one of them, or to give them different text, replace the copy edit with an add of its destination\n`;
+      `skipped  ${path}: upstream's docs/guide.md also builds ${other}, which this record changes too; edit only one of them, or to give them different text, remove the copy edit and record the destination again\n`;
     expect(t.pb(["record", "--intent", "Shout."], { cwd: t.fork.path }).stdout)
       .toBe(skip("docs/guide.md", "docs/guide2.md") + skip("docs/guide2.md", "docs/guide.md"));
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
@@ -5449,6 +5449,23 @@ describe("ForkTest", () => {
       chmodSync(bb, 0o644);
     }
     expect(read(join(t.fork.path, ".patchbook/changes/aa/ours/aa.txt.pb"))).toBe("A2\n");
+  });
+
+  forkTest("test_record_that_cannot_write_a_later_edit_does_not_say_it_added_a_file_no_change_records", (t) => {
+    t.fork.write("bb.txt", "B\n");
+    t.pb(["record", "bb", "--intent", "Bb."], { cwd: t.fork.path });
+    t.fork.write("aa.txt", "new\n");
+    t.fork.write("bb.txt", "B2\n");
+    const bb = join(t.fork.path, ".patchbook/changes/bb/ours/bb.txt.pb");
+    chmodSync(bb, 0o444);
+    try {
+      const r = t.pb(["record", "zz", "--intent", "Zz."], { cwd: t.fork.path, code: 1 });
+      expect(r.stdout).toBe("");
+      expect(r.stderr).toContain("permission denied");
+    } finally {
+      chmodSync(bb, 0o644);
+    }
+    expect(existsSync(join(t.fork.path, ".patchbook/changes/zz/CHANGE.md"))).toBe(false);
   });
 
   forkTest("test_commit_records_and_builds", (t) => {
@@ -8604,7 +8621,7 @@ describe("VendorTest", () => {
     return join(changes, "holder/ours/skills/hello/tpl.md.pb");
   };
   const shared = (path: string, other: string) =>
-    `skipped  ${path}: its copy in holder also builds ${other}, which this record changes too; edit holder directly, or to give them different text, replace the copy edit with an add of its destination\n`;
+    `skipped  ${path}: its copy in holder also builds ${other}, which this record changes too; edit holder directly, or to give them different text, remove the copy edit and record the destination again\n`;
 
   vendorTest("test_record_skips_two_outputs_that_share_one_copy_when_both_are_edited", (t) => {
     t.missingScaffoldPatchBuild();

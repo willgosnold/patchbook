@@ -48,7 +48,7 @@ const NOTHING: Need = { named: false, drafts: [] };
 const NAMED: Need = { named: true, drafts: [] };
 
 type Recording = { target: Change | null; intent: string | null };
-type Done = { touched: Change | null; notes: readonly string[] };
+type Done = { touched: Change | null; notes: readonly string[]; waitsForSave?: true };
 
 type Row<K extends Kind> = { needs(e: Edited<K>): Need; apply(e: Edited<K>, r: Recording): Done };
 
@@ -59,7 +59,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
       const c = r.target!;
       c.edits.push({ kind: "add", path: e.staged });
       c.write("ours", e.staged, e.now.data, e.now.mode);
-      return { touched: c, notes: [`add      ${e.path}`] };
+      return { touched: c, notes: [`add      ${e.path}`], waitsForSave: true };
     },
   },
   "delete-upstream": {
@@ -67,7 +67,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     apply: (e, r) => {
       const c = r.target!;
       c.edits.push({ kind: "delete", path: e.staged });
-      return { touched: c, notes: [`delete   ${e.path}`] };
+      return { touched: c, notes: [`delete   ${e.path}`], waitsForSave: true };
     },
   },
   "unadd": { needs: () => NOTHING, apply: unadd },
@@ -91,7 +91,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
       c.edits.push({ kind: "file", path: e.rel });
       c.write("base", e.rel, e.to.base.data);
       c.write("ours", e.rel, e.now.data);
-      return { touched: c, notes: [`file     ${e.path}`] };
+      return { touched: c, notes: [`file     ${e.path}`], waitsForSave: true };
     },
   },
   "paragraph-edit": {
@@ -112,7 +112,7 @@ export const needOf = (e: Edited): Need => row(e).needs(e);
 function unadd(e: Edited<"unadd" | "unreplace">): Done {
   e.change.edits = e.change.edits.filter((x) => !(x.kind === "add" && x.path === e.staged));
   e.change.drop("ours", e.staged);
-  return { touched: e.change, notes: [`unadd    ${e.path} (from ${e.change.name})`] };
+  return { touched: e.change, notes: [`unadd    ${e.path} (from ${e.change.name})`], waitsForSave: true };
 }
 
 export type Snapshot = {
@@ -136,7 +136,7 @@ export function classify(s: Snapshot, paths: readonly string[]): Edited[] {
     if (!src || !others.length) return classifyOne(s, path);
     const from = src.kind === "ours" ? `its copy in ${src.change}` : `upstream's ${src.path}`;
     const fix = src.kind === "ours" ? `edit ${src.change} directly` : "edit only one of them";
-    return { kind: "skip", path, reason: `${from} also builds ${others.join(", ")}, which this record changes too; ${fix}, or to give them different text, replace the copy edit with an add of its destination` };
+    return { kind: "skip", path, reason: `${from} also builds ${others.join(", ")}, which this record changes too; ${fix}, or to give them different text, remove the copy edit and record the destination again` };
   });
 }
 
@@ -258,15 +258,20 @@ export function record(book: Book, change: string | null, intent: string | null,
   if (target && given) target.intent = given;
 
   const touched = new Map<string, Change>(target ? [[target.name, target]] : []);
-  const notes: string[] = [];
-  const printed = () => (naming.said !== null ? naming.said + "\n" : "") + notes.map((n) => n + "\n").join("");
+  const notes: { text: string; waits: Change | null }[] = [];
+  const saved = new Set<Change>();
+  const printed = () => (naming.said !== null ? naming.said + "\n" : "")
+    + notes.filter((n) => n.waits === null || saved.has(n.waits)).map((n) => n.text + "\n").join("");
   try {
     for (const e of edits) {
       const done = row(e).apply(e, { target, intent: naming.intent });
       if (done.touched) touched.set(done.touched.name, done.touched);
-      notes.push(...done.notes);
+      for (const text of done.notes) notes.push({ text, waits: done.waitsForSave ? done.touched : null });
     }
-    for (const c of touched.values()) if (c.edits.length || c !== target) saveChange(c);
+    for (const c of touched.values()) {
+      if (c.edits.length || c !== target) saveChange(c);
+      saved.add(c);
+    }
     if (target?.edits.length && !readSeries(book).includes(target.name)) appendSeries(book, target.name);
     // The recorded output is now what the patchbook builds, so it no longer counts as a hand edit.
     const lock = readBuildLock(book);
