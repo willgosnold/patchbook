@@ -871,13 +871,13 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_a_committed_remote_with_control_characters_reaches_the_terminal_escaped", (t) => {
-    const fresh = cloneFollowing(t, "https://example.invalid/\\u001b[31mRED\\u001b]0;TITLE\\u0007x");
+    const fresh = cloneFollowing(t, "https://example.invalid/\\u001b[31mRED\\u001b]0;TITLE\\u0007x\\u007f[31mDEL\\u009b31mC1\\u0085NEL");
     for (const command of ["check", "status"]) {
       const stderr = t.pb([command], { cwd: fresh, code: 1 }).stderr;
-      expect(stderr).not.toContain("\x1b");
-      expect(stderr).not.toContain("\x07");
-      expect(stderr).toContain("example.invalid/");
-      expect(stderr).toContain("RED");
+      expect(stderr).toContain(" failed:");
+      const ours = stderr.split(" failed:")[0]!;
+      expect(ours.replace(/\n/g, "")).not.toMatch(/\p{Cc}/u);
+      for (const shown of ["example.invalid/", "RED", "DEL", "NEL"]) expect(ours).toContain(shown);
     }
   });
 
