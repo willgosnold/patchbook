@@ -13,6 +13,8 @@ import { isTable, parseToml, type Table } from "./settings.ts";
 import { stagedFolder, Upstream } from "./store.ts";
 
 export const PB = ".patchbook";
+
+export class NoBook extends Fail {}
 export const GIT = ".git";
 
 export function under(path: string, prefix: string): boolean {
@@ -256,7 +258,7 @@ export class Book {
       }
       if (d === "/") break;
     }
-    throw new Fail(`no ${PB}/config.toml here or above. Start one with \`patchbook clone\` or \`patchbook init\`.`);
+    throw new NoBook(`no ${PB}/config.toml here or above. Start one with \`patchbook clone\` or \`patchbook init\`.`);
   }
 
   private checkMounts(): void {

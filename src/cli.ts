@@ -13,6 +13,7 @@ import { Fail } from "./lib/fail.ts";
 import { exists, lexists, readText, resolve, writeText } from "./lib/fs.ts";
 import { git, redact } from "./lib/proc.ts";
 import { rstrip, split, strRepr } from "./lib/py.ts";
+import { quoteToml } from "./lib/toml.ts";
 import { cmdRecord } from "./record.ts";
 import { checkUpstreamRemote, notThisRepo } from "./remote.ts";
 import { cmdConfig } from "./settings.ts";
@@ -26,16 +27,16 @@ const VERSION = process.env.PATCHBOOK_VERSION ?? pkg.version;
 // Starting a patchbook, and following another upstream
 
 function upstreamToml(name: string, remote: string, path: string, branch: string, mount: string, vendor: string | null = null): string {
-  const lines = ["[[upstream]]", `name = "${name}"`, `remote = "${remote}"`];
-  if (path) lines.push(`path = "${path}"`);
-  lines.push(`branch = "${branch}"`, `mount = "${mount}"`);
-  if (vendor) lines.push(`vendor = "${vendor}"`);
+  const lines = ["[[upstream]]", `name = ${quoteToml(name)}`, `remote = ${quoteToml(remote)}`];
+  if (path) lines.push(`path = ${quoteToml(path)}`);
+  lines.push(`branch = ${quoteToml(branch)}`, `mount = ${quoteToml(mount)}`);
+  if (vendor) lines.push(`vendor = ${quoteToml(vendor)}`);
   return lines.join("\n") + "\n";
 }
 
 function configText(layout: "fork" | "folder", upstream: string, output?: [string, string]): string {
   let text = `layout = "${layout}"\n\n` + upstream;
-  if (output) text += `\n[output]\nfrom = "${output[0]}"\nto = "${output[1]}"\n`;
+  if (output) text += `\n[output]\nfrom = ${quoteToml(output[0])}\nto = ${quoteToml(output[1])}\n`;
   return text;
 }
 

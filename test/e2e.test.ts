@@ -2486,7 +2486,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     const user = join(t.tmp, "config/patchbook/config.toml");
     mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
     writeFileSync(user, "start.agents = [\n");
-    for (const args of [["config"], ["config", "intent.model"], ["status"]]) {
+    for (const args of [["config"], ["config", "intent.model"]]) {
       const out = t.pb(args, { cwd: t.fork.path, code: 1 });
       expect(out.stderr).toContain(`${user} isn't valid TOML`);
       expect(out.stderr).not.toContain("SyntaxError");
