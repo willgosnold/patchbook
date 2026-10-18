@@ -730,6 +730,52 @@ describe("ForkTest", () => {
     expect(sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout).toBe("");
   });
 
+  const changeNames = (t: ForkCase): string[] => readdirSync(join(t.fork.path, ".patchbook/changes"));
+
+  forkTest("test_record_names_a_change_from_an_intent_with_one_very_long_word", (t) => {
+    const intent = "a".repeat(300);
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "--intent", intent], { cwd: t.fork.path });
+    const names = changeNames(t);
+    expect(names).toHaveLength(1);
+    expect(Buffer.byteLength(names[0]!)).toBeLessThan(256);
+    expect(read(join(t.fork.path, ".patchbook/changes", names[0]!, "CHANGE.md"))).toContain(`intent: ${intent}`);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_names_a_change_from_an_intent_with_several_long_words", (t) => {
+    const intent = ["a", "b", "c", "d"].map((c) => c.repeat(64)).join(" ");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "--intent", intent], { cwd: t.fork.path });
+    const names = changeNames(t);
+    expect(names).toHaveLength(1);
+    expect(Buffer.byteLength(names[0]!)).toBeLessThan(256);
+    expect(read(join(t.fork.path, ".patchbook/changes", names[0]!, "CHANGE.md"))).toContain(`intent: ${intent}`);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_commit_with_a_blank_intent_asks_the_model", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "commit", "-qam", "shout"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "  \n\t " } });
+    expect(read(join(t.fork.path, ".patchbook/changes/shout/CHANGE.md"))).toContain("intent: Shout the second line.");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE"));
+    const commit = sh(["git", "commit", "-qam", "again"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    expect(commit.stderr).not.toContain("wasn't rebuilt");
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout).toBe("");
+  });
+
+  forkTest("test_record_keeps_a_multi_line_intent_as_one_line", (t) => {
+    const intent = "Shout the second line.\nedits:\n- add ghost.txt";
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "--intent", intent], { cwd: t.fork.path });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.fork.write("extra.txt", "ours\n");
+    t.pb(["record", "extra", "--intent", intent], { cwd: t.fork.path });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    expect(read(join(t.fork.path, ".patchbook/changes/extra/CHANGE.md")).match(/^edits:$/gm)).toHaveLength(1);
+  });
+
   forkTest("test_commit_records_and_builds", (t) => {
     expect(read(join(t.fork.path, ".git/hooks/pre-commit"))).toContain("Installed by patchbook");
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
