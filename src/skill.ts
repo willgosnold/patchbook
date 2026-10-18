@@ -1,5 +1,5 @@
 // The patchbook-update skill, embedded in the binary and written into the repo for its agents.
-import { readlinkSync, symlinkSync, unlinkSync } from "node:fs";
+import { readlinkSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import skill from "../skills/patchbook-update/SKILL.md" with { type: "text" };
 import { assemble, describe, handEdits } from "./assemble.ts";
@@ -54,14 +54,17 @@ export function installSkill(book: Book): { changed: string[]; left: string[] } 
   const file = join(book.root, FILE);
   const changed: string[] = [];
   const left: string[] = [];
+  const made: string[] = [];
   try {
     mkdirs(dir);
     for (const { link: folder } of known) {
       if (!folder) continue;
       const at = join(book.root, folder, NAME);
-      const made = link(book.root, at, dir);
-      if (made) changed.push(at);
-      else if (made === null) left.push(at);
+      const linked = link(book.root, at, dir);
+      if (linked) {
+        changed.push(at);
+        made.push(at);
+      } else if (linked === null) left.push(at);
     }
     if (!exists(file) || readText(file) !== skill) {
       writeText(file, skill);
@@ -70,6 +73,7 @@ export function installSkill(book: Book): { changed: string[]; left: string[] } 
   } catch (e) {
     // A file where a folder should go, or a read-only repo, shouldn't stop `clone` or `init` from finishing.
     if (!(e instanceof Error && "errno" in e)) throw e;
+    for (const at of made) rmSync(at, { force: true });
     process.stderr.write(`patchbook: couldn't install the update skill: ${e.message}\n`);
     return null;
   }
@@ -87,20 +91,19 @@ function installed(book: Book, p: string): boolean {
 
 const recorded = (book: Book) => readChanges(book, []).some((c) => c.name === CHANGE);
 
-/** Record the skill files as the `patchbook-update-skill` change, unless other edits are waiting that it would take too. */
+/** Record the skill files as the `patchbook-update-skill` change, and leave every other edit waiting. */
 export async function recordSkill(book: Book): Promise<number> {
   process.chdir(book.root);
-  if (handEdits(book, assemble(book).out).some((p) => !ownsSkill(p))) return 0;
   return cmdRecord({
     change: CHANGE,
     intent: recorded(book) ? null : "Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.",
+    only: ownsSkill,
   });
 }
 
-function refuseToTake(edited: string[]): never {
-  const shown = edited.slice(0, 20).join("\n  ") + (edited.length > 20 ? "\n  ..." : "");
-  throw new Fail(`these output files changed since the last build, and recording the skill would take them too:\n  ${shown}\n`
-    + "Run `patchbook record` to take them, or commit them so the hook does, then run this again.");
+function refuseToReplace(edited: string[]): never {
+  throw new Fail(`these skill files changed since the last build, and installing would replace them:\n  ${edited.join("\n  ")}\n`
+    + "Run `patchbook record` to keep them, or commit them so the hook does, then run this again.");
 }
 
 export async function cmdSkill(): Promise<number> {
@@ -117,9 +120,9 @@ export async function cmdSkill(): Promise<number> {
     throw new Fail(`${problems.length} problems; nothing installed. \`patchbook status\` lists them.`);
   }
   const fork = book.layout.kind === "fork";
-  const edited = fork ? handEdits(book, a.out) : [];
-  const waiting = edited.filter((p) => !ownsSkill(p) || !installed(book, p));
-  if (waiting.length) refuseToTake(waiting);
+  const edited = fork ? handEdits(book, a.out).filter(ownsSkill) : [];
+  const waiting = edited.filter((p) => !installed(book, p));
+  if (waiting.length) refuseToReplace(waiting);
   if (!fork && !installed(book, FILE) && git(["status", "--porcelain", "--untracked-files=all", "--", FILE], { cwd: book.root, check: false })) {
     throw new Fail(`${FILE} has changes that are not committed, and installing would replace them. Commit it or restore it, then run this again.`);
   }
