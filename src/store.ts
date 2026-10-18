@@ -96,8 +96,12 @@ export class Upstream {
     return git(["rev-parse", "FETCH_HEAD^{commit}"], { cwd: this.gitDir() });
   }
 
+  has(commit: string): boolean {
+    return spawn(["git", "cat-file", "-e", `${commit}^{commit}`], { cwd: this.gitDir() }).code === 0;
+  }
+
   have(commit: string): void {
-    if (spawn(["git", "cat-file", "-e", `${commit}^{commit}`], { cwd: this.gitDir() }).code !== 0) this.fetch(commit);
+    if (!this.has(commit)) this.fetch(commit);
   }
 
   /** Pin a commit in the store with a ref, so gc keeps it. Only pins get one: a head that was just looked at stays prunable. A ref already there is not written again. */
@@ -120,6 +124,11 @@ export class Upstream {
       process.stderr.write(`patchbook: couldn't keep ${commit.slice(0, 7)} in the store, so git gc may prune it. ${e.message}\n`);
     }
     return commit;
+  }
+
+  /** `heal` for a pin the caller does not need the files of: one the store lacks is left alone, never fetched just to keep it. */
+  healIfHeld(commit: string): void {
+    if (this.has(commit)) this.heal(commit);
   }
 
   treeOf(commit: string): string {
