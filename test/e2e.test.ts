@@ -7957,7 +7957,7 @@ describe("VendorTest", () => {
     }
   }
 
-  const replacedLine = "patchbook: staged changes under vendor/extra were replaced by the pinned copy of extra";
+  const replacedLine = "patchbook: the pre-commit hook staged the pinned copy of extra under vendor/extra, in place of what the index held";
 
   folderTest("test_untracking_the_vendored_copy_alone_is_refused_and_leaves_the_removal_staged", (t) => {
     trackExtra(t, "vendor/extra");
@@ -7970,6 +7970,7 @@ describe("VendorTest", () => {
     expect(commit.stderr).toContain("nothing would be left to commit");
     expect(commit.stderr).toContain("vendor/extra");
     expect(commit.stderr).toContain("PATCHBOOK_HOOK=0");
+    expect(commit.stderr).toContain("delete the upstream's vendor line");
     expect(gitIn(t, ["rev-parse", "HEAD"])).toBe(head);
     expect(gitIn(t, ["diff", "--cached", "--name-only"]).trim().split("\n")).toEqual(pinnedFiles("vendor/extra"));
   });
@@ -8002,6 +8003,54 @@ describe("VendorTest", () => {
     const commit = hookedCommit(t, ["-qm", "note"]);
     expect(commit.code).toBe(0);
     expect(commit.stderr).toContain(replacedLine);
+  });
+
+  const stageLock = (t: FolderCase, edit: (text: string) => string): void => {
+    const path = join(t.repo.path, ".patchbook/upstream.lock");
+    const good = readFileSync(path, "utf8");
+    writeFileSync(path, edit(good));
+    gitIn(t, ["add", ".patchbook/upstream.lock"]);
+    writeFileSync(path, good);
+  };
+
+  folderTest("test_a_pin_tree_missing_from_the_repo_is_refused_before_the_index_changes", (t) => {
+    trackExtra(t, "vendor/extra");
+    gitIn(t, ["add", "-A"]);
+    gitIn(t, ["commit", "-qm", "setup"]);
+    const missing = "1".repeat(40);
+    stageLock(t, (text) => text.replace(/"tree": "[0-9a-f]{40}"/, `"tree": "${missing}"`));
+    t.repo.write("note.txt", "a note\n");
+    gitIn(t, ["add", "note.txt"]);
+    const head = gitIn(t, ["rev-parse", "HEAD"]);
+    const index = gitIn(t, ["ls-files", "-s"]);
+    const commit = hookedCommit(t, ["-qm", "pin to a tree the repo lacks"]);
+    expect(commit.code).toBe(1);
+    expect(commit.stderr).toContain("patchbook:");
+    expect(commit.stderr).toContain("extra");
+    expect(commit.stderr).toContain(missing);
+    expect(commit.stderr).toContain("patchbook sync extra");
+    expect(commit.stderr).not.toContain("fatal:");
+    expect(gitIn(t, ["rev-parse", "HEAD"])).toBe(head);
+    expect(gitIn(t, ["ls-files", "-s"])).toBe(index);
+  });
+
+  folderTest("test_an_upstream_lock_in_the_index_that_cannot_be_read_is_refused_without_a_stack_trace", (t) => {
+    trackExtra(t, "vendor/extra");
+    gitIn(t, ["add", "-A"]);
+    gitIn(t, ["commit", "-qm", "setup"]);
+    stageLock(t, () => "{ not json");
+    t.repo.write("note.txt", "a note\n");
+    gitIn(t, ["add", "note.txt"]);
+    const head = gitIn(t, ["rev-parse", "HEAD"]);
+    const index = gitIn(t, ["ls-files", "-s"]);
+    const commit = hookedCommit(t, ["-qm", "a lock that is not json"]);
+    expect(commit.code).toBe(1);
+    expect(commit.stderr).toContain("patchbook:");
+    expect(commit.stderr).toContain(".patchbook/upstream.lock");
+    expect(commit.stderr).toContain("index");
+    expect(commit.stderr).not.toMatch(/\n\s+at /);
+    expect(gitIn(t, ["rev-parse", "HEAD"])).toBe(head);
+    expect(gitIn(t, ["ls-files", "-s"])).toBe(index);
   });
 
   folderTest("test_a_commit_that_changes_nothing_in_the_copy_says_nothing_about_it", (t) => {
