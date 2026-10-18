@@ -1020,6 +1020,7 @@ for (const [how, dir, given] of [
   ["dot_dot_from_a_subfolder", "sub", () => ".."],
   ["dot_at_the_root", "", () => "."],
   ["a_file_url_of_the_root", "", (fork: string) => `file://${fork}`],
+  ["a_file_url_with_a_host", "", (fork: string) => `file://example.invalid${fork}`],
   ["a_linked_worktree", "", () => "../worktree"],
   ["an_insteadof_alias", "", () => "self:"],
 ] as const) {
@@ -1043,7 +1044,11 @@ for (const [how, dir, given] of [
   }, TIMEOUT);
 }
 
-for (const [how, alias] of [["dot", false], ["an_alias_that_another_insteadof_would_rewrite", true]] as const) {
+for (const [how, remote] of [
+  ["dot", () => "."],
+  ["an_alias_that_another_insteadof_would_rewrite", () => "self:"],
+  ["a_file_url_with_a_host", (fork: string) => `file://example.invalid${fork}`],
+] as const) {
   test(`test_a_fork_init_refuses_an_upstream_remote_that_fetches_the_repo_itself_as_${how}`, () => {
     const t = new Case();
     try {
@@ -1052,11 +1057,12 @@ for (const [how, alias] of [["dot", false], ["an_alias_that_another_insteadof_wo
       const base = up.commit("start");
       sh(["git", "clone", "-q", up.path, "fork"], { cwd: t.tmp });
       const fork = new Repo(join(t.tmp, "fork"));
+      const alias = remote(fork.path) === "self:";
       if (alias) sh(["git", "config", `url.${fork.path}.insteadOf`, "self:"], { cwd: fork.path });
       if (alias) sh(["git", "config", `url.${up.path}.insteadOf`, fork.path], { cwd: fork.path });
-      sh(["git", "remote", "add", "upstream", alias ? "self:" : "."], { cwd: fork.path });
+      sh(["git", "remote", "add", "upstream", remote(fork.path)], { cwd: fork.path });
       const refused = t.pb(["init", "--upstream", up.path], { cwd: fork.path, code: 1 });
-      expect(refused.stderr).toContain(`the upstream remote fetches this repo (${alias ? fork.path : "."})`);
+      expect(refused.stderr).toContain(`the upstream remote fetches this repo (${alias ? fork.path : remote(fork.path)})`);
       expect(existsSync(join(fork.path, ".patchbook"))).toBe(false);
       const fix = /^.*To follow .*?: (git config --replace-all remote\.upstream\.url .*)$/m.exec(refused.stderr)?.[1];
       sh(["sh", "-c", fix!], { cwd: fork.path });
@@ -1083,6 +1089,26 @@ test("test_a_fork_init_records_a_remote_url_that_ends_in_a_space_as_it_is", () =
     t.cleanup();
   }
 }, TIMEOUT);
+
+for (const [how, stale] of [["a_url_before_it", true], ["nothing_before_it", false]] as const) {
+  test(`test_a_fork_init_records_the_remote_url_after_an_empty_one_with_${how}`, () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\n");
+      up.commit("start");
+      sh(["git", "clone", "-q", up.path, "other"], { cwd: t.tmp });
+      const fork = forkOf(t, up);
+      for (const url of [...(stale ? [join(t.tmp, "other")] : []), "", up.path]) {
+        sh(["git", "config", "--add", "remote.upstream.url", url], { cwd: fork.path });
+      }
+      expect(t.pb(["init", "--upstream", up.path], { cwd: fork.path }).stdout).toContain(`branched from ${up.path}.`);
+      expect(fork.read(".patchbook/config.toml")).toContain(`remote = "${up.path}"`);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
 
 test("test_a_fork_init_with_no_upstream_remote_refuses_an_upstream_that_names_another_remote", () => {
   const t = new Case();
