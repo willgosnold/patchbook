@@ -7,7 +7,7 @@ import { Book, NoBook } from "./book.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { intentSettings, PROVIDERS } from "./intent.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, mkdirs, pjoin, readText, writeText } from "./lib/fs.ts";
+import { exists, mkdirs, pjoin, readBytes, readText, writeText } from "./lib/fs.ts";
 import { ljust, S, strRepr } from "./lib/py.ts";
 import { quoteToml } from "./lib/toml.ts";
 
@@ -151,25 +151,87 @@ export function storeDir(): string {
   return pjoin(base, "upstreams");
 }
 
+const LOSSY_INTEGER = "Integer cannot be losslessly represented";
+
 export function setToml<N extends Name>(path: string, name: N, value: NonNullable<Value<N>> | null): void {
+  const crlf = exists(path) && Buffer.from(readBytes(path)).includes("\r\n");
   const text = exists(path) ? readText(path) : "";
-  const config = parseToml(text, path);
+  let config: Table;
+  try {
+    config = parseToml(text, path);
+  } catch (e) {
+    if (e instanceof Fail && e.message.includes(LOSSY_INTEGER)) {
+      throw new Fail(`can't change ${name} in ${path}: it holds an integer outside +/-(2^53 - 1), which Bun can't represent`);
+    }
+    throw e;
+  }
   const current = lookup(config, name);
   if (current === undefined && value === null) return;
-  const out = edited(text, config, name, value);
-  if (out === null) throw new Fail(`can't change ${name} in ${path} safely, so the file is left as it was. Edit it by hand.`);
+  const refuse = (cause: string) => new Fail(`can't change ${name} in ${path} safely: ${cause}. The file is left as it was. Edit it by hand.`);
+  const out = edited(text, config, name, value, refuse);
   mkdirs(dirname(path));
-  writeText(path, out);
+  writeText(path, crlf ? out.replace(/\n/g, "\r\n") : out);
 }
 
-function edited(text: string, config: Table, name: Name, value: unknown): string | null {
+function edited(text: string, config: Table, name: Name, value: unknown, refuse: (cause: string) => Fail): string {
+  const out = value === null ? withoutSetting(text, name, refuse) : patched(text, name, value, refuse);
+  let read: unknown;
+  try {
+    read = Bun.TOML.parse(out);
+  } catch (e) {
+    if (!(e instanceof SyntaxError)) throw e;
+    throw refuse(`the edit would write invalid TOML (${e.message.replace(/^TOML Parse error: /, "")})`);
+  }
+  const section = name.split(".")[0] ?? "";
+  const unemptied = (table: Table) => (value === null ? withoutEmpty(table, section) : table);
+  const difference = firstDifference(unemptied(withSetting(config, name, value)), unemptied(read as Table), "");
+  if (difference !== null) throw refuse(`the edit would ${difference}`);
+  return out;
+}
+
+function patched(text: string, name: Name, value: unknown, refuse: (cause: string) => Fail): string {
   try {
     const doc = new TomlDocument(text);
     doc.patch(withSetting(doc.toJsObject, name, value), { trailingNewline: 1, bracketSpacing: false });
-    return isDeepStrictEqual(Bun.TOML.parse(doc.toTomlString), withSetting(config, name, value)) ? doc.toTomlString : null;
-  } catch {
+    return doc.toTomlString;
+  } catch (e) {
+    throw refuse(`the TOML library failed on it (${e instanceof Error ? `${e.name}: ${e.message}` : String(e)})`);
+  }
+}
+
+/** The library drops the comments above a key it deletes, so the key is set to a marker and its line is cut out instead. */
+function withoutSetting(text: string, name: Name, refuse: (cause: string) => Fail): string {
+  const marker = `patchbook-unset-${crypto.randomUUID()}`;
+  const lines = patched(text, name, marker, refuse).split("\n");
+  const at = lines.findIndex((line) => line.includes(marker));
+  if (at === -1 || !new RegExp(`^\\s*[^=#\\s][^=]*=\\s*"${marker}"\\s*(#.*)?$`).test(lines[at]!)) {
+    return patched(text, name, null, refuse);
+  }
+  lines.splice(at, 1);
+  return lines.join("\n");
+}
+
+function withoutEmpty(config: Table, section: string): Table {
+  const { [section]: table, ...rest } = config;
+  return isTable(table) && Object.keys(table).length === 0 ? rest : config;
+}
+
+function firstDifference(want: unknown, got: unknown, at: string): string | null {
+  if (isTable(want) && isTable(got)) {
+    for (const key of new Set([...Object.keys(want), ...Object.keys(got)])) {
+      const found = firstDifference(
+        Object.hasOwn(want, key) ? want[key] : undefined,
+        Object.hasOwn(got, key) ? got[key] : undefined,
+        at === "" ? key : `${at}.${key}`,
+      );
+      if (found !== null) return found;
+    }
     return null;
   }
+  if (isDeepStrictEqual(want, got)) return null;
+  if (got === undefined) return `drop ${at}`;
+  if (want === undefined) return `add ${at}`;
+  return `turn ${at} into ${JSON.stringify(got)}, not ${JSON.stringify(want)}`;
 }
 
 function withSetting(config: Table, name: Name, value: unknown): Table {
