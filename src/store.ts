@@ -116,8 +116,9 @@ export class Upstream {
   }
 
   fetch(ref: string): string {
-    const shallow = this.inRepo ? [] : ["--depth=1"];
     const cwd = this.gitDir();
+    // --depth on a full clone would make the user's repo shallow at the pin.
+    const shallow = !this.inRepo || git(["rev-parse", "--is-shallow-repository"], { cwd }) === "true" ? ["--depth=1"] : [];
     const landing = `refs/patchbook/tmp/${process.pid}-${randomUUID()}`;
     try {
       const fetched = spawn(["git", "fetch", "--quiet", "--no-tags", ...shallow, this.source(), `+${ref}:${landing}`], { cwd });
