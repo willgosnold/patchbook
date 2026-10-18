@@ -734,7 +734,7 @@ describe("ForkTest", () => {
     expect(remotes(t.fork.path)).toEqual([t.up.path, up]);
   });
 
-  forkTest("test_a_relative_remote_in_config_fails_sync_and_status_and_pins_nothing", (t) => {
+  forkTest("test_a_relative_remote_in_config_fails_sync_status_and_check_and_pins_nothing", (t) => {
     const config = join(t.fork.path, ".patchbook/config.toml");
     writeFileSync(config, read(config).replace(`remote = "${t.up.path}"`, 'remote = "../fork"'));
     t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
@@ -748,7 +748,7 @@ describe("ForkTest", () => {
     expect(t.fork.read(".patchbook/upstream.lock")).toBe(lock);
   });
 
-  forkTest("test_a_url_remote_is_read_and_a_relative_path_is_refused", (t) => {
+  forkTest("test_status_reads_a_url_remote_and_refuses_a_relative_path_or_an_empty_remote", (t) => {
     const config = join(t.fork.path, ".patchbook/config.toml");
     const original = read(config);
     const status = (remote: string, code: number) => {
@@ -812,6 +812,17 @@ describe("ForkTest", () => {
     expect(t.pb(["status"], { cwd: shallow }).stdout).toBe(`0 edits apply at upstream ${head.slice(0, 7)}; no problems\n`);
     expect(t.pb(["build"], { cwd: shallow }).stdout).toContain(`from upstream ${head.slice(0, 7)}`);
     expect(commits()).toBe("2");
+  });
+
+  forkTest("test_a_full_fork_stays_full_after_a_sync_fetches_a_new_pin", (t) => {
+    const shallow = (): string => sh(["git", "rev-parse", "--is-shallow-repository"], { cwd: t.fork.path }).stdout.trim();
+    expect(shallow()).toBe("false");
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    const head = t.up.commit("upstream edit");
+    t.pb(["sync"], { cwd: t.fork.path });
+    expect(JSON.parse(t.fork.read(".patchbook/upstream.lock")).upstream.commit).toBe(head);
+    expect(sh(["git", "cat-file", "-e", `${head}^{commit}`], { cwd: t.fork.path, check: false }).code).toBe(0);
+    expect(shallow()).toBe("false");
   });
 
   forkTest("test_conflict_and_gone", (t) => {
