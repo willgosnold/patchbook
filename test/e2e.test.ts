@@ -1955,6 +1955,43 @@ exec '${Bun.which("git")}' "$@"
     });
   }
 
+  const linkBecomesFolder = (t: VendorCase): void => {
+    t.missingScaffoldPatchBuild();
+    symlinkSync("../real", join(t.up.path, "plugin/skills/d"));
+    t.up.commit("d is a link");
+    t.pb(["sync"], { cwd: t.repo.path });
+    t.pb(["build"], { cwd: t.repo.path });
+    expect(isSymlink(join(t.repo.path, "skills/d"))).toBe(true);
+    t.repo.commit("built with the link");
+    t.up.rm("plugin/skills/d");
+    t.up.write("plugin/skills/d/f.md", "in a folder\n");
+    t.up.commit("d is a folder");
+    t.pb(["sync"], { cwd: t.repo.path });
+    t.pb(["build", "--force"], { cwd: t.repo.path });
+    expect(lstatSync(join(t.repo.path, "skills/d")).isDirectory()).toBe(true);
+    expect(sh(["git", "ls-files", "-s", "skills/d"], { cwd: t.repo.path }).stdout).toContain("120000");
+  };
+
+  vendorTest("test_build_after_a_link_in_the_output_became_a_folder", (t) => {
+    linkBecomesFolder(t);
+    const out = t.pb(["build"], { cwd: t.repo.path });
+    expect(out.stdout).toContain("built");
+    expect(out.stderr).not.toContain("EISDIR");
+    expect(t.repo.read("skills/d/f.md")).toBe("in a folder\n");
+  });
+
+  vendorTest("test_commit_after_a_link_in_the_output_became_a_folder", (t) => {
+    linkBecomesFolder(t);
+    t.repo.write("NOTES.md", "notes\n");
+    sh(["git", "add", "NOTES.md"], { cwd: t.repo.path });
+    const commit = sh(["git", "commit", "-qm", "notes"], { cwd: t.repo.path, check: false, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    expect(commit.stderr).not.toContain("EISDIR");
+    expect(commit.code).toBe(0);
+    expect(sh(["git", "show", "--stat", "--format=%s", "HEAD"], { cwd: t.repo.path }).stdout).toContain("NOTES.md");
+    expect(t.repo.read("skills/d/f.md")).toBe("in a folder\n");
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
   for (const to of ["skills/.git", "skills/.git/x", "a/.git", "a/b/.git/c"]) {
     vendorTest(`test_output_folder_${to.replace(/\W/g, "_")}_has_a_git_segment_and_is_rejected`, (t) => {
       t.missingScaffoldPatchBuild();
