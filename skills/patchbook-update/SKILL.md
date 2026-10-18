@@ -61,7 +61,7 @@ Then run the `[test]` from the config on `origin/$MAIN_BRANCH` (`git show origin
 
 ## 5. Review
 
-Start a reviewer with `delegate_task`. Call `orchestrator_capabilities` first, and choose the reviewer's model from its `providers`:
+Start a reviewer with `delegate_task` and `mode: "async"`, then end your turn. The task's completion wakes this thread. Read the verdict with `task_status`, and don't go on to step 6 before it arrives. Call `orchestrator_capabilities` first, and choose the reviewer's model from its `providers`:
 
 - Take the first provider, other than `inheritedProviderInstanceId`, with `canRunCrossProviderChildTask` true.
 - Of its models, take the one whose `label` has the highest version number, such as 6.1 in `GPT-6.1-Sol`. On a tie, or when no label has one, take the first listed.
