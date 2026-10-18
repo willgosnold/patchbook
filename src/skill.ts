@@ -2,10 +2,12 @@
 import { readlinkSync, symlinkSync, unlinkSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import skill from "../skills/patchbook-update/SKILL.md" with { type: "text" };
-import { assemble, handEdits } from "./assemble.ts";
+import { assemble, describe, handEdits } from "./assemble.ts";
 import { Book } from "./book.ts";
+import { readChanges } from "./changes.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, isDir, isSymlink, lexists, mkdirs, readText, writeText } from "./lib/fs.ts";
+import { git } from "./lib/proc.ts";
 import { cmdRecord } from "./record.ts";
 import { setting } from "./settings.ts";
 
@@ -19,22 +21,26 @@ const AGENTS: ReadonlyMap<string, { link: string | null }> = new Map([
   ["codex", { link: null }],
 ]);
 
-/** Point `at` to `target`, unless a real folder is already there. */
-function link(root: string, at: string, target: string): boolean {
-  const to = relative(dirname(at), target);
-  if (isSymlink(at) && readlinkSync(at) === to) return false;
+const FILE = `.agents/skills/${NAME}/SKILL.md`;
+const LINK = `.claude/skills/${NAME}`;
+
+const pointsAt = (at: string, target: string) => isSymlink(at) && readlinkSync(at) === relative(dirname(at), target);
+
+/** Point `at` to `target`, unless a real folder is already there. Returns null when it left a folder alone. */
+function link(root: string, at: string, target: string): boolean | null {
+  if (pointsAt(at, target)) return false;
   if (isSymlink(at) || (lexists(at) && !isDir(at))) unlinkSync(at);
   else if (lexists(at)) {
     process.stderr.write(`patchbook: ${relative(root, at)} is a folder, so the skill there was left as it is\n`);
-    return false;
+    return null;
   }
   mkdirs(dirname(at));
-  symlinkSync(to, at);
+  symlinkSync(relative(dirname(at), target), at);
   return true;
 }
 
-/** Install the update skill for agents in the repo. Returns the paths it changed, or null if it installed nothing. */
-export function installSkill(book: Book): string[] | null {
+/** Install the update skill for agents in the repo. Returns the paths it changed and the ones it left as they were, or null if it installed nothing. */
+export function installSkill(book: Book): { changed: string[]; left: string[] } | null {
   if (!setting("start.install_skill", book)[0]) return null;
   const agents = setting("start.agents", book)[0];
   const unknown = agents.filter((a) => !AGENTS.has(a));
@@ -45,17 +51,21 @@ export function installSkill(book: Book): string[] | null {
   const known = agents.flatMap((a) => AGENTS.get(a) ?? []);
   if (!known.length) return null;
   const dir = join(book.root, ".agents", "skills", NAME);
-  const file = join(dir, "SKILL.md");
+  const file = join(book.root, FILE);
   const changed: string[] = [];
+  const left: string[] = [];
   try {
     mkdirs(dir);
+    for (const { link: folder } of known) {
+      if (!folder) continue;
+      const at = join(book.root, folder, NAME);
+      const made = link(book.root, at, dir);
+      if (made) changed.push(at);
+      else if (made === null) left.push(at);
+    }
     if (!exists(file) || readText(file) !== skill) {
       writeText(file, skill);
-      changed.push(file);
-    }
-    for (const { link: folder } of known) {
-      const at = folder && join(book.root, folder, NAME);
-      if (at && link(book.root, at, dir)) changed.push(at);
+      changed.unshift(file);
     }
   } catch (e) {
     // A file where a folder should go, or a read-only repo, shouldn't stop `clone` or `init` from finishing.
@@ -63,15 +73,35 @@ export function installSkill(book: Book): string[] | null {
     process.stderr.write(`patchbook: couldn't install the update skill: ${e.message}\n`);
     return null;
   }
-  return changed.map((p) => relative(book.root, p));
+  const shown = (paths: string[]) => paths.map((p) => relative(book.root, p));
+  return { changed: shown(changed), left: shown(left) };
 }
 
-export function recordSkill(book: Book): Promise<number> {
-  const known = exists(join(book.dir, "changes", CHANGE));
+const ownsSkill = (p: string) => p === FILE || p === LINK;
+
+/** Whether the file or link at `p` is already what `installSkill` writes. */
+function installed(book: Book, p: string): boolean {
+  const at = join(book.root, p);
+  if (p === FILE) return exists(at) && readText(at) === skill;
+  return pointsAt(at, join(book.root, ".agents", "skills", NAME));
+}
+
+const recorded = (book: Book) => readChanges(book, []).some((c) => c.name === CHANGE);
+
+/** Record the skill files as the `patchbook-update-skill` change, unless other edits are waiting that it would take too. */
+export async function recordSkill(book: Book): Promise<number> {
+  process.chdir(book.root);
+  if (handEdits(book, assemble(book).out).some((p) => !ownsSkill(p))) return 0;
   return cmdRecord({
     change: CHANGE,
-    intent: known ? null : "Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.",
+    intent: recorded(book) ? null : "Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.",
   });
+}
+
+function refuseToTake(edited: string[]): never {
+  const shown = edited.slice(0, 20).join("\n  ") + (edited.length > 20 ? "\n  ..." : "");
+  throw new Fail(`these output files changed since the last build, and recording the skill would take them too:\n  ${shown}\n`
+    + "Run `patchbook record` to take them, or commit them so the hook does, then run this again.");
 }
 
 export async function cmdSkill(): Promise<number> {
@@ -81,19 +111,29 @@ export async function cmdSkill(): Promise<number> {
     process.stdout.write(`start.install_skill is off (${from}), so the update skill was not installed\n`);
     return 0;
   }
+  const a = assemble(book);
+  const problems = a.problems.filter((p) => p.problem !== "conflict");
+  if (problems.length) {
+    for (const p of problems) process.stderr.write(describe(p) + "\n");
+    throw new Fail(`${problems.length} problems; nothing installed. \`patchbook status\` lists them.`);
+  }
   const fork = book.layout.kind === "fork";
-  const edited = fork ? handEdits(book, assemble(book).out) : [];
-  if (edited.length) {
-    const shown = edited.slice(0, 20).join("\n  ") + (edited.length > 20 ? "\n  ..." : "");
-    throw new Fail(`these output files changed since the last build, and recording the skill would take them too:\n  ${shown}\n`
-      + "Commit them, so the hook records them, or run `patchbook record`, then run this again.");
+  const edited = fork ? handEdits(book, a.out) : [];
+  const waiting = edited.filter((p) => !ownsSkill(p) || !installed(book, p));
+  if (waiting.length) refuseToTake(waiting);
+  if (!fork && !installed(book, FILE) && git(["status", "--porcelain", "--untracked-files=all", "--", FILE], { cwd: book.root, check: false })) {
+    throw new Fail(`${FILE} has changes that are not committed, and installing would replace them. Commit it or restore it, then run this again.`);
   }
-  const changed = installSkill(book);
-  if (changed === null) throw new Fail("the update skill was not installed");
-  if (!changed.length) {
-    process.stdout.write("the update skill is already current\n");
-    return 0;
+  const result = installSkill(book);
+  if (result === null) {
+    throw new Fail(setting("start.agents", book)[0].length ? "the update skill was not installed"
+      : "start.agents is empty, so the update skill was not installed");
   }
+  const { changed, left } = result;
   process.stdout.write(changed.map((p) => `wrote ${p}\n`).join(""));
-  return fork ? recordSkill(book) : 0;
+  const record = fork && (changed.length > 0 || edited.length > 0);
+  const code = record ? await recordSkill(book) : 0;
+  if (left.length) throw new Fail(`the update skill was not installed at ${left.join(", ")}`);
+  if (!changed.length && !record) process.stdout.write("the update skill is already current\n");
+  return code;
 }

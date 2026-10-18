@@ -68,10 +68,7 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   book.writeLock(name, commit, git(["rev-parse", "HEAD^{tree}"], { cwd: dest }));
   writeBuildLock(book, book.currentOutput());
   installHook(dest);
-  if (installSkill(book)) {
-    process.chdir(dest);
-    await recordSkill(book);
-  }
+  if (installSkill(book)) await recordSkill(book);
   git(["add", "-A"], { cwd: dest });
   git(["commit", "--quiet", "-m", `Start a patchbook at upstream ${commit.slice(0, 7)}`], { cwd: dest, env: noHook() });
   process.stdout.write(`cloned ${shown} into ${dest}, pinned at ${commit.slice(0, 7)}.\n`
@@ -110,9 +107,10 @@ async function cmdInit(args: {
   const base = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: root });
   book.writeLock(name, base, book.upstreams[0]!.treeOf(base));
   if (!hasRemote) git(["remote", "add", "--end-of-options", "upstream", args.upstream], { cwd: root });
-  installSkill(book);
+  const installed = installSkill(book);
   writeConfig(root, text);
   installHookOrWarn(root);
+  if (installed?.changed.length) await recordSkill(book);
   process.stdout.write(`pinned upstream at ${base.slice(0, 7)}, where this repo branched from ${follows}.\n`
     + "Capture your existing changes with `patchbook record`, then `patchbook build`, and commit.\n" + SCHEDULE + "\n");
   return 0;
