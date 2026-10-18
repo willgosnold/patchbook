@@ -863,7 +863,7 @@ describe("ForkTest", () => {
   forkTest("test_a_refused_remote_helper_names_the_git_command_without_patchbooks_own_flags", (t) => {
     const fresh = cloneFollowing(t, "pbtest::x");
     const check = t.pb(["check"], { cwd: fresh, code: 1 }).stderr;
-    expect(check).toContain("git ls-remote pbtest::x refs/heads/main failed:\nfatal: transport 'pbtest' not allowed");
+    expect(check).toContain("git ls-remote \"pbtest::x\" refs/heads/main failed:\nfatal: transport 'pbtest' not allowed");
     for (const stderr of [check, t.pb(["status"], { cwd: fresh, code: 1 }).stderr]) {
       expect(stderr).not.toContain("protocol.");
       expect(stderr).not.toContain("--end-of-options");
@@ -1365,7 +1365,7 @@ exec '${Bun.which("git")}' "$@"
 
   vendorTest("test_a_failed_fetch_names_the_upstream_and_the_ref_it_was_asked_for", (t) => {
     const err = t.pb(["sync", "plugin", "no-such-ref"], { cwd: t.repo.path, code: 1 }).stderr;
-    expect(err).toContain(`git fetch ${t.up.path} no-such-ref failed:`);
+    expect(err).toContain(`git fetch ${JSON.stringify(t.up.path)} no-such-ref failed:`);
     expect(err).toContain("fatal:");
     expect(err).not.toContain("refs/patchbook");
   });
