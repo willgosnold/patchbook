@@ -6,8 +6,8 @@ import { Book } from "./book.ts";
 import { type Change, readChanges } from "./changes.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, sameFile, writeDisk, writeText } from "./lib/fs.ts";
-import { dumps } from "./lib/json.ts";
+import { exists, type File, readTextReplace, sameFile, writeDisk, writeText } from "./lib/fs.ts";
+import { dumps, type Json, JsonError, loads } from "./lib/json.ts";
 import { spawn } from "./lib/proc.ts";
 import { sorted } from "./lib/py.ts";
 import { bytesEqual, decodeReplace, isText } from "./lib/text.ts";
@@ -80,16 +80,35 @@ export async function cmdSync(args: { name: string | null; ref: string | null })
   if (args.ref && !args.name && book.upstreams.length > 1) throw new Fail("name the upstream to sync to a ref: patchbook sync <name> <ref>");
   const targets = args.name ? [book.upstream(args.name)] : book.upstreams;
   const changes = readChanges(book, []);
-  const reports = new Map<string, Report>();
+  const path = join(book.dir, "last-sync.json");
+  const reports = savedReports(path);
+  let synced = false;
   for (const u of targets) {
     const report = syncUpstream(book, u, args.ref, changes);
-    if (report) reports.set(u.name, report);
+    if (!report) continue;
+    reports.set(u.name, report);
+    const current = new Map<string, Json>();
+    for (const { name } of book.upstreams) {
+      const kept = reports.get(name);
+      if (kept) current.set(name, kept);
+    }
+    writeText(path, dumps({ upstreams: current }, 2) + "\n");
+    synced = true;
   }
-  if (reports.size) {
-    writeText(join(book.dir, "last-sync.json"), dumps({ upstreams: reports }, 2) + "\n");
-    process.stdout.write("Next: patchbook status\n");
-  }
+  if (synced) process.stdout.write("Next: patchbook status\n");
   return 0;
+}
+
+function savedReports(path: string): Map<string, Json> {
+  if (!exists(path)) return new Map();
+  try {
+    const root = loads(readTextReplace(path));
+    const upstreams = root instanceof Map ? root.get("upstreams") : undefined;
+    return upstreams instanceof Map ? new Map(upstreams) : new Map();
+  } catch (e) {
+    if (e instanceof JsonError) return new Map();
+    throw e;
+  }
 }
 
 /** Move one upstream's pin and carry every change on its files forward. Returns the report, or null. */
