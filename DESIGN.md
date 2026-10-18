@@ -177,7 +177,7 @@ This repo ships a `patchbook-update` skill, built into the `patchbook` binary. `
 
 It stops and asks instead of merging when:
 
-- `patchbook status` lists problems, or the sync wasn't clean and the test command didn't exit 0, with tracked files unchanged, on the commit it would push;
+- the condition in step 6 doesn't hold;
 - upstream removed or reworked something an intent depends on, and retiring the change would lose something the user wanted;
 - meeting an intent needs a choice the intents and the guide don't settle;
 - the review fails twice;
