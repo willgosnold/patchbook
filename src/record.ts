@@ -146,7 +146,7 @@ function sharedSource(s: Snapshot, path: string): Source | null {
   return src && (src.kind === "ours" || !deleted) ? src : null;
 }
 
-const unitKey = (src: Source) => (src.kind === "ours" ? `ours ${src.change} ${src.path}` : `up ${src.path}`);
+const unitKey = (src: Source) => JSON.stringify(src.kind === "ours" ? ["ours", src.change, src.path] : ["up", src.path]);
 
 function classifyOne(s: Snapshot, path: string): Edited {
   const now = s.current.get(path);
@@ -259,7 +259,7 @@ export function record(book: Book, change: string | null, intent: string | null,
 
   const touched = new Map<string, Change>(target ? [[target.name, target]] : []);
   const notes: string[] = [];
-  let text = naming.said !== null ? naming.said + "\n" : "";
+  const printed = () => (naming.said !== null ? naming.said + "\n" : "") + notes.map((n) => n + "\n").join("");
   try {
     for (const e of edits) {
       const done = row(e).apply(e, { target, intent: naming.intent });
@@ -268,7 +268,6 @@ export function record(book: Book, change: string | null, intent: string | null,
     }
     for (const c of touched.values()) if (c.edits.length || c !== target) saveChange(c);
     if (target?.edits.length && !readSeries(book).includes(target.name)) appendSeries(book, target.name);
-    text += notes.join("\n") + "\n";
     // The recorded output is now what the patchbook builds, so it no longer counts as a hand edit.
     const lock = readBuildLock(book);
     if (lock !== null) {
@@ -281,9 +280,9 @@ export function record(book: Book, change: string | null, intent: string | null,
       writeBuildLines(book, lock);
     }
   } catch (error) {
-    throw new Partway(text, error);
+    throw new Partway(printed(), error);
   }
-  return { text };
+  return { text: printed() };
 }
 
 /** An upstream link keeps its type in the build, so a regular file over it would be written back as a link. */

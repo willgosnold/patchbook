@@ -5432,6 +5432,25 @@ describe("ForkTest", () => {
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
 
+  forkTest("test_record_that_cannot_write_a_later_edit_still_says_what_it_wrote_before", (t) => {
+    t.fork.write("aa.txt", "A\n");
+    t.pb(["record", "aa", "--intent", "Aa."], { cwd: t.fork.path });
+    t.fork.write("bb.txt", "B\n");
+    t.pb(["record", "bb", "--intent", "Bb."], { cwd: t.fork.path });
+    t.fork.write("aa.txt", "A2\n");
+    t.fork.write("bb.txt", "B2\n");
+    const bb = join(t.fork.path, ".patchbook/changes/bb/ours/bb.txt.pb");
+    chmodSync(bb, 0o444);
+    try {
+      const r = t.pb(["record"], { cwd: t.fork.path, code: 1 });
+      expect(r.stdout).toBe("update   aa.txt (in aa)\n");
+      expect(r.stderr).toContain("permission denied");
+    } finally {
+      chmodSync(bb, 0o644);
+    }
+    expect(read(join(t.fork.path, ".patchbook/changes/aa/ours/aa.txt.pb"))).toBe("A2\n");
+  });
+
   forkTest("test_commit_records_and_builds", (t) => {
     expect(read(join(t.fork.path, ".git/hooks/pre-commit"))).toContain("Installed by patchbook");
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
