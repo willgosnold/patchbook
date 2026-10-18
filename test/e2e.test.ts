@@ -5358,6 +5358,63 @@ describe("ForkTest", () => {
     expect(changeNames(t)).toEqual(["one-two-three-four"]);
   });
 
+  const unlisted = (t: ForkCase, name: string): string => {
+    const path = join(t.fork.path, ".patchbook/changes", name, "CHANGE.md");
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, `# ${name}\n\nintent: Old intent.\n\nedits:\n- add old.txt\n`);
+    return path;
+  };
+
+  forkTest("test_record_refuses_a_name_whose_folder_is_not_in_the_series", (t) => {
+    const path = unlisted(t, "ghost");
+    const before = readFileSync(path);
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    const out = t.pb(["record", "ghost", "--intent", "New intent."], { cwd: t.fork.path, code: 1 });
+    expect(out.stderr).toContain("change ghost is not in the series");
+    expect(readFileSync(path).equals(before)).toBe(true);
+    expect(existsSync(join(t.fork.path, ".patchbook/series")) ? read(join(t.fork.path, ".patchbook/series")) : "").not.toContain("ghost");
+    expect(t.pb(["record", "--intent", "New intent."], { cwd: t.fork.path }).stdout).toContain("new-intent: New intent.");
+  });
+
+  forkTest("test_record_refuses_a_name_whose_folder_has_no_change_file", (t) => {
+    mkdirSync(join(t.fork.path, ".patchbook/changes/ghost"), { recursive: true });
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    const out = t.pb(["record", "ghost", "--intent", "New intent."], { cwd: t.fork.path, code: 1 });
+    expect(out.stderr).toContain("change ghost is not in the series");
+    expect(readdirSync(join(t.fork.path, ".patchbook/changes/ghost"))).toEqual([]);
+  });
+
+  forkTest("test_record_names_a_change_from_an_intent_around_a_folder_that_is_not_in_the_series", (t) => {
+    const path = unlisted(t, "make-the-second-line");
+    const before = readFileSync(path);
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    const out = t.pb(["record", "--intent", "Make the second line loud."], { cwd: t.fork.path });
+    expect(out.stdout).toContain("make-the-second-line-2: Make the second line loud.");
+    expect(readFileSync(path).equals(before)).toBe(true);
+    expect(read(join(t.fork.path, ".patchbook/changes/make-the-second-line-2/CHANGE.md"))).toContain("intent: Make the second line loud.");
+    expect(read(join(t.fork.path, ".patchbook/series"))).toBe("make-the-second-line-2\n");
+  });
+
+  forkTest("test_commit_with_an_intent_names_the_change_around_a_folder_that_is_not_in_the_series", (t) => {
+    const path = unlisted(t, "make-the-second-line");
+    const before = readFileSync(path);
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "commit", "-qam", "shout"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Make the second line loud." } });
+    expect(readFileSync(path).equals(before)).toBe(true);
+    expect(read(join(t.fork.path, ".patchbook/changes/make-the-second-line-2/CHANGE.md"))).toContain("intent: Make the second line loud.");
+  });
+
+  forkTest("test_record_gives_a_model_chosen_name_a_suffix_when_its_folder_is_not_in_the_series", (t) => {
+    const path = unlisted(t, "shout");
+    const before = readFileSync(path);
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    const out = t.pb(["record"], { cwd: t.fork.path });
+    expect(out.stdout).toContain("shout-2: Shout the second line.");
+    expect(readFileSync(path).equals(before)).toBe(true);
+    expect(read(join(t.fork.path, ".patchbook/changes/shout-2/CHANGE.md"))).toContain("intent: Shout the second line.");
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("change shout is not in the series");
+  });
+
   forkTest("test_commit_with_a_blank_intent_asks_the_model", (t) => {
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
     sh(["git", "commit", "-qam", "shout"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "  \n\t " } });
