@@ -1,17 +1,20 @@
 // Assembling the output from the pinned upstreams and the patchbook, and writing it.
-import { rmdirSync, unlinkSync } from "node:fs";
+import { mkdtempSync, rmdirSync, rmSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { InChange, InEdit, InOutput, Problem } from "./api.ts";
 import {
   entriesPath, type Entry, formatEntry, leakScan, orphan, patchBlocks, readEntries, Rules, type Unmatched,
 } from "./blocks.ts";
-import { Book, GIT, PB, type Reserved, under } from "./book.ts";
+import { Book, buildInputs, GIT, PB, type Reserved, under } from "./book.ts";
 import { type Change, editText, readChanges } from "./changes.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, nonFolders, readDisk, readText, resolve, rglob, rmFolders, sameFile, writeDisk, writeText } from "./lib/fs.ts";
+import {
+  exists, type File, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, nonFolders, readDisk, readText, relative, resolve, rglob, rmFolders, sameFile, writeDisk, writeText,
+} from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { dumps, loads } from "./lib/json.ts";
-import { git, spawn } from "./lib/proc.ts";
+import { type Env, git, run, spawn } from "./lib/proc.ts";
 import { floatRepr, ljust, rstrip, sorted, sortedBy, strip } from "./lib/py.ts";
 import { bytesEqual, decode, encode, isText } from "./lib/text.ts";
 import { pinned } from "./store.ts";
@@ -246,9 +249,12 @@ export const buildLockPath = (book: Book) => join(book.dir, "build.lock");
 
 export function readBuildLock(book: Book): Map<string, string> | null {
   const path = buildLockPath(book);
-  if (!exists(path)) return null;
+  return exists(path) ? parseBuildLock(readText(path)) : null;
+}
+
+export function parseBuildLock(text: string): Map<string, string> {
   const entries = new Map<string, string>();
-  for (const line of readText(path).split("\n")) {
+  for (const line of text.split("\n")) {
     if (!strip(line)) continue;
     const sep = line.indexOf(" ");
     if (sep === -1) entries.set("", line);
@@ -265,12 +271,12 @@ export function writeBuildLines(book: Book, lock: ReadonlyMap<string, string>): 
 
 export const writeBuildLock = (book: Book, out: ReadonlyMap<string, File>) => writeBuildLines(book, oids(out));
 
-type Changes = { stale: string[]; changed: string[] };
+export type Changes = { stale: string[]; changed: string[] };
 
-function changesOf(current: ReadonlyMap<string, File>, out: ReadonlyMap<string, File>): Changes {
+export function changesOf(current: ReadonlyMap<string, File>, out: ReadonlyMap<string, File>, tracksExecBit = true): Changes {
   return {
     stale: Array.from(current.keys()).filter((p) => !out.has(p)),
-    changed: Array.from(out.keys()).filter((p) => !sameFile(current.get(p), out.get(p))),
+    changed: Array.from(out.keys()).filter((p) => !sameFile(current.get(p), out.get(p), tracksExecBit)),
   };
 }
 
@@ -313,16 +319,18 @@ function refuseIfUncontained(book: Book, { stale, changed }: Changes): void {
   }
 }
 
-/** Output paths changed on disk since the last build, other than to what this build writes. */
-export function handEdits(book: Book, fresh: ReadonlyMap<string, File>): string[] {
-  const files = book.currentOutput();
+export type BuildLock = ReadonlyMap<string, string>;
+
+export function handEdits(
+  book: Book, fresh: ReadonlyMap<string, File>, files: ReadonlyMap<string, File>, builds: (BuildLock | null)[] = [readBuildLock(book)],
+): string[] {
   refuseIfUncontained(book, changesOf(files, fresh));
   const current = oids(files);
   const next = oids(fresh);
-  const last = readBuildLock(book);
-  if (last === null) return sorted(Array.from(current.keys()).filter((p) => current.get(p) !== next.get(p))); // never built here
-  const paths = new Set([...current.keys(), ...last.keys()]);
-  return sorted(Array.from(paths).filter((p) => current.get(p) !== last.get(p) && current.get(p) !== next.get(p)));
+  const last = builds.filter((b) => b !== null);
+  if (!last.length) return sorted(Array.from(current.keys()).filter((p) => current.get(p) !== next.get(p))); // never built here
+  const paths = new Set([...current.keys(), ...last.flatMap((b) => [...b.keys()])]);
+  return sorted(Array.from(paths).filter((p) => current.get(p) !== next.get(p) && last.every((b) => current.get(p) !== b.get(p))));
 }
 
 /** A folder where the build writes a file goes only if it holds nothing but folders and files this build removes. */
@@ -338,9 +346,8 @@ function refuseIfFolderHoldsFiles(root: string, { stale, changed }: Changes): vo
   }
 }
 
-export function writeOutput(book: Book, out: ReadonlyMap<string, File>): void {
+export function writeOutput(book: Book, out: ReadonlyMap<string, File>, changes: Changes): void {
   const root = book.outputRoot();
-  const changes = changesOf(book.currentOutput(), out);
   refuseIfUncontained(book, changes);
   refuseIfFolderHoldsFiles(root, changes);
   const { stale, changed } = changes;
@@ -365,13 +372,14 @@ export async function cmdBuild(args: { force: boolean; commit: boolean }) {
     for (const p of a.problems) process.stderr.write(describe(p) + "\n");
     throw new Fail(`${a.problems.length} problems; nothing built. \`patchbook status\` lists them.`);
   }
-  const edited = handEdits(book, a.out);
+  const current = book.currentOutput();
+  const edited = handEdits(book, a.out, current);
   if (edited.length && !args.force) {
     const shown = edited.slice(0, 20).join("\n  ") + (edited.length > 20 ? "\n  ..." : "");
     throw new Fail(`these output files changed since the last build:\n  ${shown}\n`
       + "Move the edits into the patchbook with `patchbook record`, or pass --force to discard them.");
   }
-  writeOutput(book, a.out);
+  writeOutput(book, a.out, changesOf(current, a.out, book.tracksExecBit()));
   process.stdout.write(`built ${a.out.size} files from ${book.pins()} with ${a.applied} edits\n`);
   if (args.commit) commitBuild(book);
   return 0;
@@ -379,8 +387,19 @@ export async function cmdBuild(args: { force: boolean; commit: boolean }) {
 
 function commitBuild(book: Book): void {
   const root = book.root;
-  git(["add", "-A"], { cwd: root });
-  const tree = git(["write-tree"], { cwd: root });
+  const addBuild = (env: Env) => {
+    const tracked = (p: string) => git(["--literal-pathspecs", "ls-files", "-z", "--", p], { cwd: root, env }) !== "";
+    const matchable = (paths: string[]) => paths.filter((p) => lexists(join(root, p)) || tracked(p));
+    const output = matchable([relative(root, book.outputRoot()), ...book.vendors()]).map((p) => `:(literal)${p}`);
+    if (output.length) run(["git", "add", "-A", "--", ...output, `:(exclude,literal)${PB}`], { cwd: root, env: { ...env, GIT_LITERAL_PATHSPECS: "0" } });
+    const inputs = matchable([...buildInputs(book), `${PB}/retired.md`]);
+    const ignored = new Set(decode(run(["git", "--literal-pathspecs", "ls-files", "-z", "-o", "-i", "--exclude-standard", "--", ...inputs], { cwd: root, env })).split("\0"));
+    const addable = inputs.filter((p) => !ignored.has(p));
+    if (addable.length) git(["--literal-pathspecs", "add", "-A", "--", ...addable], { cwd: root, env });
+    if (tracked(PB)) git(["--literal-pathspecs", "add", "-u", "--", PB], { cwd: root, env });
+  };
+  addBuild(process.env);
+  const tree = headTreeWith(root, addBuild);
   const parents = ["-p", "HEAD"];
   const own = book.upstreams.find((u) => u.inRepo);
   if (own) {
@@ -396,6 +415,18 @@ function commitBuild(book: Book): void {
   const commit = git(["commit-tree", tree, ...parents, "-m", message], { cwd: root });
   git(["update-ref", "HEAD", commit], { cwd: root });
   process.stdout.write(`committed ${commit.slice(0, 7)}: ${message}\n`);
+}
+
+function headTreeWith(root: string, add: (env: Env) => void): string {
+  const tmp = mkdtempSync(join(tmpdir(), "tmp"));
+  try {
+    const env = { ...process.env, GIT_INDEX_FILE: join(tmp, "index") };
+    git(["read-tree", "HEAD"], { cwd: root, env });
+    add(env);
+    return git(["write-tree"], { cwd: root, env });
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 export async function cmdStatus(args: { json: boolean }) {

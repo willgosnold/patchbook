@@ -47,9 +47,9 @@ patchbook init --upstream <url> --path <folder> --output-to <folder>
 
 Both install a pre-commit hook in the repo, and write the `patchbook-update` skill for agents to `.agents/skills/patchbook-update/`, with a `.claude/skills` link for Claude Code.
 
-**2. Change things.** Edit files the way you normally would, including the built output, then commit as usual.
+**2. Change things.** Edit files the way you normally would, including the built output, then stage them and commit as usual.
 
-A pre-commit hook moves your edits into the patchbook, rebuilds, and adds both to the commit. A model reads the edits, names the change and writes its intent: what the change does and why. It uses Claude if it's installed, otherwise Codex; `patchbook config intent.provider codex` switches. To write the intent yourself, commit with `PATCHBOOK_INTENT="..." git commit`, or run `patchbook record <name> --intent "..."` first.
+A pre-commit hook moves the edits you staged into the patchbook, rebuilds, and adds both to the commit. A model reads the edits, names the change and writes its intent: what the change does and why. It uses Claude if it's installed, otherwise Codex; `patchbook config intent.provider codex` switches. To write the intent yourself, commit with `PATCHBOOK_INTENT="..." git commit`, or run `patchbook record <name> --intent "..."` and `git add .patchbook` first.
 
 The intent matters most. It's how an agent redoes your change later, if upstream rewrites the code underneath it.
 

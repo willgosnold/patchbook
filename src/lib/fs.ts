@@ -10,6 +10,7 @@ import { compareParts } from "./py.ts";
 import { bytesEqual, decode, decodeReplace, encode } from "./text.ts";
 
 export const LINK = 0o120000;
+export const GITLINK = 0o160000;
 export type Mode = 0o644 | 0o755 | typeof LINK;
 /** A file as git stores it: its bytes, or a symlink's target, and its mode. */
 export type File = { data: Uint8Array; mode: Mode };
@@ -23,9 +24,11 @@ export function isMode(mode: unknown): mode is Mode {
   return mode === 0o644 || mode === 0o755 || mode === LINK;
 }
 
-export function sameFile(a: File | undefined, b: File | undefined): boolean {
+export const sameMode = (a: Mode, b: Mode, tracksExecBit = true) => a === b || (!tracksExecBit && a !== LINK && b !== LINK);
+
+export function sameFile(a: File | undefined, b: File | undefined, tracksExecBit = true): boolean {
   if (a === undefined || b === undefined) return a === b;
-  return a.mode === b.mode && bytesEqual(a.data, b.data);
+  return sameMode(a.mode, b.mode, tracksExecBit) && bytesEqual(a.data, b.data);
 }
 
 /** `Path(a) / b`: joined and normalised, with no trailing slash. An absolute part drops the ones before it. */

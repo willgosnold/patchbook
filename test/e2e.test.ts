@@ -2118,6 +2118,29 @@ test("test_the_commit_hook_stages_only_the_output_file_it_names_when_the_folder_
   }
 }, TIMEOUT);
 
+test("test_the_commit_hook_reads_an_output_folder_whose_name_starts_with_a_colon", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("a.md", "a\n");
+    up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    repo.write("README.md", "mine\n");
+    repo.commit("start");
+    t.pb(["init", "--upstream", up.path, "--output-to", ":x"], { cwd: repo.path });
+    t.pb(["build"], { cwd: repo.path });
+    repo.commit("build");
+    repo.write("README.md", "mine, edited\n");
+    sh(["git", "add", "README.md"], { cwd: repo.path });
+    const env = { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Edit the readme." };
+    sh(["git", "commit", "-qm", "edit the readme"], { cwd: repo.path, env });
+    expect(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: repo.path }).stdout.trim()).toBe("README.md");
+    expect(sh(["git", "ls-files", "--", ":(literal):x/a.md"], { cwd: repo.path }).stdout.trim()).toBe(":x/a.md");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("test_a_vendored_folder_with_glob_characters_builds_only_its_own_files", () => {
   const t = new Case();
   try {
@@ -3255,7 +3278,7 @@ describe("ForkTest", () => {
     });
   }
 
-  const hookCommit = (t: ForkCase, ...args: string[]) =>
+  const intoKeptCommit = (t: ForkCase, ...args: string[]) =>
     sh(["git", "commit", "-qm", "into kept", ...args], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Shout two." }, check: false });
   const gitState = (t: ForkCase): string =>
     ["rev-parse HEAD", "ls-files -s", "diff --cached", "diff"].map((a) => sh(["git", ...a.split(" ")], { cwd: t.fork.path }).stdout).join("\n--\n");
@@ -3283,7 +3306,7 @@ describe("ForkTest", () => {
         sh(["git", "add", "-A"], { cwd: t.fork.path });
         const files = tree(t.fork.path);
         const state = gitState(t);
-        const refused = hookCommit(t);
+        const refused = intoKeptCommit(t);
         expect(refused.code).toBe(1);
         expect(refused.stderr).toContain("patchbook: refusing this commit");
         expect(refused.stderr).toContain(`  invalid   changes/into-kept ${edit}: ${dest} would be written into ${place}\n`);
@@ -3297,25 +3320,30 @@ describe("ForkTest", () => {
     }
   }
 
-  const handAdded = [
-    ["a_staged_file_under_dot_PATCHBOOK", ".PATCHBOOK/x.md", true, ".patchbook"],
-    ["an_untracked_file_under_dot_GIT", "a/.GIT/y", false, ".git"],
-  ] as const;
-  for (const [name, path, staged, place] of handAdded) {
-    forkTestOnCaseSensitiveFs(`test_hook_refuses_${name}_before_recording_it`, (t) => {
-      t.fork.write(path, "ours\n");
-      if (staged) sh(["git", "add", "--", path], { cwd: t.fork.path });
-      const files = tree(t.fork.path);
-      const state = gitState(t);
-      const refused = hookCommit(t, "--allow-empty");
-      expect(refused.code).toBe(1);
-      expect(refused.stderr).toContain(`patchbook: refusing this commit: ${path} is new, but a change can't write into ${place}.`);
-      expect(refused.stderr).toContain(`Move ${path} out of there, or skip the hook once with PATCHBOOK_HOOK=0.`);
-      expect(tree(t.fork.path)).toEqual(files);
-      expect(gitState(t)).toBe(state);
-      expect(existsSync(join(t.fork.path, ".patchbook/changes"))).toBe(false);
-    });
-  }
+  forkTestOnCaseSensitiveFs("test_hook_refuses_a_staged_file_under_dot_PATCHBOOK_before_recording_it", (t) => {
+    const [path, place] = [".PATCHBOOK/x.md", ".patchbook"];
+    t.fork.write(path, "ours\n");
+    sh(["git", "add", "--", path], { cwd: t.fork.path });
+    const files = tree(t.fork.path);
+    const state = gitState(t);
+    const refused = intoKeptCommit(t, "--allow-empty");
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain(`patchbook: refusing this commit: ${path} is new, but a change can't write into ${place}.`);
+    expect(refused.stderr).toContain(`Move ${path} out of there, or skip the hook once with PATCHBOOK_HOOK=0.`);
+    expect(tree(t.fork.path)).toEqual(files);
+    expect(gitState(t)).toBe(state);
+    expect(existsSync(join(t.fork.path, ".patchbook/changes"))).toBe(false);
+  });
+
+  forkTestOnCaseSensitiveFs("test_hook_leaves_an_untracked_file_under_dot_GIT_out_of_the_commit", (t) => {
+    t.fork.write("a/.GIT/y", "ours\n");
+    expect(sh(["git", "add", "--", "a/.GIT/y"], { cwd: t.fork.path, check: false }).code).not.toBe(0);
+    const committed = intoKeptCommit(t, "--allow-empty");
+    expect(committed.code).toBe(0);
+    expect(committed.stderr).not.toContain("refusing this commit");
+    expect(t.fork.read("a/.GIT/y")).toBe("ours\n");
+    expect(existsSync(join(t.fork.path, ".patchbook/changes"))).toBe(false);
+  });
 
   const hookRefusesUnsafe = [
     ["add_climbing_out", "add ../outside.txt"],
@@ -3339,7 +3367,7 @@ describe("ForkTest", () => {
         const files = tree(t.fork.path);
         const state = gitState(t);
         const beside = readdirSync(t.tmp).sort();
-        const refused = hookCommit(t);
+        const refused = intoKeptCommit(t);
         expect(refused.code).toBe(1);
         expect(refused.stderr).toContain("patchbook: refusing this commit");
         expect(refused.stderr).toContain(`  invalid   changes/unsafe ${edit}: `);
@@ -3362,7 +3390,7 @@ describe("ForkTest", () => {
     writeFileSync(join(t.fork.path, ".patchbook/series"), "gone\n");
     sh(["git", "add", "-A"], { cwd: t.fork.path });
     const before = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
-    const committed = hookCommit(t);
+    const committed = intoKeptCommit(t);
     expect(committed.code).toBe(0);
     expect(committed.stderr).toContain("1 problems, so the output wasn't rebuilt.");
     expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).not.toBe(before);
@@ -3498,7 +3526,7 @@ describe("ForkTest", () => {
       sh(["git", "add", "-A"], { cwd: t.fork.path });
       const files = tree(t.fork.path);
       const state = gitState(t);
-      const refused = hookCommit(t);
+      const refused = intoKeptCommit(t);
       expect(refused.code).toBe(1);
       expect(refused.stderr).toContain("patchbook: refusing this commit");
       expect(refused.stderr).toContain(`${JSON.stringify(name)} isn't a valid change name`);
@@ -4042,6 +4070,748 @@ describe("ForkTest", () => {
     expect(sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout).toBe("");
   });
 
+  const hookCommit = (t: ForkCase, args: string[], check = true) =>
+    sh(["git", "commit", "-q", ...args], { cwd: t.fork.path, check, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+  const committed = (t: ForkCase): string[] => words(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.fork.path }).stdout);
+  const porcelain = (t: ForkCase): string => sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout;
+
+  forkTest("test_commit_leaves_out_an_untracked_file", (t) => {
+    t.fork.write("notes.txt", "scratch\n");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "only app.txt"]);
+    const files = committed(t);
+    expect(files).toContain("app.txt");
+    expect(files).toContain(".patchbook/changes/shout/CHANGE.md");
+    expect(files.filter((f) => f.includes("notes.txt"))).toEqual([]);
+    expect(read(join(t.fork.path, ".patchbook/changes/shout/CHANGE.md"))).not.toContain("notes.txt");
+    expect(porcelain(t)).toBe("?? notes.txt\n");
+  });
+
+  forkTest("test_commit_records_only_the_staged_part_of_a_file", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    const staged = t.fork.read("app.txt");
+    t.fork.write("app.txt", replace(staged, "three", "THREE"));
+    const unstaged = t.fork.read("app.txt");
+    hookCommit(t, ["-m", "shout two"]);
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toBe(staged);
+    const shown = t.pb(["show", "shout"], { cwd: t.fork.path }).stdout;
+    expect(shown).toContain("+TWO");
+    expect(shown).not.toContain("THREE");
+    expect(t.fork.read("app.txt")).toBe(unstaged);
+    expect(porcelain(t)).toBe(" M app.txt\n");
+  });
+
+  forkTest("test_partial_commit_records_only_the_paths_it_names", (t) => {
+    t.fork.write("staged.txt", "staged\n");
+    sh(["git", "add", "staged.txt"], { cwd: t.fork.path });
+    t.fork.write("notes.txt", "scratch\n");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    hookCommit(t, ["-m", "only app.txt", "app.txt"]);
+    const files = committed(t);
+    expect(files).toContain("app.txt");
+    expect(files).toContain(".patchbook/changes/shout/CHANGE.md");
+    expect(files.filter((f) => f.includes("staged.txt") || f.includes("notes.txt"))).toEqual([]);
+    expect(porcelain(t)).toBe("A  staged.txt\n?? notes.txt\n");
+  });
+
+  forkTest("test_commit_refuses_to_build_over_unstaged_edits", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    hookCommit(t, ["-am", "shout"]);
+    const ours = join(t.fork.path, ".patchbook/changes/shout/ours/app.txt.pb");
+    writeFileSync(ours, replace(read(ours), "TWO", "Two"));
+    sh(["git", "add", ours], { cwd: t.fork.path });
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE"));
+    const edited = t.fork.read("app.txt");
+    t.fork.write("docs/guide.md", "a better guide\n");
+    sh(["git", "add", "docs/guide.md"], { cwd: t.fork.path });
+    const before = porcelain(t);
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+    const commit = hookCommit(t, ["-m", "soften"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("changes you haven't staged:\n  app.txt");
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
+    expect(t.fork.read("app.txt")).toBe(edited);
+    expect(read(ours)).toContain("Two");
+    expect(porcelain(t)).toBe(before);
+  });
+
+  forkTest("test_commit_after_record_takes_what_was_recorded", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("new.txt", "hello\n");
+    t.pb(["record", "loud", "--intent", "Shout the second line and add new.txt."], { cwd: t.fork.path });
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "loud"]);
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("TWO");
+    expect(sh(["git", "show", "HEAD:new.txt"], { cwd: t.fork.path }).stdout).toBe("hello\n");
+    expect(read(join(t.fork.path, ".patchbook/changes/loud/CHANGE.md"))).toContain("- add new.txt");
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_after_build_takes_the_built_output", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    hookCommit(t, ["-am", "shout"]);
+    const ours = join(t.fork.path, ".patchbook/changes/shout/ours/app.txt.pb");
+    writeFileSync(ours, replace(read(ours), "TWO", "Two"));
+    t.pb(["build"], { cwd: t.fork.path });
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "soften"]);
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("Two");
+    expect(read(ours)).toContain("Two");
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_refuses_patchbook_edits_it_does_not_take", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    hookCommit(t, ["-am", "shout"]);
+    const ours = join(t.fork.path, ".patchbook/changes/shout/ours/app.txt.pb");
+    writeFileSync(ours, replace(read(ours), "TWO", "Two"));
+    t.fork.write("docs/guide.md", "a better guide\n");
+    sh(["git", "add", "docs/guide.md"], { cwd: t.fork.path });
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+    const commit = hookCommit(t, ["-m", "guide"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("the patchbook has changes that aren't in this commit:\n  .patchbook/changes/shout/ours/app.txt.pb");
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
+    expect(t.fork.read("app.txt")).toContain("TWO");
+    expect(porcelain(t)).toBe(" M .patchbook/changes/shout/ours/app.txt.pb\nM  docs/guide.md\n");
+  });
+
+  forkTest("test_commit_builds_over_a_file_git_converts_on_checkout", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    hookCommit(t, ["-am", "shout"]);
+    writeFileSync(join(t.fork.path, ".git/info/attributes"), "*.txt text eol=crlf\n");
+    t.fork.rm("app.txt");
+    sh(["git", "checkout", "--", "app.txt"], { cwd: t.fork.path });
+    expect(t.fork.read("app.txt")).toContain("TWO\r\n");
+    const ours = join(t.fork.path, ".patchbook/changes/shout/ours/app.txt.pb");
+    writeFileSync(ours, replace(read(ours), "TWO", "Two"));
+    sh(["git", "add", ours], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "soften"]);
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("Two");
+  });
+
+  const renameToIgnoredLocalCfg = (t: ForkCase) => {
+    t.fork.write("extra.txt", "ours\n");
+    sh(["git", "add", "extra.txt"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "extra"]);
+    const change = join(t.fork.path, ".patchbook/changes/shout");
+    writeFileSync(join(change, "CHANGE.md"), replace(read(join(change, "CHANGE.md")), "- add extra.txt", "- add local.cfg"));
+    sh(["git", "mv", join(change, "ours/extra.txt.pb"), join(change, "ours/local.cfg.pb")], { cwd: t.fork.path });
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+    writeFileSync(join(t.fork.path, ".git/info/exclude"), "local.cfg\n");
+  };
+
+  forkTest("test_commit_keeps_an_ignored_file_the_build_would_overwrite", (t) => {
+    renameToIgnoredLocalCfg(t);
+    t.fork.write("local.cfg", "mine\n");
+    expect(hookCommit(t, ["-m", "rename"], false).code).toBe(0);
+    expect(committed(t)).toContain("extra.txt");
+    expect(t.fork.read("local.cfg")).toBe("mine\n");
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_writes_ignored_output_to_disk_and_leaves_it_out", (t) => {
+    renameToIgnoredLocalCfg(t);
+    expect(hookCommit(t, ["-m", "rename"]).stderr).not.toContain("local.cfg");
+    expect(t.fork.read("local.cfg")).toBe("ours\n");
+    expect(sh(["git", "ls-files", "local.cfg"], { cwd: t.fork.path }).stdout).toBe("");
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_leaves_out_an_intent_to_add_file", (t) => {
+    t.fork.write("notes.txt", "scratch\n");
+    sh(["git", "add", "-N", "notes.txt"], { cwd: t.fork.path });
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "only app.txt"]);
+    expect(committed(t).filter((f) => f.includes("notes.txt"))).toEqual([]);
+    expect(read(join(t.fork.path, ".patchbook/changes/shout/CHANGE.md"))).not.toContain("notes.txt");
+    expect(porcelain(t)).toBe(" A notes.txt\n");
+  });
+
+  forkTest("test_commit_stages_a_built_path_literally", (t) => {
+    t.fork.write("a[1].txt", "one\n");
+    sh(["git", "--literal-pathspecs", "add", "a[1].txt"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "add a[1].txt"]);
+    const ours = join(t.fork.path, ".patchbook/changes/shout/ours/a[1].txt.pb");
+    writeFileSync(ours, "ONE\n");
+    sh(["git", "--literal-pathspecs", "add", ours], { cwd: t.fork.path });
+    t.fork.write("a1.txt", "scratch\n");
+    hookCommit(t, ["-m", "shout a[1].txt"]);
+    expect(sh(["git", "show", "HEAD:a[1].txt"], { cwd: t.fork.path }).stdout).toBe("ONE\n");
+    expect(committed(t)).not.toContain("a1.txt");
+    expect(porcelain(t)).toBe("?? a1.txt\n");
+  });
+
+  forkTest("test_partial_commit_on_its_own_index_says_how_to_keep_the_record", (t) => {
+    const index = join(t.tmp, "index");
+    writeFileSync(index, readFileSync(join(t.fork.path, ".git/index")));
+    const env = { ...t.env, GIT_INDEX_FILE: index };
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    const commit = sh(["git", "commit", "-qm", "only app.txt", "app.txt"], { cwd: t.fork.path, env: { ...env, PATCHBOOK_HOOK: "1" } });
+    expect(commit.stderr).toContain("run `git --literal-pathspecs reset -q -- .patchbook/");
+    const paths = commit.stderr.split("reset -q -- ")[1]!.split("`")[0]!.split(" ");
+    sh(["git", "--literal-pathspecs", "reset", "-q", "--", ...paths], { cwd: t.fork.path, env });
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.fork.path, env }).stdout).toBe("");
+  });
+
+  const syncAndBuild = (t: ForkCase) => {
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+  };
+
+  const stageAnOlderBuild = (t: ForkCase) => {
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "two", "two v1"));
+    t.up.commit("v1");
+    syncAndBuild(t);
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "two v1", "two v2"));
+    t.up.commit("v2");
+    syncAndBuild(t);
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+  };
+
+  const stopsOnAnOlderBuild = (t: ForkCase, path: string) => {
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+    const before = [porcelain(t), tree(t.fork.path)];
+    const commit = hookCommit(t, ["-m", "take upstream"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain(`\n  ${path}\n`);
+    expect(commit.stderr).toContain(`git --literal-pathspecs add -- ${path}`);
+    expect(commit.stderr).toContain(`git --literal-pathspecs checkout -- ${path}`);
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
+    expect([porcelain(t), tree(t.fork.path)]).toEqual(before);
+  };
+
+  forkTest("test_commit_stops_on_an_older_build_left_in_the_index_and_takes_the_newer_once_added", (t) => {
+    stageAnOlderBuild(t);
+    stopsOnAnOlderBuild(t, "app.txt");
+    sh("git --literal-pathspecs add -- app.txt".split(" "), { cwd: t.fork.path });
+    expect(hookCommit(t, ["-m", "take upstream"]).stderr).not.toContain("app.txt");
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("two v2");
+    expect(t.fork.read("app.txt")).toContain("two v2");
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_stops_on_an_older_build_left_in_the_index_and_records_it_once_checked_out", (t) => {
+    stageAnOlderBuild(t);
+    stopsOnAnOlderBuild(t, "app.txt");
+    sh("git --literal-pathspecs checkout -- app.txt".split(" "), { cwd: t.fork.path });
+    expect(hookCommit(t, ["-m", "take upstream"]).stderr).toContain("file     app.txt");
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("two v1");
+    expect(t.fork.read("app.txt")).toContain("two v1");
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_records_a_staged_edit_the_working_copy_put_back", (t) => {
+    const built = t.fork.read("app.txt");
+    t.fork.write("app.txt", replace(built, "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    t.fork.write("app.txt", built);
+    expect(hookCommit(t, ["-m", "shout"]).stderr).toContain("file     app.txt");
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("TWO");
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_records_a_staged_edit_after_build_force", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    t.pb(["build", "--force"], { cwd: t.fork.path });
+    expect(hookCommit(t, ["-m", "shout"]).stderr).toContain("file     app.txt");
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("TWO");
+    expect(porcelain(t)).toBe("");
+  });
+
+  const stageAnOlderBuildsFile = (t: ForkCase) => {
+    t.up.write("extra.txt", "extra\n");
+    t.up.commit("add extra.txt");
+    syncAndBuild(t);
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    t.up.rm("extra.txt");
+    t.up.commit("remove extra.txt");
+    syncAndBuild(t);
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+  };
+
+  forkTest("test_commit_stops_on_a_file_an_older_build_left_in_the_index_and_drops_it_once_added", (t) => {
+    stageAnOlderBuildsFile(t);
+    stopsOnAnOlderBuild(t, "extra.txt");
+    sh("git --literal-pathspecs add -- extra.txt".split(" "), { cwd: t.fork.path });
+    expect(hookCommit(t, ["-m", "take upstream"]).stderr).not.toContain("extra.txt");
+    expect(sh(["git", "ls-files", "extra.txt"], { cwd: t.fork.path }).stdout).toBe("");
+    expect(existsSync(join(t.fork.path, "extra.txt"))).toBe(false);
+    expect(porcelain(t)).toBe("");
+    t.pb(["build"], { cwd: t.fork.path });
+  });
+
+  forkTest("test_commit_stops_on_a_file_an_older_build_left_in_the_index_and_records_it_once_checked_out", (t) => {
+    stageAnOlderBuildsFile(t);
+    stopsOnAnOlderBuild(t, "extra.txt");
+    sh("git --literal-pathspecs checkout -- extra.txt".split(" "), { cwd: t.fork.path });
+    expect(hookCommit(t, ["-m", "keep extra"]).stderr).toContain("add      extra.txt");
+    expect(sh(["git", "show", "HEAD:extra.txt"], { cwd: t.fork.path }).stdout).toBe("extra\n");
+    expect(t.fork.read("extra.txt")).toBe("extra\n");
+    expect(porcelain(t)).toBe("");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(porcelain(t)).toBe("");
+  });
+
+  const placeholderInOutput = (t: ForkCase) => {
+    t.up.write("greet.txt", "Say hello in Cursor.\n");
+    t.up.write("strings.md", "## greet\n\nhello\n");
+    t.up.commit("add greet.txt and strings.md");
+    syncAndBuild(t);
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    writeFileSync(config, read(config) + dedent(`
+      [placeholders.snippet]
+      file = "strings.md"
+      format = "sections"
+
+      [[check]]
+      name = "cursor"
+      files = ["greet.txt"]
+      pattern = '\\bCursor\\b'
+    `));
+    t.pb(["scaffold"], { cwd: t.fork.path });
+    const entries = join(t.fork.path, ".patchbook/blocks/greet.txt.entries");
+    const text = replace(read(entries), "rules: \nintent: \n", "rules: t3\nintent: Speak T3.\n");
+    writeFileSync(entries, partitionHead(text, "--- patched\n") + "--- patched\n{{snippet:greet}}\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "greet from strings.md"]);
+    expect(t.fork.read("greet.txt")).toBe("hello\n");
+    expect(porcelain(t)).toBe("");
+  };
+
+  forkTest("test_commit_stops_on_an_unstaged_edit_to_a_placeholder_file_in_the_output", (t) => {
+    placeholderInOutput(t);
+    t.fork.write("strings.md", "## greet\n\nhi there\n");
+    t.fork.write("notes.txt", "notes\n");
+    sh(["git", "add", "notes.txt"], { cwd: t.fork.path });
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+    const before = [porcelain(t), tree(t.fork.path)];
+    const commit = hookCommit(t, ["-m", "notes"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("the patchbook has changes that aren't in this commit:\n  strings.md\n");
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
+    expect([porcelain(t), tree(t.fork.path)]).toEqual(before);
+    sh(["git", "add", "strings.md"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "notes"]);
+    expect(sh(["git", "show", "HEAD:strings.md"], { cwd: t.fork.path }).stdout).toContain("hi there");
+    expect(sh(["git", "show", "HEAD:greet.txt"], { cwd: t.fork.path }).stdout).toBe("hi there\n");
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_stops_on_a_staged_placeholder_file_in_the_output_the_working_copy_put_back", (t) => {
+    placeholderInOutput(t);
+    const built = t.fork.read("strings.md");
+    t.fork.write("strings.md", "## greet\n\nhi there\n");
+    sh(["git", "add", "strings.md"], { cwd: t.fork.path });
+    t.fork.write("strings.md", built);
+    stopsOnAnOlderBuild(t, "strings.md");
+    sh("git --literal-pathspecs checkout -- strings.md".split(" "), { cwd: t.fork.path });
+    hookCommit(t, ["-m", "say hi"]);
+    expect(sh(["git", "show", "HEAD:strings.md"], { cwd: t.fork.path }).stdout).toContain("hi there");
+    expect(sh(["git", "show", "HEAD:greet.txt"], { cwd: t.fork.path }).stdout).toBe("hi there\n");
+    expect(porcelain(t)).toBe("");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_takes_a_placeholder_file_in_the_output_that_the_build_changed", (t) => {
+    placeholderInOutput(t);
+    t.up.write("strings.md", "## greet\n\nhowdy\n");
+    t.up.commit("howdy");
+    syncAndBuild(t);
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "take upstream"]);
+    expect(sh(["git", "show", "HEAD:strings.md"], { cwd: t.fork.path }).stdout).toContain("howdy");
+    expect(sh(["git", "show", "HEAD:greet.txt"], { cwd: t.fork.path }).stdout).toBe("howdy\n");
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_without_file_modes_builds_a_program_from_upstream_once", (t) => {
+    sh(["git", "config", "core.fileMode", "false"], { cwd: t.fork.path });
+    t.up.write("new.sh", "echo up\n", 0o755);
+    t.up.commit("add new.sh");
+    syncAndBuild(t);
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "take upstream"]);
+    expect(committed(t)).toContain("new.sh");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    const later = hookCommit(t, ["-m", "shout"]);
+    expect(later.stderr).not.toContain("built from");
+    expect(committed(t)).not.toContain("new.sh");
+  });
+
+  forkTest("test_commit_without_file_modes_records_an_edit_to_a_program_from_upstream", (t) => {
+    sh(["git", "config", "core.fileMode", "false"], { cwd: t.fork.path });
+    t.up.write("new.sh", "echo up\n", 0o755);
+    t.up.commit("add new.sh");
+    syncAndBuild(t);
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "take upstream"]);
+    t.fork.write("new.sh", "echo mine\n", 0o755);
+    sh(["git", "add", "new.sh"], { cwd: t.fork.path });
+    expect(hookCommit(t, ["-m", "mine"]).stderr).toContain("file     new.sh");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_after_sync_leaves_the_sync_report_untracked", (t) => {
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "one", "ONE"));
+    t.up.commit("move");
+    t.pb(["sync"], { cwd: t.fork.path });
+    hookCommit(t, ["-am", "Sync upstream"]);
+    expect(committed(t)).toContain(".patchbook/upstream.lock");
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("ONE");
+    expect(porcelain(t)).toBe("?? .patchbook/last-sync.json\n");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "shout"]);
+    expect(committed(t)).toContain(".patchbook/changes/shout/CHANGE.md");
+    expect(porcelain(t)).toBe("?? .patchbook/last-sync.json\n");
+  });
+
+  forkTest("test_commit_leaves_out_an_untracked_file_in_the_patchbook_folder", (t) => {
+    writeFileSync(join(t.fork.path, ".patchbook/scratch.txt"), "my note\n");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "shout"]);
+    expect(committed(t)).toContain(".patchbook/changes/shout/CHANGE.md");
+    expect(committed(t)).not.toContain(".patchbook/scratch.txt");
+    expect(porcelain(t)).toBe("?? .patchbook/scratch.txt\n");
+  });
+
+  forkTest("test_build_commit_leaves_out_an_untracked_file_in_the_patchbook_folder", (t) => {
+    writeFileSync(join(t.fork.path, ".patchbook/notes.md"), "v1\n");
+    t.fork.commit("notes");
+    writeFileSync(join(t.fork.path, ".patchbook/notes.md"), "v2\n");
+    writeFileSync(join(t.fork.path, ".patchbook/scratch.txt"), "my note\n");
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "two", "deux"));
+    t.up.commit("move");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build", "--commit"], { cwd: t.fork.path });
+    for (const p of [".patchbook/build.lock", ".patchbook/notes.md", ".patchbook/upstream.lock"]) expect(committed(t)).toContain(p);
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("deux");
+    expect(committed(t)).not.toContain(".patchbook/scratch.txt");
+    expect(porcelain(t)).toBe("?? .patchbook/last-sync.json\n?? .patchbook/scratch.txt\n");
+  });
+
+  forkTest("test_partial_commit_says_the_patchbook_changes_are_not_in_it", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "loud", "--intent", "Shout the second line."], { cwd: t.fork.path });
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+    const commit = hookCommit(t, ["-m", "only app.txt", "app.txt"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("the patchbook has changes that aren't in this commit:\n  .patchbook/build.lock");
+    expect(commit.stderr).not.toContain("haven't staged");
+  });
+
+  forkTest("test_commit_keeps_a_staged_new_file_deleted_from_the_working_tree", (t) => {
+    t.fork.write("new.txt", "new\n");
+    sh(["git", "add", "new.txt"], { cwd: t.fork.path });
+    t.fork.rm("new.txt");
+    hookCommit(t, ["-m", "add new.txt"]);
+    expect(committed(t)).toContain("new.txt");
+    expect(sh(["git", "show", "HEAD:new.txt"], { cwd: t.fork.path }).stdout).toBe("new\n");
+  });
+
+  forkTest("test_commit_over_an_unstaged_edit_advises_a_stash_that_keeps_the_build", (t) => {
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "one", "ONE"));
+    t.up.commit("move");
+    t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+    t.fork.write("app.txt", t.fork.read("app.txt") + "local\n");
+    const commit = hookCommit(t, ["-m", "Sync upstream"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).not.toContain("Stage them");
+    const stash = "git --literal-pathspecs stash push -a -- app.txt";
+    expect(commit.stderr).toContain(stash);
+    sh(stash.split(" "), { cwd: t.fork.path });
+    hookCommit(t, ["-m", "Sync upstream"]);
+    sh(["git", "stash", "pop", "-q"], { cwd: t.fork.path });
+    expect(t.fork.read("app.txt")).toStartWith("ONE\n");
+    expect(t.fork.read("app.txt")).toEndWith("local\n");
+  });
+
+  forkTest("test_commit_over_an_unstaged_edit_beside_an_intent_to_add_entry_advises_untracking_it_first", (t) => {
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "one", "ONE"));
+    t.up.commit("move");
+    t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+    t.fork.write("app.txt", t.fork.read("app.txt") + "local\n");
+    t.fork.write("notes.txt", "scratch\n");
+    sh(["git", "add", "-N", "notes.txt"], { cwd: t.fork.path });
+    const commit = hookCommit(t, ["-m", "Sync upstream"], false);
+    expect(commit.code).not.toBe(0);
+    const untrack = "git --literal-pathspecs rm -q --cached -- notes.txt";
+    expect(commit.stderr).toContain(untrack);
+    expect(commit.stderr.indexOf(untrack)).toBeLessThan(commit.stderr.indexOf("stash push"));
+    sh(untrack.split(" "), { cwd: t.fork.path });
+    sh("git --literal-pathspecs stash push -a -- app.txt".split(" "), { cwd: t.fork.path });
+    hookCommit(t, ["-m", "Sync upstream"]);
+    sh(["git", "stash", "pop", "-q"], { cwd: t.fork.path });
+    expect(t.fork.read("app.txt")).toStartWith("ONE\n");
+    expect(t.fork.read("app.txt")).toEndWith("local\n");
+    expect(t.fork.read("notes.txt")).toBe("scratch\n");
+  });
+
+  forkTest("test_commit_refuses_to_build_over_an_unstaged_edit_to_a_name_with_a_leading_space", (t) => {
+    t.up.write(" spaced.txt", "v1\n");
+    t.up.commit("v1");
+    syncAndBuild(t);
+    t.fork.commit("v1");
+    t.up.write(" spaced.txt", "v2\n");
+    t.up.commit("v2");
+    t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+    t.fork.write(" spaced.txt", "mine\n");
+    const commit = hookCommit(t, ["-m", "v2"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).not.toContain("delete");
+    expect(existsSync(join(t.fork.path, ".patchbook/changes"))).toBe(false);
+    expect(commit.stderr).toContain("changes you haven't staged:\n   spaced.txt");
+    expect(t.fork.read(" spaced.txt")).toBe("mine\n");
+  });
+
+  forkTest("test_commit_stages_records_the_repo_ignores", (t) => {
+    writeFileSync(join(t.fork.path, ".git/info/exclude"), "*.pb\n");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "shout"]);
+    expect(committed(t)).toContain(".patchbook/changes/shout/ours/app.txt.pb");
+    expect(committed(t)).toContain(".patchbook/changes/shout/base/app.txt.pb");
+  });
+
+  forkTest("test_commit_builds_over_an_unstaged_mode_change", (t) => {
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "two", "two v1"));
+    t.up.commit("v1");
+    t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+    chmodSync(join(t.fork.path, "app.txt"), 0o755);
+    hookCommit(t, ["-m", "v1"]);
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("two v1");
+    expect(headMode(t, "app.txt")).toBe("100644");
+  });
+
+  forkTest("test_commit_stops_on_a_file_removed_from_the_index_but_kept_on_disk", (t) => {
+    sh(["git", "rm", "-q", "--cached", "app.txt"], { cwd: t.fork.path });
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+    const commit = hookCommit(t, ["-m", "stop tracking app.txt"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("`git rm --cached` keeps");
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
+    expect(existsSync(join(t.fork.path, ".patchbook/changes"))).toBe(false);
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app.txt")).toContain("two");
+    t.fork.rm("app.txt");
+    expect(hookCommit(t, ["-m", "delete app.txt"]).stderr).toContain("delete   app.txt");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_deletes_an_output_file_before_any_build_lock", (t) => {
+    sh(["git", "rm", "-q", ".patchbook/build.lock"], { cwd: t.fork.path });
+    t.fork.commit("no build lock");
+    sh(["git", "rm", "-q", "app.txt"], { cwd: t.fork.path });
+    const commit = hookCommit(t, ["-m", "delete app.txt"]);
+    expect(commit.stderr).toContain("delete   app.txt");
+    expect(sh(["git", "ls-files", "app.txt"], { cwd: t.fork.path }).stdout).toBe("");
+    expect(porcelain(t)).toBe("");
+  });
+
+  const lastCommit = (t: ForkCase): string => sh(["git", "log", "-1", "--format=%s"], { cwd: t.fork.path }).stdout;
+  const inHead = (t: ForkCase, ...paths: string[]): string => sh(["git", "ls-tree", "-r", "--name-only", "HEAD", "--", ...paths], { cwd: t.fork.path }).stdout;
+
+  forkTest("test_commit_unadds_a_file_a_change_added_after_git_rm", (t) => {
+    t.fork.write("extra.txt", "extra\n");
+    sh(["git", "add", "extra.txt"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "add extra.txt"]);
+    sh(["git", "rm", "-q", "extra.txt"], { cwd: t.fork.path });
+    expect(hookCommit(t, ["-m", "drop extra.txt"]).stderr).toContain("unadd    extra.txt");
+    expect(lastCommit(t)).toBe("drop extra.txt\n");
+    expect(inHead(t, "extra.txt")).toBe("");
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_all_unadds_a_recorded_symlink_deleted_from_disk", (t) => {
+    symlinkSync("app.txt", join(t.fork.path, "link.txt"));
+    sh(["git", "add", "link.txt"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "link app.txt"]);
+    unlinkSync(join(t.fork.path, "link.txt"));
+    expect(hookCommit(t, ["-am", "drop the link"]).stderr).toContain("unadd    link.txt");
+    expect(lastCommit(t)).toBe("drop the link\n");
+    expect(inHead(t, "link.txt")).toBe("");
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_deletes_an_upstream_file_and_folder_after_git_rm", (t) => {
+    expect(existsSync(join(t.fork.path, ".patchbook/build.lock"))).toBe(true);
+    sh(["git", "rm", "-q", "-r", "app.txt", "docs"], { cwd: t.fork.path });
+    const commit = hookCommit(t, ["-m", "drop app.txt and docs"]);
+    expect(commit.stderr).toContain("delete   app.txt");
+    expect(commit.stderr).toContain("delete   docs/guide.md");
+    expect(lastCommit(t)).toBe("drop app.txt and docs\n");
+    expect(inHead(t, "app.txt", "docs")).toBe("");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(porcelain(t)).toBe("");
+  });
+
+  const shoutThenSync = (t: ForkCase, upstream: () => void) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "shout"]);
+    upstream();
+    t.up.commit("move app.txt");
+    t.pb(["sync"], { cwd: t.fork.path });
+  };
+
+  forkTest("test_commit_drops_the_file_of_a_change_retired_after_upstream_deleted_it", (t) => {
+    shoutThenSync(t, () => t.up.rm("app.txt"));
+    const pb = join(t.fork.path, ".patchbook");
+    writeFileSync(join(pb, "series"), replace(read(join(pb, "series")), "shout\n", ""));
+    rmSync(join(pb, "changes/shout"), { recursive: true });
+    writeFileSync(join(pb, "retired.md"), read(join(pb, "retired.md")) + "\n- shout: upstream deleted app.txt\n");
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "retire shout"]);
+    expect(inHead(t, "app.txt")).toBe("");
+    expect(porcelain(t)).toBe("");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_drops_the_old_name_of_a_file_a_change_follows_across_an_upstream_rename", (t) => {
+    shoutThenSync(t, () => sh(["git", "mv", "app.txt", "renamed.txt"], { cwd: t.up.path }));
+    const change = join(t.fork.path, ".patchbook/changes/shout");
+    for (const copy of ["base", "ours"]) renameSync(join(change, copy, "app.txt.pb"), join(change, copy, "renamed.txt.pb"));
+    writeFileSync(join(change, "CHANGE.md"), replace(read(join(change, "CHANGE.md")), "app.txt", "renamed.txt"));
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "repair shout"]);
+    expect(inHead(t, "app.txt")).toBe("");
+    expect(sh(["git", "show", "HEAD:renamed.txt"], { cwd: t.fork.path }).stdout).toContain("TWO");
+    expect(porcelain(t)).toBe("");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(porcelain(t)).toBe("");
+  });
+
+  const headMode = (t: ForkCase, path: string): string => sh(["git", "ls-tree", "HEAD", path], { cwd: t.fork.path }).stdout.split(" ")[0]!;
+
+  forkTest("test_commit_takes_a_staged_mode_change_and_later_commits_leave_it", (t) => {
+    chmodSync(join(t.fork.path, "app.txt"), 0o755);
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "make app.txt executable"]);
+    expect(headMode(t, "app.txt")).toBe("100755");
+    t.fork.write("notes.txt", "notes\n");
+    sh(["git", "add", "notes.txt"], { cwd: t.fork.path });
+    const later = hookCommit(t, ["-m", "notes"]);
+    expect(later.stderr).not.toContain("built from");
+    expect(sh(["git", "show", "--summary", "--format=", "HEAD"], { cwd: t.fork.path }).stdout).not.toContain("app.txt");
+    expect(headMode(t, "app.txt")).toBe("100755");
+  });
+
+  forkTest("test_commit_records_an_edit_staged_with_a_mode_change", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    chmodSync(join(t.fork.path, "app.txt"), 0o755);
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    const commit = hookCommit(t, ["-m", "shout and run"]);
+    expect(commit.stderr).toContain("file     app.txt");
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("TWO");
+    expect(headMode(t, "app.txt")).toBe("100755");
+  });
+
+  forkTest("test_commit_records_an_edit_staged_with_a_mode_change_under_an_unstaged_edit", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"), 0o755);
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    const staged = t.fork.read("app.txt");
+    t.fork.write("app.txt", staged + "extra\n", 0o755);
+    const commit = hookCommit(t, ["-m", "shout and run"], false);
+    expect(commit.code).toBe(0);
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toBe(staged);
+    expect(headMode(t, "app.txt")).toBe("100755");
+    expect(t.fork.read("app.txt")).toBe(staged + "extra\n");
+    expect(porcelain(t)).toBe(" M app.txt\n");
+  });
+
+  forkTest("test_commit_takes_a_mode_change_to_a_file_the_fork_added", (t) => {
+    t.fork.write("mine.sh", "echo mine\n", 0o755);
+    sh(["git", "add", "mine.sh"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "add mine.sh"]);
+    chmodSync(join(t.fork.path, "mine.sh"), 0o644);
+    sh(["git", "add", "mine.sh"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "mine.sh is not a program"]);
+    expect(headMode(t, "mine.sh")).toBe("100644");
+  });
+
+  forkTest("test_commit_writes_the_build_over_a_mode_the_index_already_has", (t) => {
+    t.fork.write("mine.sh", "echo mine\n", 0o755);
+    sh(["git", "add", "mine.sh"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "add mine.sh"]);
+    chmodSync(join(t.fork.path, "mine.sh"), 0o644);
+    sh(["git", "add", "mine.sh"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "mine.sh is not a program"]);
+    chmodSync(join(t.fork.path, ".patchbook/changes/shout/ours/mine.sh.pb"), 0o644);
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "record that mine.sh is not a program"]);
+    expect(isExecutable(join(t.fork.path, "mine.sh"))).toBe(false);
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_records_a_staged_file_where_upstream_adds_a_program", (t) => {
+    t.fork.write("new.sh", "mine\n");
+    sh(["git", "add", "new.sh"], { cwd: t.fork.path });
+    t.up.write("new.sh", "echo up\n", 0o755);
+    t.up.commit("add new.sh");
+    t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+    const commit = hookCommit(t, ["-m", "take upstream"]);
+    expect(commit.stderr).toContain("file     new.sh");
+    expect(sh(["git", "show", "HEAD:new.sh"], { cwd: t.fork.path }).stdout).toBe("mine\n");
+  });
+
+  forkTest("test_commit_refuses_to_build_over_an_intent_to_add_file", (t) => {
+    t.fork.write("new.sh", "mine\n");
+    sh(["git", "add", "-N", "new.sh"], { cwd: t.fork.path });
+    t.up.write("new.sh", "echo up\n", 0o755);
+    t.up.commit("add new.sh");
+    t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+    const commit = hookCommit(t, ["-m", "take upstream"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("the build changes these files, which have changes you haven't staged:\n  new.sh");
+    expect(t.fork.read("new.sh")).toBe("mine\n");
+  });
+
+  forkTest("test_commit_leaves_out_ignored_output_that_build_commit_left_out", (t) => {
+    writeFileSync(join(t.fork.path, ".git/info/exclude"), "*.log\n");
+    t.up.write("keep.log", "kept\n");
+    t.up.commit("a log");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build", "--commit"], { cwd: t.fork.path });
+    for (const [line, shout] of [["two", "TWO"], ["three", "THREE"]] as const) {
+      t.fork.write("app.txt", replace(t.fork.read("app.txt"), line, shout));
+      sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+      expect(hookCommit(t, ["-m", `shout ${line}`]).stderr).not.toContain("keep.log");
+      expect(committed(t)).not.toContain("keep.log");
+      expect(t.fork.read("keep.log")).toBe("kept\n");
+    }
+    expect(sh(["git", "ls-files", "keep.log"], { cwd: t.fork.path }).stdout).toBe("");
+    expect(porcelain(t)).toBe("?? .patchbook/last-sync.json\n");
+  });
+
+  forkTest("test_commit_takes_a_mode_change_from_upstream", (t) => {
+    t.up.write("app.txt", t.up.read("app.txt"), 0o755);
+    t.up.commit("make app.txt executable");
+    t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "take upstream"]);
+    expect(sh(["git", "ls-files", "-s", "app.txt"], { cwd: t.fork.path }).stdout).toStartWith("100755 ");
+    expect(porcelain(t)).toBe("");
+  });
+
   // What the Python version wrote, with the paths of the interpreter and script that installed it.
   const pythonHook = (extra = "") => `#!/bin/sh
 # Installed by patchbook. On each commit, it records hand edits to the build output in the
@@ -4551,6 +5321,79 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
 describe("VendorTest", () => {
   vendorTest("test_missing_scaffold_patch_build", (t) => {
     t.missingScaffoldPatchBuild();
+  });
+
+  vendorTest("test_build_commit_leaves_out_files_outside_the_build", (t) => {
+    t.missingScaffoldPatchBuild();
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "a\n");
+    extra.commit("a");
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    t.repo.write("notes.md", "scratch\n");
+    t.repo.write("README.md", "mine, edited\n");
+    t.repo.write("staged.md", "staged\n");
+    sh(["git", "add", "staged.md"], { cwd: t.repo.path });
+    t.pb(["build", "--commit"], { cwd: t.repo.path });
+    const files = words(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.repo.path }).stdout);
+    expect(files).toContain("skills/hello/SKILL.md");
+    expect(files).toContain(".patchbook/build.lock");
+    expect(files).toContain("vendor/extra/a.md");
+    expect(files).not.toContain("notes.md");
+    expect(files).not.toContain("README.md");
+    expect(files).not.toContain("staged.md");
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.repo.path }).stdout).toBe(" M README.md\nA  staged.md\n?? notes.md\n");
+  });
+
+  vendorTest("test_build_commit_takes_the_placeholder_file_so_a_clone_builds", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.pb(["build", "--commit"], { cwd: t.repo.path });
+    const clone = join(t.tmp, "clone");
+    sh(["git", "clone", "-q", t.repo.path, clone], { cwd: t.tmp });
+    t.pb(["build"], { cwd: clone });
+    expect(read(join(clone, "skills/hello/SKILL.md"))).toContain("Say hello in T3.");
+    expect(sh(["git", "status", "--porcelain"], { cwd: clone }).stdout).toBe("");
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.repo.path }).stdout).toBe("");
+  });
+
+  vendorTest("test_build_commit_leaves_out_an_ignored_placeholder_file", (t) => {
+    writeFileSync(join(t.repo.path, ".git/info/exclude"), ".patchbook/snippets.md\n");
+    t.missingScaffoldPatchBuild();
+    t.pb(["build", "--commit"], { cwd: t.repo.path });
+    expect(sh(["git", "ls-files", ".patchbook/snippets.md"], { cwd: t.repo.path }).stdout).toBe("");
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.repo.path }).stdout).toBe("");
+  });
+
+  vendorTest("test_commit_stops_on_a_placeholder_file_left_out_of_it", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.pb(["build", "--commit"], { cwd: t.repo.path });
+    t.repo.write(".patchbook/snippets.md", "## greet\n\nSay hi in T3.\n");
+    t.repo.write("README.md", "mine, edited\n");
+    sh(["git", "add", "README.md"], { cwd: t.repo.path });
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.repo.path }).stdout;
+    const commit = sh(["git", "commit", "-qm", "readme"], { cwd: t.repo.path, check: false, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("the patchbook has changes that aren't in this commit:\n  .patchbook/snippets.md");
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.repo.path }).stdout).toBe(head);
+    expect(read(join(t.repo.path, "skills/hello/SKILL.md"))).toContain("Say hello in T3.");
+  });
+
+  vendorTest("test_first_commit_after_build_takes_the_output", (t) => {
+    t.missingScaffoldPatchBuild();
+    sh(["git", "add", ".patchbook"], { cwd: t.repo.path });
+    sh(["git", "commit", "-qm", "built"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    expect(sh(["git", "show", "HEAD:skills/hello/SKILL.md"], { cwd: t.repo.path }).stdout).toContain("Say hello in T3.");
+    expect(existsSync(join(t.repo.path, ".patchbook/changes/shout"))).toBe(false);
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.repo.path }).stdout).toBe("");
+  });
+
+  vendorTest("test_build_commit_with_nothing_in_the_output", (t) => {
+    const repo = new Repo(join(t.tmp, "empty"));
+    repo.write("README.md", "mine\n");
+    repo.commit("start");
+    t.pb(["init", "--upstream", t.up.path, "--path", "plugin", "--output-from", "nothing", "--output-to", "nothing"], { cwd: repo.path });
+    t.pb(["build", "--commit"], { cwd: repo.path });
+    expect(words(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: repo.path }).stdout)).toContain(".patchbook/build.lock");
+    expect(sh(["git", "status", "--porcelain"], { cwd: repo.path }).stdout).toBe("");
   });
 
   vendorTest("test_structural_edits", (t) => {
@@ -5325,7 +6168,7 @@ exec '${Bun.which("git")}' "$@"
   vendorTest("test_commit_after_a_link_in_the_output_became_a_folder", (t) => {
     linkBecomesFolder(t);
     t.repo.write("NOTES.md", "notes\n");
-    sh(["git", "add", "NOTES.md"], { cwd: t.repo.path });
+    sh(["git", "add", "NOTES.md", ".patchbook"], { cwd: t.repo.path });
     const commit = sh(["git", "commit", "-qm", "notes"], { cwd: t.repo.path, check: false, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
     expect(commit.stderr).not.toContain("EISDIR");
     expect(commit.code).toBe(0);

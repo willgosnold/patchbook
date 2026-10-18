@@ -5,17 +5,35 @@ import type { Hooks, Problem } from "./api.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isDir, isMode, isSymlink, lexists, mkdirs, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
+import { exists, type File, GITLINK, isDir, isMode, isSymlink, lexists, mkdirs, type Mode, normMode, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
 import { dumps, loads } from "./lib/json.ts";
-import { git } from "./lib/proc.ts";
+import { git, run, spawn } from "./lib/proc.ts";
 import { length, type PyValue, sortedBy, strRepr } from "./lib/py.ts";
+import { decode } from "./lib/text.ts";
 import { isTable, parseToml, type Table } from "./settings.ts";
-import { stagedFolder, Upstream } from "./store.ts";
+import { stagedFolder, treeFiles, Upstream } from "./store.ts";
 
 export const PB = ".patchbook";
 
 export class NoBook extends Fail {}
 export const GIT = ".git";
+
+const placeholderFiles = (book: Book) =>
+  Array.from(book.placeholders.values(), (s) => s.file).filter((f) => f !== null).map((f) => pjoin(book.root, f));
+const inOutput = (book: Book, f: string) => under(f, book.outputRoot()) && !book.isReserved(relative(book.outputRoot(), f));
+
+/** A placeholder file in the output is output, so it isn't listed here but in `placeholderOutputs`. */
+export function buildInputs(book: Book): string[] {
+  return [
+    ...["blocks", "changes", "series", "build.lock", "config.toml", "upstream.lock", "hooks.ts"].map((p) => `${PB}/${p}`),
+    ...placeholderFiles(book).filter((f) => under(f, book.root) && f !== book.root && !inOutput(book, f)).map((f) => relative(book.root, f)),
+  ];
+}
+
+/** Placeholder files in the output, relative to it. The build reads their working copies. */
+export function placeholderOutputs(book: Book): string[] {
+  return placeholderFiles(book).filter((f) => f !== book.outputRoot() && inOutput(book, f)).map((f) => relative(book.outputRoot(), f));
+}
 
 export function under(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(prefix + "/");
@@ -212,6 +230,7 @@ export class Book {
   readonly badChecks: Problem[] = [];
   readonly placeholders = new Map<string, Placeholder>();
   hooks: Hooks = {};
+  private fileMode: boolean | undefined;
 
   private constructor(readonly root: string, config: string) {
     this.dir = join(root, PB);
@@ -369,7 +388,7 @@ export class Book {
     return output === null ? null : this.reservedOutput(output);
   }
 
-  private vendors(): string[] {
+  vendors(): string[] {
     return this.upstreams.flatMap((u) => (u.vendor ? [this.folderOf(u.vendor)] : []));
   }
 
@@ -484,6 +503,10 @@ export class Book {
     return this.layout.kind === "folder" ? this.layout.dir : this.root;
   }
 
+  tracksExecBit(): boolean {
+    return (this.fileMode ??= git(["config", "--type=bool", "--default=true", "core.fileMode"], { cwd: this.root }) === "true");
+  }
+
   /** The output as it is on disk now: tracked files and untracked ones git doesn't ignore. */
   currentOutput(): Map<string, File> {
     const root = this.outputRoot();
@@ -501,6 +524,31 @@ export class Book {
       out.set(key, readDisk(p));
     }
     return out;
+  }
+
+  /** The output a commit takes: the index as `write-tree` sees it, so paths only marked with `git add -N` are left out. */
+  stagedOutput(): Map<string, File> {
+    const root = this.outputRoot();
+    const tree = git(["write-tree"], { cwd: this.root });
+    const files = treeFiles(this.root, tree, root !== this.root ? relative(this.root, root) : "");
+    return new Map(Array.from(files).filter(([p]) => !this.isReserved(p)));
+  }
+
+  stagedChanges(): Map<string, { head: Mode | null; staged: Mode | null }> {
+    const root = this.outputRoot();
+    const rel = root !== this.root ? relative(this.root, root) : "";
+    const head = spawn(["git", "rev-parse", "-q", "--verify", "HEAD^{tree}"], { cwd: this.root });
+    const base = head.code === 0 ? decode(head.stdout).trim() : git(["hash-object", "-t", "tree", "--stdin"], { cwd: this.root, input: new Uint8Array() });
+    const diff = ["--literal-pathspecs", "diff-index", "--cached", "--raw", "-z", "--no-renames", base, ...(rel ? ["--", rel] : [])];
+    const fields = decode(run(["git", ...diff], { cwd: this.root })).split("\0");
+    const changes = new Map<string, { head: Mode | null; staged: Mode | null }>();
+    for (let i = 0; i + 1 < fields.length; i += 2) {
+      const [was = 0, now = 0] = fields[i]!.slice(1).split(" ", 2).map((m) => parseInt(m, 8));
+      const key = rel ? fields[i + 1]!.slice(rel.length + 1) : fields[i + 1]!;
+      if (was === GITLINK || now === GITLINK || this.isReserved(key)) continue;
+      changes.set(key, { head: was ? normMode(was) : null, staged: now ? normMode(now) : null });
+    }
+    return changes;
   }
 }
 

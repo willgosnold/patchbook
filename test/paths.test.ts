@@ -390,6 +390,7 @@ git diff --cached --name-only > ${q(join(t.tmp, "staged.txt"))}
     t.up.write("app.txt", "one\ntwo\nthree\nfour\n");
     t.up.commit("add a line");
     t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
     const made = sh(["git", "commit", "-q", "--allow-empty", "-m", "nothing of mine"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
     expect(made.stderr).toMatch(/patchbook: built from upstream [0-9a-f]+/);
     expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toBe("one\ntwo\nthree\nfour\n");
