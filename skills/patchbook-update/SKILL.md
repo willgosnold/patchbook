@@ -29,7 +29,7 @@ T3 gives each run its own worktree and branch. Work there.
    - `MAIN_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##')`
    - `MAIN_CHECKOUT=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')`
 2. Run `git fetch origin && git rebase origin/$MAIN_BRANCH`. The branch must have no commits of its own yet. If this thread is in the main checkout instead of a worktree, create a branch, `patchbook/upstream-<date>`, first.
-3. Run `patchbook sync`. It moves every upstream that moved. Commit everything it changed as "Sync upstream <name> to <short sha>", naming each upstream.
+3. Run `patchbook sync`. It moves every upstream that moved. Commit everything it changed except `.patchbook/last-sync.json` (`git add -A -- . ':!.patchbook/last-sync.json'`) as "Sync upstream <name> to <short sha>", naming each upstream.
 4. Read `.patchbook/last-sync.json` (per upstream: what changed and what merged on its own) and `patchbook status --json` (what broke).
 
 ## 3. Repair
