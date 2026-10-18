@@ -7,9 +7,9 @@ description: Pull upstreams into a repo that keeps its changes in a patchbook (.
 
 This repo keeps its changes to one or more upstream repos in `.patchbook/`. Read `.patchbook/config.toml` and the guide it names (`guide`) before you change anything. `patchbook --help` lists the commands. The `patchbook` repo's `DESIGN.md` explains the model.
 
-Never edit the build output, or a vendored copy, by hand. Change the patchbook, then build. A pre-commit hook rebuilds on each commit once the patchbook has no problems, so a commit may include the rebuilt output. That's expected.
+Never edit the build output, or a vendored copy, by hand. Change the patchbook, then build.
 
-Never commit `.patchbook/last-sync.json`. To stage everything, use `git add -A -- . ':!.patchbook/last-sync.json'`. To commit one thing, stage its paths.
+Never commit `.patchbook/last-sync.json`. To stage everything, use `git add -A -- . ':!.patchbook/last-sync.json'`. To commit one thing, stage its paths. Make every commit with `PATCHBOOK_HOOK=0 git commit`, which skips patchbook's pre-commit hook: in a fork the hook records unstaged and untracked files and hand edits to the output into whatever commit runs.
 
 To read an upstream, use `patchbook upstream <name>`: `<name> <path>` prints a file at the pin, `--diff` shows what upstream changed in the last sync, and `--export <dir>` writes it all out for searching. Export outside the worktree.
 
@@ -31,7 +31,7 @@ T3 gives each run its own worktree and branch. Work there.
    - `MAIN_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##')`
    - `MAIN_CHECKOUT=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')`
 2. Run `git fetch origin && git rebase origin/$MAIN_BRANCH`. The branch must have no commits of its own yet. If this thread is in the main checkout instead of a worktree, create a branch, `patchbook/upstream-<date>`, first.
-3. Run `patchbook sync`. It moves every upstream that moved. Commit everything it changed except `.patchbook/last-sync.json` (`git add -A -- . ':!.patchbook/last-sync.json'`) as "Sync upstream <name> to <short sha>", naming each upstream.
+3. Run `patchbook sync`. It moves every upstream that moved. Commit everything it changed except `.patchbook/last-sync.json` (`git add -A -- . ':!.patchbook/last-sync.json'`, then `PATCHBOOK_HOOK=0 git commit`) as "Sync upstream <name> to <short sha>", naming each upstream.
 4. Read `.patchbook/last-sync.json` (per upstream: what changed and what merged on its own) and `patchbook status --json` (what broke).
 
 ## 3. Repair
@@ -49,15 +49,15 @@ Also read the upstream changes in the sync report for new files or features the 
 
 To retire a change, remove it from `series` and its folder, and add it to `retired.md` with the reason.
 
-Commit each change you repair or retire on its own, as "Carry <change> to upstream <short sha>" or "Retire <change>". Handle each `replaced_upstream_changed` entry in such a commit, whose message names the file and says what you carried over, or what you left out and why. If you carried over nothing, commit with `--allow-empty`.
+Commit each change you repair or retire on its own with `PATCHBOOK_HOOK=0 git commit`, as "Carry <change> to upstream <short sha>" or "Retire <change>". Handle each `replaced_upstream_changed` entry in such a commit, whose message names the file and says what you carried over, or what you left out and why. If you carried over nothing, commit with `--allow-empty`.
 
 ## 4. Test
 
-Before you build, run `git status --porcelain`. Delete anything you or a test wrote that doesn't belong in the repo, such as an export or notes, but keep `.patchbook/last-sync.json`. If it then lists anything but `.patchbook/last-sync.json`, commit each change or fix it lists on its own, with a message that says what it is. If you can't say what something is, ask (step 6).
+Before you build, run `git status --porcelain`. Delete anything you or a test wrote that doesn't belong in the repo, such as an export or notes, but keep `.patchbook/last-sync.json`. If it then lists a file in the output, which `patchbook build` writes (the config's `[output] to` folder, or in a fork everything outside `.patchbook/`), that is a hand edit: don't commit it, and ask (step 6). Commit each other change or fix it lists, except `.patchbook/last-sync.json`, on its own with `PATCHBOOK_HOOK=0 git commit` and a message that says what it is. If you can't say what something is, ask (step 6).
 
-Run `patchbook build`. The pre-commit hook builds on each commit when the patchbook has no problems, so this usually changes nothing. The hook doesn't build when there are problems, when `hook.enabled` is false, or when the repo's pre-commit hook belongs to another tool and doesn't run `patchbook hook run`. If `patchbook build` fails, quote its message and ask (step 6). If `git status --porcelain` then lists more than `.patchbook/last-sync.json`, commit it as one build commit. It holds only what `patchbook build` wrote: output files and `.patchbook/build.lock`.
+Run `patchbook build`. Since no commit runs the hook, this is the run's only build. If it fails, quote its message and ask (step 6). If `git status --porcelain` then lists more than `.patchbook/last-sync.json`, commit it as one build commit (`git add -A -- . ':!.patchbook/last-sync.json'`, then `PATCHBOOK_HOOK=0 git commit`). It holds only what `patchbook build` wrote: output files and `.patchbook/build.lock`.
 
-Then run the `[test]` from the config on `origin/$MAIN_BRANCH` (`git show origin/$MAIN_BRANCH:.patchbook/config.toml`), not the branch's copy, from the worktree's root: a `command` must exit 0, and an `instructions` file, also read from `origin/$MAIN_BRANCH`, is a procedure to follow. If `git status --porcelain --untracked-files=no` then prints anything, ask (step 6), even if the test passed. Fix a failure if you can, with at most two attempts. Commit each fix on its own, as "Fix test: <what>", then do step 4 again.
+Then run the `[test]` from the config on `origin/$MAIN_BRANCH` (`git show origin/$MAIN_BRANCH:.patchbook/config.toml`), not the branch's copy, from the worktree's root: a `command` must exit 0, and an `instructions` file, also read from `origin/$MAIN_BRANCH`, is a procedure to follow. If `git status --porcelain --untracked-files=no` then prints anything, ask (step 6), even if the test passed. Fix a failure if you can, with at most two attempts. Commit each fix on its own with `PATCHBOOK_HOOK=0 git commit`, as "Fix test: <what>", then do step 4 again.
 
 ## 5. Review
 
@@ -75,7 +75,7 @@ Set `target` to the provider's `providerInstanceId`, the model's `id` (not its `
 - `git diff origin/$MAIN_BRANCH...HEAD -- .patchbook`;
 - the test results.
 
-Ask it, per change: does the result meet the intent on upstream's new text, and does it change anything beyond the intent. Ask it once: did upstream add anything that should have been handled. It answers each pass or fail, with reasons, without asking questions. A change or question it gives no pass or fail counts as a fail. On a fail, fix what it found, commit the fix on its own as "Fix review: <what>", do step 4 again, and start a new review round, with the earlier findings in the brief. Stop after two rounds.
+Ask it, per change: does the result meet the intent on upstream's new text, and does it change anything beyond the intent. Ask it once: did upstream add anything that should have been handled. It answers each pass or fail, with reasons, without asking questions. A change or question it gives no pass or fail counts as a fail. On a fail, fix what it found, commit the fix on its own with `PATCHBOOK_HOOK=0 git commit` as "Fix review: <what>", do step 4 again, and start a new review round, with the earlier findings in the brief. Stop after two rounds.
 
 ## 6. Merge, or ask
 
@@ -93,6 +93,7 @@ Ask the user instead of merging when that doesn't hold, or when:
 - the second review round returns any fail;
 - a test fails and you can't fix it. A failing `instructions` test counts, even though a passing one is not a signal;
 - a test leaves tracked files changed (`git status --porcelain --untracked-files=no` prints something), even if it passed;
+- step 4's pre-build check lists a hand edit to the output;
 - a `replaced_upstream_changed` entry in any upstream's report has no step 3 commit that names its file;
 - the branch changes `[test]` in `.patchbook/config.toml` (see `git diff origin/$MAIN_BRANCH...HEAD -- .patchbook/config.toml`).
 
