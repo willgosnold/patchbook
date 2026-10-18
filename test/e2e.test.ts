@@ -1186,6 +1186,76 @@ test("test_skill_install_replaces_a_committed_link_that_checkout_wrote_as_a_file
   }
 }, TIMEOUT);
 
+test("test_skill_install_refuses_a_plain_file_at_a_committed_link_when_checkout_would_have_written_a_link", () => {
+  const t = new Case();
+  try {
+    const repo = skillFolder(t);
+    retarget(repo, "../../elsewhere");
+    repo.commit("a wrong link");
+    repo.rm(SKILL_LINK);
+    repo.write(SKILL_LINK, "../../elsewhere");
+    expect(lstatSync(join(repo.path, SKILL_LINK)).isSymbolicLink()).toBe(false);
+    const before = tree(repo.path);
+    const out = t.pb(["skill", "install"], { cwd: repo.path, code: 1 });
+    expect(out.stderr).toContain(SKILL_LINK);
+    expect(out.stdout).not.toContain("your copy is in HEAD");
+    expect(repo.read(SKILL_LINK)).toBe("../../elsewhere");
+    expect(tree(repo.path)).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+/** A clean filter that drops every line holding SECRET, applied to markdown. */
+const dropSecrets = (repo: Repo): void => {
+  repo.write(".gitattributes", "*.md filter=strip\n");
+  sh(["git", "config", "filter.strip.clean", "sed /SECRET/d"], { cwd: repo.path });
+  sh(["git", "config", "filter.strip.smudge", "cat"], { cwd: repo.path });
+};
+
+test("test_skill_install_refuses_to_replace_a_line_that_a_clean_filter_drops_from_what_git_stores", () => {
+  const t = new Case();
+  try {
+    const repo = skillFolder(t);
+    dropSecrets(repo);
+    repo.write(SKILL_FILE, STALE_SKILL);
+    repo.commit("an older skill");
+    repo.write(SKILL_FILE, STALE_SKILL + "SECRET=hunter2\n");
+    const before = tree(repo.path);
+    const out = t.pb(["skill", "install"], { cwd: repo.path, code: 1 });
+    expect(out.stderr).toContain(SKILL_FILE);
+    expect(out.stdout).not.toContain("your copy is in HEAD");
+    expect(repo.read(SKILL_FILE)).toBe(STALE_SKILL + "SECRET=hunter2\n");
+    expect(tree(repo.path)).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_init_keeps_a_line_that_a_clean_filter_drops_from_what_git_stores_and_records_nothing", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\ntwo\n");
+    up.commit("start");
+    sh(["git", "clone", "-q", up.path, join(t.tmp, "mine")], { cwd: t.tmp });
+    const mine = new Repo(join(t.tmp, "mine"));
+    dropSecrets(mine);
+    mine.write(SKILL_FILE, STALE_SKILL);
+    mine.commit("an older skill");
+    mine.write(SKILL_FILE, STALE_SKILL + "SECRET=hunter2\n");
+    const out = t.pb(["init", "--upstream", up.path], { cwd: mine.path });
+    expect(mine.read(SKILL_FILE)).toBe(STALE_SKILL + "SECRET=hunter2\n");
+    expect(out.stderr).toContain(SKILL_FILE);
+    expect(out.stderr).toContain(SKILL_REFUSED);
+    expect(isSymlink(join(mine.path, SKILL_LINK)) || existsSync(join(mine.path, SKILL_LINK))).toBe(false);
+    expect(mine.read(".patchbook/series")).toBe("");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("test_skill_install_refuses_to_replace_an_edit_when_git_cannot_read_head", () => {
   const t = new Case();
   try {
