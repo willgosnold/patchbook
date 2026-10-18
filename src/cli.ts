@@ -94,7 +94,7 @@ async function cmdInit(args: {
   }
   writeConfig(root, "fork", upstreamToml(name, args.upstream, args.path, args.branch, ""));
   if (!split(git(["remote"], { cwd: root })).includes("upstream")) git(["remote", "add", "upstream", args.upstream], { cwd: root });
-  git(["fetch", "--quiet", "upstream", args.branch], { cwd: root });
+  git(["fetch", "--quiet", args.upstream, args.branch], { cwd: root });
   const base = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: root });
   const book = await Book.open(root);
   book.writeLock(name, base, book.upstreams[0]!.treeOf(base));
