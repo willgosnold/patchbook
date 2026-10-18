@@ -77,8 +77,13 @@ class Fork extends Sandbox {
     this.fork.write("app.txt", replace(this.fork.read("app.txt"), "two", "TWO"));
   }
 
-  record(args: string[] = [], code = 0) {
+  record(args: string[] = [], code: number | null = 0) {
     return this.pb(["record", ...args], { cwd: this.fork.path, code });
+  }
+
+  /** Every change's name and CHANGE.md, to look for anything taken from a model answer. */
+  changeText(): string {
+    return this.changes().map((c) => `${c}\n${this.fork.read(`.patchbook/changes/${c}/CHANGE.md`)}`).join("\n");
   }
 
   changes(): string[] {
@@ -203,18 +208,17 @@ describe("the codex provider", () => {
     expect(read(join(t.tmp, "codex.prompt"))).toContain("The change is new and called mine.");
   });
 
-  forkTest("a codex that fails stops record with its stderr, and a retry with an intent goes through", (t) => {
+  forkTest("a codex that fails is named in stderr, and no change takes a name or intent from it", (t) => {
     t.env["PATCHBOOK_PROVIDER"] = "codex";
-    t.fake("codex", "", 3, "codex: not logged in");
+    t.fake("codex", answer("codex-shout", "Shout."), 3, "codex: not logged in");
     t.edit();
-    const failed = t.record([], 1);
-    expect(failed.stderr).toContain("patchbook: codex failed: codex: not logged in. Pass --intent instead.");
-    expect(t.changes()).toEqual([]);
-    expect(t.record(["--intent", "Shout the second line."]).stdout).toContain("shout-the-second-line");
-    expect(t.changes()).toEqual(["shout-the-second-line"]);
+    const failed = t.record([], null);
+    expect(failed.stderr).toContain("codex: not logged in");
+    expect(t.changeText()).not.toContain("codex-shout");
+    expect(t.changeText()).not.toContain("Shout.");
   });
 
-  forkTest("an answer codex garbles records nothing and shows what it said", (t) => {
+  forkTest("an answer codex garbles is named in stderr, and no change takes a name or intent from it", (t) => {
     t.env["PATCHBOOK_PROVIDER"] = "codex";
     t.edit();
     for (const reply of [
@@ -226,9 +230,9 @@ describe("the codex provider", () => {
       '{"intent": "Shout."}',
     ]) {
       t.fake("codex", reply);
-      const failed = t.record([], 1);
-      expect(failed.stderr).toContain(`patchbook: codex didn't return a usable name and intent:\n${reply}\nPass a name and --intent instead.`);
-      expect(t.changes()).toEqual([]);
+      const failed = t.record([], null);
+      expect(failed.stderr).toContain(reply);
+      for (const taken of ["Not Kebab Case", "not-kebab-case", "codex-shout", "Shout."]) expect(t.changeText()).not.toContain(taken);
     }
   });
 });
@@ -380,6 +384,18 @@ git diff --cached --name-only > ${q(join(t.tmp, "staged.txt"))}
     expect(read(hook)).toBe(script);
   });
 
+  forkTest("a pin that moved is built into the commit, with the other tool's work run too", (t) => {
+    install(t);
+    t.up.write("app.txt", "one\ntwo\nthree\nfour\n");
+    t.up.commit("add a line");
+    t.pb(["sync"], { cwd: t.fork.path });
+    const made = sh(["git", "commit", "-q", "--allow-empty", "-m", "nothing of mine"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    expect(made.stderr).toMatch(/patchbook: built from upstream [0-9a-f]+/);
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toBe("one\ntwo\nthree\nfour\n");
+    expect(lines(read(join(t.tmp, "other-tool.log")))).toEqual(["other tool: lint"]);
+    expect(t.changes()).toEqual([]);
+  });
+
   forkTest("the other tool's hook is left alone by patchbook's own commands", (t) => {
     const { hook, script } = install(t);
     t.pb(["status"], { cwd: t.fork.path });
@@ -486,6 +502,20 @@ describe("planning paragraph edits", () => {
     expect(out).toMatch(/entry +guide\.md \[[0-9a-f]{12}\] removed: the paragraph is upstream's again/);
     expect(existsSync(t.entries)).toBe(false);
   });
+
+  for (const [what, old, repl] of [
+    ["an extra blank line inside a paragraph", "Then wave.\n\nThen sit.", "Then wave.\n\n\nThen sit."],
+    ["a dropped final newline", "Bye.\n", "Bye."],
+  ] as const) {
+    docTest(`${what} doesn't map onto whole paragraphs, so record skips the file and changes no entry`, (t) => {
+      const entries = read(t.entries);
+      t.edit(old, repl);
+      const out = t.record().stdout;
+      expect(out).toContain("skipped  guide.md: the edit doesn't map onto whole paragraphs; edit its block entries directly");
+      expect(read(t.entries)).toBe(entries);
+      expect(t.changes()).toEqual([]);
+    });
+  }
 
   docTest("a file that stops being text is skipped, and its entries stay as they were", (t) => {
     const entries = read(t.entries);
