@@ -26,7 +26,7 @@ export type Problem =
   | ({ problem: "check" } & InFile & Detail);
 
 /** A candidate for the new home of an orphaned entry. */
-export type Nearest = { line: number; hash: string; similarity: { readonly value: number } };
+export type Nearest = { line: number; hash: string; similarity: number };
 
 /** What a repo's `.patchbook/hooks.ts` can export. Patchbook calls each by name. */
 export interface Hooks {
@@ -57,7 +57,7 @@ export type UpstreamCheck = {
   files: string[];
 };
 
-/** What `patchbook sync` writes to `.patchbook/last-sync.json`, one report for each upstream it moved. */
+/** What `patchbook sync` writes to `.patchbook/last-sync.json`: each entry is the report of the latest sync that moved that upstream. */
 export type LastSync = {
   version: 1;
   /** By upstream name. */

@@ -114,7 +114,7 @@ export function nearest(text: string, candidates: readonly Unmatched[], limit = 
   const scored = candidates
     .map((c) => [new SequenceMatcher<string>(text, c.upstream).ratio(), c] as const)
     .sort((x, y) => y[0] - x[0]);
-  return scored.slice(0, limit).filter(([r]) => r >= 0.4).map(([r, c]) => ({ line: c.line, hash: c.hash, similarity: round2(r) }));
+  return scored.slice(0, limit).filter(([r]) => r >= 0.4).map(([r, c]) => ({ line: c.line, hash: c.hash, similarity: round2(r).value }));
 }
 
 export function orphan(rel: string, entry: Entry, candidates: readonly Unmatched[]): Problem {
