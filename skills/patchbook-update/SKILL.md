@@ -57,7 +57,7 @@ Before you build, run `git status --porcelain`. Delete anything you or a test wr
 
 Run `patchbook build`. The pre-commit hook builds on each commit when the patchbook has no problems, so this usually changes nothing. The hook doesn't build when there are problems, when `hook.enabled` is false, or when the repo's pre-commit hook belongs to another tool and doesn't run `patchbook hook run`. If `patchbook build` fails, quote its message and ask (step 6). If `git status --porcelain` then lists more than `.patchbook/last-sync.json`, commit it as one build commit. It holds only what `patchbook build` wrote: output files and `.patchbook/build.lock`.
 
-Then run the `[test]` from the config on `origin/$MAIN_BRANCH` (`git show origin/$MAIN_BRANCH:.patchbook/config.toml`), not the branch's copy, from the worktree's root: a `command` must exit 0, and an `instructions` file is a procedure to follow. If `git status --porcelain --untracked-files=no` then prints anything, ask (step 6), even if the test passed. Fix a failure if you can, with at most two attempts. Commit each fix on its own, as "Fix test: <what>", then do step 4 again.
+Then run the `[test]` from the config on `origin/$MAIN_BRANCH` (`git show origin/$MAIN_BRANCH:.patchbook/config.toml`), not the branch's copy, from the worktree's root: a `command` must exit 0, and an `instructions` file, also read from `origin/$MAIN_BRANCH`, is a procedure to follow. If `git status --porcelain --untracked-files=no` then prints anything, ask (step 6), even if the test passed. Fix a failure if you can, with at most two attempts. Commit each fix on its own, as "Fix test: <what>", then do step 4 again.
 
 ## 5. Review
 
