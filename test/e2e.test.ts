@@ -759,6 +759,7 @@ test("test_skill_install_in_a_fork_does_not_lose_a_recorded_customization_that_i
     const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
     expect(out.stderr).toContain(SKILL_FILE);
     expect(out.stderr).toContain("Commit them first");
+    expect(out.stderr).toContain("In a fork the hook records the commit");
     expect(fork.read(SKILL_FILE)).toBe(mine);
     expect(tree(fork.path)).toEqual(before);
 
@@ -798,6 +799,7 @@ test("test_skill_install_in_the_folder_layout_refuses_to_replace_an_uncommitted_
     const out = t.pb(["skill", "install"], { cwd: repo.path, code: 1 });
     expect(out.stderr).toContain(SKILL_LINK);
     expect(out.stderr).toContain("Commit them first");
+    expect(out.stderr).not.toContain("hook");
     expect(readlinkSync(join(repo.path, SKILL_LINK))).toBe("../../elsewhere");
     expect(tree(repo.path)).toEqual(before);
 
