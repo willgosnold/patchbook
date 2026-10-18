@@ -30,7 +30,7 @@ function isLocalPath(remote: string): boolean {
 }
 
 export function absoluteRemote(remote: string): string {
-  return isLocalPath(remote) ? posix.resolve(remote) : remote;
+  return remote && isLocalPath(remote) ? posix.resolve(remote) : remote;
 }
 
 function field(spec: Table, key: string, fallback: string): string {
