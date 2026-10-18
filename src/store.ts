@@ -23,6 +23,20 @@ export function defaultName(remote: string, path: string): string {
 
 const rstrip = (s: string) => s.replace(/\/+$/, "");
 
+const quoted = (s: string): string => JSON.stringify(s).replace(/[\u007f-\u009f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+
+/** git's url_is_local_not_ssh, the rule fetch and ls-remote use. `git clone` also takes an existing folder named like `a:b` as local; this does not. */
+function isLocalPath(remote: string): boolean {
+  const colon = remote.indexOf(":");
+  return !remote.includes("://") && (colon === -1 || remote.slice(0, colon).includes("/"));
+}
+
+const namesNoHelper = (remote: string): boolean => isLocalPath(remote) || remote.startsWith("file://");
+
+export function absoluteRemote(remote: string): string {
+  return remote && !remote.startsWith("-") && isLocalPath(remote) ? posix.resolve(remote) : remote;
+}
+
 function field(spec: Table, key: string, fallback: string): string {
   const value = Object.hasOwn(spec, key) ? spec[key] : fallback;
   if (typeof value !== "string") throw new Fail(`an [[upstream]]'s ${key} is a string, not ${JSON.stringify(value)}`);
@@ -46,18 +60,32 @@ export class Upstream {
   readonly name: string;
   readonly mount: string;
   readonly vendor: string | null;
-  readonly remoteName: string;
 
   constructor(readonly book: Book, spec: Table) {
-    if (!Object.hasOwn(spec, "remote")) throw new Fail("an [[upstream]] needs a remote");
     this.remote = field(spec, "remote", "");
+    if (!this.remote) throw new Fail("an [[upstream]] needs a remote");
     this.path = strip(field(spec, "path", ""), "/");
     this.branch = field(spec, "branch", "main");
     this.name = field(spec, "name", "") || defaultName(this.remote, this.path);
+    if (this.remote.startsWith("-")) {
+      throw new Fail(`upstream ${this.name}'s remote ${JSON.stringify(this.remote)} starts with "-", so git would read it as an option.`);
+    }
+    const transport = /^(ssh|git)::/.exec(this.remote)?.[1];
+    if (transport) {
+      throw new Fail(
+        `upstream ${this.name}'s remote ${JSON.stringify(this.remote)} names git's own ${transport} transport as a remote helper. `
+          + `git ships no git-remote-${transport} and allows ${transport} always, so it would run whatever git-remote-${transport} is on PATH. Write ${transport}:// instead.`,
+      );
+    }
+    if (isLocalPath(this.remote) && !posix.isAbsolute(this.remote)) {
+      throw new Fail(
+        `upstream ${this.name}'s remote ${JSON.stringify(this.remote)} is a relative path, so it names a different repo from each folder. `
+          + "Set remote in .patchbook/config.toml to an absolute path or a URL.",
+      );
+    }
     this.mount = stagedFolder(field(spec, "mount", this.name), `the mount of ${this.name}`);
     const vendor = field(spec, "vendor", "");
     this.vendor = vendor ? pjoin(book.root, vendor) : null;
-    this.remoteName = field(spec, "remote_name", "upstream");
   }
 
   /** A fork's own upstream is the repo itself. The others are fetched into the store. */
@@ -97,16 +125,16 @@ export class Upstream {
   }
 
   source(): string {
-    return this.inRepo ? this.remoteName : this.remote;
+    return this.remote;
   }
 
   fetch(ref: string): string {
-    const shallow = this.inRepo ? [] : ["--depth=1"];
     const cwd = this.gitDir();
+    // --depth on a full clone would make the user's repo shallow at the pin.
+    const shallow = !this.inRepo || git(["rev-parse", "--is-shallow-repository"], { cwd }) === "true" ? ["--depth=1"] : [];
     const landing = `refs/patchbook/tmp/${process.pid}-${randomUUID()}`;
     try {
-      const fetched = spawn(["git", "fetch", "--quiet", "--no-tags", ...shallow, this.source(), `+${ref}:${landing}`], { cwd });
-      if (fetched.code !== 0) throw new Fail(`git fetch ${this.source()} ${ref} failed:\n${strip(decodeReplace(fetched.stderr))}`);
+      this.onRemote(["fetch", "--quiet", "--no-tags", ...shallow, "--end-of-options", this.source(), `+${ref}:${landing}`], `git fetch ${quoted(this.source())} ${ref}`, cwd);
       return git(["rev-parse", `${landing}^{commit}`], { cwd });
     } finally {
       spawn(["git", "update-ref", "-d", landing], { cwd });
@@ -121,10 +149,10 @@ export class Upstream {
     if (!this.has(commit)) this.fetch(commit);
   }
 
-  /** Pin a commit in the store with a ref, so gc keeps it. Only pins get one: a head that was just looked at stays prunable. A ref already there is not written again. */
+  /** Only a pin gets a ref, so a head that was only looked at stays prunable. */
   keep(commit: string): string {
     this.have(commit);
-    if (!this.inRepo && !this.kept(commit)) git(["update-ref", `refs/pins/${commit}`, commit], { cwd: this.gitDir() });
+    if (!this.kept(commit)) git(["update-ref", `refs/pins/${commit}`, commit], { cwd: this.gitDir() });
     return commit;
   }
 
@@ -135,7 +163,7 @@ export class Upstream {
 
   /** Undo `keep` for a commit that did not become the pin. */
   unkeep(commit: string): void {
-    if (!this.inRepo) spawn(["git", "update-ref", "-d", `refs/pins/${commit}`], { cwd: this.gitDir() });
+    spawn(["git", "update-ref", "-d", `refs/pins/${commit}`], { cwd: this.gitDir() });
   }
 
   /** `keep` for a pin that is read: a store that cannot take the ref still serves the read, with a warning. */
@@ -145,7 +173,7 @@ export class Upstream {
       this.keep(commit);
     } catch (e) {
       if (!(e instanceof Fail)) throw e;
-      process.stderr.write(`patchbook: couldn't keep ${commit.slice(0, 7)} in the store, so git gc may prune it. ${e.message}\n`);
+      process.stderr.write(`patchbook: couldn't keep ${commit.slice(0, 7)} in ${this.inRepo ? "this repo" : "the store"}, so git gc may prune it. ${e.message}\n`);
     }
     return commit;
   }
@@ -162,9 +190,23 @@ export class Upstream {
   }
 
   head(): string {
-    const out = git(["ls-remote", this.source(), `refs/heads/${this.branch}`], { cwd: this.gitDir() });
+    const ref = `refs/heads/${this.branch}`;
+    const out = this.onRemote(["ls-remote", "--end-of-options", this.source(), ref], `git ls-remote ${quoted(this.source())} ${ref}`, this.gitDir());
     if (!out) throw new Fail(`upstream ${this.name} has no branch ${this.branch}`);
     return split(out)[0]!;
+  }
+
+  /**
+   * A repo chose the remote, as it chooses a submodule URL, so a remote that can name a helper gets git's rule for those: a helper git does not ship
+   * runs only if the user allows it, with protocol.<name>.allow or protocol.allow set to always, or with GIT_ALLOW_PROTOCOL.
+   * ext:: runs only through GIT_ALLOW_PROTOCOL.
+   */
+  private onRemote(args: string[], asTyped: string, cwd: string): string {
+    const done = namesNoHelper(this.source())
+      ? spawn(["git", ...args], { cwd })
+      : spawn(["git", "-c", "protocol.ext.allow=never", ...args], { cwd, env: { ...process.env, GIT_PROTOCOL_FROM_USER: "0" } });
+    if (done.code !== 0) throw new Fail(`${asTyped} failed:\n${strip(decodeReplace(done.stderr))}`);
+    return strip(decode(done.stdout));
   }
 
   /** Upstream's files at a commit, relative to the upstream path. */

@@ -1,7 +1,7 @@
 // End-to-end tests: each one builds a throwaway upstream repo and drives the CLI against it.
 
 import { describe, expect, test } from "bun:test";
-import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { Case, Repo, dedent, lstrip, mkdirNew, partitionHead, replace, sh, words } from "./helpers";
 
@@ -49,6 +49,25 @@ const dropRefs = (store: string): void => {
   for (const ref of sh(["git", "for-each-ref", "--format=%(refname)"], { cwd: store }).stdout.split("\n").filter(Boolean)) {
     sh(["git", "update-ref", "-d", ref], { cwd: store });
   }
+};
+
+const markerScript = (t: Case, name: string): string => {
+  const marker = join(t.tmp, `${name}-ran`);
+  writeFileSync(join(t.tmp, "bin", name), `#!/bin/sh\ntouch ${marker}\nexit 1\n`, { mode: 0o755 });
+  return marker;
+};
+const setRemote = (config: string, remote: string): void => writeFileSync(config, read(config).replace(/^remote = .*$/m, `remote = "${remote}"`));
+const cloneFollowing = (t: ForkCase, remote: string): string => {
+  const origin = join(t.tmp, "origin.git");
+  sh(["git", "init", "-q", "--bare", origin], { cwd: t.tmp });
+  t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+  t.up.commit("upstream edit");
+  t.pb(["sync"], { cwd: t.fork.path });
+  setRemote(join(t.fork.path, ".patchbook/config.toml"), remote);
+  t.fork.commit("Sync upstream");
+  sh(["git", "push", "-q", origin, "HEAD:main"], { cwd: t.fork.path });
+  sh(["git", "clone", "-q", "-b", "main", origin, "fresh"], { cwd: t.tmp });
+  return join(t.tmp, "fresh");
 };
 
 const snapshot = (dir: string): Record<string, string> =>
@@ -765,6 +784,255 @@ describe("ForkTest", () => {
     expect(parents[2]).toBe(head); // the build merges upstream, so its history stays reachable
   });
 
+  forkTest("test_a_fresh_clone_of_the_fork_reads_the_pin_after_a_sync", (t) => {
+    const origin = join(t.tmp, "origin.git");
+    const hooked = { ...t.env, PATCHBOOK_HOOK: "1" };
+    sh(["git", "init", "-q", "--bare", origin], { cwd: t.tmp });
+    sh(["git", "remote", "add", "origin", origin], { cwd: t.fork.path });
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    const head = t.up.commit("upstream edit");
+    t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "commit", "-qam", "Sync upstream"], { cwd: t.fork.path, env: hooked });
+    sh(["git", "push", "-q", "origin", "HEAD:main"], { cwd: t.fork.path });
+    sh(["git", "clone", "-q", "-b", "main", origin, "fresh"], { cwd: t.tmp });
+    const fresh = new Repo(join(t.tmp, "fresh"));
+    expect(t.pb(["status"], { cwd: fresh.path }).stdout).toBe(`0 edits apply at upstream ${head.slice(0, 7)}; no problems\n`);
+    expect(t.pb(["build"], { cwd: fresh.path }).stdout).toContain(`from upstream ${head.slice(0, 7)}`);
+    fresh.write("app.txt", replace(fresh.read("app.txt"), "two", "TWO"));
+    sh(["git", "commit", "-qam", "shout"], { cwd: fresh.path, env: hooked });
+    expect(words(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: fresh.path }).stdout)).toContain(".patchbook/changes/shout/CHANGE.md");
+    t.pb(["build", "--commit"], { cwd: fresh.path });
+    expect(words(sh(["git", "rev-list", "--parents", "-n1", "HEAD"], { cwd: fresh.path }).stdout)[2]).toBe(head);
+  });
+
+  forkTest("test_a_fork_and_its_clone_keep_the_pin_through_gc_when_upstream_is_gone", (t) => {
+    const origin = join(t.tmp, "origin.git");
+    sh(["git", "init", "-q", "--bare", origin], { cwd: t.tmp });
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    const head = t.up.commit("upstream edit");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.fork.commit("Sync upstream");
+    sh(["git", "push", "-q", origin, "HEAD:main"], { cwd: t.fork.path });
+    sh(["git", "clone", "-q", "-b", "main", origin, "fresh"], { cwd: t.tmp });
+    const fresh = new Repo(join(t.tmp, "fresh"));
+    t.pb(["hook", "install"], { cwd: fresh.path });
+    fresh.write("app.txt", replace(fresh.read("app.txt"), "two", "TWO"));
+    sh(["git", "commit", "-qam", "shout"], { cwd: fresh.path, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    expect(words(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: fresh.path }).stdout)).toContain(".patchbook/changes/shout/CHANGE.md");
+    rmSync(t.up.path, { recursive: true });
+    for (const repo of [t.fork.path, fresh.path]) {
+      gc(repo);
+      expect(t.pb(["status"], { cwd: repo }).stdout).toContain(`apply at upstream ${head.slice(0, 7)}; no problems`);
+    }
+  });
+
+  forkTest("test_clone_init_and_track_write_a_relative_upstream_path_as_an_absolute_one", (t) => {
+    const up = realpathSync(t.up.path);
+    const remotes = (repo: string): string[] => Array.from(read(join(repo, ".patchbook/config.toml")).matchAll(/^remote = "(.*)"$/gm), (m) => m[1]!);
+    const sub = join(t.tmp, "sub");
+    mkdirSync(sub);
+    t.pb(["clone", "../upstream", "cloned"], { cwd: sub });
+    expect(remotes(join(sub, "cloned"))).toEqual([up]);
+    const mine = join(sub, "mine");
+    sh(["git", "clone", "-q", t.up.path, mine], { cwd: t.tmp });
+    mkdirSync(join(mine, "deep"));
+    t.pb(["init", "--upstream", "../../../upstream"], { cwd: join(mine, "deep") });
+    expect(remotes(mine)).toEqual([up]);
+    t.pb(["track", "again", "../../upstream", "--mount", "again"], { cwd: join(t.fork.path, "docs") });
+    expect(remotes(t.fork.path)).toEqual([t.up.path, up]);
+  });
+
+  forkTest("test_a_relative_remote_in_config_fails_sync_status_and_check_and_pins_nothing", (t) => {
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    writeFileSync(config, read(config).replace(`remote = "${t.up.path}"`, 'remote = "../fork"'));
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.commit("upstream edit");
+    const lock = t.fork.read(".patchbook/upstream.lock");
+    for (const command of ["sync", "status", "check"]) {
+      const out = t.pb([command], { cwd: t.fork.path, code: 1 });
+      expect(out.stderr).toContain('upstream upstream\'s remote "../fork" is a relative path');
+      expect(out.stderr).toContain("Set remote in .patchbook/config.toml to an absolute path or a URL.");
+    }
+    expect(t.fork.read(".patchbook/upstream.lock")).toBe(lock);
+  });
+
+  forkTest("test_status_reads_a_url_remote_and_refuses_a_relative_path_or_an_empty_remote", (t) => {
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    const original = read(config);
+    const status = (remote: string, code: number) => {
+      writeFileSync(config, original.replace(`remote = "${t.up.path}"`, `remote = "${remote}"`));
+      return t.pb(["status"], { cwd: t.fork.path, code });
+    };
+    for (const remote of ["https://example.invalid/up.git", "ssh://example.invalid/up.git", "git@example.invalid:up.git", `file://${t.up.path}`]) {
+      expect(status(remote, 0).stdout).toContain("no problems");
+    }
+    for (const remote of ["up", "./up", "../up", "sub/dir:up"]) {
+      expect(status(remote, 1).stderr).toContain(`remote "${remote}" is a relative path`);
+    }
+    expect(status("", 1).stderr).toContain("an [[upstream]] needs a remote");
+  });
+
+  forkTest("test_an_empty_upstream_argument_is_refused_and_pins_nothing", (t) => {
+    const mine = join(t.tmp, "mine");
+    sh(["git", "clone", "-q", t.up.path, mine], { cwd: t.tmp });
+    expect(t.pb(["init", "--upstream", ""], { cwd: mine, code: 1 }).stderr).toContain("an [[upstream]] needs a remote");
+    expect(existsSync(join(mine, ".patchbook"))).toBe(false);
+    expect(t.pb(["track", "again", ""], { cwd: t.fork.path, code: 1 }).stderr).toContain("an [[upstream]] needs a remote");
+    expect(read(join(t.fork.path, ".patchbook/config.toml"))).not.toContain("again");
+    const before = readdirSync(t.tmp);
+    t.pb(["clone", ""], { cwd: t.tmp, code: 1 });
+    expect(readdirSync(t.tmp)).toEqual(before);
+  });
+
+  forkTest("test_a_remote_that_starts_with_a_dash_fails_sync_status_and_check_and_pins_nothing", (t) => {
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    const original = read(config);
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.commit("upstream edit");
+    const lock = t.fork.read(".patchbook/upstream.lock");
+    for (const remote of ["--bogus", "-x", "--bogus=a:b"]) {
+      writeFileSync(config, original.replace(`remote = "${t.up.path}"`, `remote = "${remote}"`));
+      for (const command of ["sync", "status", "check"]) {
+        const out = t.pb([command], { cwd: t.fork.path, code: 1 });
+        expect(out.stderr).toContain(`upstream upstream's remote "${remote}" starts with "-", so git would read it as an option.`);
+      }
+    }
+    expect(t.fork.read(".patchbook/upstream.lock")).toBe(lock);
+  });
+
+  forkTest("test_init_and_track_refuse_a_remote_that_starts_with_a_dash_and_change_nothing", (t) => {
+    const mine = join(t.tmp, "mine");
+    sh(["git", "clone", "-q", t.up.path, mine], { cwd: t.tmp });
+    const config = read(join(t.fork.path, ".patchbook/config.toml"));
+    const lock = t.fork.read(".patchbook/upstream.lock");
+    for (const remote of ["--bogus", "--bogus=a:b"]) {
+      const message = `remote "${remote}" starts with "-", so git would read it as an option.`;
+      expect(t.pb(["init", `--upstream=${remote}`], { cwd: mine, code: 1 }).stderr).toContain(message);
+      expect(existsSync(join(mine, ".patchbook"))).toBe(false);
+      expect(t.pb(["track", "again", "--", remote], { cwd: t.fork.path, code: 1 }).stderr).toContain(message);
+      expect(read(join(t.fork.path, ".patchbook/config.toml"))).toBe(config);
+      expect(t.fork.read(".patchbook/upstream.lock")).toBe(lock);
+    }
+  });
+
+  forkTest("test_a_remote_helper_in_a_cloned_forks_config_runs_only_if_the_users_git_config_allows_it_and_ext_never_runs", (t) => {
+    const helperRan = markerScript(t, "git-remote-pbtest");
+    const extRan = markerScript(t, "pbtest-ext");
+    const fresh = cloneFollowing(t, "pbtest::x");
+    for (const command of ["check", "status"]) {
+      expect(t.pb([command], { cwd: fresh, code: 1 }).stderr).toContain("transport 'pbtest' not allowed");
+    }
+    expect(existsSync(helperRan)).toBe(false);
+    const gitconfig = join(t.tmp, "gitconfig");
+    writeFileSync(gitconfig, '[protocol "pbtest"]\n\tallow = always\n[protocol "ext"]\n\tallow = always\n');
+    t.env["GIT_CONFIG_GLOBAL"] = gitconfig;
+    t.pb(["check"], { cwd: fresh, code: 1 });
+    expect(existsSync(helperRan)).toBe(true);
+    setRemote(join(fresh, ".patchbook/config.toml"), `ext::${join(t.tmp, "bin/pbtest-ext")}`);
+    expect(t.pb(["check"], { cwd: fresh, code: 1 }).stderr).toContain("transport 'ext' not allowed");
+    expect(existsSync(extRan)).toBe(false);
+  });
+
+  for (const name of ["file", "ssh", "git"]) {
+    forkTest(`test_a_cloned_forks_config_naming_the_${name}_helper_runs_no_git_remote_${name}`, (t) => {
+      const helperRan = markerScript(t, `git-remote-${name}`);
+      const fresh = cloneFollowing(t, `${name}::x`);
+      for (const command of ["check", "status"]) t.pb([command], { cwd: fresh, code: 1 });
+      expect(existsSync(helperRan)).toBe(false);
+    });
+  }
+
+  forkTest("test_a_users_git_config_that_refuses_the_file_transport_refuses_a_local_path_remote", (t) => {
+    const gitconfig = join(t.tmp, "gitconfig");
+    writeFileSync(gitconfig, '[protocol]\n\tallow = never\n[protocol "https"]\n\tallow = always\n');
+    t.env["GIT_CONFIG_GLOBAL"] = gitconfig;
+    expect(t.pb(["check"], { cwd: t.fork.path, code: 1 }).stderr).toContain("transport 'file' not allowed");
+  });
+
+  forkTest("test_a_refused_remote_helper_names_the_git_command_without_patchbooks_own_flags", (t) => {
+    const fresh = cloneFollowing(t, "pbtest::x");
+    const check = t.pb(["check"], { cwd: fresh, code: 1 }).stderr;
+    expect(check).toContain("git ls-remote \"pbtest::x\" refs/heads/main failed:\nfatal: transport 'pbtest' not allowed");
+    for (const stderr of [check, t.pb(["status"], { cwd: fresh, code: 1 }).stderr]) {
+      expect(stderr).not.toContain("protocol.");
+      expect(stderr).not.toContain("--end-of-options");
+    }
+  });
+
+  forkTest("test_a_committed_remote_with_control_characters_reaches_the_terminal_escaped", (t) => {
+    const fresh = cloneFollowing(t, "https://example.invalid/\\u001b[31mRED\\u001b]0;TITLE\\u0007x\\u007f[31mDEL\\u009b31mC1\\u0085NEL");
+    for (const command of ["check", "status"]) {
+      const stderr = t.pb([command], { cwd: fresh, code: 1 }).stderr;
+      expect(stderr).toContain(" failed:");
+      const ours = stderr.split(" failed:")[0]!;
+      expect(ours.replace(/\n/g, "")).not.toMatch(/\p{Cc}/u);
+      for (const shown of ["example.invalid/", "RED", "DEL", "NEL"]) expect(ours).toContain(shown);
+    }
+  });
+
+  forkTest("test_init_and_clone_give_git_an_option_like_branch_or_url_as_a_value_and_pin_nothing", (t) => {
+    for (const [i, value] of ["--bogus", "--bogus=a:b"].entries()) {
+      const mine = join(t.tmp, `mine${i}`);
+      sh(["git", "clone", "-q", t.up.path, mine], { cwd: t.tmp });
+      const init = t.pb(["init", `--upstream=${t.up.path}`, `--branch=${value}`], { cwd: mine, code: 1 }).stderr;
+      expect(init).not.toContain("unknown option");
+      expect(init).toContain("couldn't find remote ref --bogus");
+      expect(existsSync(join(mine, ".patchbook/upstream.lock"))).toBe(false);
+      const dest = join(t.tmp, `clone${i}`);
+      expect(t.pb(["clone", "--", value, dest], { cwd: t.tmp, code: 1 }).stderr).not.toContain("unknown option");
+      expect(existsSync(dest)).toBe(false);
+    }
+  });
+
+  forkTest("test_init_pins_from_the_upstream_option_when_an_upstream_remote_points_elsewhere", (t) => {
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "one", "ONE"));
+    const branched = t.up.commit("b1");
+    const mine = join(t.tmp, "mine");
+    sh(["git", "clone", "-q", t.up.path, mine], { cwd: t.tmp });
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "two", "TWO"));
+    t.up.commit("b2");
+    const other = join(t.tmp, "other");
+    sh(["git", "clone", "-q", t.up.path, other], { cwd: t.tmp });
+    sh(["git", "reset", "-q", "--hard", "HEAD~2"], { cwd: other });
+    const elsewhere = new Repo(other);
+    elsewhere.write("other.txt", "a1\n");
+    elsewhere.commit("a1");
+    sh(["git", "remote", "add", "upstream", other], { cwd: mine });
+    expect(t.pb(["init", "--upstream", t.up.path], { cwd: mine }).stdout).toContain(`pinned upstream at ${branched.slice(0, 7)}`);
+    expect(JSON.parse(read(join(mine, ".patchbook/upstream.lock"))).upstream.commit).toBe(branched);
+  });
+
+  forkTest("test_a_shallow_clone_of_the_fork_fetches_only_the_pin", (t) => {
+    const origin = join(t.tmp, "origin.git");
+    sh(["git", "init", "-q", "--bare", origin], { cwd: t.tmp });
+    let head = "";
+    for (const word of ["four", "five", "six"]) {
+      t.up.write("app.txt", replace(t.up.read("app.txt"), word, word.toUpperCase()));
+      head = t.up.commit(`shout ${word}`);
+    }
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.fork.commit("Sync upstream");
+    sh(["git", "push", "-q", origin, "HEAD:main"], { cwd: t.fork.path });
+    sh(["git", "clone", "-q", "--depth", "1", "-b", "main", `file://${origin}`, "shallow"], { cwd: t.tmp });
+    const shallow = join(t.tmp, "shallow");
+    const commits = (): string => sh(["git", "rev-list", "--count", "--all"], { cwd: shallow }).stdout.trim();
+    expect(commits()).toBe("1");
+    expect(t.pb(["status"], { cwd: shallow }).stdout).toBe(`0 edits apply at upstream ${head.slice(0, 7)}; no problems\n`);
+    expect(t.pb(["build"], { cwd: shallow }).stdout).toContain(`from upstream ${head.slice(0, 7)}`);
+    expect(commits()).toBe("2");
+  });
+
+  forkTest("test_a_full_fork_stays_full_after_a_sync_fetches_a_new_pin", (t) => {
+    const shallow = (): string => sh(["git", "rev-parse", "--is-shallow-repository"], { cwd: t.fork.path }).stdout.trim();
+    expect(shallow()).toBe("false");
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    const head = t.up.commit("upstream edit");
+    t.pb(["sync"], { cwd: t.fork.path });
+    expect(JSON.parse(t.fork.read(".patchbook/upstream.lock")).upstream.commit).toBe(head);
+    expect(sh(["git", "cat-file", "-e", `${head}^{commit}`], { cwd: t.fork.path, check: false }).code).toBe(0);
+    expect(shallow()).toBe("false");
+  });
+
   forkTest("test_conflict_and_gone", (t) => {
     t.recordFeature();
     t.up.write("app.txt", replace(t.up.read("app.txt"), "two", "deux"));
@@ -1167,7 +1435,8 @@ describe("VendorTest", () => {
     const bin = join(t.tmp, "bin/git");
     const raced = join(t.tmp, "raced");
     writeFileSync(bin, `#!/bin/sh
-if [ "$1" = fetch ] && [ ! -e '${raced}' ]; then
+case " $* " in *" fetch "*) fetch=yes ;; esac
+if [ "$fetch" = yes ] && [ ! -e '${raced}' ]; then
   : > '${raced}'
   '${Bun.which("git")}' "$@" || exit $?
   exec '${Bun.which("git")}' fetch --quiet --depth=1 '${t.up.path}' ${older}
@@ -1185,7 +1454,7 @@ exec '${Bun.which("git")}' "$@"
 
   vendorTest("test_a_failed_fetch_names_the_upstream_and_the_ref_it_was_asked_for", (t) => {
     const err = t.pb(["sync", "plugin", "no-such-ref"], { cwd: t.repo.path, code: 1 }).stderr;
-    expect(err).toContain(`git fetch ${t.up.path} no-such-ref failed:`);
+    expect(err).toContain(`git fetch ${JSON.stringify(t.up.path)} no-such-ref failed:`);
     expect(err).toContain("fatal:");
     expect(err).not.toContain("refs/patchbook");
   });
@@ -1869,6 +2138,28 @@ exec '${Bun.which("git")}' "$@"
     expect(read(config)).toBe(before);
     t.pb(["track", "extra", extra.path], { cwd: t.repo.path });
   });
+
+  vendorTest("test_a_remote_helper_in_a_cloned_config_is_refused_for_a_store_upstream", (t) => {
+    const helperRan = markerScript(t, "git-remote-pbtest");
+    setRemote(join(t.repo.path, ".patchbook/config.toml"), "pbtest::x");
+    t.repo.commit("follow a remote helper");
+    sh(["git", "clone", "-q", t.repo.path, "fresh"], { cwd: t.tmp });
+    for (const command of ["check", "status"]) {
+      expect(t.pb([command], { cwd: join(t.tmp, "fresh"), code: 1 }).stderr).toContain("transport 'pbtest' not allowed");
+    }
+    expect(existsSync(helperRan)).toBe(false);
+  });
+
+  for (const name of ["file", "ssh", "git"]) {
+    vendorTest(`test_a_cloned_config_naming_the_${name}_helper_runs_no_git_remote_${name}_for_a_store_upstream`, (t) => {
+      const helperRan = markerScript(t, `git-remote-${name}`);
+      setRemote(join(t.repo.path, ".patchbook/config.toml"), `${name}::x`);
+      t.repo.commit("follow a remote helper");
+      sh(["git", "clone", "-q", t.repo.path, "fresh"], { cwd: t.tmp });
+      for (const command of ["check", "status"]) t.pb([command], { cwd: join(t.tmp, "fresh"), code: 1 });
+      expect(existsSync(helperRan)).toBe(false);
+    });
+  }
 
   vendorTest("test_build_never_changes_the_git_dir_of_a_linked_worktree", (t) => {
     t.missingScaffoldPatchBuild();
