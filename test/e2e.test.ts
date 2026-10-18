@@ -7841,6 +7841,7 @@ describe("VendorTest", () => {
       expect(inHead(t, vendor)).toEqual(pinnedFiles(vendor));
       expect(gitIn(t, ["show", `HEAD:${sibling}`])).toBe("notes\n");
       expect(gitIn(t, ["status", "--short", "--", sibling]).trim()).toBe(change === "edit" ? `M ${sibling}` : `D ${sibling}`);
+      expect(Object.keys(tree(join(t.repo.path, "out/extra"))).sort()).toEqual(["a.md", "lib/b.md"]);
     });
   }
 
