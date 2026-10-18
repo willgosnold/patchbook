@@ -190,7 +190,7 @@ It stops and asks instead of merging when:
 - the only fix for a failing test changes the test, its scripts or its fixtures;
 - the final rebase fails, which it aborts.
 
-Then it opens a pull request without merging, unless it has committed nothing, keeps its worktree, and leaves the thread in your inbox with the question.
+Then it keeps its worktree, opens a pull request without merging if it has committed anything, and leaves the thread in your inbox with the question.
 
 ## Config
 
