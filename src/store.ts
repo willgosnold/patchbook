@@ -386,6 +386,20 @@ function hidingRule(root: string, rel: string): { source: string; line: string; 
   }
 }
 
+/** The tree git has staged under rel, which is the empty tree when it holds nothing there. */
+export function stagedTree(root: string, rel: string): string {
+  const tmp = mkdtempSync(join(tmpdir(), "tmp"));
+  try {
+    const env = { ...process.env, GIT_INDEX_FILE: join(tmp, "index") };
+    const entries = run(["git", "ls-files", "-s", "-z", "--", rel], { cwd: root });
+    git(["read-tree", "--empty"], { cwd: root, env });
+    if (entries.length) run(["git", "update-index", "-z", "--index-info"], { cwd: root, env, input: entries });
+    return git(entries.length ? ["write-tree", `--prefix=${rel}/`] : ["write-tree"], { cwd: root, env });
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 function get(value: PyValue | undefined, key: string): PyValue | undefined {
   if (value === undefined) return undefined;
   if (!(value instanceof Map)) throw new Fail(`last-sync.json: expected an object holding ${key}`);

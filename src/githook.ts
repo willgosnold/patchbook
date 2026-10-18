@@ -12,7 +12,7 @@ import { git, run, spawn } from "./lib/proc.ts";
 import { quote, sorted, strip } from "./lib/py.ts";
 import { bytesEqual, concat, decode, decodeReplace, encode } from "./lib/text.ts";
 import { type Source, setting } from "./settings.ts";
-import { refuseMergedUpstream } from "./store.ts";
+import { refuseMergedUpstream, stagedTree } from "./store.ts";
 import { linksUnder, Undo } from "./undo.ts";
 
 /** Git runs hooks from the top of the checkout. A linked worktree shares the hooks folder of its repo, and may hold a commit with no patchbook. */
@@ -542,6 +542,18 @@ function refuseOtherRepo(book: Book): void {
     + `Run \`patchbook hook install\` in ${book.root}, or start a patchbook here with \`patchbook init\`.`);
 }
 
+/** Stage each vendored copy that the index holds something else for, once the copy on disk hashes to the pin. */
+function stageVendors(book: Book): void {
+  for (const u of book.upstreams) {
+    const tree = u.pin().tree;
+    if (!u.vendor || !tree) continue;
+    const rel = relative(book.root, u.vendor);
+    if (stagedTree(book.root, rel) === tree) continue;
+    u.vendoredCopy(u.vendor, tree);
+    git(["add", "-A", "--", rel], { cwd: book.root });
+  }
+}
+
 export async function cmdHook(args: { action: "install" | "run" | "status" }) {
   if (args.action === "status") {
     printHookStatus(await Book.find());
@@ -708,5 +720,6 @@ async function runHook(undo: Undo) {
         + `\`git --literal-pathspecs reset -q -- ${[...wrote, ...recordedIgnored].map(quote).join(" ")}\`\n`);
     }
   }
+  stageVendors(book);
   return 0;
 }
