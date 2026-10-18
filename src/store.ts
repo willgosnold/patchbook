@@ -96,8 +96,48 @@ export class Upstream {
     return git(["rev-parse", "FETCH_HEAD^{commit}"], { cwd: this.gitDir() });
   }
 
+  has(commit: string): boolean {
+    return spawn(["git", "cat-file", "-e", `${commit}^{commit}`], { cwd: this.gitDir() }).code === 0;
+  }
+
   have(commit: string): void {
-    if (spawn(["git", "cat-file", "-e", `${commit}^{commit}`], { cwd: this.gitDir() }).code !== 0) this.fetch(commit);
+    if (!this.has(commit)) this.fetch(commit);
+  }
+
+  /** Pin a commit in the store with a ref, so gc keeps it. Only pins get one: a head that was just looked at stays prunable. A ref already there is not written again. */
+  keep(commit: string): string {
+    this.have(commit);
+    if (!this.inRepo && !this.kept(commit)) git(["update-ref", `refs/pins/${commit}`, commit], { cwd: this.gitDir() });
+    return commit;
+  }
+
+  kept(commit: string): boolean {
+    const held = spawn(["git", "rev-parse", "--verify", "--quiet", `refs/pins/${commit}`], { cwd: this.gitDir() });
+    return decode(held.stdout).trim() === commit;
+  }
+
+  /** Undo `keep` for a commit that did not become the pin. */
+  unkeep(commit: string): void {
+    if (!this.inRepo) spawn(["git", "update-ref", "-d", `refs/pins/${commit}`], { cwd: this.gitDir() });
+  }
+
+  /** `keep` for a pin that is read: a store that cannot take the ref still serves the read, with a warning. */
+  heal(commit: string): string {
+    this.have(commit);
+    try {
+      this.keep(commit);
+    } catch (e) {
+      if (!(e instanceof Fail)) throw e;
+      process.stderr.write(`patchbook: couldn't keep ${commit.slice(0, 7)} in the store, so git gc may prune it. ${e.message}\n`);
+    }
+    return commit;
+  }
+
+  /** `heal` for a pin the caller does not need the files of: one the store lacks is left alone, never fetched just to keep it. Says whether the store had it. */
+  healIfHeld(commit: string): boolean {
+    const held = this.has(commit);
+    if (held) this.heal(commit);
+    return held;
   }
 
   treeOf(commit: string): string {
@@ -149,7 +189,8 @@ export class Upstream {
         );
       }
       files = found.files;
-    } else files = this.files(pinned(this, pin));
+      if (pin.commit) this.healIfHeld(pin.commit);
+    } else files = this.files(this.heal(pinned(this, pin)));
     return this.mounted(files);
   }
 }
@@ -213,14 +254,14 @@ export async function cmdUpstream(args: { name: string; path: string | null; dif
   const u = book.upstream(args.name);
   const pin = u.pin();
   if (!pin.tree) throw new Fail(`upstream ${u.name} has no pin yet. Run: patchbook sync ${u.name}`);
-  const commit = pinned(u, pin);
+  const commit = u.heal(pinned(u, pin));
   if (args.diff || args.since) {
     const last = join(book.dir, "last-sync.json");
     const from = exists(last) ? get(get(get(loads(readText(last)), "upstreams") ?? new Map(), u.name) ?? new Map(), "from") : undefined;
     const old = args.since || (typeof from === "string" ? from : "");
     if (!old) throw new Fail(`no earlier pin of ${u.name} to compare with; pass --since <commit>`);
-    u.have(old);
-    u.have(commit);
+    if (args.since) u.have(old);
+    else u.heal(old);
     const where = [u.path, args.path].filter((p) => p).join("/");
     const rel = u.path ? [`--relative=${u.path}/`] : [];
     const diff = run(["git", "diff", "--no-color", ...rel, old, commit, "--", ...(where ? [where] : [])], { cwd: u.gitDir() });
