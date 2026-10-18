@@ -132,8 +132,8 @@ function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly str
   const shown = strRepr(to);
   if (rel === ".") throw new Fail(`[output] to ${shown} is the repo root. Name a folder inside the repo.`);
   if (under(rel, "..")) throw new Fail(`[output] to ${shown} is outside the repo. Name a folder inside it.`);
-  if (under(rel, PB)) throw new Fail(`[output] to ${shown} is inside ${PB}. Name a folder outside it.`);
-  if (under(rel, GIT)) throw new Fail(`[output] to ${shown} is inside ${GIT}. Name a folder outside it.`);
+  if (under(rel, PB)) throw new Fail(`[output] to ${shown} is inside ${PB}. patchbook never builds into ${PB}, so those files would never land. Change [output] to.`);
+  if (under(rel, GIT)) throw new Fail(`[output] to ${shown} is inside ${GIT}. patchbook never builds into ${GIT}, so those files would never land. Change [output] to.`);
   if (lexists(dir) && !exists(dir)) throw new Fail(`[output] to ${shown} is a link to nothing. Name a folder inside the repo.`);
   if (exists(dir) && !isDir(dir)) throw new Fail(`[output] to ${shown} is not a folder. Name a folder inside the repo.`);
   for (let up = dirname(dir); up !== root && up !== dirname(up); up = dirname(up)) {
