@@ -211,9 +211,9 @@ export class Book {
   readonly placeholders = new Map<string, Placeholder>();
   hooks: Hooks = {};
 
-  private constructor(readonly root: string, candidate?: string) {
+  private constructor(readonly root: string, config: string) {
     this.dir = join(root, PB);
-    this.config = parseToml(candidate ?? readText(join(this.dir, "config.toml")), join(this.dir, "config.toml"));
+    this.config = parseToml(config, join(this.dir, "config.toml"));
     const kind = Object.hasOwn(this.config, "layout") ? this.config["layout"] : "fork";
     if (kind !== "folder" && kind !== "fork") {
       throw new Fail(`layout must be folder or fork, not ${typeof kind === "string" ? strRepr(kind) : JSON.stringify(kind)}`);
@@ -237,14 +237,14 @@ export class Book {
     this.readPlaceholders();
   }
 
-  static fromText(root: string, config: string): Book {
-    return new Book(root, config);
+  static async fromText(root: string, config: string): Promise<Book> {
+    const book = new Book(root, config);
+    book.hooks = await loadHooks(book.dir);
+    return book;
   }
 
   static async open(root: string): Promise<Book> {
-    const book = new Book(root);
-    book.hooks = await loadHooks(book.dir);
-    return book;
+    return Book.fromText(root, readText(join(root, PB, "config.toml")));
   }
 
   static async find(start?: string): Promise<Book> {
@@ -409,21 +409,28 @@ export class Book {
     return best;
   }
 
-  /** The lock: {upstream name: {commit, tree}}, as the file has it. */
   lock(): Map<string, PyValue> {
     const path = join(this.dir, "upstream.lock");
     if (!exists(path)) return new Map();
     const data = loads(readText(path));
     if (!(data instanceof Map)) throw new Fail(`${path} isn't a JSON object`);
-    return data;
+    return new Map(Array.from(data).filter(([name]) => this.upstreams.some((u) => u.name === name)));
   }
 
   writeLock(name: string, commit: string, tree: string): void {
     const data = this.lock();
     data.set(name, new Map([["commit", commit], ["tree", tree]]));
-    const ordered = new Map(sortedBy(data, ([k]) => k));
+    this.saveLock(data);
+  }
+
+  dropPin(name: string): void {
+    const data = this.lock();
+    if (data.delete(name)) this.saveLock(data);
+  }
+
+  private saveLock(data: Map<string, PyValue>): void {
     mkdirs(this.dir);
-    writeText(join(this.dir, "upstream.lock"), dumps(ordered, 2) + "\n");
+    writeText(join(this.dir, "upstream.lock"), dumps(new Map(sortedBy(data, ([k]) => k)), 2) + "\n");
   }
 
   pins(): string {
