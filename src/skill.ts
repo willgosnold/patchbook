@@ -1,5 +1,5 @@
 // The patchbook-update skill, embedded in the binary and written into the repo for its agents.
-import { readlinkSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, readlinkSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import skill from "../skills/patchbook-update/SKILL.md" with { type: "text" };
 import { assemble, describe, handEdits } from "./assemble.ts";
@@ -26,7 +26,13 @@ const LINK = `.claude/skills/${NAME}`;
 
 const pointsAt = (at: string, target: string) => isSymlink(at) && readlinkSync(at) === relative(dirname(at), target);
 
-/** Point `at` to `target`, unless a real folder is already there. Returns null when it left a folder alone. Pushes onto `undo` what puts things back. */
+const folderNote = (root: string, at: string) =>
+  `patchbook: ${relative(root, at)} is a folder, so the skill there was left as it is\n`;
+
+/**
+ * Point `at` to `target`, unless a real folder is already there.
+ * Returns null when it left a folder alone. Pushes onto `undo` what puts things back.
+ */
 function link(root: string, at: string, target: string, undo: (() => void)[]): boolean | null {
   if (pointsAt(at, target)) return false;
   if (isSymlink(at)) {
@@ -37,9 +43,12 @@ function link(root: string, at: string, target: string, undo: (() => void)[]): b
     const was = readBytes(at);
     const mode = statSync(at).mode;
     unlinkSync(at);
-    undo.push(() => writeFileSync(at, was, { mode }));
+    undo.push(() => {
+      writeFileSync(at, was, { mode });
+      chmodSync(at, mode & 0o7777);
+    });
   } else if (lexists(at)) {
-    process.stderr.write(`patchbook: ${relative(root, at)} is a folder, so the skill there was left as it is\n`);
+    process.stderr.write(folderNote(root, at));
     return null;
   }
   mkdirs(dirname(at));
@@ -48,8 +57,8 @@ function link(root: string, at: string, target: string, undo: (() => void)[]): b
   return true;
 }
 
-/** Install the update skill for agents in the repo. Returns the paths it changed and the ones it left as they were, or null if it installed nothing. */
-export function installSkill(book: Book): { changed: string[]; left: string[] } | null {
+/** Install the update skill for agents in the repo. Returns the paths it changed, or null if it installed nothing. */
+export function installSkill(book: Book): { changed: string[] } | null {
   if (!setting("start.install_skill", book)[0]) return null;
   const agents = setting("start.agents", book)[0];
   const unknown = agents.filter((a) => !AGENTS.has(a));
@@ -62,16 +71,13 @@ export function installSkill(book: Book): { changed: string[]; left: string[] } 
   const dir = join(book.root, ".agents", "skills", NAME);
   const file = join(book.root, FILE);
   const changed: string[] = [];
-  const left: string[] = [];
   const undo: (() => void)[] = [];
   try {
     mkdirs(dir);
     for (const { link: folder } of known) {
       if (!folder) continue;
       const at = join(book.root, folder, NAME);
-      const linked = link(book.root, at, dir, undo);
-      if (linked) changed.push(at);
-      else if (linked === null) left.push(at);
+      if (link(book.root, at, dir, undo)) changed.push(at);
     }
     if (!exists(file) || readText(file) !== skill) {
       writeText(file, skill);
@@ -84,8 +90,7 @@ export function installSkill(book: Book): { changed: string[]; left: string[] } 
     process.stderr.write(`patchbook: couldn't install the update skill: ${e.message}\n`);
     return null;
   }
-  const shown = (paths: string[]) => paths.map((p) => relative(book.root, p));
-  return { changed: shown(changed), left: shown(left) };
+  return { changed: changed.map((p) => relative(book.root, p)) };
 }
 
 const ownsSkill = (p: string) => p === FILE || p === LINK;
@@ -103,7 +108,9 @@ export async function recordSkill(book: Book): Promise<number> {
   process.chdir(book.root);
   return cmdRecord({
     change: CHANGE,
-    intent: recorded(book) ? null : "Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.",
+    intent: recorded(book)
+      ? null
+      : "Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.",
     only: ownsSkill,
   });
 }
@@ -114,14 +121,21 @@ function wanted(book: Book): string[] {
   return known.length ? [FILE, ...known.flatMap(({ link: folder }) => (folder ? [`${folder}/${NAME}`] : []))] : [];
 }
 
-/** The paths an install would replace whose content is in no commit. */
-function uncommitted(book: Book): string[] {
-  return wanted(book).filter((p) => {
-    const at = join(book.root, p);
-    const replaced = lexists(at) && (isSymlink(at) || !isDir(at));
-    return replaced && !installed(book, p)
-      && git(["status", "--porcelain", "--untracked-files=all", "--", p], { cwd: book.root, check: false }) !== "";
-  });
+/** The link paths that are real folders, which install leaves as they are. */
+const folders = (book: Book) =>
+  wanted(book).filter((p) => p !== FILE && !isSymlink(join(book.root, p)) && isDir(join(book.root, p)));
+
+/** The paths an install would replace that no commit keeps: those with uncommitted changes, and those git ignores. */
+function unkept(book: Book): { uncommitted: string[]; ignored: string[] } {
+  const found: { uncommitted: string[]; ignored: string[] } = { uncommitted: [], ignored: [] };
+  for (const p of wanted(book)) {
+    if (!lexists(join(book.root, p)) || installed(book, p)) continue;
+    const status = git(["status", "--porcelain", "--ignored", "--untracked-files=all", "--", p],
+      { cwd: book.root, check: false });
+    if (status.startsWith("!!")) found.ignored.push(p);
+    else if (status) found.uncommitted.push(p);
+  }
+  return found;
 }
 
 export async function cmdSkill(): Promise<number> {
@@ -137,23 +151,35 @@ export async function cmdSkill(): Promise<number> {
     for (const p of problems) process.stderr.write(describe(p) + "\n");
     throw new Fail(`${problems.length} problems; nothing installed. \`patchbook status\` lists them.`);
   }
-  const waiting = uncommitted(book);
-  if (waiting.length) {
-    throw new Fail(`these skill files differ from the shipped copy and are not in a commit, and installing would replace them:\n  ${waiting.join("\n  ")}\n`
-      + "Commit them first, then run this again. In a fork the hook records the commit.");
+  const blocked = folders(book);
+  if (blocked.length) {
+    for (const p of blocked) process.stderr.write(folderNote(book.root, join(book.root, p)));
+    throw new Fail(`the update skill was not installed at ${blocked.join(", ")}`);
   }
+  const { uncommitted, ignored } = unkept(book);
+  const refusals = [
+    uncommitted.length && "these skill files differ from the shipped copy and are not in a commit, "
+      + `and installing would replace them:\n  ${uncommitted.join("\n  ")}\n`
+      + "Commit them first, then run this again. In a fork the hook records the commit.",
+    ignored.length && "these skill files differ from the shipped copy and git ignores them, "
+      + `so no commit can keep them, and installing would replace them:\n  ${ignored.join("\n  ")}\n`
+      + "Move the file, or stop ignoring the path, then run this again.",
+  ].filter(Boolean);
+  if (refusals.length) throw new Fail(refusals.join("\n"));
+  const replacing = wanted(book).filter((p) => lexists(join(book.root, p)) && !installed(book, p));
   const fork = book.layout.kind === "fork";
+  // `handEdits` sees skill files that match the shipped copy but were never recorded, which `changed` does not.
   const unrecorded = fork ? handEdits(book, a.out).filter(ownsSkill) : [];
   const result = installSkill(book);
   if (result === null) {
     throw new Fail(setting("start.agents", book)[0].length ? "the update skill was not installed"
       : "start.agents is empty, so the update skill was not installed");
   }
-  const { changed, left } = result;
+  const { changed } = result;
   process.stdout.write(changed.map((p) => `wrote ${p}\n`).join(""));
+  process.stdout.write(replacing.map((p) => `replaced ${p}; your copy is in HEAD\n`).join(""));
   const record = fork && (changed.length > 0 || unrecorded.length > 0);
   const code = record ? await recordSkill(book) : 0;
-  if (left.length) throw new Fail(`the update skill was not installed at ${left.join(", ")}`);
   if (!changed.length && !record) process.stdout.write("the update skill is already current\n");
   return code;
 }
