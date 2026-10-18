@@ -7556,6 +7556,65 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     });
   }
 
+  const committed = (t: ForkCase): string[] =>
+    sh(["git", "ls-tree", "-r", "--name-only", "HEAD"], { cwd: t.fork.path }).stdout.split("\n").filter((p) => p.startsWith("vendor/"));
+  const pinnedCopy = ["vendor/extra/a.md", "vendor/extra/lib/b.md"];
+
+  for (const flag of ["-qm", "-qam"]) {
+    forkTest(`test_a_commit_after_the_advised_sync_keeps_the_vendored_copy_with_git_commit_${flag.slice(1)}`, (t) => {
+      trackVendored(t);
+      sh(["git", "mv", "vendor/extra/a.md", "moved-a.md"], { cwd: t.fork.path });
+      sh(["git", "mv", "vendor/extra/lib/b.md", "moved-b.md"], { cwd: t.fork.path });
+      expect(hooked(t, ["commit", "-qm", "move them out"]).code).not.toBe(0);
+
+      t.pb(["sync", "extra"], { cwd: t.fork.path });
+      expect(hooked(t, ["commit", flag, "move them out"]).code).toBe(0);
+      expect(committed(t)).toEqual(pinnedCopy);
+      expect(sh(["git", "status", "--short"], { cwd: t.fork.path }).stdout).not.toContain("vendor");
+      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    });
+  }
+
+  forkTest("test_a_commit_after_a_killed_sync_and_a_repair_does_not_record_the_stale_index", (t) => {
+    trackVendored(t);
+    const vendor = join(t.fork.path, "vendor/extra");
+    rmSync(join(vendor, "lib"), { recursive: true });
+    writeFileSync(join(vendor, "a.md"), "half written\n");
+    t.fork.write("note.txt", "a note\n");
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    const blocked = hooked(t, ["commit", "-qm", "after the kill"]);
+    expect(blocked.code).not.toBe(0);
+    expect(blocked.stderr).toContain("differs from the pin");
+
+    t.pb(["sync", "extra"], { cwd: t.fork.path });
+    expect(hooked(t, ["commit", "-qm", "after the kill"]).code).toBe(0);
+    expect(committed(t)).toEqual(pinnedCopy);
+    expect(sh(["git", "show", "HEAD:vendor/extra/a.md"], { cwd: t.fork.path }).stdout).toBe("one\n");
+    expect(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.fork.path }).stdout).not.toContain("vendor/");
+  });
+
+  forkTest("test_a_commit_stages_a_vendored_copy_that_matches_the_pin_and_is_missing_from_the_index", (t) => {
+    trackVendored(t);
+    sh(["git", "rm", "-rq", "--cached", "vendor/extra"], { cwd: t.fork.path });
+    t.fork.write("note.txt", "a note\n");
+    sh(["git", "add", "note.txt"], { cwd: t.fork.path });
+    expect(hooked(t, ["commit", "-qm", "note"]).code).toBe(0);
+    expect(committed(t)).toEqual(pinnedCopy);
+  });
+
+  forkTest("test_a_commit_does_not_record_a_vendored_copy_that_differs_from_the_pin", (t) => {
+    trackVendored(t);
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+    writeFileSync(join(t.fork.path, "vendor/extra/a.md"), "HAND EDIT\n");
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    const commit = hooked(t, ["commit", "-qm", "edit the copy"]);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("differs from the pin");
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
+    expect(committed(t)).toEqual(pinnedCopy);
+    expect(sh(["git", "show", "HEAD:vendor/extra/a.md"], { cwd: t.fork.path }).stdout).toBe("one\n");
+  });
+
   const trackHidden = (t: ForkCase): void => {
     const extra = new Repo(join(t.tmp, "extra"));
     extra.write("a.md", "one\n");
