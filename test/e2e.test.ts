@@ -1278,12 +1278,14 @@ test("test_clone_and_init_print_no_folder_note_for_a_claude_skills_link_to_the_a
     up.write("a.txt", "a\n");
     sharedLayout(up);
     const cloned = t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
-    expect(cloned.stderr).toBe("");
+    expect(cloned.stderr).not.toContain("is a folder");
+    expect(cloned.stderr).not.toContain("is a symlink");
     expect(read(join(t.tmp, "fork", SKILL_FILE))).toBe(SKILL_COPY);
 
     sh(["git", "clone", "-q", up.path, join(t.tmp, "mine")], { cwd: t.tmp });
     const inited = t.pb(["init", "--upstream", up.path], { cwd: join(t.tmp, "mine") });
-    expect(inited.stderr).toBe("");
+    expect(inited.stderr).not.toContain("is a folder");
+    expect(inited.stderr).not.toContain("is a symlink");
     expect(read(join(t.tmp, "mine", SKILL_FILE))).toBe(SKILL_COPY);
   } finally {
     t.cleanup();

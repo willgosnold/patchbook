@@ -1,5 +1,7 @@
 // The patchbook-update skill, embedded in the binary and written into the repo for its agents.
-import { chmodSync, readlinkSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync,
+} from "node:fs";
 import { dirname, join, relative } from "node:path";
 import skill from "../skills/patchbook-update/SKILL.md" with { type: "text" };
 import { assemble, describe, handEdits } from "./assemble.ts";
@@ -24,12 +26,23 @@ const AGENTS: ReadonlyMap<string, { link: string | null }> = new Map([
 
 const FILE = `.agents/skills/${NAME}/SKILL.md`;
 const LINK = `.claude/skills/${NAME}`;
-const SKILL = encode(skill);
-
-/** SKILL.md and the folders above it. A link at any of them would send a write out of the repo. */
-const THROUGH = [".agents", ".agents/skills", `.agents/skills/${NAME}`, FILE];
+const SKILL_BYTES = encode(skill);
 
 const pointsAt = (at: string, target: string) => isSymlink(at) && readlinkSync(at) === relative(dirname(at), target);
+
+const real = (p: string) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return null;
+  }
+};
+
+/** With `.claude/skills` linked to `.agents/skills`, the link path is the skill folder itself. */
+const sharesSkills = (root: string, p: string) => {
+  const skills = real(join(root, ".agents", "skills"));
+  return skills !== null && real(dirname(join(root, p))) === skills;
+};
 
 const folderNote = (root: string, at: string) =>
   `patchbook: ${relative(root, at)} is a folder, so the skill there was left as it is\n`;
@@ -87,11 +100,11 @@ export function installSkill(book: Book): { changed: string[] } | null {
   try {
     mkdirs(dir);
     for (const { link: folder } of known) {
-      if (!folder) continue;
+      if (!folder || sharesSkills(book.root, `${folder}/${NAME}`)) continue;
       const at = join(book.root, folder, NAME);
       if (link(book.root, at, dir, undo)) changed.push(at);
     }
-    if (!exists(file) || !bytesEqual(readBytes(file), SKILL)) {
+    if (!exists(file) || !bytesEqual(readBytes(file), SKILL_BYTES)) {
       writeText(file, skill);
       changed.unshift(file);
     }
@@ -109,8 +122,8 @@ const ownsSkill = (p: string) => p === FILE || p === LINK;
 
 function installed(book: Book, p: string): boolean {
   const at = join(book.root, p);
-  if (p === FILE) return exists(at) && bytesEqual(readBytes(at), SKILL);
-  return pointsAt(at, join(book.root, ".agents", "skills", NAME));
+  if (p === FILE) return exists(at) && bytesEqual(readBytes(at), SKILL_BYTES);
+  return sharesSkills(book.root, p) || pointsAt(at, join(book.root, ".agents", "skills", NAME));
 }
 
 const recorded = (book: Book) => readChanges(book, []).some((c) => c.name === CHANGE);
@@ -133,12 +146,23 @@ function wanted(book: Book): string[] {
   return known.length ? [FILE, ...known.flatMap(({ link: folder }) => (folder ? [`${folder}/${NAME}`] : []))] : [];
 }
 
-/** The paths on the way to SKILL.md that are links. Nothing is written through them. */
-const symlinked = (book: Book) => (wanted(book).length ? THROUGH.filter((p) => isSymlink(join(book.root, p))) : []);
+const prefixes = (p: string) => p.split("/").map((_, i, parts) => parts.slice(0, i + 1).join("/"));
+
+/**
+ * The paths an install writes through that are links: every folder above a path it writes, and SKILL.md.
+ * The link paths are left out, since install owns those, and so is a link path that is the skill folder already.
+ */
+function symlinked(book: Book): string[] {
+  const through = wanted(book).flatMap((p) => {
+    if (p === FILE) return prefixes(p);
+    return sharesSkills(book.root, p) ? [] : prefixes(p).slice(0, -1);
+  });
+  return Array.from(new Set(through)).filter((p) => isSymlink(join(book.root, p)));
+}
 
 /** The paths an install would write that are real folders. `skill install` refuses them; clone and init leave them. */
-const folders = (book: Book) =>
-  wanted(book).filter((p) => !isSymlink(join(book.root, p)) && isDir(join(book.root, p)));
+const folders = (book: Book) => wanted(book).filter((p) =>
+  !isSymlink(join(book.root, p)) && isDir(join(book.root, p)) && !sharesSkills(book.root, p));
 
 /** The paths an install would replace that no commit keeps: those with uncommitted changes, and those git ignores. */
 function unkept(book: Book): { uncommitted: string[]; ignored: string[] } {
