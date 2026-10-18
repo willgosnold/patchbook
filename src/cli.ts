@@ -104,7 +104,9 @@ async function cmdInit(args: {
     process.stdout.write(`Next: patchbook build, then commit.\n${SCHEDULE}\n`);
     return 0;
   }
-  const hasRemote = split(git(["remote"], { cwd: root })).includes("upstream");
+  const remotes = split(git(["remote"], { cwd: root }));
+  const hasRemote = remotes.includes("upstream");
+  if (!hasRemote && remotes.includes(upstream)) throw new Fail(`--upstream ${upstream} names a remote of this repo, not a URL. Give its URL (git remote get-url ${upstream}).`);
   const follows = redact(hasRemote ? checkedRemoteUrl(root, upstream, args.branch) : upstream);
   const text = configText("fork", upstreamToml(name, follows, args.path, args.branch, ""));
   const book = await Book.fromText(root, text);
