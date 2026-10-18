@@ -9,6 +9,7 @@ import { intentSettings, PROVIDERS } from "./intent.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, mkdirs, pjoin, readBytes, readText, writeText } from "./lib/fs.ts";
 import { ljust, S, strRepr } from "./lib/py.ts";
+import { decode } from "./lib/text.ts";
 import { quoteToml } from "./lib/toml.ts";
 
 /** A parsed TOML table. Values stay unknown until a setting or the book's config reads them. */
@@ -20,12 +21,15 @@ export function isTable(value: unknown): value is Table {
   return proto === Object.prototype || proto === null;
 }
 
+const LOSSY_INTEGER = "Integer cannot be losslessly represented";
+
 export function parseToml(text: string, path: string): Table {
   let parsed: unknown;
   try {
     parsed = Bun.TOML.parse(text);
   } catch (e) {
     if (!(e instanceof SyntaxError)) throw e;
+    if (e.message.includes(LOSSY_INTEGER)) throw new Fail(`${path} holds an integer outside +/-(2^53 - 1), which Bun can't represent`);
     throw new Fail(`${path} isn't valid TOML: ${e.message.replace(/^TOML Parse error: /, "")}`);
   }
   if (!isTable(parsed)) throw new Fail(`${path} isn't a TOML table`);
@@ -151,26 +155,16 @@ export function storeDir(): string {
   return pjoin(base, "upstreams");
 }
 
-const LOSSY_INTEGER = "Integer cannot be losslessly represented";
-
 export function setToml<N extends Name>(path: string, name: N, value: NonNullable<Value<N>> | null): void {
-  const crlf = exists(path) && Buffer.from(readBytes(path)).includes("\r\n");
+  const raw = exists(path) ? decode(readBytes(path)) : "";
   const text = exists(path) ? readText(path) : "";
-  let config: Table;
-  try {
-    config = parseToml(text, path);
-  } catch (e) {
-    if (e instanceof Fail && e.message.includes(LOSSY_INTEGER)) {
-      throw new Fail(`can't change ${name} in ${path}: it holds an integer outside +/-(2^53 - 1), which Bun can't represent`);
-    }
-    throw e;
-  }
+  const config = parseToml(text, path);
   const current = lookup(config, name);
   if (current === undefined && value === null) return;
   const refuse = (cause: string) => new Fail(`can't change ${name} in ${path} safely: ${cause}. The file is left as it was. Edit it by hand.`);
   const out = edited(text, config, name, value, refuse);
   mkdirs(dirname(path));
-  writeText(path, crlf ? out.replace(/\n/g, "\r\n") : out);
+  writeText(path, withEndingsOf(raw, out));
 }
 
 function edited(text: string, config: Table, name: Name, value: unknown, refuse: (cause: string) => Fail): string {
@@ -199,16 +193,54 @@ function patched(text: string, name: Name, value: unknown, refuse: (cause: strin
   }
 }
 
-/** The library drops the comments above a key it deletes, so the key is set to a marker and its line is cut out instead. */
+const MARKER = 7243981605;
+
+/**
+ * The library drops the comments above a key it deletes, and leaves the comments inside a multi-line
+ * value as orphan lines when it rewrites one. So a plain `key = value` is cut out of the text. A
+ * marker number set in its place shows which line the key is on, and the value ends at the first line
+ * where the lines from the key parse.
+ */
 function withoutSetting(text: string, name: Name, refuse: (cause: string) => Fail): string {
-  const marker = `patchbook-unset-${crypto.randomUUID()}`;
-  const lines = patched(text, name, marker, refuse).split("\n");
-  const at = lines.findIndex((line) => line.includes(marker));
-  if (at === -1 || !new RegExp(`^\\s*[^=#\\s][^=]*=\\s*"${marker}"\\s*(#.*)?$`).test(lines[at]!)) {
-    return patched(text, name, null, refuse);
+  const lines = text.split("\n");
+  const marked = patched(text, name, MARKER, refuse).split("\n");
+  const at = marked.findIndex((line, i) => line !== lines[i]);
+  if (at !== -1 && new RegExp(`^\\s*[^=#\\s][^=]*=\\s*${MARKER}\\s*(#.*)?$`).test(marked[at]!)) {
+    for (let end = at; end < lines.length; end++) {
+      if (parses(lines.slice(at, end + 1))) return [...lines.slice(0, at), ...lines.slice(end + 1)].join("\n");
+    }
   }
-  lines.splice(at, 1);
-  return lines.join("\n");
+  return patched(text, name, null, refuse);
+}
+
+function parses(lines: string[]): boolean {
+  try {
+    Bun.TOML.parse(lines.join("\n"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** `out` with each line the ending it had in `raw`. Lines the edit changed take the ending of the file's first line. */
+function withEndingsOf(raw: string, out: string): string {
+  if (!raw.includes("\r\n")) return out;
+  const lines = (text: string) => text.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+  const ends = raw.split("\n").map((line) => (line.endsWith("\r") ? "\r\n" : "\n"));
+  ends[ends.length - 1] = ends[0]!;
+  const was = lines(raw);
+  const now = lines(out);
+  let head = 0;
+  while (head < Math.min(was.length, now.length) && was[head] === now[head]) head++;
+  let tail = 0;
+  while (tail < Math.min(was.length, now.length) - head && was[was.length - 1 - tail] === now[now.length - 1 - tail]) tail++;
+  return now
+    .map((line, i) => {
+      if (i === now.length - 1) return line;
+      const from = i < head ? i : i >= now.length - tail ? was.length - (now.length - i) : -1;
+      return line + (from === -1 ? ends[0]! : ends[from]!);
+    })
+    .join("");
 }
 
 function withoutEmpty(config: Table, section: string): Table {
