@@ -12581,4 +12581,77 @@ describe("ModeTest", () => {
     t.pb(["record", "--intent", "Make the app executable."], { cwd: t.fork.path });
     expect(lockLines(t)).toContainEqual(expect.stringMatching(/^100755 [0-9a-f]{40} app\.txt$/));
   });
+
+  forkTest("test_a_file_edit_recorded_before_modes_keeps_the_upstream_mode", (t) => {
+    const dir = join(t.fork.path, ".patchbook/changes/old");
+    mkdirSync(join(dir, "base/bin"), { recursive: true });
+    mkdirSync(join(dir, "ours/bin"), { recursive: true });
+    writeFileSync(join(dir, "CHANGE.md"), "# old\n\nintent: Say more.\n\nedits:\n- file bin/run.sh\n");
+    writeFileSync(join(dir, "base/bin/run.sh.pb"), "#!/bin/sh\necho run\n");
+    writeFileSync(join(dir, "ours/bin/run.sh.pb"), "#!/bin/sh\necho run more\n");
+    expect(isExecutable(join(dir, "ours/bin/run.sh.pb"))).toBe(false);
+    writeFileSync(join(t.fork.path, ".patchbook/series"), "old\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("bin/run.sh")).toContain("echo run more");
+    expect(isExecutable(join(t.fork.path, "bin/run.sh"))).toBe(true);
+    expect(lockLines(t)).toContainEqual(expect.stringMatching(/^100755 [0-9a-f]{40} bin\/run\.sh$/));
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_of_a_content_edit_to_an_executable_keeps_it_executable_and_follows_upstream", (t) => {
+    t.fork.write("bin/run.sh", "#!/bin/sh\necho run more\n", 0o755);
+    t.pb(["record", "--intent", "Say more."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isExecutable(join(t.fork.path, "bin/run.sh"))).toBe(true);
+    t.fork.commit("record");
+    chmodSync(join(t.up.path, "bin/run.sh"), 0o644);
+    t.up.commit("upstream stops running it");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isExecutable(join(t.fork.path, "bin/run.sh"))).toBe(false);
+  });
+
+  forkTest("test_sync_carries_an_upstream_mode_change_to_a_file_edit", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "--intent", "Shout the second line."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("record");
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "seven", "SEVEN"), 0o755);
+    t.up.commit("upstream edits the last line and makes it executable");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app.txt")).toContain("TWO");
+    expect(t.fork.read("app.txt")).toContain("SEVEN");
+    expect(isExecutable(join(t.fork.path, "app.txt"))).toBe(true);
+    t.fork.commit("sync");
+    chmodSync(join(t.up.path, "app.txt"), 0o644);
+    t.up.commit("upstream stops making it executable");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isExecutable(join(t.fork.path, "app.txt"))).toBe(false);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_of_a_retargeted_upstream_symlink_keeps_it_a_symlink", (t) => {
+    symlinkSync("app.txt", join(t.up.path, "link"));
+    t.up.commit("link");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("link");
+    const link = join(t.fork.path, "link");
+    unlinkSync(link);
+    symlinkSync("docs/guide.md", link);
+    t.pb(["record", "--intent", "Point the link at the guide."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(readlinkSync(link)).toBe("docs/guide.md");
+    t.fork.commit("retarget");
+    unlinkSync(link);
+    symlinkSync("bin/run.sh", link);
+    hookCommit(t, t.fork, "retarget again", "Point the link at the script.");
+    expect(readlinkSync(link)).toBe("bin/run.sh");
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout).toBe("");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(readlinkSync(link)).toBe("bin/run.sh");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
 });

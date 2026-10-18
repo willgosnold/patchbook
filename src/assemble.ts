@@ -152,17 +152,18 @@ export function assemble(book: Book): Assembly {
         problems.push({ problem: "gone", ...where, detail: "upstream no longer has it" });
         continue;
       }
-      const base = c.read("base", e.path);
+      const base = c.file("base", e.path);
       const ours = c.file("ours", e.path);
       if (base === null || ours === null) {
         problems.push({ problem: "invalid", ...where, detail: "its base or ours copy is missing" });
         continue;
       }
-      if (!bytesEqual(base, up.data)) {
+      if (!bytesEqual(base.data, up.data)) {
         problems.push({ problem: "stale", ...where, detail: "its base differs from upstream at the pin; run sync" });
       }
       if (isText(ours.data) && hasConflictMarker(decode(ours.data))) problems.push({ problem: "conflict", ...where, detail: "ours has conflict markers" });
-      content.set(e.path, ours);
+      // A mode that still matches the base copy's was never changed by the change, so upstream's current mode stands.
+      content.set(e.path, { data: ours.data, mode: sameMode(ours.mode, base.mode, book.tracksExecBit()) ? up.mode : ours.mode });
       applied++;
     }
   }
@@ -338,10 +339,10 @@ function refuseIfUncontained(book: Book, { stale, changed }: Changes): void {
 
 export type BuildLock = ReadonlyMap<string, Stamp>;
 
-export const builtAs = (file: File | undefined, stamp: Stamp | undefined, tracksExecBit: boolean): boolean =>
-  file === undefined || stamp === undefined
-    ? file === undefined && stamp === undefined
-    : blobOid(file.data) === stamp.oid && (stamp.mode === null || sameMode(stamp.mode, file.mode, tracksExecBit));
+export function builtAs(file: File | undefined, stamp: Stamp | undefined, tracksExecBit: boolean): boolean {
+  if (file === undefined || stamp === undefined) return file === undefined && stamp === undefined;
+  return blobOid(file.data) === stamp.oid && (stamp.mode === null || sameMode(stamp.mode, file.mode, tracksExecBit));
+}
 
 /** A mode change counts, unless git ignores the executable bit here. */
 export function handEdits(

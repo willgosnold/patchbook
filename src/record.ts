@@ -103,13 +103,13 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     apply: (e, r) => {
       if (e.to.kind === "owned") {
         const c = e.to.change;
-        c.write("ours", e.rel, e.now.data, copyMode(e.now));
+        c.write("ours", e.rel, e.now.data, e.now.mode);
         return { touched: [c], notes: [`file     ${e.path}` + (c !== r.target ? ` (in ${c.name})` : "")] };
       }
       const c = r.target!;
       c.edits.push({ kind: "file", path: e.rel });
-      c.write("base", e.rel, e.to.base.data);
-      c.write("ours", e.rel, e.now.data, copyMode(e.now));
+      c.write("base", e.rel, e.to.base.data, e.to.base.mode);
+      c.write("ours", e.rel, e.now.data, e.now.mode);
       return { touched: [c], notes: [`file     ${e.path}`], waitsForSave: true };
     },
   },
@@ -124,9 +124,6 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
   },
   "skip": { needs: () => NOTHING, apply: (e) => ({ touched: [], notes: [`skipped  ${e.path}: ${e.reason}`] }) },
 };
-
-/** The mode for a change's copy of a file. A link keeps whatever the copy already is. */
-const copyMode = (f: File): Mode | undefined => (f.mode === LINK ? undefined : f.mode);
 
 const row = <K extends Kind>(e: Edited<K>): Row<K> => KINDS[e.kind];
 
@@ -203,7 +200,7 @@ function classifyOne(s: Snapshot, path: string): Edited {
     if (typeof plan === "string") return { kind: "skip", path, reason: plan };
     if (now.mode === built.mode || now.mode === LINK || built.mode === LINK) return { kind: "paragraph-edit", path, plan, unrecorded: null };
     const unrecorded = `block entries hold no mode, so the mode change was not recorded; to set it, make your finish hook in ${PB}/hooks.ts run `
-      + `out.get("${path}")!.mode = 0o${now.mode.toString(8)};`;
+      + `out.get(${JSON.stringify(path)})!.mode = 0o${now.mode.toString(8)};`;
     return bytesEqual(built.data, now.data) ? { kind: "skip", path, reason: unrecorded } : { kind: "paragraph-edit", path, plan, unrecorded };
   }
   const owner = s.owners.get(src.path);

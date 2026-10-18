@@ -131,3 +131,10 @@ test("outputs built from one upstream file are all skipped when more than one is
   ]);
   expect(classify(w, ["plain.md", "plain3.md"])).toMatchObject([{ kind: "file-edit", path: "plain.md" }, { kind: "delete-upstream", path: "plain3.md" }]);
 });
+
+test("a mode change to a file with block entries names the file as a string literal", () => {
+  const path = 'para"x.md';
+  const w = { ...world, out: new Map([[path, f("up")]]), current: new Map([[path, { ...f("up"), mode: 0o755 as const }]]),
+    sources: new Map([[path, up("skills/para.md")]]) };
+  expect(one(w, path)).toMatchObject({ kind: "skip", reason: expect.stringContaining('out.get("para\\"x.md")!.mode = 0o755;') });
+});
