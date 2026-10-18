@@ -1287,6 +1287,14 @@ describe("VendorTest", () => {
     expect(existsSync(join(t.repo.path, t.repo.path))).toBe(false);
   });
 
+  vendorTest("test_absolute_output_folder_reached_through_a_link_above_the_repo_is_used_as_given", (t) => {
+    symlinkSync(t.tmp, join(t.tmp, "via"));
+    const config = join(t.repo.path, ".patchbook/config.toml");
+    writeFileSync(config, replace(read(config), 'to = "skills"', `to = "${join(t.tmp, "via/adapted/skills")}"`));
+    t.missingScaffoldPatchBuild();
+    expect(t.repo.read("skills/hello/SKILL.md")).toContain("Hello");
+  });
+
   const setOutputFolder = (t: VendorCase, to: string): void => {
     const config = join(t.repo.path, ".patchbook/config.toml");
     writeFileSync(config, read(config).replace(/^to = .*$/m, () => `to = ${JSON.stringify(to)}`));
