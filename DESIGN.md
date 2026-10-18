@@ -149,9 +149,9 @@ Patchbook does not check for links inside `.patchbook/`. A link in `blocks/` is 
 
 ## JSON output
 
-The update skill and other agents read three JSON documents: what `patchbook check` prints, what `patchbook status --json` prints, and `.patchbook/last-sync.json`, which `patchbook sync` writes. `CheckJson`, `StatusJson` and `LastSync` in `src/api.ts` are their types, and the code that writes each document is typed against them. With patchbook installed from npm, `import type { CheckJson } from "patchbook"` gets the same types.
+The update skill and other agents read three JSON documents: what `patchbook check` prints, what `patchbook status --json` prints, and `.patchbook/last-sync.json`, which `patchbook sync` writes. `CheckJson`, `StatusJson` and `LastSync` in `src/api.ts` are their types. The code that writes `check` and `last-sync.json` is typed against them. So is `status --json`, except `upstreams` and `last_sync`, which it copies from the files as they are. With patchbook installed from npm, `import type { CheckJson } from "patchbook"` gets the same types.
 
-**Versions.** Each document has its own integer `version`, the first key. All three are 1. A version goes up when a field is removed or renamed, changes type, or means something else. A new field leaves it alone, so a reader ignores keys it doesn't know. A `last-sync.json` with no `version` was written before the field existed. It has the version 1 shape, and patchbook reads it as it reads a new one. `status --json` shows `last_sync` as the file has it, so for an older file `last_sync` has no `version` either.
+**Versions.** Each document has its own integer `version`, the first key. All three are 1. A version goes up when a field is removed or renamed, changes type, or means something else. A new field leaves it alone, so a reader ignores keys it doesn't know. So does a new `problem` kind, or a new prefix in `files`, so a reader treats a value it doesn't know as unknown and does not fail. A `last-sync.json` with no `version` was written before the field existed. It has the version 1 shape, and patchbook reads it as it reads a new one. `status --json` shows `last_sync` as the file has it, so for an older file `last_sync` has no `version` either.
 
 In the tables, `<name>` is an upstream's name.
 
@@ -205,7 +205,7 @@ A problem always has `problem`, its kind, first. The other fields depend on the 
 
 ### `.patchbook/last-sync.json`
 
-Written by `patchbook sync`, whole, each time at least one upstream moved. A sync of one upstream replaces the file with that upstream's report alone. An upstream whose files match its pin has no report.
+Written by `patchbook sync` each time at least one upstream moved. Each entry is the report of the latest sync that moved that upstream. An upstream can have no entry, for example one whose files match its pin.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
