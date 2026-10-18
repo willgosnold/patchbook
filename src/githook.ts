@@ -1,7 +1,7 @@
 // The pre-commit hook: on each commit, record hand edits to the output, rebuild, and stage both.
 import { chmodSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { assemble, handEdits, writeOutput } from "./assemble.ts";
+import { assemble, describe, handEdits, writeOutput } from "./assemble.ts";
 import { Book } from "./book.ts";
 import { cmdRecord } from "./record.ts";
 import { Fail } from "./lib/fail.ts";
@@ -80,7 +80,19 @@ export async function cmdHook(args: { action: "install" | "run" }) {
   if (!setting("hook.enabled", book)[0]) return 0;
   const before = dirty(book.root);
   let a = assemble(book);
+  const refused = a.problems.filter((p) => "refuse" in p);
+  if (refused.length) {
+    throw new Fail("refusing this commit: a change writes where a build must not.\n" + refused.map((p) => `  ${describe(p)}\n`).join("")
+      + "Edit or remove that line in the change's CHANGE.md, or skip the hook once with PATCHBOOK_HOOK=0.");
+  }
   const edited = handEdits(book, a.out);
+  for (const p of edited.filter((p) => !a.out.has(p))) {
+    const reserved = book.reservedOutput(p);
+    if (reserved?.refuse) {
+      throw new Fail(`refusing this commit: ${p} is new, but a change can't write into ${reserved.place}.\n`
+        + `Move ${p} out of there, or skip the hook once with PATCHBOOK_HOOK=0.`);
+    }
+  }
   if (edited.length) {
     await cmdRecord({ change: null, intent: process.env["PATCHBOOK_INTENT"] ?? null });
     a = assemble(book);

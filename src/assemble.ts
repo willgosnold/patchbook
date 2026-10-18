@@ -5,7 +5,7 @@ import type { InChange, InEdit, InOutput, Problem } from "./api.ts";
 import {
   entriesPath, type Entry, formatEntry, leakScan, orphan, patchBlocks, readEntries, Rules, type Unmatched,
 } from "./blocks.ts";
-import { Book, GIT, PB, under } from "./book.ts";
+import { Book, GIT, PB, type Reserved, under } from "./book.ts";
 import { type Change, editText, readChanges } from "./changes.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, nonFolders, readDisk, readText, resolve, rglob, rmFolders, sameFile, writeDisk, writeText } from "./lib/fs.ts";
@@ -63,12 +63,17 @@ const CONFLICT = /^(?:<{7}|>{7})(?: |$)/;
 /** A line that starts with a conflict marker. Python's `^` in MULTILINE breaks on `\n` only. */
 export const hasConflictMarker = (text: string) => text.split("\n").some((line) => CONFLICT.test(line));
 
+function intoReserved(where: InEdit, path: string, { place, refuse }: Reserved): Problem {
+  const detail = `${path} would be written into ${place}`;
+  return refuse ? { problem: "invalid", ...where, detail, refuse: true } : { problem: "invalid", ...where, detail };
+}
+
 /** Apply add, replace, delete, move and copy to a map of staged path to source. */
 export function applyStructure(
   changes: readonly Change[],
   upstream: ReadonlyMap<string, File>,
   problems: Problem[],
-  reservedHolding: (staged: string) => string | null,
+  reservedHolding: (staged: string) => Reserved | null,
 ): Map<string, Source> {
   const tree = new Map<string, Source>(Array.from(upstream.keys(), (p) => [p, { kind: "up", path: p }]));
   for (const c of changes) {
@@ -79,7 +84,7 @@ export function applyStructure(
       if (e.kind === "add") {
         const reserved = reservedHolding(e.path);
         if (reserved !== null) {
-          problems.push({ problem: "invalid", ...where, detail: `${e.path} would be written into ${reserved}` });
+          problems.push(intoReserved(where, e.path, reserved));
         } else if (matched.length) problems.push({ problem: "invalid", ...where, detail: `${e.path} already exists; use replace` });
         else if (c.read("ours", e.path) === null) problems.push({ problem: "invalid", ...where, detail: "its ours copy is missing" });
         else tree.set(e.path, { kind: "ours", change: c.name, path: e.path });
@@ -91,9 +96,13 @@ export function applyStructure(
       else {
         const dest = "dest" in e ? e.dest : "";
         const moved = new Map(dest ? matched.map((p) => [dest + p.slice(e.path.length), tree.get(p)!]) : []);
-        const held = Array.from(moved.keys()).find((p) => reservedHolding(p) !== null);
-        if (held !== undefined) {
-          problems.push({ problem: "invalid", ...where, detail: `${held} would be written into ${reservedHolding(held)}` });
+        const held = Array.from(moved.keys()).flatMap((path) => {
+          const reserved = reservedHolding(path);
+          return reserved ? [{ path, reserved }] : [];
+        });
+        const hit = held.find((h) => h.reserved.refuse) ?? held[0];
+        if (hit) {
+          problems.push(intoReserved(where, hit.path, hit.reserved));
           continue;
         }
         const clash = Array.from(moved.keys()).filter((p) => tree.has(p) && !under(p, e.path));

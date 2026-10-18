@@ -132,6 +132,7 @@ function isProblem(value: unknown): value is Problem {
 /** A `[[check]]`: the output files it covers and the pattern a block mustn't match without an entry. */
 export type Check = { files: RegExp[]; exclude: RegExp[]; pattern: RegExp };
 export type Placeholder = { file: string | null; format: string };
+export type Reserved = { place: string; refuse: boolean };
 export type Layout = { kind: "fork" } | { kind: "folder"; from: string; dir: string };
 
 /** How `path` spells the repo root: its outermost ancestor that resolves into the repo, or null when that one is a link into a folder of the repo. */
@@ -350,13 +351,17 @@ export class Book {
     return output === null ? null : this.heldBy(output);
   }
 
-  reservedHolding(staged: string): string | null {
-    const vendored = this.vendorHolding(staged);
-    if (vendored !== null) return `the vendored copy ${vendored}`;
-    const output = this.outputOf(staged);
-    if (output === null) return null;
+  /** Where an output path can't be written. A vendored copy is skipped with a warning, `.patchbook` and `.git` are refused. */
+  reservedOutput(output: string): Reserved | null {
+    const vendored = this.heldBy(output);
+    if (vendored !== null) return { place: `the vendored copy ${vendored}`, refuse: false };
     const inRepo = this.inRepo(output);
-    return under(inRepo.toLowerCase(), PB) ? PB : namesGit(inRepo) ? GIT : null;
+    return under(inRepo.toLowerCase(), PB) ? { place: PB, refuse: true } : namesGit(inRepo) ? { place: GIT, refuse: true } : null;
+  }
+
+  reservedHolding(staged: string): Reserved | null {
+    const output = this.outputOf(staged);
+    return output === null ? null : this.reservedOutput(output);
   }
 
   private vendors(): string[] {
