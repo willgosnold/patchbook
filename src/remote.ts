@@ -1,7 +1,7 @@
 // The `upstream` remote that a fork init follows, and the URL it is given.
 import { isAbsolute } from "node:path";
 import { Fail } from "./lib/fail.ts";
-import { exists, pjoin, resolve } from "./lib/fs.ts";
+import { exists, resolve } from "./lib/fs.ts";
 import { git, redact, run, spawn } from "./lib/proc.ts";
 import { quote, split } from "./lib/py.ts";
 import { decode, decodeReplace } from "./lib/text.ts";
@@ -21,23 +21,23 @@ export function resolveFromCwd(root: string, url: string): string {
   return exists(here) ? here : url;
 }
 
+function hostEnd(url: string): number {
+  const at = url.indexOf("@[");
+  const start = at < 0 ? 0 : at + 1;
+  return url[start] === "[" ? Math.max(url.indexOf("]", start + 1), 0) : 0;
+}
+
 function localPath(root: string, url: string): string | null {
   if (url.startsWith("file://")) {
-    let rest: string;
-    try {
-      rest = decodeURIComponent(url.slice(7).replace(/%(?!(?!00)[0-9a-f]{2})/gi, "%25"));
-    } catch {
-      return null;
-    }
-    const at = rest.indexOf("@[");
-    const start = at < 0 ? 0 : at + 1;
-    const close = rest[start] === "[" ? rest.indexOf("]", start + 1) : -1;
-    const slash = rest.indexOf("/", Math.max(close, 0));
-    return slash < 0 ? null : rest.slice(slash);
+    const bytes = Buffer.from(url.slice(7)).toString("latin1").replace(/%(?!00)([0-9a-f]{2})/gi, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+    const slash = bytes.indexOf("/", hostEnd(bytes));
+    return slash < 0 ? null : Buffer.from(bytes.slice(slash), "latin1").toString();
   }
   if (NETWORK.test(url)) return null;
-  if (/^~(\/|$)/.test(url)) return process.env["HOME"] ? process.env["HOME"] + url.slice(1) : null;
-  return pjoin(root, url);
+  const path = url.slice(hostEnd(url));
+  const home = process.env["HOME"];
+  if (/^~(\/|$)/.test(path)) return home === undefined ? null : home + path.slice(1);
+  return isAbsolute(path) ? path : `${root}/${path}`;
 }
 
 function commonDir(root: string, url: string): string | null {
