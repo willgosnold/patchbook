@@ -609,6 +609,43 @@ test("test_init_keeps_an_uncommitted_file_at_the_skill_link_and_writes_no_skill"
   }
 }, TIMEOUT);
 
+test.skipIf(process.getuid?.() === 0)("test_init_finishes_with_a_note_when_the_skill_file_cannot_be_read", () => {
+  for (const folder of [false, true]) {
+    const t = new Case();
+    let file = "";
+    try {
+      Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\ntwo\n");
+      up.commit("start");
+      let repo: Repo;
+      if (folder) {
+        repo = new Repo(join(t.tmp, "adapted"));
+        repo.write("README.md", "mine\n");
+        repo.commit("start");
+      } else {
+        sh(["git", "clone", "-q", up.path, join(t.tmp, "mine")], { cwd: t.tmp });
+        repo = new Repo(join(t.tmp, "mine"));
+      }
+      repo.write(SKILL_FILE, STALE_SKILL);
+      repo.commit("skill");
+      file = join(repo.path, SKILL_FILE);
+      const mode = statSync(file).mode & 0o777;
+      chmodSync(file, 0o000);
+      const out = t.pb(["init", "--upstream", up.path, ...(folder ? ["--output-to", "out"] : [])], { cwd: repo.path });
+      expect(out.stderr).toContain("couldn't install the update skill");
+      expect(statSync(file).mode & 0o777).toBe(0);
+      chmodSync(file, mode);
+      expect(repo.read(SKILL_FILE)).toBe(STALE_SKILL);
+      expect(statSync(file).mode & 0o777).toBe(mode);
+      if (!folder) expect(repo.read(".patchbook/series")).toBe("");
+    } finally {
+      if (file && existsSync(file)) chmodSync(file, 0o644);
+      t.cleanup();
+    }
+  }
+}, TIMEOUT);
+
 test("test_init_in_a_fork_records_nothing_for_a_skill_it_did_not_write", () => {
   const t = new Case();
   try {

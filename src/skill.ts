@@ -102,17 +102,17 @@ export function installSkill(book: Book): { changed: string[] } | null {
     for (const p of linked) process.stderr.write(linkNote(p));
     return null;
   }
-  const { uncommitted } = unkept(book);
-  if (uncommitted.length) {
-    process.stderr.write(`patchbook: the update skill was not installed, since these skill files differ from the shipped copy and are not in a commit:\n  ${uncommitted.join("\n  ")}\n`
-      + "Commit them, then run `patchbook skill install`.\n");
-    return null;
-  }
   const dir = join(book.root, ".agents", "skills", NAME);
   const file = join(book.root, FILE);
   const changed: string[] = [];
   const undo: (() => void)[] = [];
   try {
+    const { uncommitted } = unkept(book);
+    if (uncommitted.length) {
+      process.stderr.write(`patchbook: the update skill was not installed, since these skill files differ from the shipped copy and are not in a commit:\n  ${uncommitted.join("\n  ")}\n`
+        + "Commit them, then run `patchbook skill install`.\n");
+      return null;
+    }
     mkdirs(dir);
     for (const { link: folder } of known) {
       if (!folder || sharesSkills(book.root, `${folder}/${NAME}`)) continue;
