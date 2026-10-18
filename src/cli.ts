@@ -2,7 +2,7 @@
 // The command line: a table of subcommands, parsed and reported the way Python's argparse does.
 // Also the commands that start a patchbook or follow another upstream, which use every other part.
 import { mkdirSync, rmSync } from "node:fs";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import pkg from "../package.json" with { type: "json" };
 import { cmdBuild, cmdScaffold, cmdStatus, writeBuildLock } from "./assemble.ts";
 import { cmdBlocks } from "./blocks.ts";
@@ -11,10 +11,10 @@ import { cmdShow } from "./changes.ts";
 import { cmdHook, installHook, installHookOrWarn } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, lexists, readText, resolve, writeText } from "./lib/fs.ts";
-import { git, redact, spawn } from "./lib/proc.ts";
-import { quote, rstrip, split, strRepr } from "./lib/py.ts";
-import { decode, decodeReplace } from "./lib/text.ts";
+import { git } from "./lib/proc.ts";
+import { rstrip, split, strRepr } from "./lib/py.ts";
 import { cmdRecord } from "./record.ts";
+import { notAnOption, requireSameRepo, resolveFromCwd } from "./remote.ts";
 import { cmdConfig } from "./settings.ts";
 import { installSkill, SCHEDULE } from "./skill.ts";
 import { absoluteRemote, defaultName, cmdUpstream } from "./store.ts";
@@ -45,23 +45,6 @@ function writeConfig(root: string, text: string): void {
   writeText(join(d, "series"), "");
   writeText(join(d, "retired.md"), "# Retired changes\n\nChanges dropped because upstream made them unnecessary or impossible, and why.\n");
   writeText(join(d, "config.toml"), text);
-}
-
-function tipOf(root: string, label: string, repo: string, branch: string, shown = repo): string {
-  const r = spawn(["git", "ls-remote", "--", repo, `refs/heads/${branch}`], { cwd: root });
-  if (r.code !== 0) throw new Fail(redact(`couldn't read ${label} ${shown}:\n${decodeReplace(r.stderr).trim()}`));
-  return split(decode(r.stdout))[0] ?? "";
-}
-
-function resolveFromCwd(root: string, url: string): string {
-  if (resolve(".") === root || isAbsolute(url) || /^([a-z][a-z0-9+.-]*:\/\/|[^/]*:)/i.test(url)) return url;
-  const here = resolve(url);
-  return exists(here) ? here : url;
-}
-
-function notAnOption(url: string): string {
-  if (url.startsWith("-")) throw new Fail(`an upstream can't start with a dash: ${redact(url)}`);
-  return url;
 }
 
 const noHook = () => ({ ...process.env, PATCHBOOK_HOOK: "0" });
@@ -122,20 +105,7 @@ async function cmdInit(args: {
   const text = configText("fork", upstreamToml(name, upstream, args.path, args.branch, ""));
   const book = await Book.fromText(root, text);
   const hasRemote = split(git(["remote"], { cwd: root })).includes("upstream");
-  if (hasRemote) {
-    const fix = `To follow ${redact(upstream)}: git config --replace-all remote.upstream.url ${quote(redact(upstream))}`;
-    if (git(["config", "--get-all", "remote.upstream.url"], { cwd: root, check: false }) === "") throw new Fail(`the upstream remote has no url. ${fix}`);
-    const fetches = git(["remote", "get-url", "upstream"], { cwd: root });
-    if (fetches !== upstream) {
-      const theirs = tipOf(root, "the upstream remote", "upstream", args.branch, fetches);
-      const mine = tipOf(root, "--upstream", upstream, args.branch);
-      if (theirs !== mine) {
-        const tip = (sha: string) => sha.slice(0, 7) || "missing";
-        throw new Fail(`the upstream remote and --upstream name different repos. The remote fetches ${redact(fetches)}, --upstream is ${redact(upstream)}. `
-          + `${args.branch} is ${tip(theirs)} on the remote and ${tip(mine)} on --upstream. ${fix}`);
-      }
-    }
-  }
+  if (hasRemote) requireSameRepo(root, upstream, args.branch);
   git(["fetch", "--quiet", "--end-of-options", hasRemote ? "upstream" : upstream, args.branch], { cwd: root });
   const base = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: root });
   book.writeLock(name, base, book.upstreams[0]!.treeOf(base));
