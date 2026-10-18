@@ -987,6 +987,18 @@ describe("VendorTest", () => {
     expect(read(join(t.repo.path, ".patchbook/changes/unnamed/CHANGE.md"))).not.toContain("Wave twice.");
   });
 
+  vendorTest("test_record_deleting_a_file_with_block_entries_keeps_the_change_named_unnamed", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.repo.write("skills/hello/notes.txt", "added by hand\n");
+    t.pb(["record", "unnamed", "--intent", "Add notes."], { cwd: t.repo.path });
+    unlinkSync(join(t.repo.path, "skills/hello/SKILL.md"));
+    t.pb(["record", "--intent", "Drop the skill."], { cwd: t.repo.path });
+    const kept = read(join(t.repo.path, ".patchbook/changes/unnamed/CHANGE.md"));
+    expect(kept).toContain("intent: Add notes.");
+    expect(kept).toContain("- add skills/hello/notes.txt");
+    expect(read(join(t.repo.path, ".patchbook/changes/unnamed-2/CHANGE.md"))).toContain("- delete skills/hello/SKILL.md");
+  });
+
   vendorTest("test_record_ignores_output_the_patchbook_changed", (t) => {
     const entries = t.missingScaffoldPatchBuild();
     writeFileSync(entries, replace(read(entries), "{{snippet:greet}}", "Say hi in T3."));
