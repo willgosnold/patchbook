@@ -7385,6 +7385,57 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
       }
     });
   }
+
+  const staged = (t: ForkCase): string[] => {
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    const names = sh(["git", "diff", "--cached", "--name-only"], { cwd: t.fork.path }).stdout.split("\n").filter(Boolean);
+    sh(["git", "reset", "-q"], { cwd: t.fork.path });
+    return names;
+  };
+
+  const harms: [string, (vendor: string) => void][] = [
+    ["an_empty", (vendor) => {
+      rmSync(vendor, { recursive: true });
+      mkdirSync(vendor);
+    }],
+    ["a_missing", (vendor) => rmSync(vendor, { recursive: true })],
+    ["a_hand_edited", (vendor) => writeFileSync(join(vendor, "a.md"), "HAND EDIT\n")],
+    ["a_half_written", (vendor) => {
+      rmSync(join(vendor, "lib"), { recursive: true });
+      writeFileSync(join(vendor, "a.md"), "half\n");
+    }],
+  ];
+  for (const [state, harm] of harms) {
+    forkTest(`test_sync_rewrites_${state}_vendored_copy_when_upstream_has_not_moved`, (t) => {
+      trackVendored(t);
+      const before = tree(t.fork.path);
+      harm(join(t.fork.path, "vendor/extra"));
+      t.pb(["status"], { cwd: t.fork.path, code: 1 });
+
+      const synced = t.pb(["sync", "extra"], { cwd: t.fork.path });
+      expect(synced.stdout).toContain("matches the pin");
+      expect(synced.stdout).toContain("Rewrote the vendored copy, which did not.");
+      expect(tree(t.fork.path)).toEqual(before);
+      expect(staged(t)).toEqual([]);
+      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+      expect(t.pb(["sync", "extra"], { cwd: t.fork.path }).stdout).toContain("Nothing to do.");
+    });
+  }
+
+  forkTest("test_sync_leaves_a_vendored_copy_that_gitignore_hides_as_it_was_when_upstream_has_not_moved", (t) => {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "one\n");
+    extra.write("debug.log", "noise\n");
+    extra.commit("start");
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.fork.path });
+    t.fork.write(".gitignore", "vendor/extra/*.log\n");
+    t.fork.commit("track extra, hide its logs");
+    const before = tree(t.fork.path);
+
+    const synced = t.pb(["sync", "extra"], { cwd: t.fork.path, code: 1 });
+    expect(synced.stderr).toContain("Does a .gitignore hide upstream files?");
+    expect(tree(t.fork.path)).toEqual(before);
+  });
 });
 
 describe("VendorTest", () => {
@@ -7985,6 +8036,22 @@ exec '${Bun.which("git")}' "$@"
       expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
     });
   }
+
+  vendorTest("test_a_rewrite_killed_while_it_checks_the_new_copy_is_undone_and_done_again_by_the_next_sync", (t) => {
+    extraWithAChange(t, true);
+    rmSync(join(t.repo.path, "vendor/extra/scratch"));
+    t.repo.commit("follow extra");
+    const before = tree(t.repo.path);
+    rmSync(join(t.repo.path, "vendor/extra"), { recursive: true });
+    mkdirSync(join(t.repo.path, "vendor/extra"));
+    killSync(t, "write-tree --prefix=vendor/extra/");
+    expect(existsSync(join(t.repo.path, ".patchbook/sync-extra/pin"))).toBe(true);
+    expect(sh(["git", "status", "--porcelain", "--untracked-files=all"], { cwd: t.repo.path }).stdout).not.toContain(".patchbook");
+
+    expect(t.pb(["sync", "extra"], { cwd: t.repo.path }).stdout).toContain("Rewrote the vendored copy, which did not.");
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
 
   const lockChanges: [string, (t: VendorCase) => void, boolean][] = [
     ["the_lock_has_changed_since", (t) => sh(["git", "checkout", "HEAD~1", "--", ".patchbook/upstream.lock"], { cwd: t.repo.path }), false],
