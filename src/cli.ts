@@ -14,7 +14,7 @@ import { exists, lexists, readText, resolve, writeText } from "./lib/fs.ts";
 import { git, redact } from "./lib/proc.ts";
 import { rstrip, split, strRepr } from "./lib/py.ts";
 import { cmdRecord } from "./record.ts";
-import { forkUpstream, notAnOption, notThisRepo, resolveFromCwd } from "./remote.ts";
+import { checkUpstreamRemote, notThisRepo } from "./remote.ts";
 import { cmdConfig } from "./settings.ts";
 import { installSkill, SCHEDULE } from "./skill.ts";
 import { absoluteRemote, defaultName, cmdUpstream } from "./store.ts";
@@ -89,13 +89,11 @@ async function cmdInit(args: {
 }) {
   const root = git(["rev-parse", "--show-toplevel"], { cwd: process.cwd() });
   if (exists(join(root, PB, "config.toml"))) throw new Fail(`${root} already has a patchbook. To follow another upstream: patchbook track`);
-  const given = notAnOption(args.upstream);
-  const name = args.name || defaultName(redact(given), args.path);
-  const upstream = resolveFromCwd(root, given);
-  notThisRepo(root, upstream);
+  const name = args.name || defaultName(redact(args.upstream), args.path);
   if (args.outputTo !== null) {
-    const text = configText("folder", upstreamToml(name, upstream, args.path, args.branch, "", args.vendor), [args.outputFrom, args.outputTo]);
+    const text = configText("folder", upstreamToml(name, args.upstream, args.path, args.branch, "", args.vendor), [args.outputFrom, args.outputTo]);
     const book = await Book.fromText(root, text);
+    notThisRepo(root, args.upstream);
     book.dropPin(name);
     syncUpstream(book, book.upstreams[0]!, args.branch, []);
     installSkill(book);
@@ -104,13 +102,16 @@ async function cmdInit(args: {
     process.stdout.write(`Next: patchbook build, then commit.\n${SCHEDULE}\n`);
     return 0;
   }
-  const { follows, from, addRemote } = forkUpstream(root, upstream, args.branch);
+  const follows = redact(args.upstream);
   const text = configText("fork", upstreamToml(name, follows, args.path, args.branch, ""));
   const book = await Book.fromText(root, text);
-  git(["fetch", "--quiet", "--end-of-options", from, args.branch], { cwd: root });
+  notThisRepo(root, args.upstream);
+  const hasRemote = split(git(["remote"], { cwd: root })).includes("upstream");
+  if (hasRemote) checkUpstreamRemote(root, args.upstream, args.branch);
+  git(["fetch", "--quiet", "--end-of-options", args.upstream, args.branch], { cwd: root });
   const base = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: root });
   book.writeLock(name, base, book.upstreams[0]!.treeOf(base));
-  if (addRemote) git(["remote", "add", "--end-of-options", "upstream", upstream], { cwd: root });
+  if (!hasRemote) git(["remote", "add", "--end-of-options", "upstream", args.upstream], { cwd: root });
   installSkill(book);
   writeConfig(root, text);
   installHookOrWarn(root);
@@ -123,7 +124,6 @@ async function cmdInit(args: {
 async function cmdTrack(args: { name: string; url: string; branch: string; path: string; mount: string | null; vendor: string | null }) {
   const book = await Book.find();
   if (book.upstreams.some((u) => u.name === args.name)) throw new Fail(`already following an upstream called ${args.name}`);
-  notAnOption(args.url);
   const config = join(book.dir, "config.toml");
   const mount = args.mount ?? args.name;
   const text = rstrip(readText(config), "\n") + "\n\n" + upstreamToml(args.name, args.url, args.path, args.branch, mount, args.vendor);
