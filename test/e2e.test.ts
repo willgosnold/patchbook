@@ -763,6 +763,26 @@ describe("ForkTest", () => {
     }
   });
 
+  forkTest("test_a_shallow_clone_of_the_fork_fetches_only_the_pin", (t) => {
+    const origin = join(t.tmp, "origin.git");
+    sh(["git", "init", "-q", "--bare", origin], { cwd: t.tmp });
+    let head = "";
+    for (const word of ["four", "five", "six"]) {
+      t.up.write("app.txt", replace(t.up.read("app.txt"), word, word.toUpperCase()));
+      head = t.up.commit(`shout ${word}`);
+    }
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.fork.commit("Sync upstream");
+    sh(["git", "push", "-q", origin, "HEAD:main"], { cwd: t.fork.path });
+    sh(["git", "clone", "-q", "--depth", "1", "-b", "main", `file://${origin}`, "shallow"], { cwd: t.tmp });
+    const shallow = join(t.tmp, "shallow");
+    const commits = (): string => sh(["git", "rev-list", "--count", "--all"], { cwd: shallow }).stdout.trim();
+    expect(commits()).toBe("1");
+    expect(t.pb(["status"], { cwd: shallow }).stdout).toBe(`0 edits apply at upstream ${head.slice(0, 7)}; no problems\n`);
+    expect(t.pb(["build"], { cwd: shallow }).stdout).toContain(`from upstream ${head.slice(0, 7)}`);
+    expect(commits()).toBe("2");
+  });
+
   forkTest("test_conflict_and_gone", (t) => {
     t.recordFeature();
     t.up.write("app.txt", replace(t.up.read("app.txt"), "two", "deux"));
