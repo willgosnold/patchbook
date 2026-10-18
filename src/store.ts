@@ -137,6 +137,7 @@ export class Upstream {
     if (!this.has(commit)) this.fetch(commit);
   }
 
+  /** Only a pin gets a ref, so a head that was only looked at stays prunable. */
   keep(commit: string): string {
     this.have(commit);
     if (!this.kept(commit)) git(["update-ref", `refs/pins/${commit}`, commit], { cwd: this.gitDir() });
@@ -160,7 +161,7 @@ export class Upstream {
       this.keep(commit);
     } catch (e) {
       if (!(e instanceof Fail)) throw e;
-      process.stderr.write(`patchbook: couldn't keep ${commit.slice(0, 7)} in the store, so git gc may prune it. ${e.message}\n`);
+      process.stderr.write(`patchbook: couldn't keep ${commit.slice(0, 7)} in ${this.inRepo ? "this repo" : "the store"}, so git gc may prune it. ${e.message}\n`);
     }
     return commit;
   }
