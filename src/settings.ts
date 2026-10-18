@@ -185,14 +185,17 @@ function listed<N extends Name>(name: N, book: Book | null): [string, Source] {
 
 export async function cmdConfig(args: { name: string | null; value: string | null; project: boolean; unset: boolean }) {
   let book: Book | null = null;
+  let broken: Fail | null = null;
   try {
     book = await Book.find();
   } catch (e) {
-    if (!(e instanceof NoBook)) throw e;
+    if (!(e instanceof Fail)) throw e;
+    if (!(e instanceof NoBook)) broken = e;
   }
   const name = args.name || null;
   if (name !== null && !isName(name)) throw new Fail(`no setting ${name}. Settings: ${NAMES.join(", ")}`);
   if (args.project && name !== null && SETTINGS[name].userOnly) throw new Fail(`${name} can only be set in the user config`);
+  if (broken && (args.project || !(args.unset || args.value !== null))) throw broken;
   if (args.project && book === null) throw new Fail("--project needs a patchbook here or above");
   const path = args.project && book ? pjoin(book.dir, "config.toml") : USER_CONFIG;
   if ((args.unset || args.value !== null) && name === null) throw new Fail("name the setting to change");
