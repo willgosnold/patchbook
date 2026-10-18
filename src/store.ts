@@ -1,4 +1,5 @@
 // The upstreams: one bare repo per remote in the user's store, fetched shallowly, read at the pin.
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
@@ -100,9 +101,15 @@ export class Upstream {
   }
 
   fetch(ref: string): string {
-    const depth = this.inRepo ? [] : ["--depth=1"];
-    git(["fetch", "--quiet", ...depth, this.source(), ref], { cwd: this.gitDir() });
-    return git(["rev-parse", "FETCH_HEAD^{commit}"], { cwd: this.gitDir() });
+    const shallow = this.inRepo ? [] : ["--depth=1", "--no-tags"];
+    const cwd = this.gitDir();
+    const landing = `refs/patchbook/tmp/${process.pid}-${randomUUID()}`;
+    try {
+      git(["fetch", "--quiet", ...shallow, this.source(), `+${ref}:${landing}`], { cwd });
+      return git(["rev-parse", `${landing}^{commit}`], { cwd });
+    } finally {
+      spawn(["git", "update-ref", "-d", landing], { cwd });
+    }
   }
 
   has(commit: string): boolean {
