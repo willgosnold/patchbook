@@ -214,6 +214,62 @@ test("test_clone_finishes_when_the_skill_cannot_be_installed", () => {
   }
 }, TIMEOUT);
 
+test("test_clone_of_a_patchbook_repo_starts_a_patchbook_of_its_own", () => {
+  const t = new Case();
+  try {
+    const base = new Repo(join(t.tmp, "base"));
+    base.write("app.txt", "one\ntwo\n");
+    base.commit("start");
+    t.pb(["clone", base.path, "theirs"], { cwd: t.tmp });
+    const theirs = new Repo(join(t.tmp, "theirs"));
+    theirs.write("app.txt", "one\nTHEIRS\n");
+    t.pb(["record", "theirs-change", "--intent", "Theirs."], { cwd: theirs.path });
+    t.pb(["build"], { cwd: theirs.path });
+    theirs.commit("theirs");
+
+    t.pb(["clone", theirs.path, "mine"], { cwd: t.tmp });
+    const mine = new Repo(join(t.tmp, "mine"));
+    expect(t.pb(["status"], { cwd: mine.path }).stdout).toContain("no problems");
+    expect(existsSync(join(mine.path, ".patchbook/changes/theirs-change"))).toBe(false);
+
+    mine.write("app.txt", "one\nMINE\n");
+    t.pb(["record", "mine", "--intent", "Mine."], { cwd: mine.path });
+    const built = t.pb(["build"], { cwd: mine.path }).stdout;
+    expect(built).toContain("built 1 files");
+    expect(mine.read(".patchbook/series")).toBe("mine\n");
+    expect(mine.read(".patchbook/config.toml")).toContain(`remote = "${theirs.path}"`);
+    expect(mine.read(".patchbook/config.toml")).not.toContain(base.path);
+    expect(mine.read(".patchbook/upstream.lock")).not.toContain("base");
+    expect(mine.read("app.txt")).toBe("one\nMINE\n");
+    expect(t.pb(["status"], { cwd: mine.path }).stdout).toContain("1 edits apply");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_build_leaves_a_vendored_copy_alone_when_upstream_ships_the_folder", () => {
+  const t = new Case();
+  try {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "extra\n");
+    extra.commit("start");
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    up.write("vendor/extra/stale.md", "old\n");
+    up.commit("start");
+    t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+    const fork = new Repo(join(t.tmp, "fork"));
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: fork.path });
+    fork.commit("track");
+    t.pb(["build"], { cwd: fork.path });
+    expect(existsSync(join(fork.path, "vendor/extra/stale.md"))).toBe(false);
+    expect(fork.read("vendor/extra/a.md")).toBe("extra\n");
+    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 describe("ForkTest", () => {
   forkTest("test_clone_keeps_history_and_pins", (t) => {
     const log = sh(["git", "log", "--oneline"], { cwd: t.fork.path }).stdout;
