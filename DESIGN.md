@@ -133,7 +133,7 @@ The rest of `.patchbook/` is data, and patchbook checks the names and paths in i
 - **The hook.** A bad change name or an unsafe edit path makes the pre-commit hook refuse the commit, before it records, builds or stages anything. The working tree, the index and `.patchbook/` stay as they were, so a hand edit in the output is not lost. The refusal names the problem and how to fix it, and `PATCHBOOK_HOOK=0` skips the hook once. Any other problem that `status` reports only skips the build, with a warning. The build's own safety checks still stop a commit. A change whose file really goes outside the output through a link makes the hook fail and leaves everything as it was, while `status` reports no problems.
 - **Block entries.** Their file names come from the files under `blocks/`, so they can't be spelled with such a path.
 
-Patchbook does not check for links inside `.patchbook/`. A link in `blocks/` is read and written through, and a link at `changes/<name>/ours` is copied into the output as a link by `build`, while `show` reports the size of its target. A link there can make patchbook read or write outside the repo. Issue #93 tracks links inside `.patchbook/`. This is why a change to `.patchbook/` needs the same review as a change to `hooks.ts`.
+Patchbook does not check for links inside `.patchbook/`. A link in `blocks/` is read and written through, and a link at `changes/<name>/ours` is copied into the output as a link by `build`, while `show` reports the length of the link's target path, not the size of the file it points to. A link there can make patchbook read or write outside the repo. Issue #93 tracks links inside `.patchbook/`. This is why a change to `.patchbook/` needs the same review as a change to `hooks.ts`.
 
 ## Sync
 
