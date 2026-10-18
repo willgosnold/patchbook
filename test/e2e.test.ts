@@ -1317,6 +1317,38 @@ test("test_skill_install_and_clone_install_the_codex_copy_when_the_shared_link_d
   }
 }, TIMEOUT);
 
+/** An outside `.claude` whose `skills` is the shared link, so a lexical read of that link would match. */
+function outsideSharedClaude(t: Case): string {
+  const outside = join(t.tmp, "outside-claude2");
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(join(outside, "keep.txt"), "Kept outside the repo.\n");
+  symlinkSync("../.agents/skills", join(outside, "skills"));
+  return outside;
+}
+
+test("test_skill_install_and_clone_refuse_a_claude_symlink_to_an_outside_folder_whose_skills_link_is_shared", () => {
+  const t = new Case();
+  try {
+    const fork = skillFork(t);
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    commitLink(fork, ".claude", outsideSharedClaude(t));
+    const installed = t.pb(["skill", "install"], { code: 1, cwd: fork.path });
+    expect(installed.stderr).toContain(".claude is a symlink");
+
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("a.txt", "a\n");
+    commitLink(up, ".claude", join(t.tmp, "outside-claude2"));
+    const cloned = t.pb(["clone", up.path, "fork2"], { cwd: t.tmp });
+    expect(cloned.stderr).toContain(".claude is a symlink");
+
+    expect(read(join(t.tmp, "outside-claude2/keep.txt"))).toBe("Kept outside the repo.\n");
+    expect(existsSync(join(t.tmp, "outside-claude2/.agents"))).toBe(false);
+    expect(existsSync(join(t.tmp, ".agents"))).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 const NOT_UTF8 = Buffer.from([0x62, 0x61, 0x64, 0x20, 0xff, 0xfe, 0x20, 0x62, 0x79, 0x74, 0x65, 0x73, 0x0a]);
 
 function writeBytes(repo: Repo, rel: string, data: Uint8Array): void {
