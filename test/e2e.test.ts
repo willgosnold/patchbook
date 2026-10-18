@@ -7493,6 +7493,69 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(tree(t.fork.path)).toEqual(before);
   });
 
+  const hooked = (t: ForkCase, args: string[]) =>
+    sh(["git", ...args], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Move the files out." }, check: false });
+
+  forkTest("test_a_commit_that_moves_the_last_file_out_of_a_vendored_copy_says_the_copy_is_empty", (t) => {
+    trackVendored(t);
+    sh(["git", "mv", "vendor/extra/a.md", "moved-a.md"], { cwd: t.fork.path });
+    sh(["git", "mv", "vendor/extra/lib/b.md", "moved-b.md"], { cwd: t.fork.path });
+    const commit = hooked(t, ["commit", "-qm", "move them out"]);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("the vendored copy of extra (vendor/extra) is empty or missing");
+    expect(commit.stderr).toContain("Run: patchbook sync extra, or delete the vendor line of upstream extra in .patchbook/config.toml");
+    expect(commit.stderr).not.toContain("write-tree");
+  });
+
+  for (const how of ["empty", "missing"]) {
+    forkTest(`test_status_says_the_vendored_copy_is_${how}`, (t) => {
+      trackVendored(t);
+      rmSync(join(t.fork.path, "vendor/extra"), { recursive: true });
+      if (how === "empty") mkdirSync(join(t.fork.path, "vendor/extra"), { recursive: true });
+      const status = t.pb(["status"], { cwd: t.fork.path, code: 1 });
+      expect(status.stderr).toContain("the vendored copy of extra (vendor/extra) is empty or missing");
+      expect(status.stderr).toContain("Run: patchbook sync extra, or delete the vendor line of upstream extra in .patchbook/config.toml");
+    });
+  }
+
+  for (const rule of ["vendor/extra/", "vendor/extra/*", "vendor/"]) {
+    forkTest(`test_a_vendored_copy_that_gitignore_hides_says_which_rule_hides_it_${rule.replace(/\W/g, "_")}`, (t) => {
+      trackVendored(t);
+      t.fork.write(".gitignore", `${rule}\n`);
+      const message = `.gitignore hides the vendored copy of extra (vendor/extra), by the rule ${rule} at .gitignore:1`;
+      for (const args of [["status"], ["build"]]) {
+        const out = t.pb(args, { cwd: t.fork.path, code: 1 });
+        expect(out.stderr).toContain(message);
+        expect(out.stderr).toContain("change that rule, or move the vendor folder of upstream extra in .patchbook/config.toml");
+        expect(out.stderr).not.toContain("git add --");
+      }
+      const commit = hooked(t, ["commit", "-qam", "hidden"]);
+      expect(commit.code).not.toBe(0);
+      expect(commit.stderr).toContain(message);
+      expect(commit.stderr).not.toContain("git add --");
+      expect(snapshot(join(t.fork.path, "vendor/extra"))).toEqual({ "a.md": "one\n", "lib/b.md": "bee\n" });
+    });
+  }
+
+  for (const what of ["file", "link"]) {
+    forkTest(`test_a_vendor_path_that_is_a_${what}_says_the_vendored_copy_is_not_a_folder`, (t) => {
+      trackVendored(t);
+      const vendor = join(t.fork.path, "vendor/extra");
+      rmSync(vendor, { recursive: true });
+      if (what === "file") writeFileSync(vendor, "x\n");
+      else symlinkSync(join(t.tmp, "extra"), vendor);
+      for (const args of [["status"], ["build"]]) {
+        const out = t.pb(args, { cwd: t.fork.path, code: 1 });
+        expect(out.stderr).toContain(`the vendored copy of extra (vendor/extra) is a ${what}, not a folder`);
+        expect(out.stderr).toContain("Delete it, then run: patchbook sync extra");
+        expect(out.stderr).not.toContain("write-tree");
+      }
+      unlinkSync(vendor);
+      t.pb(["sync", "extra"], { cwd: t.fork.path });
+      expect(snapshot(vendor)).toEqual({ "a.md": "one\n", "lib/b.md": "bee\n" });
+    });
+  }
+
   const trackHidden = (t: ForkCase): void => {
     const extra = new Repo(join(t.tmp, "extra"));
     extra.write("a.md", "one\n");
