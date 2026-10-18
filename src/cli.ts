@@ -47,15 +47,13 @@ function writeConfig(root: string, text: string): void {
   writeText(join(d, "config.toml"), text);
 }
 
-/** The commit a repo serves for the branch, or "" when it has none. git applies `insteadOf`, resolves paths and decodes URLs, so two spellings of one repo give one answer. */
 function tipOf(root: string, label: string, repo: string, branch: string, shown = repo): string {
   const r = spawn(["git", "ls-remote", "--", repo, `refs/heads/${branch}`], { cwd: root });
   if (r.code !== 0) throw new Fail(redact(`couldn't read ${label} ${shown}:\n${strip(decodeReplace(r.stderr))}`));
   return split(strip(decode(r.stdout)))[0] ?? "";
 }
 
-/** A relative local path names the folder the user typed it in, not the repo root that git runs from. */
-function fromHere(root: string, url: string): string {
+function resolveFromCwd(root: string, url: string): string {
   if (resolve(".") === root || isAbsolute(url) || /^([a-z][a-z0-9+.-]*:\/\/|[^/]*:)/i.test(url)) return url;
   const here = resolve(url);
   return exists(here) ? here : url;
@@ -109,7 +107,7 @@ async function cmdInit(args: {
   if (exists(join(root, PB, "config.toml"))) throw new Fail(`${root} already has a patchbook. To follow another upstream: patchbook track`);
   const given = notAnOption(args.upstream);
   const name = args.name || defaultName(given, args.path);
-  const upstream = fromHere(root, given);
+  const upstream = resolveFromCwd(root, given);
   if (args.outputTo !== null) {
     const text = configText("folder", upstreamToml(name, upstream, args.path, args.branch, "", args.vendor), [args.outputFrom, args.outputTo]);
     const book = await Book.fromText(root, text);

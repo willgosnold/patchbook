@@ -23,10 +23,11 @@ export function spawn(args: readonly string[], { cwd, input, env, capture = true
   return { code: result.exitCode, stdout: result.stdout ?? empty, stderr: result.stderr ?? empty };
 }
 
-/** Text with the credentials of any `scheme://user:password@` URL taken out: all of the userinfo for http(s) and ftp(s), the password for the rest. */
+const WEB_SCHEMES = /^(https?|ftps?)$/i;
+
 export function redact(text: string): string {
-  return text.replace(/\b([a-z][a-z0-9+.-]*):\/\/([^\s/@]*)@/gi, (_, scheme: string, info: string) =>
-    /^(https?|ftps?)$/i.test(scheme) ? `${scheme}://` : `${scheme}://${info.split(":")[0]}@`);
+  return text.replace(/\b([a-z][a-z0-9+.-]*):\/\/([^\s/@]*)@/gi, (_, scheme: string, userinfo: string) =>
+    WEB_SCHEMES.test(scheme) ? `${scheme}://` : `${scheme}://${userinfo.split(":")[0]}@`);
 }
 
 /** Run a command and return its stdout, failing if it exits non-zero. */
