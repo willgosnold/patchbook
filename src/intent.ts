@@ -117,7 +117,7 @@ const NAME_LENGTH = 40;
 /** An intent on one line, with each run of whitespace a single space. */
 export const oneLine = (text: string): string => split(text).join(" ");
 
-/** A kebab-case change name from at most the first four words of an intent, kept within `NAME_LENGTH`, that no change or folder already uses. */
+/** A kebab-case change name from at most the first four words of an intent, kept within `NAME_LENGTH`, that nothing in `changes/` already uses. */
 export function nameFromIntent(intent: string, roster: Roster): string {
   let base = "";
   for (const word of intent.toLowerCase().match(/[a-z0-9]+/g)?.slice(0, 4) ?? []) {

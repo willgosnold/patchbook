@@ -209,7 +209,7 @@ function nameAndIntent(
 ): Naming {
   if (name && !CHANGE_NAME.test(name)) throw new Fail(notAChangeName(name));
   const changes = roster.listed;
-  if (name && roster.unlisted(name)) {
+  if (name && roster.strayFolder(name)) {
     throw new Fail(`change ${name} is not in the series: add it to ${PB}/series, or remove ${PB}/changes/${name}`);
   }
   const named = ask.named.length > 0;

@@ -5384,6 +5384,15 @@ describe("ForkTest", () => {
     expect(readdirSync(join(t.fork.path, ".patchbook/changes/ghost"))).toEqual([]);
   });
 
+  forkTest("test_record_into_a_name_the_series_lists_does_not_call_it_missing_from_the_series", (t) => {
+    mkdirSync(join(t.fork.path, ".patchbook/changes/ghost"), { recursive: true });
+    writeFileSync(join(t.fork.path, ".patchbook/series"), "ghost\n");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "ghost", "--intent", "New intent."], { cwd: t.fork.path });
+    expect(read(join(t.fork.path, ".patchbook/changes/ghost/CHANGE.md"))).toContain("intent: New intent.");
+    expect(read(join(t.fork.path, ".patchbook/series"))).toBe("ghost\n");
+  });
+
   forkTest("test_record_names_a_change_from_an_intent_around_a_folder_that_is_not_in_the_series", (t) => {
     const path = unlisted(t, "make-the-second-line");
     const before = readFileSync(path);
