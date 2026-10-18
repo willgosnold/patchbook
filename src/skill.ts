@@ -2,7 +2,7 @@
 import {
   chmodSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync,
 } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import skill from "../skills/patchbook-update/SKILL.md" with { type: "text" };
 import { assemble, describe, handEdits } from "./assemble.ts";
 import { Book } from "./book.ts";
@@ -38,10 +38,16 @@ const real = (p: string) => {
   }
 };
 
-/** With `.claude/skills` linked to `.agents/skills`, the link path is the skill folder itself. */
+/**
+ * With `.claude/skills` linked to `.agents/skills`, the link path is the skill folder itself.
+ * A link that dangles still counts, since making `.agents/skills` makes it live.
+ */
 const sharesSkills = (root: string, p: string) => {
-  const skills = real(join(root, ".agents", "skills"));
-  return skills !== null && real(dirname(join(root, p))) === skills;
+  const parent = dirname(join(root, p));
+  const skills = join(root, ".agents", "skills");
+  if (isSymlink(parent) && resolve(dirname(parent), readlinkSync(parent)) === skills) return true;
+  const shared = real(skills);
+  return shared !== null && real(parent) === shared;
 };
 
 const folderNote = (root: string, at: string) =>
@@ -205,7 +211,8 @@ export async function cmdSkill(): Promise<number> {
   const refusals = [
     uncommitted.length && "these skill files differ from the shipped copy and are not in a commit, "
       + `and installing would replace them:\n  ${uncommitted.join("\n  ")}\n`
-      + "Commit them first, then run this again. In a fork the hook records the commit.",
+      + "Commit them first, then run this again."
+      + (book.layout.kind === "fork" ? " In a fork the hook records the commit." : ""),
     ignored.length && "these skill files differ from the shipped copy and git ignores them, "
       + `so no commit can keep them, and installing would replace them:\n  ${ignored.join("\n  ")}\n`
       + "Move the file, or stop ignoring the path, then run this again.",
