@@ -81,10 +81,11 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
     notes.push(...plan.notes.map(([h, what]) => `entry    ${p} [${h}] ${what}`));
   }
 
-  const chosen = name || "unnamed";
-  let target = changes.get(chosen);
-  if (target === undefined) target = new Change(chosen, join(book.dir, "changes", chosen), intent);
-  else if (given) target.intent = given;
+  const existing = name ? changes.get(name) : undefined;
+  let chosen = name || "unnamed";
+  if (!name) for (let n = 2; changes.has(chosen); n++) chosen = `unnamed-${n}`;
+  const target = existing ?? new Change(chosen, join(book.dir, "changes", chosen), intent);
+  if (existing && given) target.intent = given;
   const touched = new Map([[target.name, target]]);
 
   for (const p of edited) {
