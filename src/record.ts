@@ -13,7 +13,7 @@ import { Fail, Partway } from "./lib/fail.ts";
 import { exists, type File, LINK, type Mode, sameFile, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { replace, splitlines, strip } from "./lib/py.ts";
-import { bytesEqual, decode, decodeReplace, encode, isText } from "./lib/text.ts";
+import { bytesEqual, decode, encode, isText } from "./lib/text.ts";
 
 /** An entry a recording makes. A null intent means it still needs one. */
 type Draft = Omit<Entry, "intent"> & { intent: string | null };
@@ -136,7 +136,7 @@ export type Snapshot = {
   blocks: ReadonlySet<string>;
   entriesAt(rel: string): string;
   prefix: string;
-  /** Whether a change's copy holds a placeholder of a configured kind. */
+  /** Whether a change's copy is text with a placeholder of a configured kind. The build expands only text. */
   uses(copy: Uint8Array | null): boolean;
   plan(rel: string, path: string, built: File, now: File): Plan | string;
 };
@@ -214,7 +214,7 @@ function snapshot(book: Book, a: Assembly, current: ReadonlyMap<string, File>, c
     blocks: new Set(blockFiles(book)),
     entriesAt: (rel) => entriesPath(book, rel),
     prefix: book.layout.kind === "folder" && book.layout.from ? book.layout.from + "/" : "",
-    uses: (copy) => rules.uses(decodeReplace(copy ?? new Uint8Array())),
+    uses: (copy) => copy !== null && isText(copy) && rules.uses(decode(copy)),
     plan: (rel, path, built, now) => planParagraphs(book, rules, rel, path, decode(a.upstream.get(rel)!.data), built.data, now.data),
   };
 }
