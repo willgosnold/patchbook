@@ -1,11 +1,11 @@
 // The repo, its config and its upstreams.
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Hooks, Problem } from "./api.ts";
 import { installHook } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isMode, lexists, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
+import { exists, type File, isDir, isMode, isSymlink, lexists, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
 import { dumps, loads } from "./lib/json.ts";
 import { git } from "./lib/proc.ts";
 import { length, type PyValue, sortedBy, strRepr } from "./lib/py.ts";
@@ -13,6 +13,7 @@ import { isTable, parseToml, type Table } from "./settings.ts";
 import { stagedFolder, Upstream } from "./store.ts";
 
 export const PB = ".patchbook";
+export const GIT = ".git";
 
 export function under(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(prefix + "/");
@@ -125,6 +126,34 @@ export type Check = { files: RegExp[]; exclude: RegExp[]; pattern: RegExp };
 export type Placeholder = { file: string | null; format: string };
 export type Layout = { kind: "fork" } | { kind: "folder"; from: string; dir: string };
 
+/** The repo-relative folder `to` names once links above the repo are resolved, after the checks that keep a build inside it. */
+function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly string[]): string {
+  const dir = pjoin(root, to);
+  const rel = relative(resolve(root), resolve(dir));
+  const shown = strRepr(to);
+  if (rel === ".") throw new Fail(`[output] to ${shown} is the repo root. Name a folder inside the repo.`);
+  if (under(rel, "..")) throw new Fail(`[output] to ${shown} is outside the repo. Name a folder inside it.`);
+  if (under(rel, PB)) throw new Fail(`[output] to ${shown} is inside ${PB}. patchbook never builds into ${PB}, so those files would never land. Change [output] to.`);
+  if (lexists(dir) && !exists(dir)) throw new Fail(`[output] to ${shown} is a link to nothing. Name a folder inside the repo.`);
+  if (isSymlink(dir)) throw new Fail(`[output] to ${shown} is a link, and a build would replace it with a folder. Name the folder it points to.`);
+  if (exists(dir) && !isDir(dir)) throw new Fail(`[output] to ${shown} is not a folder. Name a folder inside the repo.`);
+  const realRoot = resolve(root);
+  // A link above the repo (macOS /var) can spell the repo's own path, so that spelling ends the walk. A link inside it never does.
+  const atRepo = (p: string) => p === root || (!under(p, root) && resolve(p) === realRoot);
+  for (let up = dirname(dir); !atRepo(up) && up !== dirname(up); up = dirname(up)) {
+    const name = under(up, root) ? relative(root, up) : up;
+    if (lexists(up) && !exists(up)) throw new Fail(`[output] to ${shown} is under ${name}, which is a link to nothing. Name a folder inside the repo.`);
+    if (isSymlink(up)) throw new Fail(`[output] to ${shown} is under ${name}, which is a link. Name a folder that is not behind a link.`);
+    if (exists(up) && !isDir(up)) throw new Fail(`[output] to ${shown} is under ${name}, which is not a folder. Name a folder inside the repo.`);
+  }
+  for (const v of vendors) {
+    const vendor = relative(resolve(root), resolve(pjoin(root, v)));
+    if (vendor === ".") throw new Fail(`[output] to ${shown} overlaps the vendored copy, which is the repo root. Name another folder.`);
+    if (under(rel, vendor)) throw new Fail(`[output] to ${shown} overlaps the vendored copy ${vendor}. Name another folder.`);
+  }
+  return rel;
+}
+
 /** `**` matches any number of folders, `*` and `?` stay within one. */
 export function globRe(pattern: string): RegExp {
   const chars = Array.from(pattern);
@@ -183,7 +212,8 @@ export class Book {
       const out = Object.hasOwn(this.config, "output") ? this.config["output"] : {};
       if (!isTable(out) || !Object.hasOwn(out, "to")) throw new Fail("a folder layout needs [output] with to = <folder>");
       const from = stagedFolder(text(out, "from", "", "[output] from"), "[output] from");
-      this.layout = { kind, from, dir: pjoin(root, text(out, "to", "", "[output] to")) };
+      const to = text(out, "to", "", "[output] to");
+      this.layout = { kind, from, dir: pjoin(root, checkOutputIsSafeToWipe(root, to, this.vendors())) };
     } else this.layout = { kind };
     this.checkMounts();
     this.readChecks();
@@ -225,7 +255,7 @@ export class Book {
     }
     for (const u of this.upstreams) {
       const out = this.outputFolder(u);
-      const own = out === null ? undefined : [PB, ".git"].find((reserved) => under(out, reserved));
+      const own = out === null ? undefined : under(out, PB) ? PB : out.split("/").some((segment) => segment.toLowerCase() === GIT) ? GIT : undefined;
       if (own) {
         const where = this.layout.kind === "fork" ? `mounts at ${shown(u.mount)}` : `builds into ${shown(out ?? "")}`;
         throw new Fail(`${u.name} ${where}, inside ${own}. patchbook never builds into ${own}, so those files would never land. Change ${this.outputKnob(u)}.`);

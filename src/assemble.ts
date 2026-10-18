@@ -5,10 +5,10 @@ import type { InChange, InEdit, InOutput, Problem } from "./api.ts";
 import {
   entriesPath, type Entry, formatEntry, leakScan, orphan, patchBlocks, readEntries, Rules, type Unmatched,
 } from "./blocks.ts";
-import { Book, under } from "./book.ts";
+import { Book, GIT, PB, under } from "./book.ts";
 import { type Change, editText, readChanges } from "./changes.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isEmptyDir, LINK, mkdirs, readDisk, readText, rglob, sameFile, writeDisk, writeText } from "./lib/fs.ts";
+import { exists, type File, isDir, isEmptyDir, LINK, lexists, mkdirs, readDisk, readText, resolve, rglob, sameFile, writeDisk, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { dumps, loads } from "./lib/json.ts";
 import { git, spawn } from "./lib/proc.ts";
@@ -256,9 +256,59 @@ export function writeBuildLines(book: Book, lock: ReadonlyMap<string, string>): 
 
 export const writeBuildLock = (book: Book, out: ReadonlyMap<string, File>) => writeBuildLines(book, oids(out));
 
+type Changes = { stale: string[]; changed: string[] };
+
+function changesOf(current: ReadonlyMap<string, File>, out: ReadonlyMap<string, File>): Changes {
+  return {
+    stale: Array.from(current.keys()).filter((p) => !out.has(p)),
+    changed: Array.from(out.keys()).filter((p) => !sameFile(current.get(p), out.get(p))),
+  };
+}
+
+/** A linked worktree's `.git` is a file, so git is asked. */
+function keptPlaces(book: Book): (readonly [string, string])[] {
+  const dirs = git(["rev-parse", "--path-format=absolute", "--git-common-dir", "--git-dir"], { cwd: book.root }).split("\n");
+  const places = [[PB, join(book.root, PB)], [GIT, join(book.root, GIT)], ...dirs.map((dir) => [GIT, dir] as const)];
+  return places.map(([name, path]) => [name, resolve(path!)] as const);
+}
+
+function refuseIfUncontained(book: Book, { stale, changed }: Changes): void {
+  const root = book.outputRoot();
+  const realRoot = resolve(root);
+  const kept = keptPlaces(book);
+  const unlinked = new Set(stale);
+  const resolved = new Map<string, string>();
+  const checked = new Set<string>();
+  for (const [p, writing] of [...stale.map((p) => [p, false] as const), ...changed.map((p) => [p, true] as const)]) {
+    const parts = p.split("/");
+    let onDisk = parts.length - 1;
+    if (writing) {
+      const unlinkedAt = parts.slice(0, -1).findIndex((_, i) => unlinked.has(parts.slice(0, i + 1).join("/")));
+      if (unlinkedAt !== -1) onDisk = unlinkedAt;
+    }
+    for (let i = 1; i <= onDisk; i++) {
+      const folder = parts.slice(0, i).join("/");
+      if (checked.has(folder)) continue;
+      const at = join(root, folder);
+      if (lexists(at) && !exists(at)) throw new Fail(`${p} is under ${folder}, which is a link to nothing. Nothing was changed.`);
+      if (exists(at) && !isDir(at)) throw new Fail(`${p} is under ${folder}, which is not a folder. Nothing was changed.`);
+      checked.add(folder);
+    }
+    const top = parts.slice(0, onDisk).join("/");
+    if (!resolved.has(top)) resolved.set(top, resolve(join(root, top)));
+    const parent = join(resolved.get(top)!, ...parts.slice(onDisk, -1));
+    const real = join(parent, parts.at(-1)!);
+    const hit = kept.find(([, place]) => under(real, place));
+    if (hit) throw new Fail(`${p} is really inside ${hit[0]} (it goes to ${real}), so a build must not change it. Nothing was changed.`);
+    if (!under(parent, realRoot)) throw new Fail(`${p} really goes to ${real}, outside the output folder. Nothing was changed.`);
+  }
+}
+
 /** Output paths changed on disk since the last build, other than to what this build writes. */
 export function handEdits(book: Book, fresh: ReadonlyMap<string, File>): string[] {
-  const current = oids(book.currentOutput());
+  const files = book.currentOutput();
+  refuseIfUncontained(book, changesOf(files, fresh));
+  const current = oids(files);
   const next = oids(fresh);
   const last = readBuildLock(book);
   if (last === null) return sorted(Array.from(current.keys()).filter((p) => current.get(p) !== next.get(p))); // never built here
@@ -268,15 +318,17 @@ export function handEdits(book: Book, fresh: ReadonlyMap<string, File>): string[
 
 export function writeOutput(book: Book, out: ReadonlyMap<string, File>): void {
   const root = book.outputRoot();
-  const current = book.currentOutput();
-  for (const p of current.keys()) {
-    if (out.has(p)) continue;
+  const changes = changesOf(book.currentOutput(), out);
+  refuseIfUncontained(book, changes);
+  const { stale, changed } = changes;
+  for (const p of stale) {
+    if (!lexists(join(root, p))) continue;
     unlinkSync(join(root, p));
     for (let parent = dirname(join(root, p)); parent !== root && exists(parent) && isEmptyDir(parent); parent = dirname(parent)) {
       rmdirSync(parent);
     }
   }
-  for (const [p, f] of out) if (!sameFile(current.get(p), f)) writeDisk(join(root, p), f);
+  for (const p of changed) writeDisk(join(root, p), out.get(p)!);
   writeBuildLock(book, out);
 }
 

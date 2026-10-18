@@ -83,7 +83,7 @@ async function cmdInit(args: {
   const root = git(["rev-parse", "--show-toplevel"], { cwd: process.cwd() });
   if (exists(join(root, PB, "config.toml"))) throw new Fail(`${root} already has a patchbook. To follow another upstream: patchbook track`);
   const name = args.name || defaultName(args.upstream, args.path);
-  if (args.outputTo) {
+  if (args.outputTo !== null) {
     writeConfig(root, "folder", upstreamToml(name, args.upstream, args.path, args.branch, "", args.vendor), [args.outputFrom, args.outputTo]);
     const book = await Book.open(root);
     syncUpstream(book, book.upstreams[0]!, args.branch, []);
