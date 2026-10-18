@@ -33,13 +33,6 @@ export function absoluteRemote(remote: string): string {
   return remote && !remote.startsWith("-") && isLocalPath(remote) ? posix.resolve(remote) : remote;
 }
 
-/**
- * A remote read from config.toml comes from a repo, as a submodule URL does, so git gets the rule it uses for those.
- * A remote helper runs only if the user's git config allows it "always", and ext:: never runs. Local paths and file:// get "always", because git gives file the policy "user" and that rule alone would refuse them.
- */
-const FROM_REPO = ["-c", "protocol.file.allow=always", "-c", "protocol.ext.allow=never"];
-const fromRepo = () => ({ ...process.env, GIT_PROTOCOL_FROM_USER: "0" });
-
 function field(spec: Table, key: string, fallback: string): string {
   const value = Object.hasOwn(spec, key) ? spec[key] : fallback;
   if (typeof value !== "string") throw new Fail(`an [[upstream]]'s ${key} is a string, not ${JSON.stringify(value)}`);
@@ -130,8 +123,7 @@ export class Upstream {
     const shallow = !this.inRepo || git(["rev-parse", "--is-shallow-repository"], { cwd }) === "true" ? ["--depth=1"] : [];
     const landing = `refs/patchbook/tmp/${process.pid}-${randomUUID()}`;
     try {
-      const fetched = spawn(["git", ...FROM_REPO, "fetch", "--quiet", "--no-tags", ...shallow, "--end-of-options", this.source(), `+${ref}:${landing}`], { cwd, env: fromRepo() });
-      if (fetched.code !== 0) throw new Fail(`git fetch ${this.source()} ${ref} failed:\n${strip(decodeReplace(fetched.stderr))}`);
+      this.onRemote(["fetch", "--quiet", "--no-tags", ...shallow, "--end-of-options", this.source(), `+${ref}:${landing}`], `git fetch ${this.source()} ${ref}`, cwd);
       return git(["rev-parse", `${landing}^{commit}`], { cwd });
     } finally {
       spawn(["git", "update-ref", "-d", landing], { cwd });
@@ -187,9 +179,26 @@ export class Upstream {
   }
 
   head(): string {
-    const out = git([...FROM_REPO, "ls-remote", "--end-of-options", this.source(), `refs/heads/${this.branch}`], { cwd: this.gitDir(), env: fromRepo() });
+    const ref = `refs/heads/${this.branch}`;
+    const out = this.onRemote(["ls-remote", "--end-of-options", this.source(), ref], `git ls-remote ${this.source()} ${ref}`, this.gitDir());
     if (!out) throw new Fail(`upstream ${this.name} has no branch ${this.branch}`);
     return split(out)[0]!;
+  }
+
+  /**
+   * Run git on the remote. A failure names only `shown`, the command as the user would type it.
+   * A local path or file:// URL cannot name a remote helper, so git reads it under the user's own config.
+   * Any other remote comes from a repo, as a submodule URL does, so it gets git's rule for those: a helper git does not ship
+   * runs only if the user allows it, with protocol.<name>.allow or protocol.allow set to always, or with GIT_ALLOW_PROTOCOL.
+   * ext:: runs only through GIT_ALLOW_PROTOCOL.
+   */
+  private onRemote(args: string[], shown: string, cwd: string): string {
+    const remote = this.source();
+    const done = isLocalPath(remote) || remote.startsWith("file://")
+      ? spawn(["git", ...args], { cwd })
+      : spawn(["git", "-c", "protocol.ext.allow=never", ...args], { cwd, env: { ...process.env, GIT_PROTOCOL_FROM_USER: "0" } });
+    if (done.code !== 0) throw new Fail(`${shown} failed:\n${strip(decodeReplace(done.stderr))}`);
+    return strip(decode(done.stdout));
   }
 
   /** Upstream's files at a commit, relative to the upstream path. */

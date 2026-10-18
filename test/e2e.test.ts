@@ -1339,7 +1339,7 @@ case " $* " in *" fetch "*) fetch=yes ;; esac
 if [ "$fetch" = yes ] && [ ! -e '${raced}' ]; then
   : > '${raced}'
   '${Bun.which("git")}' "$@" || exit $?
-  exec '${Bun.which("git")}' -c protocol.file.allow=always fetch --quiet --depth=1 '${t.up.path}' ${older}
+  exec '${Bun.which("git")}' fetch --quiet --depth=1 '${t.up.path}' ${older}
 fi
 exec '${Bun.which("git")}' "$@"
 `);
