@@ -5,7 +5,7 @@ import type { Hooks, Problem } from "./api.ts";
 import { installHook } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isDir, isMode, isSymlink, lexists, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
+import { exists, type File, isDir, isMode, isSymlink, lexists, mkdirs, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
 import { dumps, loads } from "./lib/json.ts";
 import { git } from "./lib/proc.ts";
 import { length, type PyValue, sortedBy, strRepr } from "./lib/py.ts";
@@ -237,8 +237,8 @@ export class Book {
     this.readPlaceholders();
   }
 
-  static validate(root: string, config: string): void {
-    new Book(root, config);
+  static fromText(root: string, config: string): Book {
+    return new Book(root, config);
   }
 
   static async open(root: string): Promise<Book> {
@@ -422,6 +422,7 @@ export class Book {
     const data = this.lock();
     data.set(name, new Map([["commit", commit], ["tree", tree]]));
     const ordered = new Map(sortedBy(data, ([k]) => k));
+    mkdirs(this.dir);
     writeText(join(this.dir, "upstream.lock"), dumps(ordered, 2) + "\n");
   }
 

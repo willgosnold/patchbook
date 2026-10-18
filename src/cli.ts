@@ -32,10 +32,13 @@ function upstreamToml(name: string, remote: string, path: string, branch: string
   return lines.join("\n") + "\n";
 }
 
-function writeConfig(root: string, layout: "fork" | "folder", upstream: string, output?: [string, string]): void {
+function configText(layout: "fork" | "folder", upstream: string, output?: [string, string]): string {
   let text = `layout = "${layout}"\n\n` + upstream;
   if (output) text += `\n[output]\nfrom = "${output[0]}"\nto = "${output[1]}"\n`;
-  Book.validate(root, text);
+  return text;
+}
+
+function writeConfig(root: string, text: string): void {
   const d = join(root, PB);
   mkdirSync(d, { recursive: true });
   writeText(join(d, "config.toml"), text);
@@ -55,7 +58,9 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   const inherited = lexists(join(dest, PB));
   if (inherited) rmSync(join(dest, PB), { recursive: true, force: true });
   const name = defaultName(args.url, "");
-  writeConfig(dest, "fork", upstreamToml(name, args.url, "", branch, ""));
+  const text = configText("fork", upstreamToml(name, args.url, "", branch, ""));
+  Book.fromText(dest, text);
+  writeConfig(dest, text);
   const book = await Book.open(dest);
   book.writeLock(name, commit, git(["rev-parse", "HEAD^{tree}"], { cwd: dest }));
   writeBuildLock(book, book.currentOutput());
@@ -84,20 +89,23 @@ async function cmdInit(args: {
   if (exists(join(root, PB, "config.toml"))) throw new Fail(`${root} already has a patchbook. To follow another upstream: patchbook track`);
   const name = args.name || defaultName(args.upstream, args.path);
   if (args.outputTo !== null) {
-    writeConfig(root, "folder", upstreamToml(name, args.upstream, args.path, args.branch, "", args.vendor), [args.outputFrom, args.outputTo]);
-    const book = await Book.open(root);
+    const text = configText("folder", upstreamToml(name, args.upstream, args.path, args.branch, "", args.vendor), [args.outputFrom, args.outputTo]);
+    const book = Book.fromText(root, text);
     syncUpstream(book, book.upstreams[0]!, args.branch, []);
+    writeConfig(root, text);
     installHook(root);
     installSkill(book);
     process.stdout.write(`Next: patchbook build, then commit.\n${SCHEDULE}\n`);
     return 0;
   }
-  writeConfig(root, "fork", upstreamToml(name, args.upstream, args.path, args.branch, ""));
-  if (!split(git(["remote"], { cwd: root })).includes("upstream")) git(["remote", "add", "--end-of-options", "upstream", args.upstream], { cwd: root });
-  git(["fetch", "--quiet", "--end-of-options", args.upstream, args.branch], { cwd: root });
+  const text = configText("fork", upstreamToml(name, args.upstream, args.path, args.branch, ""));
+  const book = Book.fromText(root, text);
+  const hasRemote = split(git(["remote"], { cwd: root })).includes("upstream");
+  git(["fetch", "--quiet", "--end-of-options", hasRemote ? "upstream" : args.upstream, args.branch], { cwd: root });
   const base = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: root });
-  const book = await Book.open(root);
   book.writeLock(name, base, book.upstreams[0]!.treeOf(base));
+  if (!hasRemote) git(["remote", "add", "--end-of-options", "upstream", args.upstream], { cwd: root });
+  writeConfig(root, text);
   installHook(root);
   installSkill(book);
   process.stdout.write(`pinned upstream at ${base.slice(0, 7)}, where this repo branched from it.\n`
@@ -107,15 +115,14 @@ async function cmdInit(args: {
 
 /** Follow one more upstream, mounted at its own folder of the staged tree. */
 async function cmdTrack(args: { name: string; url: string; branch: string; path: string; mount: string | null; vendor: string | null }) {
-  let book = await Book.find();
+  const book = await Book.find();
   if (book.upstreams.some((u) => u.name === args.name)) throw new Fail(`already following an upstream called ${args.name}`);
   const config = join(book.dir, "config.toml");
   const mount = args.mount ?? args.name;
   const text = rstrip(readText(config), "\n") + "\n\n" + upstreamToml(args.name, args.url, args.path, args.branch, mount, args.vendor);
-  Book.validate(book.root, text);
+  const candidate = Book.fromText(book.root, text);
+  syncUpstream(candidate, candidate.upstream(args.name), args.branch, []);
   writeText(config, text);
-  book = await Book.open(book.root);
-  syncUpstream(book, book.upstream(args.name), args.branch, []);
   const where = mount ? `${mount}/` : "the root";
   process.stdout.write(`Its files appear at ${where} of the staged tree. Ship what you need with edits (move, copy), then build.\n`);
   return 0;
