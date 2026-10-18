@@ -131,9 +131,9 @@ export function nameFromIntent(intent: string, roster: Roster): string {
 /** Ask the chosen model for the change's name and intent. Returns the name (null if not named) and the intent. */
 export function writeIntent(
   book: Book, changes: ReadonlyMap<string, Change>, diff: string, name: string | null, named: boolean,
-): [string | null, string | null] {
+): [string, string] {
   const [provider, model, effort] = intentSettings(book);
-  const listed = Array.from(changes.values(), (c) => `${c.name}: ${c.intent ?? "None"}`).join("\n") || "(none yet)";
+  const listed = Array.from(changes.values(), (c) => `${c.name}: ${c.intent}`).join("\n") || "(none yet)";
   let instruction: string;
   if (!named) {
     name = "paragraphs";
@@ -155,12 +155,12 @@ export function writeIntent(
   const fields = answer instanceof Map ? answer : new Map<string, PyValue>();
   const given = fields.get("change") ?? "";
   let chosen = typeof given === "string" ? given : "";
-  let intent: string | null = oneLine(str(fields.has("intent") ? fields.get("intent")! : ""));
+  let intent = oneLine(str(fields.has("intent") ? fields.get("intent")! : ""));
   if (!CHANGE_NAME.test(chosen) || !intent) {
     throw new Fail(`${provider} didn't return a usable name and intent:\n${slice(strip(reply), 0, 500)}\nPass a name and --intent instead.`);
   }
   if (name && chosen !== name) chosen = name;
   const known = changes.get(chosen);
   if (known && named) intent = known.intent;
-  return [named ? chosen : null, intent];
+  return [chosen, intent];
 }
