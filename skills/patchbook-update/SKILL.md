@@ -53,7 +53,7 @@ Commit each change you repair or retire on its own, as "Carry <change> to upstre
 
 Run `patchbook build`. The pre-commit hook builds on each commit when the patchbook has no problems, so this usually changes nothing. The hook doesn't build when there are problems, when `hook.enabled` is false, or when the repo's pre-commit hook belongs to another tool and doesn't run `patchbook hook run`. If `patchbook build` fails, quote its message and ask (step 6). If `git status --porcelain` then lists more than `.patchbook/last-sync.json`, commit the rest as one build commit. It holds only what `patchbook build` wrote: output files and `.patchbook/build.lock`. Never commit `.patchbook/last-sync.json`.
 
-Then run the config's `[test]` from the worktree's root: a `command` must exit 0, and an `instructions` file is a procedure to follow. Fix a failure if you can, with at most two attempts, and run the test again after each fix.
+Then run the config's `[test]` from the worktree's root: a `command` must exit 0, and an `instructions` file is a procedure to follow. Fix a failure if you can, with at most two attempts. Commit each fix on its own, as "Fix test: <what>", then do step 4 again.
 
 ## 5. Review
 
@@ -71,7 +71,7 @@ Set `target` to the provider's `providerInstanceId`, the model's `id` (not its `
 - `git diff origin/$MAIN_BRANCH...HEAD -- .patchbook`;
 - the test results.
 
-Ask it, per change: does the result meet the intent on upstream's new text, does it change anything beyond the intent, and did upstream add anything that should have been handled. It answers pass or fail, with reasons. A change it gives no pass or fail counts as a fail. On a fail, fix what it found and start a new review round, with the earlier findings in the brief. Stop after two rounds.
+Ask it, per change: does the result meet the intent on upstream's new text, does it change anything beyond the intent, and did upstream add anything that should have been handled. It answers pass or fail, with reasons. A change it gives no pass or fail counts as a fail. On a fail, fix what it found, commit the fix on its own, do step 4 again, and start a new review round, with the earlier findings in the brief. Stop after two rounds.
 
 ## 6. Merge, or ask
 
