@@ -7476,6 +7476,51 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     }
   });
 
+  forkTest("test_record_deleting_the_output_of_a_replace_keeps_the_ours_copy_when_the_owner_cannot_be_saved", (t) => {
+    if (process.getuid?.() === 0) return;
+    handChange(t, "rep", "Replace the guide.", ["replace docs/guide.md"], { "docs/guide.md": "replaced\n" });
+    t.pb(["build"], { cwd: t.fork.path });
+    const before = outputs(t);
+    t.fork.rm("docs/guide.md");
+    const owner = join(t.fork.path, ".patchbook/changes/rep/CHANGE.md");
+    const ours = join(t.fork.path, ".patchbook/changes/rep/ours/docs/guide.md.pb");
+    chmodSync(owner, 0o444);
+    try {
+      t.pb(["record", "dropguide", "--intent", "Drop the guide."], { cwd: t.fork.path, code: 1 });
+      expect(existsSync(ours)).toBe(true);
+    } finally {
+      chmodSync(owner, 0o644);
+    }
+    t.pb(["record", "dropguide", "--intent", "Drop the guide."], { cwd: t.fork.path });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(outputs(t)).toEqual(without(before, "docs/guide.md"));
+    expect(existsSync(ours)).toBe(false);
+  });
+
+  forkTest("test_record_unadd_keeps_the_ours_copy_when_the_named_change_cannot_be_saved", (t) => {
+    if (process.getuid?.() === 0) return;
+    t.fork.write("extra.txt", "ours\n");
+    t.pb(["record", "ch", "--intent", "Add extra."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    const before = outputs(t);
+    t.fork.rm("extra.txt");
+    const owner = join(t.fork.path, ".patchbook/changes/ch/CHANGE.md");
+    const ours = join(t.fork.path, ".patchbook/changes/ch/ours/extra.txt.pb");
+    chmodSync(owner, 0o444);
+    try {
+      t.pb(["record", "ch"], { cwd: t.fork.path, code: 1 });
+      expect(existsSync(ours)).toBe(true);
+    } finally {
+      chmodSync(owner, 0o644);
+    }
+    t.pb(["record", "ch"], { cwd: t.fork.path });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(outputs(t)).toEqual(without(before, "extra.txt"));
+    expect(existsSync(ours)).toBe(false);
+  });
+
   forkTest("test_record_deleting_the_source_of_a_copy_that_was_never_built_keeps_the_copy", (t) => {
     handChange(t, "addn", "Add n.", ["add notes/n.txt"], { "notes/n.txt": "new\n" });
     t.pb(["build"], { cwd: t.fork.path });
