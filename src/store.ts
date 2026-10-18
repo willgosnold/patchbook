@@ -23,7 +23,7 @@ export function defaultName(remote: string, path: string): string {
 
 const rstrip = (s: string) => s.replace(/\/+$/, "");
 
-/** git's url_is_local_not_ssh, so a remote is a local path exactly when git treats it as one. */
+/** git's url_is_local_not_ssh, the rule fetch and ls-remote use. `git clone` also takes an existing folder named like `a:b` as local; this does not. */
 function isLocalPath(remote: string): boolean {
   const colon = remote.indexOf(":");
   return !remote.includes("://") && (colon === -1 || remote.slice(0, colon).includes("/"));
