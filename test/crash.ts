@@ -6,13 +6,18 @@ import { existsSync, readFileSync, rmSync as remove, type RmOptions, type WriteF
 
 export * from "node:fs";
 
+const endsIn = (path: string, variable: string): boolean => {
+  const tail = process.env[variable];
+  return !!tail && path.endsWith(tail);
+};
+
 export function rmSync(path: string, options?: RmOptions): void {
-  if (path.endsWith(process.env["CRASH_BEFORE_RM"]!) && existsSync(path)) process.kill(process.pid, "SIGKILL");
+  if (endsIn(path, "CRASH_BEFORE_RM") && existsSync(path)) process.kill(process.pid, "SIGKILL");
   remove(path, options);
 }
 
 export function writeFileSync(path: string, data: string | NodeJS.ArrayBufferView, options?: WriteFileOptions): void {
-  if (path.endsWith(process.env["CRASH_BEFORE_WRITE"]!)) process.kill(process.pid, "SIGKILL");
+  if (endsIn(path, "CRASH_BEFORE_WRITE")) process.kill(process.pid, "SIGKILL");
   write(path, data, options);
 }
 
