@@ -679,6 +679,42 @@ describe("VendorTest", () => {
     expect(sh(["git", "rev-parse", "--verify", "--quiet", `refs/pins/${head}`], { cwd: store }).stdout.trim()).toBe(head);
   });
 
+  for (const layout of ["folder", "vendored"]) {
+    for (const before of [false, true]) {
+      vendorTest(`test_sync_keeps_no_new_ref_when_it_fails_after_the_keep_${layout}${before ? "_unless_it_was_there" : ""}`, (t) => {
+        const extra = new Repo(join(t.tmp, "extra"));
+        extra.write("a.md", "one\ntwo\nthree\nfour\nfive\n");
+        extra.commit("a");
+        t.pb(["track", "extra", extra.path, ...(layout === "vendored" ? ["--vendor", "vendor/extra"] : [])], { cwd: t.repo.path });
+        const change = join(t.repo.path, ".patchbook/changes/tweak");
+        mkdirNew(change);
+        writeFileSync(join(change, "CHANGE.md"), "# tweak\n\nintent: Shout the first line.\n\nedits:\n- file extra/a.md\n");
+        mkdirSync(join(change, "base/extra"), { recursive: true });
+        mkdirSync(join(change, "ours/extra"), { recursive: true });
+        writeFileSync(join(change, "base/extra/a.md.pb"), "one\ntwo\nthree\nfour\nfive\n");
+        writeFileSync(join(change, "ours/extra/a.md.pb"), "ONE\ntwo\nthree\nfour\nfive\n");
+        writeFileSync(join(t.repo.path, ".patchbook/series"), "tweak\n");
+        extra.write("a.md", "one\ntwo\nthree\nfour\nFIVE\n");
+        const head = extra.commit("more");
+        const store = readdirSync(join(t.tmp, "store/upstreams")).map((d) => join(t.tmp, "store/upstreams", d)).find((s) => !inStore(s, pinOf(t)))!;
+        const refOf = (): string => sh(["git", "rev-parse", "--verify", "--quiet", `refs/pins/${head}`], { cwd: store, check: false }).stdout.trim();
+        if (before) {
+          sh(["git", "fetch", "-q", "--depth=1", extra.path, head], { cwd: store });
+          sh(["git", "update-ref", `refs/pins/${head}`, head], { cwd: store });
+        }
+        const lock = read(join(t.repo.path, ".patchbook/upstream.lock"));
+        sh(["chmod", "-R", "a-w", join(change, "ours")], { cwd: t.repo.path });
+        try {
+          t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+        } finally {
+          sh(["chmod", "-R", "u+w", join(change, "ours")], { cwd: t.repo.path });
+        }
+        expect(refOf()).toBe(before ? head : "");
+        expect(read(join(t.repo.path, ".patchbook/upstream.lock"))).toBe(lock);
+      });
+    }
+  }
+
   for (const command of ["status", "build"]) {
     vendorTest(`test_${command}_keeps_a_pin_it_held_without_a_ref`, (t) => {
       const store = storeOf(t);
