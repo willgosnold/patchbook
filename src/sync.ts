@@ -1,13 +1,13 @@
 // Has an upstream moved, and moving the pins: carrying every change forward with git merge-file.
-import { lstatSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { Book } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, LINK, lexists, mkdirs, readDisk, readText, readTextReplace, rglob, sameFile, writeDisk, writeText } from "./lib/fs.ts";
+import { exists, type File, isSymlink, LINK, lexists, mkdirs, readDisk, readText, readTextReplace, sameFile, writeDisk, writeText } from "./lib/fs.ts";
 import { dumps, type Json, JsonError, loads } from "./lib/json.ts";
 import { spawn } from "./lib/proc.ts";
 import { sorted } from "./lib/py.ts";
@@ -82,6 +82,7 @@ export async function cmdSync(args: { name: string | null; ref: string | null })
   if (args.ref && !args.name && book.upstreams.length > 1) throw new Fail("name the upstream to sync to a ref: patchbook sync <name> <ref>");
   const targets = args.name ? [book.upstream(args.name)] : book.upstreams;
   const changes = readChanges(book, []);
+  for (const u of targets) recover(book, u);
   const path = join(book.dir, "last-sync.json");
   const reports = savedReports(path);
   const save = () => {
@@ -199,14 +200,20 @@ const journal = (book: Book, u: Upstream) => join(book.dir, `sync-${encodeURICom
 
 const spell = (pin: Pin) => `${pin.commit ?? ""} ${pin.tree ?? ""}`;
 
+type Journal = { from: string; to: string; added: string; vendor: string; copy: boolean };
+
 function begin(book: Book, u: Upstream, from: Pin, to: Required<Pin>): void {
   const j = journal(book, u);
   mkdirs(j);
   writeText(join(j, ".gitignore"), "*\n");
-  const added = u.kept(to.commit) ? "" : to.commit;
-  const vendor = u.vendor ? relative(book.root, u.vendor) : "";
-  const copy = u.vendor !== null && lexists(u.vendor);
-  writeText(join(j, "pin.tmp"), `${spell(from)}\n${spell(to)}\n${added}\n${vendor}\n${copy ? "copy" : "none"}\n`);
+  const record: Journal = {
+    from: spell(from),
+    to: spell(to),
+    added: u.kept(to.commit) ? "" : to.commit,
+    vendor: u.vendor ? relative(book.root, u.vendor) : "",
+    copy: u.vendor !== null && lexists(u.vendor),
+  };
+  writeText(join(j, "pin.tmp"), JSON.stringify(record));
   renameSync(join(j, "pin.tmp"), join(j, "pin"));
 }
 
@@ -234,16 +241,22 @@ function recover(book: Book, u: Upstream): void {
   const j = journal(book, u);
   const pin = join(j, "pin");
   if (exists(pin)) {
-    const [from, to, added, path, copy] = readText(pin).split("\n");
+    const { from, to, added, vendor: path, copy }: Journal = JSON.parse(readText(pin));
     const now = locked(u);
     const torn = now === null && lexists(join(j, "lock"));
     if (now === to) return drop(j);
     if (now !== from && !torn) {
+      if (now !== null) release(book, u, added);
+      const held = [
+        lexists(join(j, "old")) && "old/ holds the vendored copy as it was",
+        lexists(join(j, "before")) && "before/ holds the change files as they were",
+      ].filter(Boolean);
       throw new Fail(`${relative(book.root, j)} holds a sync of ${u.name} that stopped partway, but upstream.lock has changed since. `
-        + `Its old/ folder holds the vendored copy as it was, and before/ the change files: put back what you need, then delete it.`);
+        + (held.length ? `In it, ${held.join(", and ")}. Put back what you need, then delete the folder.` : "Delete the folder."));
     }
     const before = join(j, "before");
-    for (const rel of rglob(before, "")) {
+    const saved = lexists(before) ? readdirSync(before, { recursive: true, encoding: "utf8" }) : [];
+    for (const rel of saved) {
       if (!lstatSync(join(before, rel)).isDirectory()) putBack(join(book.dir, rel), readDisk(join(before, rel)));
     }
     if (torn) {
@@ -251,20 +264,29 @@ function recover(book: Book, u: Upstream): void {
       if (was.length) writeFileSync(join(book.dir, "upstream.lock"), was);
       else rmSync(join(book.dir, "upstream.lock"), { force: true });
     }
-    if (added) u.unkeep(added);
+    release(book, u, added);
     const vendor = path ? join(book.root, path) : null;
     const old = join(j, "old");
-    const newCopy = lexists(old) || copy === "none";
+    const newCopy = lexists(old) || !copy;
     if (newCopy) takeVendor(vendor, null);
-    if (vendor && lexists(old)) renameSync(old, vendor);
+    if (vendor && lexists(old)) {
+      mkdirs(dirname(vendor));
+      renameSync(old, vendor);
+    }
   }
   drop(j);
 }
 
+function release(book: Book, u: Upstream, added: string): void {
+  if (added && !book.upstreams.some((o) => o.pin().commit === added)) u.unkeep(added);
+}
+
 function putBack(p: string, was: File): void {
   if (lexists(p) && sameFile(readDisk(p), was)) return;
-  if (was.mode === LINK) writeDisk(p, was);
-  else writeFileSync(p, was.data);
+  if (was.mode === LINK) return writeDisk(p, was);
+  mkdirs(dirname(p));
+  if (isSymlink(p)) unlinkSync(p);
+  writeFileSync(p, was.data);
 }
 
 function drop(j: string): void {
