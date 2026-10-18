@@ -9892,6 +9892,9 @@ exec '${Bun.which("git")}' "$@"
     ["a_folder_in_the_patchbook_in_capitals", () => ".PATCHBOOK/vendor", "is inside .patchbook"],
     ["the_git_dir", () => ".git", "is inside .git"],
     ["a_folder_in_the_git_dir", () => "lib/.GIT/vendor", "is inside .git"],
+    ["a_name_hfs_reads_as_git", () => ".g\u200cit", "is inside .git"],
+    ["the_ntfs_short_name_of_git", () => "git~1", "is inside .git"],
+    ["a_name_ntfs_reads_as_git", () => ".git.", "is inside .git"],
   ];
 
   for (const [what, vendor, why] of unsafeVendors) {
@@ -9989,6 +9992,10 @@ exec '${Bun.which("git")}' "$@"
     ["a_git_dir_in_capitals", "lib", "lib/.GIT", (repo) => {
       mkdirSync(join(repo.path, "lib/.GIT"), { recursive: true });
       writeFileSync(join(repo.path, "lib/.GIT/HEAD"), "ref: refs/heads/main\n");
+    }],
+    ["a_git_dir_hfs_reads_as_git", "lib", "lib/.g\u200cit", (repo) => {
+      mkdirSync(join(repo.path, "lib/.g\u200cit"), { recursive: true });
+      writeFileSync(join(repo.path, "lib/.g\u200cit/HEAD"), "ref: refs/heads/main\n");
     }],
     ["a_linked_worktree", "wt", "wt/.git", (repo) => {
       sh(["git", "worktree", "add", "-q", "--detach", join(repo.path, "wt"), "HEAD"], { cwd: repo.path });

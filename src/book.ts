@@ -191,8 +191,8 @@ function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly str
   return rel;
 }
 
-/** git takes a folder named this, in any letter case, for its own. */
-const namesGit = (segment: string): boolean => segment.toLowerCase() === GIT;
+/** Whether one name, not a path, is a name git reads as `.git`. */
+const segmentNamesGit = (segment: string): boolean => hfsDotGit(segment) || ntfsDotGit(segment);
 
 /** Why a sync must never replace `vendor` (an absolute path), or null. Links above it are resolved, but not the last name: a sync moves or deletes a link there, never what it points to. */
 export function unsafeVendor(root: string, vendor: string): string | null {
@@ -200,10 +200,11 @@ export function unsafeVendor(root: string, vendor: string): string | null {
   if (rel === ".") return "is the repo root";
   if (under(rel, "..")) return "is outside the repo";
   if (under(rel.toLowerCase(), PB)) return `is inside ${PB}`;
-  if (rel.split("/").some(namesGit)) return `is inside ${GIT}`;
+  if (rel.split("/").some(segmentNamesGit)) return `is inside ${GIT}`;
   // resolve() keeps a link that leads nowhere as a plain name, so the copy would look like it stays in the repo.
-  for (let up = dirname(vendor); up !== dirname(up); up = dirname(up)) {
-    if (lexists(up) && !exists(up)) return `is under ${under(up, root) ? relative(root, up) : up}, which is a link to nothing`;
+  const repo = repoAsSpelled(resolve(root), dirname(vendor));
+  for (let up = dirname(vendor); up !== repo && up !== dirname(up); up = dirname(up)) {
+    if (lexists(up) && !exists(up)) return `is under ${repo === null ? up : relative(repo, up)}, which is a link to nothing`;
   }
   return null;
 }
@@ -225,7 +226,7 @@ function findGit(dir: string): Stop | null {
       return { kind: "unreadable", path: here };
     }
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    const hit = entries.find((e) => namesGit(e.name));
+    const hit = entries.find((e) => segmentNamesGit(e.name));
     if (hit) return { kind: "git", path: joinPath(here, hit.name) };
     for (const e of entries.reverse()) if (e.isDirectory()) todo.push(joinPath(here, e.name));
   }
