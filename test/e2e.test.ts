@@ -1080,6 +1080,7 @@ for (const flag of ["--skip-worktree", "--assume-unchanged"]) {
       const before = tree(fork.path);
       const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
       expect(out.stderr).toContain(SKILL_FILE);
+      expect(out.stderr).toContain("git update-index --no-skip-worktree");
       expect(out.stdout).not.toContain("your copy is in HEAD");
       expect(out.stdout).not.toContain("wrote");
       expect(fork.read(SKILL_FILE)).toBe(mine);

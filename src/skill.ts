@@ -269,7 +269,8 @@ export async function cmdSkill(): Promise<number> {
   const refusals = [
     uncommitted.length && "these skill files differ from the shipped copy and are not in a commit, "
       + `and installing would replace them:\n  ${uncommitted.join("\n  ")}\n`
-      + "Commit them first, then run this again."
+      + "Commit them first, then run this again. A file hidden with `--skip-worktree` or `--assume-unchanged` stays out of a commit"
+      + " until `git update-index --no-skip-worktree` or `--no-assume-unchanged` undoes it, or you move the file."
       + (book.layout.kind === "fork" ? " In a fork the hook records the commit." : ""),
     hidden.length && "these skill files differ from the shipped copy and git ignores them, "
       + `so no commit can keep them, and installing would replace them:\n  ${hidden.join("\n  ")}\n`
