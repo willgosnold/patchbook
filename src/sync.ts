@@ -25,7 +25,7 @@ export async function cmdCheck() {
     if (head !== pin.commit) {
       u.fetch(head);
       if (u.treeOf(head) !== pin.tree) {
-        const old = pin.tree ? u.mounted(u.files(pinned(u, pin))) : new Map<string, File>();
+        const old = pin.tree ? u.mounted(u.files(u.keep(pinned(u, pin)))) : new Map<string, File>();
         r.moved = true;
         r.files = upstreamDelta(old, u.mounted(u.files(head)));
       }
@@ -101,7 +101,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     return null;
   }
   const raw = u.files(commit);
-  const old = pin.tree ? u.mounted(u.files(pinned(u, pin))) : new Map<string, File>();
+  const old = pin.tree ? u.mounted(u.files(u.keep(pinned(u, pin)))) : new Map<string, File>();
   const fresh = u.mounted(raw);
   const report: Report = {
     from: pin.commit ?? null, to: commit, upstream: upstreamDelta(old, fresh), merged: [], conflicts: [], gone: [],
@@ -148,6 +148,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     }
   }
 
+  u.keep(commit);
   book.writeLock(u.name, commit, tree);
   process.stdout.write(`${u.name}: pinned ${commit.slice(0, 7)}. ${report.upstream.length} upstream files changed, `
     + `${report.merged.length} of ours merged cleanly, ${report.conflicts.length} conflicts, ${report.gone.length} gone.\n`);

@@ -19,7 +19,7 @@ A patchbook can follow any number of upstreams. Each has a name and a mount, the
 
 ## The upstream store
 
-A repo holds only what it changed. Each upstream lives once per user, in the store (`~/.local/share/patchbook/upstreams/`, or `$PATCHBOOK_HOME/upstreams/`), as a git repo with each pinned commit fetched. Every repo that follows the same upstream shares it. A fork's own upstream is the fork's history, so it needs no store.
+A repo holds only what it changed. Each upstream lives once per user, in the store (`~/.local/share/patchbook/upstreams/`, or `$PATCHBOOK_HOME/upstreams/`), as a git repo with each pinned commit fetched and referenced, so `git gc` keeps it. A commit that `check` only looks at gets no reference and gc prunes it. Every repo that follows the same upstream shares it. A fork's own upstream is the fork's history, so it needs no store.
 
 The store is data, not a cache: it is the only local copy of the unchanged upstream files. If it is lost, the tool fetches each pin again by commit. That fails only if upstream deleted the commit, which is the case for keeping a vendored copy: set `vendor = "<folder>"` on an upstream, and sync keeps a byte-for-byte copy in the repo, which the build checks against the pin.
 

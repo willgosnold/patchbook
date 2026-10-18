@@ -93,13 +93,18 @@ export class Upstream {
   fetch(ref: string): string {
     const depth = this.inRepo ? [] : ["--depth=1"];
     git(["fetch", "--quiet", ...depth, this.source(), ref], { cwd: this.gitDir() });
-    const commit = git(["rev-parse", "FETCH_HEAD^{commit}"], { cwd: this.gitDir() });
-    if (!this.inRepo) git(["update-ref", `refs/pins/${commit}`, commit], { cwd: this.gitDir() });
-    return commit;
+    return git(["rev-parse", "FETCH_HEAD^{commit}"], { cwd: this.gitDir() });
   }
 
   have(commit: string): void {
     if (spawn(["git", "cat-file", "-e", `${commit}^{commit}`], { cwd: this.gitDir() }).code !== 0) this.fetch(commit);
+  }
+
+  /** Pin a commit in the store with a ref, so gc keeps it. Only pins get one: a head that was just looked at stays prunable. */
+  keep(commit: string): string {
+    this.have(commit);
+    if (!this.inRepo) git(["update-ref", `refs/pins/${commit}`, commit], { cwd: this.gitDir() });
+    return commit;
   }
 
   treeOf(commit: string): string {
@@ -151,7 +156,7 @@ export class Upstream {
         );
       }
       files = found.files;
-    } else files = this.files(pinned(this, pin));
+    } else files = this.files(this.keep(pinned(this, pin)));
     return this.mounted(files);
   }
 }
@@ -215,7 +220,7 @@ export async function cmdUpstream(args: { name: string; path: string | null; dif
   const u = book.upstream(args.name);
   const pin = u.pin();
   if (!pin.tree) throw new Fail(`upstream ${u.name} has no pin yet. Run: patchbook sync ${u.name}`);
-  const commit = pinned(u, pin);
+  const commit = u.keep(pinned(u, pin));
   if (args.diff || args.since) {
     const last = join(book.dir, "last-sync.json");
     const from = exists(last) ? get(get(get(loads(readText(last)), "upstreams") ?? new Map(), u.name) ?? new Map(), "from") : undefined;
