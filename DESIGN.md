@@ -147,6 +147,77 @@ Patchbook does not check for links inside `.patchbook/`. A link in `blocks/` is 
 - A pre-commit hook does `record` and `build` on each commit, and stages what they change, so the usual loop is: edit, stage, commit. It records what is staged, not the working tree, so unstaged changes and untracked files stay out of the commit, and `git commit <path>` records only that path. The build reads the patchbook on disk, so the commit stops if a patchbook file it reads (`blocks/`, `changes/`, `series`, `build.lock`, `config.toml`, `upstream.lock`, `hooks.ts`, or a `[placeholders.<kind>] file` outside the output) has changes that aren't in the commit. It stops too on a placeholder file in the output whose unstaged changes the last build didn't write. A staged output file is the build's when it matches its entry in HEAD's `build.lock` or the index's, and a hand edit otherwise. A staged file that matches neither, while its working copy matches the last build and the commit changes the patchbook, may be an older build's output, so the hook stops. Its message gives a `git add` that commits the last build and a `git checkout` that records the staged copy. The hook writes the build to disk wherever the disk differs, except over unstaged work that matches neither the index nor the last build: it leaves that alone, and stops if the build would stage that file. It also stops on a file removed from the index but kept on disk, as `git rm --cached` does. Output that git ignores goes to disk but not into the commit, as with `build --commit`. The patchbook can't record a file edit's executable bit, so a mode you stage is committed as staged, and the build's mode goes only to disk. Under `core.fileMode=false` the hook ignores the executable bit, as git does. The hook is a short script that runs `patchbook hook run` from `PATH`, so upgrading patchbook upgrades the hook. If `patchbook` isn't on `PATH`, it says so and lets the commit through. While git runs hooks from `.git/hooks`, `clone`, `init`, `record`, `build`, `sync` and `track` install it in the repo if it's missing, so a fresh clone gets it on first use. They skip a patchbook that sits in another git repo than the one you're in. If the file is patchbook's own and isn't executable, they make it executable again; another tool's file they leave alone, and `hook install` says git ignores it. `clone` says the hook records only when it does, and otherwise names the setting that turned it off. `status`, `check`, `show`, `upstream` and `config` never write a hook, and nothing installs one while `hook.enabled` is off. `patchbook hook install` installs it by hand. A hook manager moves the hook git runs. Vite+ and husky set `core.hooksPath` to their own folder, and lefthook and the pre-commit framework put their dispatcher in `.git/hooks`. So `clone`, `init` and `hook install` find the hook git will run. In a Vite+ (`.vite-hooks/pre-commit`) or husky (`.husky/pre-commit`) script, they put lines first that call `patchbook hook run`, and in a fork record that edit as the change `patchbook-hook`. For lefthook, the pre-commit framework and any other hook, they print the lines to add. For lefthook they print them in the format of its config file (`lefthook.yml`, `.yaml`, `.toml`, `.json` or `.jsonc`, also under a leading dot or in `.config/`), and for the pre-commit framework as an entry. Where the config already has the `pre-commit` or `repos` key, they print only what goes under it, and say where; in lefthook's YAML and JSON they go one level deeper if `commands` is there too. The lefthook command and the pre-commit entry run the same guarded lines as a script, through `sh`. They never edit a config file, and never write into the `_` dispatcher folder that Vite+ and husky point git at, or into another tool's hooks folder. They don't write through a symlink either; a script reached through a link gets the lines printed. What patchbook adds to a manager stops the commit when `patchbook` isn't on `PATH`, because a commit that skips recording leaves the output and `build.lock` out of step. That holds for the lines in a script, the lefthook command and the pre-commit entry alike. They say how to install patchbook and how to skip the hook once, and `PATCHBOOK_HOOK=0` skips under every manager. They do nothing in a repo without a patchbook, so they are safe in a hooks folder every repo shares. When it puts the lines in a script, patchbook inserts them as bytes, so the rest of the file is as it was, including bytes that aren't UTF-8. `patchbook hook install` stops with an error in a git repo that sits inside another repo's patchbook, because it would install the other repo's hook. `patchbook status` warns on stderr when git runs no hook, or the hook it runs doesn't call patchbook. A manager that hasn't installed its hook in this checkout, as in a new git worktree before `npm install`, leaves git running nothing, and the warning names the manager's install command (`npx husky`, `vp config`). `patchbook hook status` prints the same facts on stdout: whether `hook.enabled` is on and where that setting came from, the file git runs, and whether it calls patchbook. It never writes. A failed hook run puts the patchbook and the output back as it found them, so the retry records from scratch; the hook stops before it writes anything if `blocks`, `changes`, `series` or `build.lock` in the patchbook is a link, or a link sits in `blocks/` or `changes/` other than a recorded symlink (a `.pb` copy in a change's `base` or `ours` that links to a file, which the record replaces). A linked `config.toml` or `upstream.lock` is fine once the link is staged or committed, since the hook never writes them. If the patchbook has problems, it records but doesn't build, and says so. Three things are the exception. They are a change whose output lands in `.patchbook` or at a part git reads as `.git`, an edit path that isn't a clean path inside the tree, and a change name outside `[a-z0-9][a-z0-9-]*`. The hook refuses the commit before it records, builds or stages anything, and names the problem. It does the same for a new file you add by hand in the output at a path that lands in `.patchbook` in another letter case, or at a part git reads as `.git`, such as `.PATCHBOOK/x.md` on a case-sensitive filesystem or `a/.GIT/y`. The book's own `.patchbook/` folder is the book, not output, and commits normally. Any other problem that `status` reports, a destination in a vendored copy included, only skips the build with a warning. The build's own safety checks still stop a commit. A change whose file really goes outside the output through a link makes the hook fail and leaves everything as it was, while `status` reports no problems. `PATCHBOOK_HOOK=0 git commit` skips it once, and `PATCHBOOK_INTENT="..."` gives the intent instead of the model.
 - Intents are written by Claude Haiku 5.5 at medium effort through the `claude` CLI, or GPT-6-Luna at high effort through `codex`: Claude if it's installed, unless the settings choose.
 
+## JSON output
+
+The update skill and other agents read three JSON documents: what `patchbook check` prints, what `patchbook status --json` prints, and `.patchbook/last-sync.json`, which `patchbook sync` writes. `CheckJson`, `StatusJson` and `LastSync` in `src/api.ts` are their types, and the code that writes each document is typed against them. With patchbook installed from npm, `import type { CheckJson } from "patchbook"` gets the same types.
+
+**Versions.** Each document has its own integer `version`, the first key. All three are 1. A version goes up when a field is removed or renamed, changes type, or means something else. A new field leaves it alone, so a reader ignores keys it doesn't know. A `last-sync.json` with no `version` was written before the field existed. It has the version 1 shape, and patchbook reads it as it reads a new one. `status --json` shows `last_sync` as the file has it, so for an older file `last_sync` has no `version` either.
+
+In the tables, `<name>` is an upstream's name.
+
+### `patchbook check`
+
+Printed on stdout. Exit 0 if no upstream moved, 10 if any did.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `version` | `1` | |
+| `moved` | boolean | Any upstream moved. |
+| `upstreams.<name>.pinned` | string or null | The pinned commit, null before the first sync. |
+| `upstreams.<name>.head` | string | The commit at the head of the upstream's branch. |
+| `upstreams.<name>.moved` | boolean | The head's files differ from the pin's. A new commit with the same files is not a move. |
+| `upstreams.<name>.files` | string list | Empty unless `moved`. Otherwise `added <path>`, `changed <path>` or `deleted <path>` for each file that differs, sorted by path. Paths include the upstream's mount. Files the build leaves out aren't listed. |
+
+### `patchbook status --json`
+
+Printed on stdout. Exit 0 if `problems` is empty, 1 if not.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `version` | `1` | |
+| `upstreams.<name>.commit` | string | The pinned commit, from `upstream.lock` as the file has it. |
+| `upstreams.<name>.tree` | string | The pinned commit's tree hash. |
+| `applied` | integer | The number of edits that apply at the pins. |
+| `problems` | list | The problems, as below. |
+| `last_sync` | object or null | `last-sync.json` as the file has it, or null if there is none. |
+
+A problem always has `problem`, its kind, first. The other fields depend on the kind. A location is one of these sets of fields:
+
+| Location | Fields | Meaning |
+| --- | --- | --- |
+| file | `file` | A path in the patchbook, in upstream or in the output. |
+| edit | `file`, `edit` | `file` is `changes/<change>` and `edit` is the edit as `CHANGE.md` writes it. |
+| change | `file`, `change` | `file` is a path in upstream that the named change edits. |
+| output | `file`, `output` | `file` is the upstream path, or `changes/<change>` for a file the change adds. `output` is where it lands in the output folder. |
+| block | `file`, `output`, `line`, `hash` | A paragraph of the upstream file `file`, from its 1-based `line`, with its `hash`. |
+
+| `problem` | Fields after `problem` | Meaning |
+| --- | --- | --- |
+| `invalid` | any location, `detail` | Something in the patchbook is malformed, or an edit can't apply. |
+| `gone` | edit or change, `detail` | The file an edit names isn't in upstream. |
+| `stale` | change, `detail` | The change's base differs from upstream at the pin. Run `sync`. |
+| `conflict` | file or change, `detail` | Conflict markers in our copy, or in the output. |
+| `placeholder` | output or block, `detail` | A `{{kind:name}}` that neither the `placeholder` hook nor the placeholder source gives a value. |
+| `leak` | output with `line`, or block, then `terms` | Text that a `[[check]]` pattern or `blockTerms` flags is still in the output. Without `hash`, `line` is the 1-based line in the output where the paragraph starts. `terms` is a string list. |
+| `missing` | block, `terms`, `upstream` | A paragraph that needs an entry. `upstream` is its text. |
+| `orphan` | `file`, `hash`, `kind`, `rules`, `intent`, `upstream`, `patched`, `nearest` | An entry whose paragraph changed upstream. `kind` is `translation`, `policy` or `keep`. `nearest` is a list of `{line, hash, similarity}`, where `similarity` is a number from 0.4 to 1. |
+| `check` | file, `detail` | A problem the repo's `check` hook reports. A hook may return any kind. |
+
+### `.patchbook/last-sync.json`
+
+Written by `patchbook sync`, whole, each time at least one upstream moved. A sync of one upstream replaces the file with that upstream's report alone. An upstream whose files match its pin has no report.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `version` | `1` | |
+| `upstreams.<name>.from` | string or null | The commit pinned before the sync, null before the first. |
+| `upstreams.<name>.to` | string | The commit pinned now. |
+| `upstreams.<name>.upstream` | string list | The files upstream changed, as `files` in `check`. |
+| `upstreams.<name>.merged` | list | `{change, path}` for each file edit that merged without conflict. |
+| `upstreams.<name>.conflicts` | list | `{change, path, count}` for a text file with `count` conflicts in our copy, or `{change, path, detail}` for a binary file. |
+| `upstreams.<name>.gone` | list | `{change, path, maybe}` for a file edit whose file upstream no longer has. `maybe` is up to three added paths with similar names, most similar first. |
+| `upstreams.<name>.replaced_upstream_changed` | string list | `<change>: <path>` for each `replace` edit whose file changed upstream. |
+
 ## Settings
 
 Each setting can be set in three places, and the most specific wins: an env var, for one command; the project's `.patchbook/config.toml`, shared with everyone who works on the repo; and the user's `~/.config/patchbook/config.toml`. `patchbook config` lists every setting, its value, and where the value came from. `patchbook config <name> <value>` sets one in the user config, `--project` sets it in the project's, and `--unset` removes it.
