@@ -291,7 +291,7 @@ function stuck(book: Book, u: Upstream, why: string): Fail {
 }
 
 function release(book: Book, u: Upstream, added: string): void {
-  if (added && !book.upstreams.some((o) => o.remote === u.remote && o.pin().commit === added)) u.unkeep(added);
+  if (added && !book.upstreams.some((o) => !o.inRepo && o.remote === u.remote && o.pin().commit === added)) u.unkeep(added);
 }
 
 function putBack(p: string, was: File): void {
@@ -304,8 +304,7 @@ function putBack(p: string, was: File): void {
 }
 
 function drop(j: string): void {
-  rmSync(join(j, "lock"), { force: true });
   rmSync(join(j, "pin"), { force: true });
-  for (const payload of ["pin.tmp", "next", "old", "before"]) rmSync(join(j, payload), { recursive: true, force: true });
+  for (const payload of ["lock", "pin.tmp", "next", "old", "before"]) rmSync(join(j, payload), { recursive: true, force: true });
   rmSync(j, { recursive: true, force: true });
 }
