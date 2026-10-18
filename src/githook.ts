@@ -542,15 +542,17 @@ function refuseOtherRepo(book: Book): void {
     + `Run \`patchbook hook install\` in ${book.root}, or start a patchbook here with \`patchbook init\`.`);
 }
 
-/** Stage each vendored copy that the index holds something else for, once the copy on disk hashes to the pin. */
+/** Put the pinned copy into the index for each vendor folder where the index holds anything else. Never reads the working tree. */
 function stageVendors(book: Book): void {
+  // `git commit -- <paths>` runs the hook on a temporary index that becomes the commit, and that commit takes only what the user named.
+  if (!["index", "index.lock"].includes(basename(process.env["GIT_INDEX_FILE"] ?? "index"))) return;
   for (const u of book.upstreams) {
     const tree = u.pin().tree;
     if (!u.vendor || !tree) continue;
     const rel = relative(book.root, u.vendor);
     if (stagedTree(book.root, rel) === tree) continue;
-    u.vendoredCopy(u.vendor, tree);
-    git(["add", "-A", "--", rel], { cwd: book.root });
+    git(["--literal-pathspecs", "rm", "-rqf", "--cached", "--ignore-unmatch", "--", rel], { cwd: book.root });
+    git(["read-tree", `--prefix=${rel}/`, tree], { cwd: book.root });
   }
 }
 
