@@ -26,7 +26,7 @@ export function spawn(args: readonly string[], { cwd, input, env, capture = true
 const WEB_SCHEMES = /^(https?|ftps?)$/i;
 
 export function redact(text: string): string {
-  return text.replace(/\b([a-z][a-z0-9+.-]*):\/\/([^\s/@]*)@/gi, (_, scheme: string, userinfo: string) =>
+  return text.replace(/\b([a-z][a-z0-9+.-]*):\/\/([^\s/]*)@/gi, (_, scheme: string, userinfo: string) =>
     WEB_SCHEMES.test(scheme) ? `${scheme}://` : `${scheme}://${userinfo.split(":")[0]}@`);
 }
 

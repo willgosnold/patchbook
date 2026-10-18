@@ -11,10 +11,10 @@ import { cmdShow } from "./changes.ts";
 import { cmdHook, installHook, installHookOrWarn } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, lexists, readText, resolve, writeText } from "./lib/fs.ts";
-import { git } from "./lib/proc.ts";
+import { git, redact } from "./lib/proc.ts";
 import { rstrip, split, strRepr } from "./lib/py.ts";
 import { cmdRecord } from "./record.ts";
-import { notAnOption, requireSameRepo, resolveFromCwd } from "./remote.ts";
+import { checkedRemoteUrl, notAnOption, notThisRepo, resolveFromCwd } from "./remote.ts";
 import { cmdConfig } from "./settings.ts";
 import { installSkill, SCHEDULE } from "./skill.ts";
 import { absoluteRemote, defaultName, cmdUpstream } from "./store.ts";
@@ -59,7 +59,7 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   const inherited = lexists(join(dest, PB));
   if (inherited) rmSync(join(dest, PB), { recursive: true, force: true });
   const name = defaultName(args.url, "");
-  const text = configText("fork", upstreamToml(name, args.url, "", branch, ""));
+  const text = configText("fork", upstreamToml(name, redact(args.url), "", branch, ""));
   await Book.fromText(dest, text);
   writeConfig(dest, text);
   const book = await Book.open(dest);
@@ -75,7 +75,7 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   }
   git(["add", "-A"], { cwd: dest });
   git(["commit", "--quiet", "-m", `Start a patchbook at upstream ${commit.slice(0, 7)}`], { cwd: dest, env: noHook() });
-  process.stdout.write(`cloned ${args.url} into ${dest}, pinned at ${commit.slice(0, 7)}.\n`
+  process.stdout.write(`cloned ${redact(args.url)} into ${dest}, pinned at ${commit.slice(0, 7)}.\n`
     + (inherited ? `Upstream has a ${PB}/ of its own. It is not part of this fork, so patchbook removed it and builds leave it out.\n` : "")
     + "Make your changes and commit: the hook records them in the patchbook and rebuilds.\n"
     + `${SCHEDULE}\n`
@@ -91,6 +91,7 @@ async function cmdInit(args: {
   const given = notAnOption(args.upstream);
   const name = args.name || defaultName(given, args.path);
   const upstream = resolveFromCwd(root, given);
+  notThisRepo(root, upstream);
   if (args.outputTo !== null) {
     const text = configText("folder", upstreamToml(name, upstream, args.path, args.branch, "", args.vendor), [args.outputFrom, args.outputTo]);
     const book = await Book.fromText(root, text);
@@ -102,10 +103,10 @@ async function cmdInit(args: {
     process.stdout.write(`Next: patchbook build, then commit.\n${SCHEDULE}\n`);
     return 0;
   }
-  const text = configText("fork", upstreamToml(name, upstream, args.path, args.branch, ""));
-  const book = await Book.fromText(root, text);
   const hasRemote = split(git(["remote"], { cwd: root })).includes("upstream");
-  if (hasRemote) requireSameRepo(root, upstream, args.branch);
+  const follows = redact(hasRemote ? checkedRemoteUrl(root, upstream, args.branch) : upstream);
+  const text = configText("fork", upstreamToml(name, follows, args.path, args.branch, ""));
+  const book = await Book.fromText(root, text);
   git(["fetch", "--quiet", "--end-of-options", hasRemote ? "upstream" : upstream, args.branch], { cwd: root });
   const base = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: root });
   book.writeLock(name, base, book.upstreams[0]!.treeOf(base));
@@ -113,7 +114,7 @@ async function cmdInit(args: {
   installSkill(book);
   writeConfig(root, text);
   installHookOrWarn(root);
-  process.stdout.write(`pinned upstream at ${base.slice(0, 7)}, where this repo branched from it.\n`
+  process.stdout.write(`pinned upstream at ${base.slice(0, 7)}, where this repo branched from ${follows}.\n`
     + "Capture your existing changes with `patchbook record`, then `patchbook build`, and commit.\n" + SCHEDULE + "\n");
   return 0;
 }
