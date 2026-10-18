@@ -172,11 +172,12 @@ This repo ships a `patchbook-update` skill, built into the `patchbook` binary. `
 2. Works on the branch of the worktree T3 made for the thread, rebased onto `origin/main`. Runs `patchbook sync` and commits the sync on its own.
 3. Resolves each problem from the change's intent and the repo's guide (`guide` in the config). One commit per change.
 4. Builds, then runs the config's `test`, which is a command or an instruction file for the agent.
-5. Starts a review in a fresh subagent on the same model. The reviewer gets each intent, the upstream change, and our result, and says per change whether the result meets the intent. At most two rounds.
-6. Pushes its branch to `main`, runs the config's `deploy`, removes its worktree, and settles the thread with a short summary.
+5. Starts a review in a fresh subagent, on another provider's model when T3 can run one, otherwise on the same model. The reviewer gets each intent, the upstream change, and our result, and says per change whether the result meets the intent. At most two rounds.
+6. If the sync was clean and it made no repair, retirement or fix, or the test command exits 0, pushes its branch to `main`, runs the config's `deploy`, removes its worktree, and settles the thread with a short summary.
 
 It stops and asks instead of merging when:
 
+- the sync wasn't clean or it made a repair, retirement or fix, and no test command passes;
 - upstream removed or reworked something an intent depends on;
 - meeting an intent needs a choice the intents and the guide don't settle;
 - the review rejects a change twice;

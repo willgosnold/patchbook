@@ -53,7 +53,7 @@ A pre-commit hook moves your edits into the patchbook, rebuilds, and adds both t
 
 The intent matters most. It's how an agent redoes your change later, if upstream rewrites the code underneath it.
 
-**3. Keep up with upstream.** Add a daily T3 scheduled task in the repo with the prompt "Use the patchbook-update skill." Most days nothing has changed and the run tidies up after itself. When upstream moves, it pulls the new version, redoes any change that broke from its intent, tests, reviews its own work, then merges and deploys. It only comes to you when it can't decide.
+**3. Keep up with upstream.** Add a daily T3 scheduled task in the repo with the prompt "Use the patchbook-update skill." Most days nothing has changed and the run tidies up after itself. When upstream moves, it pulls the new version, redoes any change that broke from its intent, tests, and has a second agent review the work. It merges and deploys on its own only when every change carried over cleanly or your test command passes. Otherwise it opens a pull request and asks you.
 
 To update by hand instead:
 
