@@ -761,6 +761,7 @@ describe("ForkTest", () => {
     for (const remote of ["up", "./up", "../up", "sub/dir:up"]) {
       expect(status(remote, 1).stderr).toContain(`remote "${remote}" is a relative path`);
     }
+    expect(status("", 1).stderr).toContain("an [[upstream]] needs a remote");
   });
 
   forkTest("test_a_shallow_clone_of_the_fork_fetches_only_the_pin", (t) => {
