@@ -186,11 +186,13 @@ function listed<N extends Name>(name: N, book: Book | null): [string, Source] {
 export async function cmdConfig(args: { name: string | null; value: string | null; project: boolean; unset: boolean }) {
   let book: Book | null = null;
   let broken: Fail | null = null;
-  try {
-    book = await Book.find();
-  } catch (e) {
-    if (!(e instanceof Fail)) throw e;
-    if (!(e instanceof NoBook)) broken = e;
+  if (args.project || !(args.unset || args.value !== null)) {
+    try {
+      book = await Book.find();
+    } catch (e) {
+      if (!(e instanceof Fail)) throw e;
+      if (!(e instanceof NoBook)) broken = e;
+    }
   }
   const name = args.name || null;
   if (name !== null && !isName(name)) throw new Fail(`no setting ${name}. Settings: ${NAMES.join(", ")}`);
