@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 
 type Env = Record<string, string>;
 
-const TOOL = resolve(import.meta.dir, "..", "src", "cli.ts");
+export const TOOL = resolve(import.meta.dir, "..", "src", "cli.ts");
 
 export function shlexSplit(line: string): string[] {
   const out: string[] = [];

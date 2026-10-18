@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { accessSync, appendFileSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import { CMD, Case, Repo, type Run, dedent, lstrip, mkdirNew, partitionHead, replace, sh, shlexSplit, words } from "./helpers";
+import { CMD, Case, Repo, TOOL, type Run, dedent, lstrip, mkdirNew, partitionHead, replace, sh, shlexSplit, words } from "./helpers";
 
 const TIMEOUT = 120_000;
 
@@ -7211,7 +7211,7 @@ exec '${Bun.which("git")}' "$@"
     expect(t.pb(["sync", name], { cwd: t.repo.path, code: null }).code).not.toBe(0);
     t.env["PATH"] = path;
   };
-  const pinRefs = (t: VendorCase, commit: string): number => readdirSync(join(t.tmp, "store/upstreams"))
+  const pinRefs = (t: Case, commit: string): number => readdirSync(join(t.tmp, "store/upstreams"))
     .map((d) => join(t.tmp, "store/upstreams", d))
     .filter((s) => inStore(s, commit) && sh(["git", "rev-parse", "--verify", "--quiet", `refs/pins/${commit}`], { cwd: s, check: false }).code === 0)
     .length;
@@ -7454,6 +7454,40 @@ exec '${Bun.which("git")}' "$@"
     t.pb(["sync", "other"], { cwd: t.repo.path });
     t.pb(["sync", "extra", "refs/heads/nope"], { cwd: t.repo.path, code: 1 });
     expect(pinRefs(t, head)).toBe(1);
+  });
+
+  forkTest("test_a_failed_sync_drops_its_ref_though_the_forks_own_upstream_on_that_remote_pins_the_commit", (t) => {
+    t.pb(["track", "mirror", t.up.path, "--vendor", "vendor/mirror"], { cwd: t.fork.path });
+    t.fork.commit("track mirror");
+    t.up.write("c.log", "hidden\n");
+    const head = t.up.commit("v2");
+    t.pb(["sync", "upstream"], { cwd: t.fork.path });
+    t.fork.commit("sync");
+    t.fork.write(".gitignore", "*.log\n");
+    expect(t.pb(["sync", "mirror"], { cwd: t.fork.path, code: 1 }).stderr).toContain("the vendored copy of mirror hashes to");
+    expect(pinRefs(t, head)).toBe(0);
+  });
+
+  describe.skipIf(!!process.env["PATCHBOOK_CMD"])("killed by a preload, so only from source", () => {
+    for (const file of ["pin", "lock"]) {
+      vendorTest(`test_a_sync_killed_before_it_deletes_its_journal_${file}_keeps_its_ref_once_an_older_commit_is_checked_out`, (t) => {
+        const extra = extraWithAChange(t, true);
+        extra.commit("v2");
+        t.repo.commit("follow extra");
+        t.pb(["sync", "extra"], { cwd: t.repo.path });
+        t.repo.commit("sync extra");
+        extra.write("b.md", "b\n");
+        const head = extra.commit("v3");
+        const env = { ...t.env, CRASH_BEFORE_RM: `/.patchbook/sync-extra/${file}` };
+        sh([process.execPath, "--preload", join(import.meta.dir, "crash.ts"), TOOL, "sync", "extra"], { cwd: t.repo.path, env, check: false });
+        expect(t.repo.read(".patchbook/upstream.lock")).toContain(head);
+        expect(existsSync(join(t.repo.path, ".patchbook/sync-extra", file))).toBe(true);
+        t.repo.commit("sync extra to v3");
+        sh(["git", "checkout", "-q", "HEAD~2"], { cwd: t.repo.path });
+        t.pb(["sync", "extra"], { cwd: t.repo.path, code: null });
+        expect(pinRefs(t, head)).toBe(1);
+      });
+    }
   });
 
   vendorTest("test_a_plain_sync_puts_back_a_torn_lock_before_it_recovers_an_earlier_upstream", (t) => {
