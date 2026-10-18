@@ -7436,6 +7436,27 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(synced.stderr).toContain("Does a .gitignore hide upstream files?");
     expect(tree(t.fork.path)).toEqual(before);
   });
+
+  const trackHidden = (t: ForkCase): void => {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "one\n");
+    extra.write("debug.log", "noise\n");
+    extra.commit("start");
+    t.fork.write(".gitignore", "deep/vendor/extra/*.log\n");
+    const tracked = t.pb(["track", "extra", extra.path, "--vendor", "deep/vendor/extra"], { cwd: t.fork.path, code: 1 });
+    expect(tracked.stderr).toContain("the vendored copy of extra hashes to");
+  };
+
+  forkTest("test_sync_leaves_no_vendor_folder_behind_when_the_first_copy_does_not_verify", (t) => {
+    trackHidden(t);
+    expect(existsSync(join(t.fork.path, "deep"))).toBe(false);
+  });
+
+  forkTest("test_a_first_copy_that_does_not_verify_leaves_the_folders_that_were_there", (t) => {
+    t.fork.write("deep/notes.txt", "mine\n");
+    trackHidden(t);
+    expect(readdirSync(join(t.fork.path, "deep"))).toEqual(["notes.txt"]);
+  });
 });
 
 describe("VendorTest", () => {
