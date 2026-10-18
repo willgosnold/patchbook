@@ -2517,17 +2517,69 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
   forkTest("test_config_refuses_an_edit_it_cannot_make_safely", (t) => {
     const user = join(t.tmp, "config/patchbook/config.toml");
     mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    for (const [before, model] of [
-      ["[intent]\nmodel = 'old'\n", "first\r\nsecond"],
-      ['[__proto__]\nkeep = "this"\n\n[intent]\nmodel = "old"\n', "new"],
-      ['[other]\nwhen = 2016-12-31T23:59:60Z\n\n[intent]\nmodel = "old"\n', "new"],
+    for (const [before, model, cause] of [
+      ["[intent]\nmodel = 'old'\n", "first\r\nsecond", 'turn intent.model into "first\\nsecond", not "first\\r\\nsecond"'],
+      ['[__proto__]\nkeep = "this"\n\n[intent]\nmodel = "old"\n', "new", "drop __proto__"],
+      ['[other]\nwhen = 2016-12-31T23:59:60Z\n\n[intent]\nmodel = "old"\n', "new", "the TOML library failed on it (RangeError: "],
     ]) {
       writeFileSync(user, before!);
       const out = t.pb(["config", "intent.model", model!], { cwd: t.fork.path, code: 1 });
-      expect(out.stderr).toContain(`can't change intent.model in ${user} safely, so the file is left as it was`);
+      expect(out.stderr).toContain(`can't change intent.model in ${user} safely: `);
+      expect(out.stderr).toContain(cause!);
+      expect(out.stderr).toContain("The file is left as it was.");
       expect(out.stderr).not.toContain("    at ");
       expect(read(user)).toBe(before!);
     }
+  });
+
+  forkTest("test_config_unset_keeps_the_comments_above_the_key", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    const unset = (before: string, name: string, after: string) => {
+      writeFileSync(user, before);
+      t.config(["--unset", name]);
+      expect(read(user)).toBe(after);
+    };
+    unset(
+      '[start]\n# agents I install for\nagents = ["claude-code"] # for now\nby_host = []\n',
+      "start.agents",
+      "[start]\n# agents I install for\nby_host = []\n",
+    );
+    unset(
+      '# agents I install for\nstart.agents = [\n  "claude-code",\n]\n[intent]\nmodel = "x"\n',
+      "start.agents",
+      '# agents I install for\n[intent]\nmodel = "x"\n',
+    );
+    unset(
+      '# the hook\nhook = { enabled = true }\n',
+      "hook.enabled",
+      '# the hook\nhook = {}\n',
+    );
+  });
+
+  forkTest("test_config_keeps_the_line_endings_of_a_crlf_file", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    const before = '# my settings\r\n[start]\r\n# agents\r\nagents = ["claude-code"]\r\nby_host = []\r\n';
+    writeFileSync(user, before);
+    t.config(["start.agents", "codex"]);
+    expect(read(user)).toBe(replace(before, '["claude-code"]', '["codex"]'));
+    t.config(["--unset", "start.agents"]);
+    expect(read(user)).toBe("# my settings\r\n[start]\r\n# agents\r\nby_host = []\r\n");
+    t.config(["intent.model", "x"]);
+    expect(read(user)).not.toMatch(/[^\r]\n/);
+  });
+
+  forkTest("test_config_says_when_an_integer_is_too_big_for_bun_to_read", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    const before = "[other]\nbig = 9007199254740993\n";
+    writeFileSync(user, before);
+    const out = t.pb(["config", "intent.model", "x"], { cwd: t.fork.path, code: 1 });
+    expect(out.stderr).toContain(`can't change intent.model in ${user}`);
+    expect(out.stderr).toContain("Bun can't represent");
+    expect(out.stderr).not.toContain("isn't valid TOML");
+    expect(read(user)).toBe(before);
   });
 
   forkTest("test_config_starts_a_user_config_that_does_not_exist", (t) => {
