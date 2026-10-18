@@ -100,10 +100,25 @@ export class Upstream {
     if (spawn(["git", "cat-file", "-e", `${commit}^{commit}`], { cwd: this.gitDir() }).code !== 0) this.fetch(commit);
   }
 
-  /** Pin a commit in the store with a ref, so gc keeps it. Only pins get one: a head that was just looked at stays prunable. */
+  /** Pin a commit in the store with a ref, so gc keeps it. Only pins get one: a head that was just looked at stays prunable. A ref already there is not written again. */
   keep(commit: string): string {
     this.have(commit);
-    if (!this.inRepo) git(["update-ref", `refs/pins/${commit}`, commit], { cwd: this.gitDir() });
+    if (this.inRepo) return commit;
+    const ref = `refs/pins/${commit}`;
+    const held = spawn(["git", "rev-parse", "--verify", "--quiet", ref], { cwd: this.gitDir() });
+    if (decode(held.stdout).trim() !== commit) git(["update-ref", ref, commit], { cwd: this.gitDir() });
+    return commit;
+  }
+
+  /** `keep` for a pin that is read: a store that cannot take the ref still serves the read, with a warning. */
+  heal(commit: string): string {
+    this.have(commit);
+    try {
+      this.keep(commit);
+    } catch (e) {
+      if (!(e instanceof Fail)) throw e;
+      process.stderr.write(`patchbook: couldn't keep ${commit.slice(0, 7)} in the store, so git gc may prune it. ${e.message}\n`);
+    }
     return commit;
   }
 
@@ -156,7 +171,7 @@ export class Upstream {
         );
       }
       files = found.files;
-    } else files = this.files(this.keep(pinned(this, pin)));
+    } else files = this.files(this.heal(pinned(this, pin)));
     return this.mounted(files);
   }
 }
@@ -220,14 +235,14 @@ export async function cmdUpstream(args: { name: string; path: string | null; dif
   const u = book.upstream(args.name);
   const pin = u.pin();
   if (!pin.tree) throw new Fail(`upstream ${u.name} has no pin yet. Run: patchbook sync ${u.name}`);
-  const commit = u.keep(pinned(u, pin));
+  const commit = u.heal(pinned(u, pin));
   if (args.diff || args.since) {
     const last = join(book.dir, "last-sync.json");
     const from = exists(last) ? get(get(get(loads(readText(last)), "upstreams") ?? new Map(), u.name) ?? new Map(), "from") : undefined;
     const old = args.since || (typeof from === "string" ? from : "");
     if (!old) throw new Fail(`no earlier pin of ${u.name} to compare with; pass --since <commit>`);
-    u.have(old);
-    u.have(commit);
+    if (args.since) u.have(old);
+    else u.heal(old);
     const where = [u.path, args.path].filter((p) => p).join("/");
     const rel = u.path ? [`--relative=${u.path}/`] : [];
     const diff = run(["git", "diff", "--no-color", ...rel, old, commit, "--", ...(where ? [where] : [])], { cwd: u.gitDir() });
