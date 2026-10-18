@@ -359,6 +359,7 @@ describe("ForkTest", () => {
     writeFileSync(config, replace(read(config), 'mount = ""', 'mount = ""\nvendor = "vendor"'));
     const status = t.pb(["status"], { cwd: t.fork.path, code: 1 });
     expect(status.stderr).toContain("the vendored copy of upstream (vendor) overlaps the folder upstream builds into (the repo root)");
+    expect(status.stderr).toContain("Change vendor for upstream.");
   });
 
   forkTest("test_a_vendor_folder_over_another_upstreams_mount_is_rejected", (t) => {
@@ -399,13 +400,33 @@ describe("ForkTest", () => {
     t.pb(["build"], { cwd: t.fork.path });
   });
 
+  forkTest("test_a_failed_command_still_says_which_files_it_left_out", (t) => {
+    const lib = new Repo(join(t.tmp, "lib"));
+    lib.write("a.txt", "a\n");
+    lib.write("vendored/z.txt", "z\n");
+    lib.commit("lib");
+    const bup = new Repo(join(t.tmp, "bup"));
+    bup.write("b.txt", "b\n");
+    bup.commit("bup");
+    t.pb(["track", "lib", lib.path], { cwd: t.fork.path });
+    t.pb(["track", "bup", bup.path, "--vendor", "lib/vendored"], { cwd: t.fork.path });
+    const change = join(t.fork.path, ".patchbook/changes/into-vendor");
+    mkdirNew(join(change, "ours/lib/vendored"));
+    writeFileSync(join(change, "ours/lib/vendored/n.md.pb"), "ours\n");
+    writeFileSync(join(change, "CHANGE.md"), "# into-vendor\n\nintent: Write into the vendored copy.\n\nedits:\n- add lib/vendored/n.md\n");
+    writeFileSync(join(t.fork.path, ".patchbook/series"), "into-vendor\n");
+    const refused = t.pb(["build"], { cwd: t.fork.path, code: 1 });
+    expect(refused.stderr).toContain("add lib/vendored/n.md");
+    expect(refused.stderr).toContain("patchbook: left 1 upstream files out of the build because they would land in a vendored copy: lib/vendored (1).");
+  });
+
   const intoVendor = [
     ["add", "add vendor/extra/new.md"],
     ["copy", "copy app.txt -> vendor/extra/app.txt"],
     ["move", "move docs/guide.md -> vendor/extra/guide.md"],
   ] as const;
   for (const [kind, edit] of intoVendor) {
-    forkTest(`test_a_${kind}_edit_into_a_vendored_copy_is_refused`, (t) => {
+    forkTest(`test_${kind}_edit_into_a_vendored_copy_is_refused`, (t) => {
       const extra = new Repo(join(t.tmp, "extra"));
       extra.write("a.md", "extra\n");
       extra.commit("extra");
