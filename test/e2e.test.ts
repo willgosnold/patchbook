@@ -2,7 +2,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { Case, Repo, dedent, lstrip, mkdirNew, partitionHead, replace, sh, words } from "./helpers";
 
 const TIMEOUT = 120_000;
@@ -716,6 +716,47 @@ describe("ForkTest", () => {
       expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain(`changes/into-vendor ${edit}`);
       expect(t.fork.read(".patchbook/build.lock")).toBe(lock);
       expect(sh(["git", "status", "--porcelain", "--", "vendor", "app.txt", "docs"], { cwd: t.fork.path }).stdout).toBe("");
+    });
+  }
+
+  const intoKept = [
+    ["copy_into_the_patchbook_config", "copy app.txt -> .patchbook/config.toml", ".patchbook/config.toml", ".patchbook"],
+    ["copy_into_the_patchbook", "copy app.txt -> .patchbook/notes.txt", ".patchbook/notes.txt", ".patchbook"],
+    ["add_into_the_patchbook", "add .patchbook/new.md", ".patchbook/new.md", ".patchbook"],
+    ["move_into_the_patchbook", "move docs/guide.md -> .patchbook/guide.md", ".patchbook/guide.md", ".patchbook"],
+    ["copy_into_git", "copy app.txt -> .git/x", ".git/x", ".git"],
+    ["add_into_git", "add .git/new.md", ".git/new.md", ".git"],
+    ["move_into_git", "move docs/guide.md -> .git/guide.md", ".git/guide.md", ".git"],
+    ["copy_into_dot_GIT", "copy app.txt -> .GIT/x", ".GIT/x", ".git"],
+    ["copy_into_dot_git_dot", "copy app.txt -> .git./x", ".git./x", ".git"],
+    ["copy_into_a_nested_git", "copy app.txt -> a/.git/x", "a/.git/x", ".git"],
+  ] as const;
+  for (const [name, edit, dest, place] of intoKept) {
+    forkTest(`test_${name}_is_invalid_and_nothing_is_written`, (t) => {
+      const change = join(t.fork.path, ".patchbook/changes/into-kept");
+      mkdirNew(change);
+      if (edit.startsWith("add ")) {
+        mkdirSync(join(change, "ours", dirname(dest)), { recursive: true });
+        writeFileSync(join(change, "ours", `${dest}.pb`), "ours\n");
+      }
+      writeFileSync(join(change, "CHANGE.md"), `# into-kept\n\nintent: Write into a place a build keeps.\n\nedits:\n- ${edit}\n`);
+      writeFileSync(join(t.fork.path, ".patchbook/series"), "into-kept\n");
+      const target = join(t.fork.path, dest);
+      const was = existsSync(target) ? read(target) : null;
+      const before = tree(t.fork.path);
+      const detail = `${dest} would be written into ${place}`;
+      const status = t.pb(["status"], { cwd: t.fork.path, code: 1 });
+      expect(status.stdout).toContain(`changes/into-kept ${edit}`);
+      expect(status.stdout).toContain(detail);
+      const problems = JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path, code: 1 }).stdout).problems;
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toMatchObject({ problem: "invalid", file: "changes/into-kept", edit });
+      expect(problems[0].detail).toBe(detail);
+      const refused = t.pb(["build"], { cwd: t.fork.path, code: 1 });
+      expect(refused.stderr).toContain(detail);
+      expect(refused.stderr).toContain("nothing built");
+      expect(tree(t.fork.path)).toEqual(before);
+      expect(existsSync(target) ? read(target) : null).toBe(was);
     });
   }
 
@@ -1893,6 +1934,19 @@ exec '${Bun.which("git")}' "$@"
     const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
     expect(out.stderr).toContain("is not a folder");
     expect(t.repo.read("README.md")).toBe("mine\n");
+  });
+
+  vendorTest("test_a_copy_into_a_git_name_in_the_output_folder_is_invalid", (t) => {
+    const change = join(t.repo.path, ".patchbook/changes/into-git");
+    mkdirNew(change);
+    writeFileSync(join(change, "CHANGE.md"), "# into-git\n\nintent: Write into a git name.\n\nedits:\n- copy skills/hello/SKILL.md -> skills/agents/.git/x\n");
+    writeFileSync(join(t.repo.path, ".patchbook/series"), "into-git\n");
+    const detail = "skills/agents/.git/x would be written into .git";
+    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout).toContain(detail);
+    const before = tree(t.repo.path);
+    expect(t.pb(["build"], { cwd: t.repo.path, code: 1 }).stderr).toContain(detail);
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(existsSync(join(t.repo.path, "skills/agents/.git"))).toBe(false);
   });
 
   vendorTest("test_output_folder_cannot_be_inside_the_git_dir", (t) => {
