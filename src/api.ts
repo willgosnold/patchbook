@@ -49,7 +49,7 @@ export type CheckJson = {
 };
 
 export type UpstreamCheck = {
-  /** The pinned commit, or null before the first sync. */
+  /** The pinned commit, or null when nothing is pinned. */
   pinned: string | null;
   head: string;
   moved: boolean;
@@ -57,7 +57,7 @@ export type UpstreamCheck = {
   files: string[];
 };
 
-/** What `patchbook sync` writes to `.patchbook/last-sync.json`: for each upstream in the config that a sync has moved, the report of the latest sync that moved it. Entries can come from different runs. */
+/** What `patchbook sync` writes to `.patchbook/last-sync.json`: for each upstream in the config that a sync has moved, the report of the latest sync that moved it. Entries can come from different runs. After a failed pin write, an entry names a move `upstream.lock` does not hold. */
 export type LastSync = {
   version: 1;
   /** By upstream name. */
@@ -69,9 +69,9 @@ export type UnversionedLastSync = Omit<LastSync, "version">;
 
 /** What one sync did to one upstream. */
 export type SyncReport = {
-  /** The commit pinned before that sync, or null before the first one. */
+  /** The commit pinned before that sync, or null when nothing was pinned before that sync. */
   from: string | null;
-  /** The commit that sync pinned. */
+  /** The commit that sync pinned, unless writing the pin failed. Compare it with `upstream.lock` to tell. */
   to: string;
   /** The files upstream changed, as in `UpstreamCheck.files`. */
   upstream: string[];

@@ -163,7 +163,7 @@ Printed on stdout. Exit 0 if no upstream moved, 10 if any did.
 | --- | --- | --- |
 | `version` | `1` | |
 | `moved` | boolean | Any upstream moved. |
-| `upstreams.<name>.pinned` | string or null | The pinned commit, null before the first sync. |
+| `upstreams.<name>.pinned` | string or null | The pinned commit, null when nothing is pinned. |
 | `upstreams.<name>.head` | string | The commit at the head of the upstream's branch. |
 | `upstreams.<name>.moved` | boolean | The head's files differ from the pin's. A new commit with the same files is not a move. |
 | `upstreams.<name>.files` | string list | Empty unless `moved`. Otherwise `added <path>`, `changed <path>` or `deleted <path>` for each file that differs, sorted by path. Paths include the upstream's mount. Files the build leaves out aren't listed. |
@@ -205,15 +205,15 @@ A problem always has `problem`, its kind, first. The other fields depend on the 
 
 ### `.patchbook/last-sync.json`
 
-Written by `patchbook sync`. It has an entry for each upstream in the config that a sync has moved, in config order. Each entry is the report of the latest sync that moved that upstream, so entries can come from different runs. An upstream no sync has moved has no entry.
+Written by `patchbook sync`. It has an entry for each upstream in the config that a sync has moved, in config order. Each entry is the report of the latest sync that moved that upstream, so entries can come from different runs. A sync that writes the report and then fails to write the pin leaves an entry for a move `upstream.lock` does not hold. An upstream no sync has moved has no entry.
 
 `sync` writes the file after each upstream it moves, before it moves that upstream's pin, and keeps the entries of the upstreams it did not move. It drops the entry of an upstream no longer in the config, even on a sync that moves nothing. A file that does not parse counts as empty, and the next sync that writes replaces it. To keep only one run's moves, a reader keeps the entries whose `from` is the upstream's pin before that run and whose `to` is its pin in `upstream.lock` after it.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `version` | `1` | |
-| `upstreams.<name>.from` | string or null | The commit pinned before that sync, null before the first. |
-| `upstreams.<name>.to` | string | The commit that sync pinned. |
+| `upstreams.<name>.from` | string or null | The commit pinned before that sync, null when nothing was pinned before that sync. |
+| `upstreams.<name>.to` | string | The commit that sync pinned, unless writing the pin failed. Compare it with `upstream.lock` to tell. |
 | `upstreams.<name>.upstream` | string list | The files upstream changed, as `files` in `check`. |
 | `upstreams.<name>.merged` | list | `{change, path}` for each file edit that merged without conflict. |
 | `upstreams.<name>.conflicts` | list | `{change, path, count}` for a text file with `count` conflicts in our copy, or `{change, path, detail}` for a binary file. |
