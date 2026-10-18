@@ -33,6 +33,13 @@ export function absoluteRemote(remote: string): string {
   return remote && !remote.startsWith("-") && isLocalPath(remote) ? posix.resolve(remote) : remote;
 }
 
+/**
+ * A remote read from config.toml comes from a repo, as a submodule URL does, so git gets the rule it uses for those.
+ * A remote helper runs only if the user's git config allows it "always". Local paths stay allowed, though that rule holds them back too, and ext:: never runs.
+ */
+const FROM_REPO = ["-c", "protocol.file.allow=always", "-c", "protocol.ext.allow=never"];
+const fromRepo = () => ({ ...process.env, GIT_PROTOCOL_FROM_USER: "0" });
+
 function field(spec: Table, key: string, fallback: string): string {
   const value = Object.hasOwn(spec, key) ? spec[key] : fallback;
   if (typeof value !== "string") throw new Fail(`an [[upstream]]'s ${key} is a string, not ${JSON.stringify(value)}`);
@@ -123,7 +130,7 @@ export class Upstream {
     const shallow = !this.inRepo || git(["rev-parse", "--is-shallow-repository"], { cwd }) === "true" ? ["--depth=1"] : [];
     const landing = `refs/patchbook/tmp/${process.pid}-${randomUUID()}`;
     try {
-      const fetched = spawn(["git", "fetch", "--quiet", "--no-tags", ...shallow, this.source(), `+${ref}:${landing}`], { cwd });
+      const fetched = spawn(["git", ...FROM_REPO, "fetch", "--quiet", "--no-tags", ...shallow, this.source(), `+${ref}:${landing}`], { cwd, env: fromRepo() });
       if (fetched.code !== 0) throw new Fail(`git fetch ${this.source()} ${ref} failed:\n${strip(decodeReplace(fetched.stderr))}`);
       return git(["rev-parse", `${landing}^{commit}`], { cwd });
     } finally {
@@ -180,7 +187,7 @@ export class Upstream {
   }
 
   head(): string {
-    const out = git(["ls-remote", this.source(), `refs/heads/${this.branch}`], { cwd: this.gitDir() });
+    const out = git([...FROM_REPO, "ls-remote", this.source(), `refs/heads/${this.branch}`], { cwd: this.gitDir(), env: fromRepo() });
     if (!out) throw new Fail(`upstream ${this.name} has no branch ${this.branch}`);
     return split(out)[0]!;
   }
