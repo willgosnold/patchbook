@@ -201,8 +201,13 @@ function headEntry(book: Book, p: string): { link: boolean; bytes: Uint8Array } 
   return blob.code === 0 ? { link: mode === "120000", bytes: blob.stdout } : null;
 }
 
-/** Whether two files hold the same bytes once each `\r\n` is read as `\n`. A lone `\r` still differs. */
+/**
+ * Whether two files hold the same bytes once each `\r\n` is read as `\n`. A lone `\r` still differs.
+ * If either holds a NUL byte, as raw UTF-16 does, the bytes must match exactly, since its CR bytes can be part of a character.
+ */
+// latin1 maps each byte to one character, so no two different byte strings compare equal. UTF-8 decoding would merge invalid bytes.
 const sameLines = (a: Uint8Array, b: Uint8Array) => {
+  if (a.includes(0) || b.includes(0)) return bytesEqual(a, b);
   const lf = (data: Uint8Array) => Buffer.from(data).toString("latin1").replaceAll("\r\n", "\n");
   return lf(a) === lf(b);
 };
