@@ -61,7 +61,7 @@ Then run the `[test]` from the config on `origin/$MAIN_BRANCH` (`git show origin
 
 ## 5. Review
 
-Start a reviewer with `delegate_task`, `mode: "wait"` and `timeoutMs: 3600000`, and go on to step 6 only after it returns. If it returns `waitTimedOut` or ends without a verdict, stop it with `task_cancel` and count every change as a fail. Call `orchestrator_capabilities` first, and choose the reviewer's model from its `providers`:
+Start a reviewer with `delegate_task`, `mode: "wait"` and `timeoutMs: 3600000`, and go on to step 6 only after it returns. If it returns `waitTimedOut` or `hasPendingQuestion`, or ends with no verdicts at all, stop it with `task_cancel` and count every change as a fail. Call `orchestrator_capabilities` first, and choose the reviewer's model from its `providers`:
 
 - Take the first provider, other than `inheritedProviderInstanceId`, with `canRunCrossProviderChildTask` true.
 - Of its models, take the one whose `label` has the highest version number, such as 6.1 in `GPT-6.1-Sol`. On a tie, or when no label has one, take the first listed.
@@ -75,7 +75,7 @@ Set `target` to the provider's `providerInstanceId`, the model's `id` (not its `
 - `git diff origin/$MAIN_BRANCH...HEAD -- .patchbook`;
 - the test results.
 
-Ask it, per change: does the result meet the intent on upstream's new text, does it change anything beyond the intent, and did upstream add anything that should have been handled. It answers pass or fail, with reasons. A change it gives no pass or fail counts as a fail. On a fail, fix what it found, commit the fix on its own, do step 4 again, and start a new review round, with the earlier findings in the brief. Stop after two rounds.
+Ask it, per change: does the result meet the intent on upstream's new text, does it change anything beyond the intent, and did upstream add anything that should have been handled. It answers pass or fail, with reasons. A change it gives no pass or fail counts as a fail. On a fail, fix what it found, commit the fix on its own as "Fix review: <what>", do step 4 again, and start a new review round, with the earlier findings in the brief. Stop after two rounds.
 
 ## 6. Merge, or ask
 
