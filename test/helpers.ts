@@ -127,8 +127,23 @@ function definedEnv(env: Record<string, string | undefined>): Env {
   return out;
 }
 
+// The environment every child process gets: the caller's, plus a git identity. Tests commit with git
+// directly, so the hook stays off unless a test turns it on.
+function baseEnv(): Env {
+  return {
+    ...definedEnv(process.env),
+    GIT_AUTHOR_NAME: "t",
+    GIT_AUTHOR_EMAIL: "t@t",
+    GIT_COMMITTER_NAME: "t",
+    GIT_COMMITTER_EMAIL: "t@t",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    PATCHBOOK_HOOK: "0",
+    PATCHBOOK_SKILL: "0",
+  };
+}
+
 export function sh(args: string[], opts: { cwd: string; check?: boolean; env?: Env }): Run {
-  const r = run(args, opts.cwd, opts.env ?? definedEnv(process.env));
+  const r = run(args, opts.cwd, opts.env ?? baseEnv());
   if (opts.check !== false && r.code !== 0) {
     throw new Error(`Command '${args.join(" ")}' returned non-zero exit status ${r.code}.\n${r.stdout}\n${r.stderr}`);
   }
@@ -169,20 +184,7 @@ export class Case {
 
   constructor() {
     this.tmp = mkdtempSync(join(tmpdir(), "tmp"));
-    this.env = {
-      ...definedEnv(process.env),
-      PATCHBOOK_HOME: join(this.tmp, "store"),
-      GIT_AUTHOR_NAME: "t",
-      GIT_AUTHOR_EMAIL: "t@t",
-      GIT_COMMITTER_NAME: "t",
-      GIT_COMMITTER_EMAIL: "t@t",
-      GIT_CONFIG_GLOBAL: "/dev/null",
-    };
-    // Tests commit with git directly, so the hook stays off unless a test turns it on.
-    Object.assign(this.env, { PATCHBOOK_HOOK: "0", PATCHBOOK_SKILL: "0" });
-    for (const [k, v] of Object.entries(this.env)) {
-      if (k.startsWith("GIT_") || k.startsWith("PATCHBOOK_")) process.env[k] = v;
-    }
+    this.env = { ...baseEnv(), PATCHBOOK_HOME: join(this.tmp, "store") };
     // A fake claude CLI that names the change and writes its intent, and keeps the prompt it got.
     const binDir = join(this.tmp, "bin");
     mkdirSync(binDir);
