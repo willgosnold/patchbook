@@ -32,8 +32,10 @@ export function run(args: readonly string[], options: SpawnOptions & { check?: b
   return result.stdout;
 }
 
+/** Run git with every pathspec taken literally, so a config path like `o*` names that folder and no other. */
 export function git(args: readonly string[], options: SpawnOptions & { check?: boolean } = {}): string {
-  return strip(decode(run(["git", ...args], options)));
+  const env = { ...(options.env ?? process.env), GIT_LITERAL_PATHSPECS: "1" };
+  return strip(decode(run(["git", ...args], { ...options, env })));
 }
 
 /** `shutil.which`. */

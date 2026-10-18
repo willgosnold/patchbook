@@ -369,6 +369,95 @@ test("test_init_rejects_a_vendor_folder_inside_the_output_before_it_writes_anyth
   }
 }, TIMEOUT);
 
+test("test_an_output_folder_with_glob_characters_builds_twice_beside_a_folder_it_would_match", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("a.md", "a\n");
+    up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    repo.write("README.md", "mine\n");
+    repo.write("other/notes.md", "notes\n");
+    repo.commit("start");
+    t.pb(["init", "--upstream", up.path, "--output-to", "o*"], { cwd: repo.path });
+    t.pb(["build"], { cwd: repo.path });
+    const second = t.pb(["build"], { cwd: repo.path });
+    expect(second.stdout).toContain("built 1 files");
+    expect(second.stderr).not.toContain("changed since the last build");
+    expect(repo.read("o*/a.md")).toBe("a\n");
+    expect(repo.read("other/notes.md")).toBe("notes\n");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_the_commit_hook_stages_only_the_output_file_it_names_when_the_folder_has_glob_characters", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("a.md", "a\n");
+    up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    repo.write("README.md", "mine\n");
+    repo.write("other/a.md", "theirs\n");
+    repo.commit("start");
+    t.pb(["init", "--upstream", up.path, "--output-to", "o*"], { cwd: repo.path });
+    t.pb(["build"], { cwd: repo.path });
+    repo.commit("build");
+    repo.write("o*/a.md", "edited\n");
+    repo.write("other/a.md", "unrelated work\n");
+    sh(["git", "add", "--", ":(literal)o*/a.md"], { cwd: repo.path });
+    const env = { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Edit a." };
+    sh(["git", "commit", "-qm", "edit a"], { cwd: repo.path, env });
+    const committed = sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: repo.path }).stdout;
+    expect(committed).toContain("o*/a.md");
+    expect(committed).not.toContain("other/a.md");
+    expect(sh(["git", "status", "--short"], { cwd: repo.path }).stdout).toContain(" M other/a.md");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_a_vendored_folder_with_glob_characters_builds_only_its_own_files", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("a.md", "a\n");
+    up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    repo.write("README.md", "mine\n");
+    repo.write("v*/a.md", "a\n");
+    repo.write("vx/n.md", "n\n");
+    repo.commit("start");
+    t.pb(["init", "--upstream", up.path, "--output-to", "out", "--vendor", "v*"], { cwd: repo.path });
+    const built = t.pb(["build"], { cwd: repo.path });
+    expect(built.stdout).toContain("built 1 files");
+    expect(Object.keys(tree(join(repo.path, "out")))).toEqual(["a.md"]);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_a_missing_vendor_folder_is_named_by_its_plain_path_in_the_error", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("a.md", "a\n");
+    up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    repo.write("README.md", "mine\n");
+    repo.commit("start");
+    t.pb(["init", "--upstream", up.path, "--output-to", "out", "--vendor", "nope"], { cwd: repo.path });
+    rmSync(join(repo.path, "nope"), { recursive: true, force: true });
+    const built = t.pb(["build"], { cwd: repo.path, code: 1 });
+    expect(built.stderr).toContain("git add -- nope failed");
+    expect(built.stderr).toContain("pathspec 'nope' did not match any files");
+    expect(built.stderr).not.toContain(":(literal)");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 describe("ForkTest", () => {
   // Each layout puts a vendored copy where its own upstream's build writes, so a build would land in it.
   for (const [where, mount, vendor] of [
