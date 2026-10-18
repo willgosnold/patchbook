@@ -676,6 +676,27 @@ describe("ForkTest", () => {
     expect(parents[2]).toBe(head); // the build merges upstream, so its history stays reachable
   });
 
+  forkTest("test_a_fresh_clone_of_the_fork_reads_the_pin_after_a_sync", (t) => {
+    const origin = join(t.tmp, "origin.git");
+    const hooked = { ...t.env, PATCHBOOK_HOOK: "1" };
+    sh(["git", "init", "-q", "--bare", origin], { cwd: t.tmp });
+    sh(["git", "remote", "add", "origin", origin], { cwd: t.fork.path });
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    const head = t.up.commit("upstream edit");
+    t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "commit", "-qam", "Sync upstream"], { cwd: t.fork.path, env: hooked });
+    sh(["git", "push", "-q", "origin", "HEAD:main"], { cwd: t.fork.path });
+    sh(["git", "clone", "-q", "-b", "main", origin, "fresh"], { cwd: t.tmp });
+    const fresh = new Repo(join(t.tmp, "fresh"));
+    expect(t.pb(["status"], { cwd: fresh.path }).stdout).toBe(`0 edits apply at upstream ${head.slice(0, 7)}; no problems\n`);
+    expect(t.pb(["build"], { cwd: fresh.path }).stdout).toContain(`from upstream ${head.slice(0, 7)}`);
+    fresh.write("app.txt", replace(fresh.read("app.txt"), "two", "TWO"));
+    sh(["git", "commit", "-qam", "shout"], { cwd: fresh.path, env: hooked });
+    expect(words(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: fresh.path }).stdout)).toContain(".patchbook/changes/shout/CHANGE.md");
+    t.pb(["build", "--commit"], { cwd: fresh.path });
+    expect(words(sh(["git", "rev-list", "--parents", "-n1", "HEAD"], { cwd: fresh.path }).stdout)[2]).toBe(head);
+  });
+
   forkTest("test_conflict_and_gone", (t) => {
     t.recordFeature();
     t.up.write("app.txt", replace(t.up.read("app.txt"), "two", "deux"));
