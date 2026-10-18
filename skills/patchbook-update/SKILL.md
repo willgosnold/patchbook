@@ -11,7 +11,7 @@ Never edit the build output, or a vendored copy, by hand. Change the patchbook, 
 
 Never commit `.patchbook/last-sync.json`. To stage everything, use `git add -A -- . ':!.patchbook/last-sync.json'`. To commit one thing, stage its paths. Make every commit with `PATCHBOOK_HOOK=0 git commit`, which skips patchbook's pre-commit hook: in a fork the hook records unstaged and untracked files and hand edits to the output into whatever commit runs.
 
-To read an upstream, use `patchbook upstream <name>`: `<name> <path>` prints a file at the pin, `--diff` shows what upstream changed in the last sync, and `--export <dir>` writes it all out for searching. Export outside the worktree.
+To read an upstream, use `patchbook upstream <name>`: `<name> <path>` prints a file at the pin, `--diff` shows what upstream changed in the sync that last pinned it, and `--export <dir>` writes it all out for searching. Export outside the worktree. Use `--diff` only for an upstream `patchbook sync` printed `pinned` for in this run, since for any other it shows an older run's change.
 
 ## 1. Check
 
@@ -32,7 +32,7 @@ T3 gives each run its own worktree and branch. Work there.
    - `MAIN_CHECKOUT=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')`
 2. Run `git fetch origin && git rebase origin/$MAIN_BRANCH`. The branch must have no commits of its own yet. If this thread is in the main checkout instead of a worktree, create a branch, `patchbook/upstream-<date>`, first.
 3. Run `patchbook sync`. It moves every upstream that moved, and prints `<name>: pinned <short sha>` for each one. If it exits non-zero, quote its message and ask (step 6), before any commit. If it exits 0 and prints no `pinned` line, every upstream that moved has moved back to its pin since step 1. Say that in one line, and end the run as step 1 does when no upstream has moved, with no commit. Otherwise commit everything it changed except `.patchbook/last-sync.json` (`git add -A -- . ':!.patchbook/last-sync.json'`, then `PATCHBOOK_HOOK=0 git commit`) as "Sync upstream <name> to <short sha>", naming each upstream.
-4. Read `.patchbook/last-sync.json` (per upstream: what changed and what merged on its own) and `patchbook status --json` (what broke). Here and in steps 3, 5 and 6, read only the reports of the upstreams `patchbook sync` printed `pinned` for. An upstream can move after step 1, so this list can be longer than `patchbook check`'s.
+4. Read `.patchbook/last-sync.json` (per upstream: what changed and what merged on its own) and the `problems` in `patchbook status --json` (what broke). Ignore its `last_sync`, which can hold older runs' reports. Here and in steps 3, 5 and 6, read only the reports of the upstreams `patchbook sync` printed `pinned` for. An upstream can move after step 1, so this list can be longer than `patchbook check`'s.
 
 ## 3. Repair
 
