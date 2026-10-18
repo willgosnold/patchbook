@@ -4244,3 +4244,68 @@ exec '${Bun.which("git")}' "$@"
     expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stderr).toContain("Use [[upstream]] with a name");
   });
 });
+
+describe("ReadOnlyLockTest", () => {
+  const asRoot = process.getuid?.() === 0;
+  const lockTest = (name: string, body: (t: ForkCase, lock: string) => void) =>
+    test.skipIf(asRoot)(name, () => {
+      const t = new ForkCase();
+      try {
+        body(t, join(t.fork.path, ".patchbook/upstream.lock"));
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+  const refused = (lock: string) => `patchbook: couldn't write ${lock}: permission denied\n`;
+
+  lockTest("test_sync_names_the_lock_when_it_cannot_write_it", (t, lock) => {
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    const head = t.up.commit("upstream edit");
+    const before = read(lock);
+    sh(["chmod", "a-w", lock], { cwd: t.fork.path });
+    try {
+      expect(t.pb(["sync"], { cwd: t.fork.path, code: 1 }).stderr).toBe(refused(lock));
+    } finally {
+      sh(["chmod", "u+w", lock], { cwd: t.fork.path });
+    }
+    expect(read(lock)).toBe(before);
+    t.pb(["sync"], { cwd: t.fork.path });
+    expect(JSON.parse(read(lock)).upstream.commit).toBe(head);
+  });
+
+  lockTest("test_track_names_the_lock_when_it_cannot_write_it_and_can_be_retried", (t, lock) => {
+    const lib = new Repo(join(t.tmp, "lib"));
+    lib.write("a.txt", "lib\n");
+    const commit = lib.commit("lib");
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    const before = read(config);
+    sh(["chmod", "a-w", lock], { cwd: t.fork.path });
+    try {
+      expect(t.pb(["track", "lib", lib.path], { cwd: t.fork.path, code: 1 }).stderr).toBe(refused(lock));
+    } finally {
+      sh(["chmod", "u+w", lock], { cwd: t.fork.path });
+    }
+    expect(read(config)).toBe(before);
+    t.pb(["track", "lib", lib.path], { cwd: t.fork.path });
+    expect(JSON.parse(read(lock)).lib.commit).toBe(commit);
+  });
+
+  lockTest("test_init_names_the_lock_when_it_cannot_write_it_and_can_be_retried", (t) => {
+    const repo = new Repo(join(t.tmp, "adapted"));
+    repo.write("README.md", "mine\n");
+    repo.commit("start");
+    const lock = join(repo.path, ".patchbook/upstream.lock");
+    mkdirSync(join(repo.path, ".patchbook"));
+    writeFileSync(lock, "{}\n");
+    sh(["chmod", "a-w", lock], { cwd: repo.path });
+    const init = ["init", "--upstream", t.up.path, "--output-from", "", "--output-to", "out"];
+    try {
+      expect(t.pb(init, { cwd: repo.path, code: 1 }).stderr).toBe(refused(lock));
+    } finally {
+      sh(["chmod", "u+w", lock], { cwd: repo.path });
+    }
+    expect(existsSync(join(repo.path, ".patchbook/config.toml"))).toBe(false);
+    t.pb(init, { cwd: repo.path });
+    expect(JSON.parse(read(lock)).upstream.commit).toMatch(/^[0-9a-f]{40}$/);
+  });
+});
