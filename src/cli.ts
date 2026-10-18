@@ -14,7 +14,7 @@ import { exists, lexists, readText, resolve, writeText } from "./lib/fs.ts";
 import { git, redact } from "./lib/proc.ts";
 import { rstrip, split, strRepr } from "./lib/py.ts";
 import { cmdRecord } from "./record.ts";
-import { checkedRemoteUrl, notAnOption, notThisRepo, resolveFromCwd } from "./remote.ts";
+import { forkUpstream, notAnOption, notThisRepo, resolveFromCwd } from "./remote.ts";
 import { cmdConfig } from "./settings.ts";
 import { installSkill, SCHEDULE } from "./skill.ts";
 import { absoluteRemote, defaultName, cmdUpstream } from "./store.ts";
@@ -104,16 +104,13 @@ async function cmdInit(args: {
     process.stdout.write(`Next: patchbook build, then commit.\n${SCHEDULE}\n`);
     return 0;
   }
-  const remotes = split(git(["remote"], { cwd: root }));
-  const hasRemote = remotes.includes("upstream");
-  if (!hasRemote && remotes.includes(upstream)) throw new Fail(`--upstream ${upstream} names a remote of this repo, not a URL. Give its URL (git remote get-url ${upstream}).`);
-  const follows = redact(hasRemote ? checkedRemoteUrl(root, upstream, args.branch) : upstream);
+  const { follows, from, addRemote } = forkUpstream(root, upstream, args.branch);
   const text = configText("fork", upstreamToml(name, follows, args.path, args.branch, ""));
   const book = await Book.fromText(root, text);
-  git(["fetch", "--quiet", "--end-of-options", hasRemote ? "upstream" : upstream, args.branch], { cwd: root });
+  git(["fetch", "--quiet", "--end-of-options", from, args.branch], { cwd: root });
   const base = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: root });
   book.writeLock(name, base, book.upstreams[0]!.treeOf(base));
-  if (!hasRemote) git(["remote", "add", "--end-of-options", "upstream", upstream], { cwd: root });
+  if (addRemote) git(["remote", "add", "--end-of-options", "upstream", upstream], { cwd: root });
   installSkill(book);
   writeConfig(root, text);
   installHookOrWarn(root);

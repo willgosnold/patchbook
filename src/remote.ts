@@ -1,9 +1,8 @@
 // The `upstream` remote that a fork init follows, and the URL it is given.
 import { isAbsolute } from "node:path";
-import { fileURLToPath } from "node:url";
 import { Fail } from "./lib/fail.ts";
 import { exists, pjoin, resolve } from "./lib/fs.ts";
-import { redact, run, spawn } from "./lib/proc.ts";
+import { git, redact, run, spawn } from "./lib/proc.ts";
 import { quote, split } from "./lib/py.ts";
 import { decode, decodeReplace } from "./lib/text.ts";
 
@@ -23,9 +22,10 @@ export function resolveFromCwd(root: string, url: string): string {
 }
 
 function localPath(root: string, url: string): string | null {
-  if (/^file:\/\//i.test(url)) {
+  const file = /^file:\/\/[^/]*(\/.*)/is.exec(url);
+  if (file) {
     try {
-      return fileURLToPath(url);
+      return decodeURIComponent(file[1]!.replace(/%(?![0-9a-f]{2})/gi, "%25"));
     } catch {
       return null;
     }
@@ -42,13 +42,13 @@ function commonDir(root: string, url: string): string | null {
   return null;
 }
 
-function isThisRepo(root: string, url: string): boolean {
-  const theirs = commonDir(root, gitLine(root, ["ls-remote", "--get-url", "--", url]));
+function isThisRepo(root: string, expanded: string): boolean {
+  const theirs = commonDir(root, expanded);
   return theirs !== null && theirs === commonDir(root, root);
 }
 
 export function notThisRepo(root: string, url: string): void {
-  if (isThisRepo(root, url)) throw new Fail(`--upstream ${redact(url)} is this repo. Give the URL of the repo it follows.`);
+  if (isThisRepo(root, gitLine(root, ["ls-remote", "--get-url", "--", url]))) throw new Fail(`--upstream ${redact(url)} is this repo. Give the URL of the repo it follows.`);
 }
 
 function tipOf(root: string, label: string, repo: string, branch: string, shown = repo): string {
@@ -57,14 +57,15 @@ function tipOf(root: string, label: string, repo: string, branch: string, shown 
   return split(decode(r.stdout))[0] ?? "";
 }
 
-export function checkedRemoteUrl(root: string, upstream: string, branch: string): string {
+function checkedRemoteUrl(root: string, upstream: string, branch: string): string {
   const shown = redact(upstream);
   const fillIn = shown === upstream ? "" : ", add the credentials from --upstream to the URL in this command, since patchbook does not print them";
   const fix = `To follow ${shown}${fillIn}: git config --replace-all remote.upstream.url ${quote(shown)}`;
-  const url = decode(run(["git", "config", "-z", "--get-all", "remote.upstream.url"], { cwd: root, check: false })).split("\0")[0]!;
+  const urls = decode(run(["git", "config", "-z", "--get-all", "remote.upstream.url"], { cwd: root, check: false })).split("\0").slice(0, -1);
+  const url = urls[urls.lastIndexOf("") + 1] ?? "";
   if (url === "") throw new Fail(`the upstream remote has no url. ${fix}`);
   const fetches = gitLine(root, ["remote", "get-url", "upstream"]);
-  if (isThisRepo(root, "upstream")) throw new Fail(`the upstream remote fetches this repo (${redact(fetches)}). ${fix}`);
+  if (isThisRepo(root, fetches)) throw new Fail(`the upstream remote fetches this repo (${redact(fetches)}). ${fix}`);
   if (fetches === upstream) return url;
   const theirs = tipOf(root, "the upstream remote", "upstream", branch, fetches);
   const mine = tipOf(root, "--upstream", upstream, branch);
@@ -72,4 +73,11 @@ export function checkedRemoteUrl(root: string, upstream: string, branch: string)
   const tip = (sha: string) => sha.slice(0, 7) || "missing";
   throw new Fail(`the upstream remote and --upstream serve different commits for ${branch}. The remote fetches ${redact(fetches)}, --upstream is ${shown}. `
     + `${branch} is ${tip(theirs)} on the remote and ${tip(mine)} on --upstream. ${fix}`);
+}
+
+export function forkUpstream(root: string, upstream: string, branch: string): { follows: string; from: string; addRemote: boolean } {
+  const remotes = split(git(["remote"], { cwd: root }));
+  if (remotes.includes("upstream")) return { follows: redact(checkedRemoteUrl(root, upstream, branch)), from: "upstream", addRemote: false };
+  if (remotes.includes(upstream)) throw new Fail(`--upstream ${upstream} names a remote of this repo, not a URL. Give its URL (git remote get-url ${upstream}).`);
+  return { follows: redact(upstream), from: upstream, addRemote: true };
 }
