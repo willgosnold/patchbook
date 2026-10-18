@@ -2579,6 +2579,46 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     );
   });
 
+  forkTest("test_config_unset_keeps_the_comment_above_a_key_whatever_the_library_would_have_changed", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    const unset = (before: string, after: string) => {
+      writeFileSync(user, before);
+      t.config(["--unset", "intent.model"]);
+      expect(read(user)).toBe(after);
+    };
+    unset("[intent]\n# above\nmodel = 7243981605\n# below\n", "[intent]\n# above\n# below\n");
+    unset('[ table ]\nx = 1\n[intent]\n# above\nmodel = "old"\n', "[ table ]\nx = 1\n[intent]\n# above\n");
+    unset('[intent]\n# above\nmodel = "old" # after\n', "[intent]\n# above\n");
+  });
+
+  forkTest("test_config_unset_refuses_rather_than_drop_a_comment", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    const before = "[hook]\n# about enabled\nenabled.x = 1\n";
+    writeFileSync(user, before);
+    const out = t.pb(["config", "--unset", "hook.enabled"], { cwd: t.fork.path, code: 1 });
+    expect(out.stderr).toContain(`can't change hook.enabled in ${user} safely: the TOML library would drop the comment "# about enabled"`);
+    expect(read(user)).toBe(before);
+  });
+
+  forkTest("test_config_keeps_the_endings_and_the_end_of_a_file_with_no_final_newline", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    writeFileSync(user, '[intent]\n# c\r\nmodel = "old"\n[hook]\r\nenabled = true');
+    t.config(["intent.model", "new"]);
+    expect(read(user)).toBe('[intent]\n# c\r\nmodel = "new"\n[hook]\r\nenabled = true');
+    writeFileSync(user, '[intent]\r\nprovider = "claude"');
+    t.config(["intent.model", "new"]);
+    expect(read(user)).toBe('[intent]\r\nprovider = "claude"\r\nmodel = "new"');
+    writeFileSync(user, '[intent]\nmodel = "old"\n\n\n');
+    t.config(["intent.model", "new"]);
+    expect(read(user)).toBe('[intent]\nmodel = "new"\n\n\n');
+    writeFileSync(user, '[intent]\r# c\rmodel = "old"\r');
+    t.config(["intent.model", "new"]);
+    expect(read(user)).toBe('[intent]\r# c\rmodel = "new"\r');
+  });
+
   forkTest("test_config_keeps_each_lines_own_ending_in_a_file_with_mixed_endings", (t) => {
     const user = join(t.tmp, "config/patchbook/config.toml");
     mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
