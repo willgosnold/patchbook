@@ -8157,6 +8157,31 @@ exec '${Bun.which("git")}' "$@"
     expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
   });
 
+  for (const [how, change] of [
+    ["has_changed_since", (t: VendorCase) => sh(["git", "checkout", "HEAD~1", "--", ".patchbook/upstream.lock"], { cwd: t.repo.path })],
+    ["no_longer_parses", (t: VendorCase) => t.repo.write(".patchbook/upstream.lock", "<<<<<<< HEAD\n")],
+  ] as const) {
+    vendorTest(`test_a_killed_rewrite_is_undone_when_the_lock_${how}`, (t) => {
+      const extra = extraWithAChange(t, true);
+      rmSync(join(t.repo.path, "vendor/extra/scratch"));
+      extra.commit("v2");
+      t.repo.commit("follow extra");
+      t.pb(["sync", "extra"], { cwd: t.repo.path });
+      t.repo.commit("sync extra");
+      const before = tree(t.repo.path);
+      rmSync(join(t.repo.path, "vendor/extra"), { recursive: true });
+      mkdirSync(join(t.repo.path, "vendor/extra"));
+      killSync(t, "write-tree --prefix=vendor/extra/");
+      change(t);
+
+      expect(t.pb(["sync", "extra"], { cwd: t.repo.path, code: null }).stderr).not.toContain("holds a sync of extra");
+      expect(existsSync(join(t.repo.path, ".patchbook/sync-extra"))).toBe(false);
+      sh(["git", "checkout", "HEAD", "--", ".patchbook"], { cwd: t.repo.path });
+      t.pb(["sync", "extra"], { cwd: t.repo.path });
+      expect(tree(t.repo.path)).toEqual(before);
+    });
+  }
+
   const lockChanges: [string, (t: VendorCase) => void, boolean][] = [
     ["the_lock_has_changed_since", (t) => sh(["git", "checkout", "HEAD~1", "--", ".patchbook/upstream.lock"], { cwd: t.repo.path }), false],
     ["the_lock_has_changed_since_the_sync_wrote_it", (t) => {
