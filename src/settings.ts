@@ -185,10 +185,11 @@ function edited(text: string, config: Table, name: Name, value: unknown, refuse:
 
 function patched(text: string, name: Name, value: unknown, refuse: (cause: string) => Fail): string {
   try {
-    const doc = new TomlDocument(text);
+    const body = text.trimEnd();
+    const doc = new TomlDocument(body);
     doc.patch(withSetting(doc.toJsObject, name, value), { trailingNewline: 1, bracketSpacing: false });
     const out = doc.toTomlString;
-    return text.trim() === "" ? out : out.replace(/\s*$/, "") + (text.match(/\s*$/)?.[0] ?? "");
+    return body === "" ? (text.startsWith("\uFEFF") ? "\uFEFF" : "") + out : out.trimEnd() + text.slice(body.length);
   } catch (e) {
     throw refuse(`the TOML library failed on it (${e instanceof Error ? `${e.name}: ${e.message}` : String(e)})`);
   }
@@ -267,14 +268,16 @@ function withEndingsOf(raw: string, out: string): string {
   if (!/\r/.test(raw)) return out;
   const marks = raw.match(/\r\n|\r|\n/g) ?? [];
   const body = (lines: string[]) => (lines[lines.length - 1] === "" ? lines.slice(0, -1) : lines);
-  const was = body(raw.split(/\r\n|\r|\n/));
+  const bare = (line: string) => line.replace(/^\uFEFF/, "");
+  const was = body(raw.split(/\r\n|\r|\n/)).map(bare);
   const outLines = out.split("\n");
   const now = body(outLines);
+  const nowBare = now.map(bare);
   const mark = (i: number) => marks[i] ?? marks[0] ?? "\n";
   let head = 0;
-  while (head < Math.min(was.length, now.length) && was[head] === now[head]) head++;
+  while (head < Math.min(was.length, nowBare.length) && was[head] === nowBare[head]) head++;
   let tail = 0;
-  while (tail < Math.min(was.length, now.length) - head && was[was.length - 1 - tail] === now[now.length - 1 - tail]) tail++;
+  while (tail < Math.min(was.length, nowBare.length) - head && was[was.length - 1 - tail] === nowBare[nowBare.length - 1 - tail]) tail++;
   const finalNewline = outLines.length > now.length;
   return now
     .map((line, i) => {
