@@ -2471,6 +2471,15 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     }
   });
 
+  forkTest("test_config_refuses_to_edit_a_setting_whose_section_is_not_a_table", (t) => {
+    const project = join(t.fork.path, ".patchbook/config.toml");
+    const before = replace(read(project), 'layout = "fork"\n', 'layout = "fork"\nhook = true\n');
+    writeFileSync(project, before);
+    expect(t.pb(["config", "--project", "hook.enabled", "false"], { cwd: t.fork.path, code: 1 }).stderr)
+      .toContain("hook in the config must be a table, as in [hook]");
+    expect(read(project)).toBe(before);
+  });
+
   forkTest("test_config_set_and_unset_keep_the_rest_of_a_commented_file", (t) => {
     const user = join(t.tmp, "config/patchbook/config.toml");
     mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
@@ -2507,6 +2516,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
 
   forkTest("test_config_starts_a_user_config_that_does_not_exist", (t) => {
     const user = join(t.tmp, "config/patchbook/config.toml");
+    t.config(["--unset", "start.agents"]);
     expect(existsSync(user)).toBe(false);
     t.config(["start.agents", "codex"]);
     expect(read(user)).toBe('[start]\nagents = ["codex"]\n');
@@ -2590,12 +2600,13 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     const user = join(t.tmp, "config/patchbook/config.toml");
     mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
     writeFileSync(user, "start.agents = [\n");
-    for (const args of [["config"], ["config", "intent.model"]]) {
+    for (const args of [["config"], ["config", "intent.model"], ["config", "intent.model", "x"]]) {
       const out = t.pb(args, { cwd: t.fork.path, code: 1 });
       expect(out.stderr).toContain(`${user} isn't valid TOML`);
       expect(out.stderr).not.toContain("SyntaxError");
       expect(out.stderr).not.toContain("    at ");
     }
+    expect(read(user)).toBe("start.agents = [\n");
   });
 
   forkTest("test_hook_off_in_the_project", (t) => {

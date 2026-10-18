@@ -1,12 +1,13 @@
 // Settings: each one's env var, kind and default, read from the env, the project and the user config.
 import { homedir } from "node:os";
 import { dirname } from "node:path";
+import { TomlDocument } from "@decimalturn/toml-patch";
 import { Book, NoBook } from "./book.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { intentSettings, PROVIDERS } from "./intent.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, mkdirs, pjoin, readText, writeText } from "./lib/fs.ts";
-import { ljust, lstrip, rstrip, S, strip, strRepr } from "./lib/py.ts";
+import { ljust, S, strRepr } from "./lib/py.ts";
 import { quoteToml } from "./lib/toml.ts";
 
 /** A parsed TOML table. Values stay unknown until a setting or the book's config reads them. */
@@ -149,26 +150,18 @@ export function storeDir(): string {
   return pjoin(base, "upstreams");
 }
 
-/** Set or remove (value null) one key in a TOML file, keeping its other lines and comments. */
-export function setToml(path: string, name: string, value: string | null): void {
+/** Set or remove (value null) one setting in a TOML file, keeping its other keys, comments and layout. */
+export function setToml(path: string, name: Name, value: NonNullable<Value<Name>> | null): void {
+  const text = exists(path) ? readText(path) : "";
+  if (lookup(parseToml(text, path), name) === undefined && value === null) return;
+  const doc = new TomlDocument(text);
+  const config: Record<string, Record<string, unknown> | undefined> = doc.toJsObject;
   const [section = "", key = ""] = name.split(".");
-  let lines = exists(path) ? readText(path).split("\n") : [];
-  const head = lines.findIndex((l) => strip(l) === `[${section}]`);
-  const assign = `${key} = ${value}`;
-  if (head === -1) {
-    if (value !== null) lines = [...(lines.length && strip(lines.at(-1)!) ? [...lines, ""] : lines), `[${section}]`, assign];
-  } else {
-    let end = lines.findIndex((l, i) => i > head && lstrip(l).startsWith("["));
-    if (end === -1) end = lines.length;
-    const keyLine = new RegExp(`^[${S}]*${key.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&")}[${S}]*=`, "u");
-    const at = lines.findIndex((l, i) => i > head && i < end && keyLine.test(l));
-    if (at !== -1) {
-      if (value === null) lines.splice(at, 1);
-      else lines[at] = assign;
-    } else if (value !== null) lines.splice(head + 1, 0, assign);
-  }
+  if (value !== null) (config[section] ??= {})[key] = value;
+  else delete config[section]?.[key];
+  doc.patch(config, { trailingNewline: 1, bracketSpacing: false });
   mkdirs(dirname(path));
-  writeText(path, rstrip(lines.join("\n"), "\n") + "\n");
+  writeText(path, doc.toTomlString);
 }
 
 /** A setting as `config` lists it: its value, filled in for the intent settings, and where it came from. */
@@ -220,7 +213,7 @@ export async function cmdConfig(args: { name: string | null; value: string | nul
       throw new Fail(`intent.provider is one of ${Array.from(PROVIDERS.keys()).join(", ")}`);
     }
     const shown = show(name, value);
-    setToml(path, name, shown);
+    setToml(path, name, value);
     process.stdout.write(`${name} = ${shown} in ${path}\n`);
     return 0;
   }

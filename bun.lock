@@ -4,6 +4,9 @@
   "workspaces": {
     "": {
       "name": "patchbook",
+      "dependencies": {
+        "@decimalturn/toml-patch": "3.3.1",
+      },
       "devDependencies": {
         "@types/bun": "^1.4.3",
         "typescript": "^7.0.2",
@@ -11,6 +14,8 @@
     },
   },
   "packages": {
+    "@decimalturn/toml-patch": ["@decimalturn/toml-patch@3.3.1", "", {}, "sha512-bevRGAUJonKWPBEY0tmn6HxEsPS1hJquwoIRNg/WTJnN+/0J6nfomSkn4FBtGlw1dUEt8tkS97oR0wwy3bo2HQ=="],
+
     "@types/bun": ["@types/bun@1.4.3", "", { "dependencies": { "bun-types": "1.4.3" } }, "sha512-N67Pqy8JXbAY/j0tNraS3V5mubGvc6rrrNDmDCtZLlFzccbUJPDb0tvgUBC5q4m8ybkP93Jcn1QB+RYQ6PvBhw=="],
 
     "@types/node": ["@types/node@26.6.5", "", { "dependencies": { "undici-types": "~8.9.0" } }, "sha512-uMzsv9stDdofIZBx4UGh4Z9ZgXnGC9seRDscilBcTHAeOFk67MZg/k9bWVfO+bk4qZmG+l52hRnLwUiH2LnJTg=="],
