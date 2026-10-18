@@ -1021,6 +1021,9 @@ for (const [how, dir, given] of [
   ["dot_at_the_root", "", () => "."],
   ["a_file_url_of_the_root", "", (fork: string) => `file://${fork}`],
   ["a_file_url_with_a_host", "", (fork: string) => `file://example.invalid${fork}`],
+  ["a_file_url_with_an_encoded_slash_after_the_host", "", (fork: string) => `file://example.invalid%2F${fork.slice(1)}`],
+  ["a_path_that_git_finds_with_dot_git_added", "", (fork: string) => `${fork}-self`],
+  ["a_path_from_the_home_folder", "", (fork: string) => `~/${relative(process.env["HOME"]!, fork)}`],
   ["a_linked_worktree", "", () => "../worktree"],
   ["an_insteadof_alias", "", () => "self:"],
 ] as const) {
@@ -1034,6 +1037,7 @@ for (const [how, dir, given] of [
       mkdirSync(join(fork.path, "sub"));
       sh(["git", "worktree", "add", "-q", "--detach", "../worktree"], { cwd: fork.path });
       sh(["git", "config", `url.${fork.path}.insteadOf`, "self:"], { cwd: fork.path });
+      symlinkSync(fork.path, `${fork.path}-self.git`);
       const refused = t.pb(["init", "--upstream", given(fork.path)], { cwd: join(fork.path, dir), code: 1 });
       expect(refused.stderr).toContain("is this repo");
       expect(existsSync(join(fork.path, ".patchbook"))).toBe(false);
@@ -1048,6 +1052,7 @@ for (const [how, remote] of [
   ["dot", () => "."],
   ["an_alias_that_another_insteadof_would_rewrite", () => "self:"],
   ["a_file_url_with_a_host", (fork: string) => `file://example.invalid${fork}`],
+  ["a_file_url_with_an_encoded_slash_after_the_host", (fork: string) => `file://example.invalid%2F${fork.slice(1)}`],
 ] as const) {
   test(`test_a_fork_init_refuses_an_upstream_remote_that_fetches_the_repo_itself_as_${how}`, () => {
     const t = new Case();
@@ -1109,6 +1114,41 @@ for (const [how, stale] of [["a_url_before_it", true], ["nothing_before_it", fal
     }
   }, TIMEOUT);
 }
+
+test("test_a_fork_init_refuses_an_upstream_remote_whose_url_is_the_name_of_another_remote", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    up.commit("start");
+    const fork = forkOf(t, up);
+    sh(["git", "remote", "add", "upstream", "origin"], { cwd: fork.path });
+    const refused = t.pb(["init", "--upstream", up.path], { cwd: fork.path, code: 1 });
+    expect(refused.stderr).toContain(`the upstream remote fetches origin, but its url origin expands to ${up.path}.`);
+    expect(existsSync(join(fork.path, ".patchbook"))).toBe(false);
+    const fix = /^.*To follow .*?: (git config --replace-all remote\.upstream\.url .*)$/m.exec(refused.stderr)?.[1];
+    sh(["sh", "-c", fix!], { cwd: fork.path });
+    expect(t.pb(["init", "--upstream", up.path], { cwd: fork.path }).stdout).toContain(`branched from ${up.path}.`);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_init_reports_a_failed_fetch_for_a_file_url_with_an_encoded_nul", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    up.commit("start");
+    const fork = forkOf(t, up);
+    const failed = t.pb(["init", "--upstream", `file://${fork.path}%00x`], { cwd: fork.path, code: 1 });
+    expect(failed.stderr).toContain("patchbook: git fetch");
+    expect(failed.stderr).not.toContain("TypeError");
+    expect(existsSync(join(fork.path, ".patchbook/config.toml"))).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
 
 test("test_a_fork_init_with_no_upstream_remote_refuses_an_upstream_that_names_another_remote", () => {
   const t = new Case();
