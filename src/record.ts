@@ -25,27 +25,32 @@ function recordedMode(now: Mode, built: Mode): Mode | undefined {
   return built === LINK ? 0o644 : undefined;
 }
 
+/** What a recording printed. */
+export type RecordResult = { text: string };
+
 export async function cmdRecord(args: { change: string | null; intent: string | null; current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean }) {
   const book = await Book.find();
   if (args.current === undefined) installHookOrWarn(book);
+  process.stdout.write(record(book, args.change, args.intent, args).text);
+  return 0;
+}
+
+/** Move the hand edits to the output into the patchbook, under the change and intent given, if any. */
+export function record(book: Book, change: string | null, intent: string | null, opts: { current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean } = {}): RecordResult {
+  let text = "";
   const problems: Problem[] = [];
   const changes = new Map(readChanges(book, problems).map((c) => [c.name, c]));
-  const asked = args.change || null;
-  if (asked !== null && !CHANGE_NAME.test(asked)) throw new Fail(notAChangeName(asked));
   const badName = problems.find((p) => p.file === "series" && "refuse" in p);
   if (badName) throw new Fail(`refusing to record: ${describe(badName)}\nRename it to lowercase letters, digits and dashes in series and changes/ first.`);
   const a = assemble(book);
-  const current = args.current ?? book.currentOutput();
+  const current = opts.current ?? book.currentOutput();
   const fileOwner = new Map<string, Change>();
   for (const c of changes.values()) for (const e of c.edits) if (e.kind === "file") fileOwner.set(e.path, c);
   const hasBlocks = new Set(rglob(join(book.dir, "blocks"), ".entries").map((p) => p.slice(0, -".entries".length)));
   const prefix = book.layout.kind === "folder" && book.layout.from ? book.layout.from + "/" : "";
   // Only files edited by hand since the last build. Others differ because the patchbook changed.
-  const edited = (args.edits ?? handEdits(book, a.out, current)).filter(args.only ?? (() => true));
-  if (!edited.length) {
-    process.stdout.write("no hand edits to the output since the last build; nothing to record\n");
-    return 0;
-  }
+  const edited = (opts.edits ?? handEdits(book, a.out, current)).filter(opts.only ?? (() => true));
+  if (!edited.length) return { text: "no hand edits to the output since the last build; nothing to record\n" };
   refuseLinkTurnedFile(a, current, edited);
   const blocked = (p: string) => {
     const src = a.sources.get(p);
@@ -72,16 +77,18 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
     }
   }
 
+  const asked = change || null;
+  if (asked !== null && !CHANGE_NAME.test(asked)) throw new Fail(notAChangeName(asked));
   let name = asked;
-  const given = args.intent === null ? null : oneLine(args.intent) || null;
-  let intent = given;
+  const given = intent === null ? null : oneLine(intent) || null;
+  intent = given;
   const pending = Array.from(paragraphs, ([p, plan]) => Array.from(plan.entries.values(), (e) => [p, e] as const)).flat()
     .filter(([, e]) => e.intent === null);
   const needsIntent = pending.length > 0;
   const named = fresh.length > 0;
   if (named && !name && intent) {
     name = nameFromIntent(intent, changes);
-    process.stdout.write(`${name}: ${intent}\n`);
+    text += `${name}: ${intent}\n`;
   }
   if ((named && (!name || (!changes.has(name) && !intent))) || (needsIntent && !intent && !(name !== null && changes.has(name)))) {
     const diff = pendingDiff(a, current, fresh) + pending
@@ -89,7 +96,7 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
       .join("");
     [name, intent] = writeIntent(book, changes, diff, name, named);
     const known = name !== null && changes.has(name);
-    process.stdout.write((named && !known ? `${name}: ${intent}` : named ? `adding to ${name}` : `intent: ${intent}`) + "\n");
+    text += (named && !known ? `${name}: ${intent}` : named ? `adding to ${name}` : `intent: ${intent}`) + "\n";
   } else if (needsIntent && !intent) intent = changes.get(name!)!.intent;
   for (const [p, plan] of paragraphs) {
     for (const e of plan.entries.values()) e.intent ??= intent;
@@ -151,7 +158,7 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
 
   for (const c of touched.values()) if (c.edits.length || c !== target) saveChange(c);
   if (target.edits.length && !readSeries(book).includes(target.name)) appendSeries(book, target.name);
-  process.stdout.write(notes.join("\n") + "\n");
+  text += notes.join("\n") + "\n";
   // The recorded output is now what the patchbook builds, so it no longer counts as a hand edit.
   const lock = readBuildLock(book);
   if (lock !== null) {
@@ -163,7 +170,7 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
     }
     writeBuildLines(book, lock);
   }
-  return 0;
+  return { text };
 }
 
 /** An upstream link keeps its type in the build, so a regular file over it would be written back as a link. */
