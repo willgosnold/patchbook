@@ -107,11 +107,18 @@ export class Upstream {
   /** Pin a commit in the store with a ref, so gc keeps it. Only pins get one: a head that was just looked at stays prunable. A ref already there is not written again. */
   keep(commit: string): string {
     this.have(commit);
-    if (this.inRepo) return commit;
-    const ref = `refs/pins/${commit}`;
-    const held = spawn(["git", "rev-parse", "--verify", "--quiet", ref], { cwd: this.gitDir() });
-    if (decode(held.stdout).trim() !== commit) git(["update-ref", ref, commit], { cwd: this.gitDir() });
+    if (!this.inRepo && !this.kept(commit)) git(["update-ref", `refs/pins/${commit}`, commit], { cwd: this.gitDir() });
     return commit;
+  }
+
+  kept(commit: string): boolean {
+    const held = spawn(["git", "rev-parse", "--verify", "--quiet", `refs/pins/${commit}`], { cwd: this.gitDir() });
+    return decode(held.stdout).trim() === commit;
+  }
+
+  /** Undo `keep` for a commit that did not become the pin. */
+  unkeep(commit: string): void {
+    if (!this.inRepo) spawn(["git", "update-ref", "-d", `refs/pins/${commit}`], { cwd: this.gitDir() });
   }
 
   /** `keep` for a pin that is read: a store that cannot take the ref still serves the read, with a warning. */
@@ -126,9 +133,11 @@ export class Upstream {
     return commit;
   }
 
-  /** `heal` for a pin the caller does not need the files of: one the store lacks is left alone, never fetched just to keep it. */
-  healIfHeld(commit: string): void {
-    if (this.has(commit)) this.heal(commit);
+  /** `heal` for a pin the caller does not need the files of: one the store lacks is left alone, never fetched just to keep it. Says whether the store had it. */
+  healIfHeld(commit: string): boolean {
+    const held = this.has(commit);
+    if (held) this.heal(commit);
+    return held;
   }
 
   treeOf(commit: string): string {
@@ -180,6 +189,7 @@ export class Upstream {
         );
       }
       files = found.files;
+      if (pin.commit) this.healIfHeld(pin.commit);
     } else files = this.files(this.heal(pinned(this, pin)));
     return this.mounted(files);
   }

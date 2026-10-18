@@ -22,11 +22,11 @@ export async function cmdCheck() {
     const pin = u.pin();
     const head = u.head();
     const r = { pinned: pin.commit ?? null, head, moved: false, files: [] as string[] };
-    if (pin.commit) u.healIfHeld(pin.commit);
+    const held = pin.commit ? u.healIfHeld(pin.commit) : false;
     if (head !== pin.commit) {
       u.fetch(head);
       if (u.treeOf(head) !== pin.tree) {
-        const old = pin.tree ? u.mounted(u.files(u.heal(pinned(u, pin)))) : new Map<string, File>();
+        const old = pin.tree ? u.mounted(u.files(held ? pinned(u, pin) : u.heal(pinned(u, pin)))) : new Map<string, File>();
         r.moved = true;
         r.files = upstreamDelta(old, u.mounted(u.files(head)));
       }
@@ -109,16 +109,18 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     replaced_upstream_changed: [],
   };
 
+  const held = u.kept(commit);
+  u.keep(commit);
+
   if (u.vendor) {
     if (exists(u.vendor)) rmSync(u.vendor, { recursive: true });
     for (const [p, f] of raw) writeDisk(join(u.vendor, p), f);
     const actual = u.vendorTree(u.vendor).tree;
     if (actual !== tree) {
+      if (!held) u.unkeep(commit);
       throw new Fail(`the vendored copy of ${u.name} hashes to ${actual}, not upstream's ${tree}. Does a .gitignore hide upstream files?`);
     }
   }
-
-  u.keep(commit);
 
   const added = Array.from(fresh.keys()).filter((p) => !old.has(p));
   for (const c of changes) {
