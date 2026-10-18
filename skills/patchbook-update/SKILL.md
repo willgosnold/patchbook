@@ -49,7 +49,7 @@ Also read the upstream changes in the sync report for new files or features the 
 
 To retire a change, remove it from `series` and its folder, and add it to `retired.md` with the reason.
 
-Commit each change you repair or retire on its own with `PATCHBOOK_HOOK=0 git commit`, as "Carry <change> to upstream <short sha>" or "Retire <change>". Handle each `replaced_upstream_changed` entry in such a commit, whose message names the file and says what you carried over, or what you left out and why. If you carried over nothing, commit with `--allow-empty`.
+Commit each change you repair or retire on its own with `PATCHBOOK_HOOK=0 git commit`, as "Carry <change> to upstream <short sha>" or "Retire <change>". Handle each `replaced_upstream_changed` entry in such a commit, whose message names the file and says what you carried over, or what you left out and why. If you carried over nothing, commit with `PATCHBOOK_HOOK=0 git commit --allow-empty`.
 
 ## 4. Test
 
