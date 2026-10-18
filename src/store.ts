@@ -93,7 +93,9 @@ export class Upstream {
   fetch(ref: string): string {
     const depth = this.inRepo ? [] : ["--depth=1"];
     git(["fetch", "--quiet", ...depth, this.source(), ref], { cwd: this.gitDir() });
-    return git(["rev-parse", "FETCH_HEAD^{commit}"], { cwd: this.gitDir() });
+    const commit = git(["rev-parse", "FETCH_HEAD^{commit}"], { cwd: this.gitDir() });
+    if (!this.inRepo) git(["update-ref", `refs/pins/${commit}`, commit], { cwd: this.gitDir() });
+    return commit;
   }
 
   have(commit: string): void {
