@@ -1,7 +1,7 @@
 // End-to-end tests: each one builds a throwaway upstream repo and drives the CLI against it.
 
 import { describe, expect, test } from "bun:test";
-import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Case, Repo, dedent, lstrip, mkdirNew, partitionHead, replace, sh, words } from "./helpers";
 
@@ -482,6 +482,19 @@ describe("VendorTest", () => {
     const diff = t.pb(["upstream", "plugin", "--diff"], { cwd: t.repo.path }).stdout;
     expect(diff).toContain("-For Cursor users.");
     expect(diff).toContain("a/README.md");
+  });
+
+  vendorTest("test_store_keeps_pinned_commits_through_gc", (t) => {
+    t.up.write("plugin/README.md", "For everyone.\n");
+    t.up.commit("readme");
+    t.pb(["sync"], { cwd: t.repo.path });
+    const store = join(t.tmp, "store/upstreams", readdirSync(join(t.tmp, "store/upstreams"))[0]!);
+    sh(["git", "gc", "-q", "--prune=now"], { cwd: store });
+    rmSync(t.up.path, { recursive: true });
+    expect(words(t.pb(["upstream", "plugin"], { cwd: t.repo.path }).stdout)).toEqual(["README.md", "agents/helper.md", "skills/hello/SKILL.md"]);
+    const diff = t.pb(["upstream", "plugin", "--diff"], { cwd: t.repo.path }).stdout;
+    expect(diff).toContain("-For Cursor users.");
+    expect(diff).toContain("+For everyone.");
   });
 
   vendorTest("test_vendor_copy_is_guarded", (t) => {
