@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Disposable sandboxes for driving patchbook from this checkout.
+#
+#   pb-sandbox new [label]    create a sandbox; prints the path of its env file to source
+#   pb-sandbox doctor         (with the env file sourced) check the sandbox is isolated and drivable
+#   pb-sandbox clean <dir>    delete a sandbox this script made; evidence is kept
+#   pb-sandbox list           list sandboxes and evidence folders
+#
+# A sandbox gets its own store, user config, git identity, a `patchbook` shim that runs this
+# checkout's src/cli.ts (or $PATCHBOOK_CMD) and a fake `claude`, so no real model is ever called.
+set -euo pipefail
+
+ROOT=${TMPDIR:-/tmp}/patchbook-verify
+EVIDENCE_ROOT=${XDG_STATE_HOME:-$HOME/.local/state}/patchbook-verify
+CHECKOUT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)
+
+die() { echo "pb-sandbox: $*" >&2; exit 1; }
+
+cmd_new() {
+  local label=${1:-run}
+  [[ $label =~ ^[A-Za-z0-9._-]+$ ]] || die "label must be letters, digits, dot, dash or underscore"
+  [ -f "$CHECKOUT/src/cli.ts" ] || die "no src/cli.ts in $CHECKOUT"
+  # Resolve bun to an absolute path now. The sandbox moves XDG_CONFIG_HOME, which hides mise's
+  # global config, so a mise `bun` shim stops working inside it.
+  local bun
+  bun=$(cd "$CHECKOUT" && bun -e 'console.log(process.execPath)' 2>/dev/null) || die "bun doesn't run in $CHECKOUT"
+  mkdir -p "$ROOT"
+  local id sb ev
+  id="$label-$(date +%Y%m%d-%H%M%S)-$$"
+  sb="$ROOT/$id"
+  ev="$EVIDENCE_ROOT/$id"
+  mkdir -p "$sb/bin" "$sb/config" "$sb/work" "$ev"
+
+  local cmd
+  if [ -n "${PATCHBOOK_CMD:-}" ]; then cmd=$PATCHBOOK_CMD; else cmd="\"$bun\" \"$CHECKOUT/src/cli.ts\""; fi
+  printf '#!/bin/sh\nexec %s "$@"\n' "$cmd" > "$sb/bin/patchbook"
+
+  # The fake model. Default answer matches the repro scripts in the audit issues.
+  # PB_FAKE_MODEL=fail makes it exit 1, like an offline or missing CLI.
+  cat > "$sb/bin/claude" <<F
+#!/bin/sh
+cat > "$sb/prompt.txt"
+echo "\$(date +%s) claude \$*" >> "$sb/model-calls.log"
+[ "\${PB_FAKE_MODEL:-}" = fail ] && { echo "fake claude: failing on purpose" >&2; exit 1; }
+echo "{\"change\": \"\${PB_FAKE_CHANGE:-model-name}\", \"intent\": \"\${PB_FAKE_INTENT:-MODEL WROTE THIS.}\"}"
+F
+  chmod +x "$sb/bin/patchbook" "$sb/bin/claude"
+
+  cat > "$sb/env.sh" <<E
+# Source this file: . $sb/env.sh
+export SB="$sb" EVIDENCE="$ev" PATCHBOOK_CHECKOUT="$CHECKOUT"
+export PATCHBOOK_HOME="$sb/store" XDG_CONFIG_HOME="$sb/config" PATCHBOOK_SKILL=0 PATCHBOOK_PROVIDER=claude
+export GIT_CONFIG_GLOBAL=/dev/null GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+export PATH="$sb/bin:\$PATH"
+pb() { patchbook "\$@"; }
+# rec <command...>: run it here, and append the command, its output and exit code to \$EVIDENCE/transcript.txt.
+rec() {
+  local out code
+  { printf '\$ (%s)' "\${PWD#\$SB/}"; printf ' %q' "\$@"; printf '\n'; } >> "\$EVIDENCE/transcript.txt"
+  out=\$("\$@" 2>&1) && code=0 || code=\$?
+  printf '%s\n' "\$out" | tee -a "\$EVIDENCE/transcript.txt"
+  printf '[exit %s]\n\n' "\$code" | tee -a "\$EVIDENCE/transcript.txt"
+  return \$code
+}
+cd "$sb/work"
+E
+  {
+    echo "sandbox: $sb"
+    echo "checkout: $CHECKOUT @ $(git -C "$CHECKOUT" rev-parse --short HEAD)$(git -C "$CHECKOUT" diff --quiet HEAD -- || echo ' (uncommitted changes)')"
+    echo "patchbook: $cmd"
+    echo "created: $(date -Is)"
+  } > "$ev/run.txt"
+  echo "$sb/env.sh"
+}
+
+cmd_doctor() {
+  local ok=1
+  check() { if eval "$2" >/dev/null 2>&1; then echo "ok    $1"; else echo "FAIL  $1"; ok=0; fi; }
+  [ -n "${SB:-}" ] || die "source a sandbox's env.sh first"
+  check "sandbox exists under $ROOT" '[ -d "$SB" ] && [[ $SB == "$ROOT"/* ]]'
+  check "evidence folder exists" '[ -d "$EVIDENCE" ]'
+  check "patchbook resolves to the sandbox shim" '[ "$(command -v patchbook)" = "$SB/bin/patchbook" ]'
+  check "claude resolves to the fake model" '[ "$(command -v claude)" = "$SB/bin/claude" ]'
+  check "store is inside the sandbox" '[[ $PATCHBOOK_HOME == "$SB"/* ]]'
+  check "user config is inside the sandbox" '[[ $XDG_CONFIG_HOME == "$SB"/* ]]'
+  check "global git config is off" '[ "$GIT_CONFIG_GLOBAL" = /dev/null ]'
+  check "patchbook --version runs" 'patchbook --version'
+  echo "version: $(patchbook --version 2>&1)"
+  [ $ok = 1 ] || exit 1
+}
+
+cmd_clean() {
+  local dir=${1:-}
+  [ -n "$dir" ] || die "usage: pb-sandbox clean <sandbox dir>"
+  dir=$(cd "$dir" 2>/dev/null && pwd) || die "no such sandbox: $1"
+  [[ $dir == "$ROOT"/* && -f $dir/env.sh ]] || die "$dir isn't a sandbox made by pb-sandbox; not deleting it"
+  local ev="$EVIDENCE_ROOT/$(basename "$dir")"
+  [ -f "$dir/prompt.txt" ] && cp "$dir/prompt.txt" "$ev/last-model-prompt.txt"
+  [ -f "$dir/model-calls.log" ] && cp "$dir/model-calls.log" "$ev/model-calls.log"
+  rm -rf "$dir"
+  echo "deleted $dir; evidence kept in $ev"
+}
+
+cmd_list() {
+  echo "sandboxes ($ROOT):"; ls -1 "$ROOT" 2>/dev/null | sed 's/^/  /' || true
+  echo "evidence ($EVIDENCE_ROOT):"; ls -1 "$EVIDENCE_ROOT" 2>/dev/null | sed 's/^/  /' || true
+}
+
+case "${1:-}" in
+  new) shift; cmd_new "$@" ;;
+  doctor) cmd_doctor ;;
+  clean) shift; cmd_clean "$@" ;;
+  list) cmd_list ;;
+  *) sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
