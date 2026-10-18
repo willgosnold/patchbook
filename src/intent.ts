@@ -112,9 +112,20 @@ function askModel(provider: string, spec: Provider, model: string, effort: strin
   return decodeReplace(result.stdout);
 }
 
-/** A kebab-case change name from the first words of an intent, unique among the existing changes. */
+const NAME_LENGTH = 40;
+
+/** An intent on one line, with each run of whitespace a single space. */
+export const oneLine = (text: string): string => split(text).join(" ");
+
+/** A kebab-case change name from the first words of an intent that fit in `NAME_LENGTH`, unique among the existing changes. */
 export function nameFromIntent(intent: string, changes: ReadonlyMap<string, Change>): string {
-  const base = intent.toLowerCase().match(/[a-z0-9]+/g)?.slice(0, 4).join("-") || "change";
+  let base = "";
+  for (const word of intent.toLowerCase().match(/[a-z0-9]+/g)?.slice(0, 4) ?? []) {
+    const next = base ? `${base}-${word}` : word;
+    if (next.length > NAME_LENGTH) break;
+    base = next;
+  }
+  base ||= "change";
   let name = base;
   for (let n = 2; changes.has(name); n++) name = `${base}-${n}`;
   return name;
@@ -147,7 +158,7 @@ export function writeIntent(
   const fields = answer instanceof Map ? answer : new Map<string, PyValue>();
   const given = fields.get("change") ?? "";
   let chosen = typeof given === "string" ? given : "";
-  let intent: string | null = split(str(fields.has("intent") ? fields.get("intent")! : "")).join(" ");
+  let intent: string | null = oneLine(str(fields.has("intent") ? fields.get("intent")! : ""));
   if (!/^[a-z0-9][a-z0-9-]*$/.test(chosen) || !intent) {
     throw new Fail(`${provider} didn't return a usable name and intent:\n${slice(strip(reply), 0, 500)}\nPass a name and --intent instead.`);
   }

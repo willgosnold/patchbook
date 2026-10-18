@@ -5,7 +5,7 @@ import { assemble, handEdits, readBuildLock, writeBuildLines } from "./assemble.
 import { blockHash, blockSpans, type Entry, entriesPath, formatEntry, patchBlocks, PLACEHOLDER_HINT, readEntries, Rules } from "./blocks.ts";
 import { Book } from "./book.ts";
 import { appendSeries, Change, readChanges, readSeries, saveChange } from "./changes.ts";
-import { nameFromIntent, pendingDiff, writeIntent } from "./intent.ts";
+import { nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
 import { exists, rglob, sameFile, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
@@ -57,7 +57,8 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
   }
 
   let name = args.change;
-  let intent = args.intent;
+  const given = args.intent === null ? null : oneLine(args.intent) || null;
+  let intent = given;
   const pending = Array.from(paragraphs, ([p, plan]) => Array.from(plan.entries.values(), (e) => [p, e] as const)).flat()
     .filter(([, e]) => e.intent === null);
   const needsIntent = pending.length > 0;
@@ -83,7 +84,7 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
   const chosen = name || "unnamed";
   let target = changes.get(chosen);
   if (target === undefined) target = new Change(chosen, join(book.dir, "changes", chosen), intent);
-  else if (args.intent) target.intent = args.intent;
+  else if (given) target.intent = given;
   const touched = new Map([[target.name, target]]);
 
   for (const p of edited) {
