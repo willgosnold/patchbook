@@ -458,7 +458,8 @@ export class Book {
     for (const path of listed.split("\0")) {
       if (!path) continue;
       const p = join(this.root, path);
-      if (!lexists(p)) continue;
+      const folderNow = isDir(p) && !isSymlink(p);
+      if (!lexists(p) || folderNow) continue;
       const key = rel ? path.slice(rel.length + 1) : path;
       if (this.isReserved(key)) continue;
       out.set(key, readDisk(p));
