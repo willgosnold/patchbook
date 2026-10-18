@@ -438,6 +438,26 @@ test("test_a_vendored_folder_with_glob_characters_builds_only_its_own_files", ()
   }
 }, TIMEOUT);
 
+test("test_a_missing_vendor_folder_is_named_by_its_plain_path_in_the_error", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("a.md", "a\n");
+    up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    repo.write("README.md", "mine\n");
+    repo.commit("start");
+    t.pb(["init", "--upstream", up.path, "--output-to", "out", "--vendor", "nope"], { cwd: repo.path });
+    rmSync(join(repo.path, "nope"), { recursive: true, force: true });
+    const built = t.pb(["build"], { cwd: repo.path, code: 1 });
+    expect(built.stderr).toContain("git add -- nope failed");
+    expect(built.stderr).toContain("pathspec 'nope' did not match any files");
+    expect(built.stderr).not.toContain(":(literal)");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 describe("ForkTest", () => {
   // Each layout puts a vendored copy where its own upstream's build writes, so a build would land in it.
   for (const [where, mount, vendor] of [
