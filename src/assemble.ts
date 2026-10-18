@@ -68,7 +68,7 @@ export function applyStructure(
   changes: readonly Change[],
   upstream: ReadonlyMap<string, File>,
   problems: Problem[],
-  vendorHolding: (staged: string) => string | null,
+  reservedHolding: (staged: string) => string | null,
 ): Map<string, Source> {
   const tree = new Map<string, Source>(Array.from(upstream.keys(), (p) => [p, { kind: "up", path: p }]));
   for (const c of changes) {
@@ -77,9 +77,9 @@ export function applyStructure(
       const where: InEdit = { file: `changes/${c.name}`, edit: editText(e) };
       const matched = Array.from(tree.keys()).filter((p) => under(p, e.path));
       if (e.kind === "add") {
-        const vendored = vendorHolding(e.path);
-        if (vendored !== null) {
-          problems.push({ problem: "invalid", ...where, detail: `${e.path} would be written into the vendored copy ${vendored}` });
+        const reserved = reservedHolding(e.path);
+        if (reserved !== null) {
+          problems.push({ problem: "invalid", ...where, detail: `${e.path} would be written into ${reserved}` });
         } else if (matched.length) problems.push({ problem: "invalid", ...where, detail: `${e.path} already exists; use replace` });
         else if (c.read("ours", e.path) === null) problems.push({ problem: "invalid", ...where, detail: "its ours copy is missing" });
         else tree.set(e.path, { kind: "ours", change: c.name, path: e.path });
@@ -91,9 +91,9 @@ export function applyStructure(
       else {
         const dest = "dest" in e ? e.dest : "";
         const moved = new Map(dest ? matched.map((p) => [dest + p.slice(e.path.length), tree.get(p)!]) : []);
-        const held = Array.from(moved.keys()).find((p) => vendorHolding(p) !== null);
+        const held = Array.from(moved.keys()).find((p) => reservedHolding(p) !== null);
         if (held !== undefined) {
-          problems.push({ problem: "invalid", ...where, detail: `${held} would be written into the vendored copy ${vendorHolding(held)}` });
+          problems.push({ problem: "invalid", ...where, detail: `${held} would be written into ${reservedHolding(held)}` });
           continue;
         }
         const clash = Array.from(moved.keys()).filter((p) => tree.has(p) && !under(p, e.path));
@@ -162,7 +162,7 @@ export function assemble(book: Book): Assembly {
     blocks.set(rel, readEntries(entriesPath(book, rel)));
   }
 
-  const staged = applyStructure(changes, upstream, problems, (p) => book.vendorHolding(p));
+  const staged = applyStructure(changes, upstream, problems, (p) => book.reservedHolding(p));
   let selected: Map<string, Source>;
   if (book.layout.kind === "folder") {
     const prefix = book.layout.from;

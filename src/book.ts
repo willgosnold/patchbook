@@ -329,16 +329,34 @@ export class Book {
     return underOrRoot(from, u.mount) ? to : null;
   }
 
+  private inRepo(outputPath: string): string {
+    return this.layout.kind === "folder" ? joinPath(this.folderOf(this.layout.dir), outputPath) : outputPath;
+  }
+
   private heldBy(outputPath: string): string | null {
-    const inRepo = this.layout.kind === "folder" ? joinPath(this.folderOf(this.layout.dir), outputPath) : outputPath;
+    const inRepo = this.inRepo(outputPath);
     return this.vendors().find((v) => underOrRoot(inRepo, v)) ?? null;
   }
 
-  vendorHolding(staged: string): string | null {
-    if (this.layout.kind === "fork") return this.heldBy(staged);
+  private outputOf(staged: string): string | null {
+    if (this.layout.kind === "fork") return staged;
     const { from } = this.layout;
     if (from && !staged.startsWith(from + "/")) return null;
-    return this.heldBy(from ? staged.slice(from.length + 1) : staged);
+    return from ? staged.slice(from.length + 1) : staged;
+  }
+
+  vendorHolding(staged: string): string | null {
+    const output = this.outputOf(staged);
+    return output === null ? null : this.heldBy(output);
+  }
+
+  reservedHolding(staged: string): string | null {
+    const vendored = this.vendorHolding(staged);
+    if (vendored !== null) return `the vendored copy ${vendored}`;
+    const output = this.outputOf(staged);
+    if (output === null) return null;
+    const inRepo = this.inRepo(output);
+    return under(inRepo, PB) ? PB : namesGit(inRepo) ? GIT : null;
   }
 
   private vendors(): string[] {
