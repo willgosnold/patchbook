@@ -2,7 +2,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { Case, Repo, dedent, lstrip, mkdirNew, partitionHead, replace, sh, words } from "./helpers";
 
 const TIMEOUT = 120_000;
@@ -22,6 +22,23 @@ const isExecutable = (p: string): boolean => {
   } catch {
     return false;
   }
+};
+
+/** Every file and link under root except `.git`, by path, so a test can see that nothing changed. */
+const tree = (root: string): Record<string, string> => {
+  const found: Record<string, string> = {};
+  const walk = (dir: string): void => {
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name);
+      if (path === join(root, ".git")) continue;
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink()) found[relative(root, path)] = `-> ${readlinkSync(path)}`;
+      else if (stat.isDirectory()) walk(path);
+      else found[relative(root, path)] = readFileSync(path, "utf8");
+    }
+  };
+  walk(root);
+  return found;
 };
 
 const storeOf = (t: Case): string => join(t.tmp, "store/upstreams", readdirSync(join(t.tmp, "store/upstreams"))[0]!);
@@ -1437,6 +1454,116 @@ describe("VendorTest", () => {
     expect(read(config)).toBe(before);
     t.pb(["track", "extra", extra.path], { cwd: t.repo.path });
   });
+
+  vendorTest("test_build_never_changes_the_git_dir_of_a_linked_worktree", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.repo.write("skills/zz/config", "stale\n");
+    t.repo.commit("a file under skills/zz");
+    const worktree = join(t.tmp, "wt");
+    sh(["git", "worktree", "add", "-q", worktree, "-b", "wt"], { cwd: t.repo.path });
+    rmSync(join(worktree, "skills/zz"), { recursive: true });
+    symlinkSync(join(t.repo.path, ".git"), join(worktree, "skills/zz"));
+    writeFileSync(join(worktree, ".gitignore"), "/skills/zz\n");
+    const config = t.repo.read(".git/config");
+    const out = t.pb(["build", "--force"], { cwd: worktree, code: 1 });
+    expect(out.stderr).toContain("is really inside .git");
+    expect(t.repo.read(".git/config")).toBe(config);
+    expect(isSymlink(join(worktree, "skills/zz"))).toBe(true);
+  });
+
+  for (const [how, ignored] of [["an ignored", true], ["a visible", false]] as const) {
+    for (const [where, file, target] of [["the repo root", "README.md", ".."], ["a sibling folder", "x.md", "../notes"]] as const) {
+      vendorTest(`test_build_never_deletes_through_${how.replace(" ", "_")}_link_to_${where.replaceAll(" ", "_")}`, (t) => {
+        t.missingScaffoldPatchBuild();
+        t.repo.write("notes/x.md", "keep\n");
+        t.repo.write(`skills/zz/${file}`, "stale\n");
+        t.repo.commit("a file under skills/zz");
+        rmSync(join(t.repo.path, "skills/zz"), { recursive: true });
+        symlinkSync(target, join(t.repo.path, "skills/zz"));
+        if (ignored) t.repo.write(".gitignore", "/skills/zz\n");
+        const before = tree(t.repo.path);
+        const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
+        expect(out.stderr).toContain("really goes to");
+        expect(out.stderr).toContain("outside the output folder");
+        expect(tree(t.repo.path)).toEqual(before);
+      });
+    }
+  }
+
+  vendorTest("test_build_refuses_a_dangling_link_in_the_output_before_changing_anything", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.repo.write("skills/old.md", "stale\n");
+    t.repo.commit("a stale file");
+    rmSync(join(t.repo.path, "skills/hello"), { recursive: true });
+    symlinkSync("../.patchbook/nope", join(t.repo.path, "skills/hello"));
+    t.repo.write(".gitignore", "/skills/hello\n");
+    const before = tree(t.repo.path);
+    const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("hello/SKILL.md is under hello, which is a link to nothing");
+    expect(out.stderr).not.toContain("EEXIST");
+    expect(tree(t.repo.path)).toEqual(before);
+  });
+
+  vendorTest("test_commit_in_a_refused_state_records_nothing", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.repo.write("skills/d/retired.md", "hand\n");
+    t.repo.commit("a file under skills/d");
+    rmSync(join(t.repo.path, "skills/d"), { recursive: true });
+    symlinkSync("../.patchbook", join(t.repo.path, "skills/d"));
+    t.repo.write(".gitignore", "/skills/d\n");
+    t.repo.write("skills/hello/SKILL.md", replace(t.repo.read("skills/hello/SKILL.md"), "Then wave.", "Then bow."));
+    const before = tree(t.repo.path);
+    const commit = sh(["git", "commit", "-q", "--allow-empty", "-m", "edit"], { cwd: t.repo.path, check: false, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("is really inside .patchbook");
+    expect(commit.stderr).not.toContain("fatal");
+    expect(tree(t.repo.path)).toEqual(before);
+  });
+
+  vendorTest("test_record_in_a_refused_state_records_nothing", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.repo.write("skills/d/retired.md", "hand\n");
+    t.repo.commit("a file under skills/d");
+    rmSync(join(t.repo.path, "skills/d"), { recursive: true });
+    symlinkSync("../.patchbook", join(t.repo.path, "skills/d"));
+    t.repo.write(".gitignore", "/skills/d\n");
+    t.repo.write("skills/hello/SKILL.md", replace(t.repo.read("skills/hello/SKILL.md"), "Then wave.", "Then bow."));
+    const before = tree(t.repo.path);
+    const out = t.pb(["record"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("is really inside .patchbook");
+    expect(tree(t.repo.path)).toEqual(before);
+  });
+
+  vendorTest("test_output_folder_cannot_be_under_a_file_or_a_dangling_link", (t) => {
+    t.missingScaffoldPatchBuild();
+    symlinkSync(".patchbook/nope", join(t.repo.path, "dangle"));
+    for (const [to, why] of [
+      ["README.md/out", "is under README.md, which is not a folder"],
+      ["dangle/out", "is under dangle, which is a link to nothing"],
+    ] as const) {
+      setOutputFolder(t, to);
+      const before = tree(t.repo.path);
+      const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
+      expect(out.stderr).toContain(why);
+      expect(out.stderr).not.toContain("ENOTDIR");
+      expect(out.stderr).not.toContain("EEXIST");
+      expect(tree(t.repo.path)).toEqual(before);
+    }
+  });
+
+  test("test_init_rejects_an_output_folder_under_a_file", () => {
+    const t = new VendorCase();
+    try {
+      const repo = new Repo(join(t.tmp, "fresh"));
+      repo.write("README.md", "mine\n");
+      repo.commit("start");
+      const out = t.pb(["init", "--upstream", t.up.path, "--output-to", "README.md/out"], { cwd: repo.path, code: 1 });
+      expect(out.stderr).toContain("is under README.md, which is not a folder");
+      expect(existsSync(join(repo.path, ".patchbook"))).toBe(false);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
 
   vendorTest("test_absolute_placeholder_file_is_used_as_given", (t) => {
     const snippets = join(t.tmp, "snippets.md");
