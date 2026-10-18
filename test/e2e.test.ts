@@ -8696,6 +8696,43 @@ describe("VendorTest", () => {
     expect(dropped).toContain("- delete skills/hello/SKILL.md");
   });
 
+  vendorTest("test_record_deleting_a_file_with_block_entries_removes_its_block_entries", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    unlinkSync(join(t.repo.path, "skills/hello/SKILL.md"));
+    expect(t.pb(["record", "--intent", "Drop the skill."], { cwd: t.repo.path }).stdout).toBe("drop-the-skill: Drop the skill.\ndelete   hello/SKILL.md\n");
+    expect(existsSync(entries)).toBe(false);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.repo.path });
+    expect(existsSync(join(t.repo.path, "skills/hello/SKILL.md"))).toBe(false);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  vendorTest("test_record_deleting_one_file_keeps_the_block_entries_of_another", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    t.up.write("plugin/skills/bye/SKILL.md", "# Bye\n\nOpen Cursor and say bye.\n");
+    t.up.commit("more");
+    t.pb(["sync"], { cwd: t.repo.path });
+    t.pb(["scaffold"], { cwd: t.repo.path });
+    const kept = join(t.repo.path, ".patchbook/blocks/skills/bye/SKILL.md.entries");
+    expect(existsSync(kept)).toBe(true);
+    unlinkSync(join(t.repo.path, "skills/hello/SKILL.md"));
+    t.pb(["record", "--intent", "Drop the skill."], { cwd: t.repo.path });
+    expect(existsSync(entries)).toBe(false);
+    expect(existsSync(kept)).toBe(true);
+  });
+
+  vendorTest("test_commit_deleting_a_file_with_block_entries_removes_its_block_entries", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    t.pb(["hook", "install"], { cwd: t.repo.path });
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+    sh(["git", "commit", "-qm", "built"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Built it." } });
+    unlinkSync(join(t.repo.path, "skills/hello/SKILL.md"));
+    sh(["git", "commit", "-qam", "drop"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Drop the skill." }, check: false });
+    expect(read(join(t.repo.path, ".patchbook/changes/drop-the-skill/CHANGE.md"))).toContain("- delete skills/hello/SKILL.md");
+    expect(existsSync(entries)).toBe(false);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
   vendorTest("test_record_notes_come_in_path_order", (t) => {
     t.missingScaffoldPatchBuild();
     t.repo.write("skills/hello/AGENTS.md", "added by hand\n");
