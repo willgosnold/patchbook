@@ -53,7 +53,7 @@ Commit each change you repair or retire on its own with `PATCHBOOK_HOOK=0 git co
 
 ## 4. Test
 
-Before you build, run `git status --porcelain`. Delete anything you or a test wrote that doesn't belong in the repo, such as an export or notes, but keep `.patchbook/last-sync.json`. If it then lists a file in the output, which `patchbook build` writes (the config's `[output] to` folder, or in a fork everything outside `.patchbook/`), that is a hand edit: don't commit it, and ask (step 6). Commit each other change or fix it lists, except `.patchbook/last-sync.json`, on its own with `PATCHBOOK_HOOK=0 git commit` and a message that says what it is. If you can't say what something is, ask (step 6).
+Before you build, run `git status --porcelain`. Delete anything you or a test wrote that doesn't belong in the repo, such as an export or notes, but keep `.patchbook/last-sync.json`. If it then lists a file in the build output or in a vendored copy (the config's `[output] to` folder, or in a fork everything outside `.patchbook/`), that is a hand edit: don't commit it, and ask (step 6). Commit each other change or fix it lists, except `.patchbook/last-sync.json`, on its own with `PATCHBOOK_HOOK=0 git commit` and a message that says what it is. If you can't say what something is, ask (step 6).
 
 Run `patchbook build`. Since no commit runs the hook, this is the run's only build. If it fails, quote its message and ask (step 6). If `git status --porcelain` then lists more than `.patchbook/last-sync.json`, commit it as one build commit (`git add -A -- . ':!.patchbook/last-sync.json'`, then `PATCHBOOK_HOOK=0 git commit`). It holds only what `patchbook build` wrote: output files and `.patchbook/build.lock`.
 
@@ -93,7 +93,7 @@ Ask the user instead of merging when that doesn't hold, or when:
 - the second review round returns any fail;
 - a test fails and you can't fix it. A failing `instructions` test counts, even though a passing one is not a signal, and so does an `instructions` file you can't read from `origin/$MAIN_BRANCH`;
 - a test leaves tracked files changed (`git status --porcelain --untracked-files=no` prints something), even if it passed;
-- step 4's pre-build check lists a hand edit to the output;
+- step 4's pre-build check lists a hand edit to the output or a vendored copy;
 - a `replaced_upstream_changed` entry in the report of an upstream this run moved has no step 3 commit that names its file;
 - the branch changes `[test]` in `.patchbook/config.toml` (see `git diff origin/$MAIN_BRANCH...HEAD -- .patchbook/config.toml`);
 - the only fix you can find for a failing test changes the test, its scripts or its fixtures.
