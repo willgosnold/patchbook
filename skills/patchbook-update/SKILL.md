@@ -47,15 +47,23 @@ Also read the upstream changes in the sync report for new files or features the 
 
 To retire a change, remove it from `series` and its folder, and add it to `retired.md` with the reason.
 
-Commit each change you repair on its own, as "Carry <change> to upstream <short sha>".
+Commit each change you repair or retire on its own, as "Carry <change> to upstream <short sha>" or "Retire <change>".
 
 ## 4. Test
 
-Run `patchbook build`. The hook builds on each commit, so this usually changes nothing. If it changes files, commit them. Then run the config's `[test]`: a `command` must exit 0, and an `instructions` file is a procedure to follow. Fix a failure if you can, with at most two attempts.
+Run `patchbook build`. The pre-commit hook builds on each commit when the patchbook has no problems, so this usually changes nothing. The hook doesn't build when there are problems, when `hook.enabled` is false, or when the repo's pre-commit hook belongs to another tool. If `patchbook build` fails, problems remain and `patchbook status` exits 1, so ask (step 6). If `git status --porcelain` then lists more than `.patchbook/last-sync.json`, commit the rest, which is build output and `.patchbook/build.lock`. Never commit `.patchbook/last-sync.json`.
+
+Then run the config's `[test]` from the worktree's root: a `command` must exit 0, and an `instructions` file is a procedure to follow. Fix a failure if you can, with at most two attempts, and run the test again after each fix.
 
 ## 5. Review
 
-Start a reviewer with `delegate_task`. Call `orchestrator_capabilities` first. If it lists a provider other than `inheritedProviderInstanceId` with `canRunCrossProviderChildTask` true, set `target` to that provider and the strongest model it lists, with its reasoning option at `high` if it has one. Otherwise omit `target`, so the reviewer runs on this thread's model and effort. Its brief holds:
+Start a reviewer with `delegate_task`. Call `orchestrator_capabilities` first, and choose the reviewer's model from its `providers`:
+
+- Take the first provider, other than `inheritedProviderInstanceId`, with `canRunCrossProviderChildTask` true.
+- Of its models, take the one whose `label` has the highest version number, such as 6.1 in `GPT-6.1-Sol`. On a tie, or when no label has one, take the first listed.
+- If that model has an `effort` or `reasoningEffort` option, set it to the highest of `max`, `xhigh` and `high` that the option lists.
+
+Set `target` to that provider, model and option. If no other provider qualifies, omit `target`, so the reviewer runs on this thread's model and effort. Its brief holds:
 
 - the guide's path;
 - each repaired or retired change, with its intent;
@@ -67,19 +75,19 @@ Ask it, per change: does the result meet the intent on upstream's new text, does
 
 ## 6. Merge, or ask
 
-Merge only on one of these signals:
+Merge only when `patchbook status` exits 0 on the commit you push, and one of these signals holds:
 
-- **Clean.** After the sync, `patchbook status` exited 0 and the sync report had no `replaced_upstream_changed`, and every commit after the sync commit is build output from step 4. A repair, a retirement or a test fix voids it.
-- **Tested.** The config's `[test]` has a `command`, and it exits 0 on the branch's last commit.
+- **Clean.** No upstream's report in `.patchbook/last-sync.json` has a `replaced_upstream_changed` entry. Step 3 found nothing to handle, from a check or from reading upstream's changes. Every commit after the sync commit is build output from step 4, and the rebase below brings in nothing. A repair, a retirement, a test fix or a review fix voids it.
+- **Tested.** The config's `[test]` has a `command`, and it exited 0 on the commit you push. After any later commit, a review fix included, do step 4 again.
 
 An `instructions` test and the review are not signals, since an agent grades both.
 
-Ask the user instead of merging when neither signal holds, or when:
+Ask the user instead of merging when that doesn't hold, or when:
 
 - upstream removed or reworked something an intent depends on, and retiring the change would lose something the user wanted;
 - meeting an intent needs a choice that the intents and the guide don't settle;
 - the review fails twice;
-- a test fails and you can't fix it.
+- a test fails and you can't fix it. A failing `instructions` test counts, even though a passing one is not a signal.
 
 To ask, push the branch (`git push -u origin HEAD`), open a pull request against `$MAIN_BRANCH` and link it with `link_pull_request`, then end with one short message that names the decision. Keep the worktree, since the pull request needs it, and leave the thread active.
 
