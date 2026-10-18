@@ -12,7 +12,7 @@ import { cmdHook, installHook, installHookOrWarn } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, lexists, readText, resolve, writeText } from "./lib/fs.ts";
 import { git, redact, spawn } from "./lib/proc.ts";
-import { quote, rstrip, split, strip, strRepr } from "./lib/py.ts";
+import { quote, rstrip, split, strRepr } from "./lib/py.ts";
 import { decode, decodeReplace } from "./lib/text.ts";
 import { cmdRecord } from "./record.ts";
 import { cmdConfig } from "./settings.ts";
@@ -49,8 +49,8 @@ function writeConfig(root: string, text: string): void {
 
 function tipOf(root: string, label: string, repo: string, branch: string, shown = repo): string {
   const r = spawn(["git", "ls-remote", "--", repo, `refs/heads/${branch}`], { cwd: root });
-  if (r.code !== 0) throw new Fail(redact(`couldn't read ${label} ${shown}:\n${strip(decodeReplace(r.stderr))}`));
-  return split(strip(decode(r.stdout)))[0] ?? "";
+  if (r.code !== 0) throw new Fail(redact(`couldn't read ${label} ${shown}:\n${decodeReplace(r.stderr).trim()}`));
+  return split(decode(r.stdout))[0] ?? "";
 }
 
 function resolveFromCwd(root: string, url: string): string {
