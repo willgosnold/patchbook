@@ -227,7 +227,8 @@ test("test_clone_of_a_patchbook_repo_starts_a_patchbook_of_its_own", () => {
     t.pb(["build"], { cwd: theirs.path });
     theirs.commit("theirs");
 
-    t.pb(["clone", theirs.path, "mine"], { cwd: t.tmp });
+    const cloned = t.pb(["clone", theirs.path, "mine"], { cwd: t.tmp }).stdout;
+    expect(cloned).toContain("Upstream has a .patchbook/ of its own");
     const mine = new Repo(join(t.tmp, "mine"));
     expect(t.pb(["status"], { cwd: mine.path }).stdout).toContain("no problems");
     expect(existsSync(join(mine.path, ".patchbook/changes/theirs-change"))).toBe(false);

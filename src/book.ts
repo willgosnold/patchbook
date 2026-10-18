@@ -277,12 +277,17 @@ export class Book {
   stagedUpstream(): Map<string, File> {
     const staged = new Map<string, File>();
     for (const u of this.upstreams) {
-      const files = u.staged();
+      const files = new Map(Array.from(u.staged()).filter(([p]) => !this.isReserved(p)));
       const clash = Array.from(files.keys()).find((p) => staged.has(p));
       if (clash) throw new Fail(`${clash} comes from two upstreams; give ${u.name} its own mount`);
       for (const [p, f] of files) staged.set(p, f);
     }
     return staged;
+  }
+
+  isReserved(path: string): boolean {
+    if (this.layout.kind !== "fork") return false;
+    return [PB, ...this.upstreams.flatMap((u) => (u.vendor ? [relative(this.root, u.vendor)] : []))].some((k) => under(path, k));
   }
 
   outputRoot(): string {
@@ -295,15 +300,13 @@ export class Book {
     const out = new Map<string, File>();
     if (!exists(root)) return out;
     const rel = root !== this.root ? relative(this.root, root) : "";
-    // In a fork the output is the repo root, minus the patchbook and any vendored copies.
-    const kept = [PB, ...this.upstreams.flatMap((u) => (u.vendor ? [relative(this.root, u.vendor)] : []))];
     const listed = git(["ls-files", "-z", "-co", "--exclude-standard", ...(rel ? ["--", rel] : [])], { cwd: this.root });
     for (const path of listed.split("\0")) {
       if (!path) continue;
       const p = join(this.root, path);
       if (!lexists(p)) continue;
       const key = rel ? path.slice(rel.length + 1) : path;
-      if (this.layout.kind === "fork" && kept.some((k) => under(key, k))) continue;
+      if (this.isReserved(key)) continue;
       out.set(key, readDisk(p));
     }
     return out;

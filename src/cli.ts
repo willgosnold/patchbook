@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // The command line: a table of subcommands, parsed and reported the way Python's argparse does.
 // Also the commands that start a patchbook or follow another upstream, which use every other part.
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import pkg from "../package.json" with { type: "json" };
 import { cmdBuild, cmdScaffold, cmdStatus, writeBuildLock } from "./assemble.ts";
@@ -51,6 +51,8 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   git([...clone, args.url, dest], { cwd: dirname(dest) });
   const branch = git(["branch", "--show-current"], { cwd: dest });
   const commit = git(["rev-parse", "HEAD"], { cwd: dest });
+  const inherited = exists(join(dest, PB));
+  if (inherited) rmSync(join(dest, PB), { recursive: true, force: true });
   const name = defaultName(args.url, "");
   writeConfig(dest, "fork", upstreamToml(name, args.url, "", branch, ""));
   const book = await Book.open(dest);
@@ -67,6 +69,7 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   git(["add", "-A"], { cwd: dest });
   git(["commit", "--quiet", "-m", `Start a patchbook at upstream ${commit.slice(0, 7)}`], { cwd: dest, env: noHook() });
   process.stdout.write(`cloned ${args.url} into ${dest}, pinned at ${commit.slice(0, 7)}.\n`
+    + (inherited ? `Upstream has a ${PB}/ of its own. It is not part of this fork, so patchbook removed it and builds leave it out.\n` : "")
     + "Make your changes and commit: the hook records them in the patchbook and rebuilds.\n"
     + `${SCHEDULE}\n`
     + `To publish it: gh repo create <name> --private --source ${dest} --push\n`);
