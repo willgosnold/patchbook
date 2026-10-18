@@ -30,7 +30,7 @@ function isLocalPath(remote: string): boolean {
 }
 
 export function absoluteRemote(remote: string): string {
-  return remote && isLocalPath(remote) ? posix.resolve(remote) : remote;
+  return remote && !remote.startsWith("-") && isLocalPath(remote) ? posix.resolve(remote) : remote;
 }
 
 function field(spec: Table, key: string, fallback: string): string {
@@ -63,6 +63,9 @@ export class Upstream {
     this.path = strip(field(spec, "path", ""), "/");
     this.branch = field(spec, "branch", "main");
     this.name = field(spec, "name", "") || defaultName(this.remote, this.path);
+    if (this.remote.startsWith("-")) {
+      throw new Fail(`upstream ${this.name}'s remote ${JSON.stringify(this.remote)} starts with "-", so git would read it as an option.`);
+    }
     if (isLocalPath(this.remote) && !posix.isAbsolute(this.remote)) {
       throw new Fail(
         `upstream ${this.name}'s remote ${JSON.stringify(this.remote)} is a relative path, so it names a different repo from each folder. `
