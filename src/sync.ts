@@ -226,10 +226,18 @@ const spell = (pin: Pin) => `${pin.commit ?? ""} ${pin.tree ?? ""}`;
 /** `to` is the lock that marks the sync finished, or "" for a rewrite under an unmoved pin, which no lock does. A rewrite changes only the vendored copy, so it is undone whatever the lock says. `made` is the highest folder the sync makes for a vendored copy that was not there, or "". */
 type Journal = { from: string; to: string; added: string; vendor: string; copy: boolean; made: string };
 
+/** What a journal holds besides its record and `.gitignore`. A sync can't start while one is left from an earlier sync, because recovering it would put back the earlier sync's files. */
+const PAYLOADS = ["lock", "pin.tmp", "next", "old", "before"];
+
 function begin(book: Book, u: Upstream, from: Pin, to: Required<Pin> | null): void {
   const j = journal(book, u);
+  const stale = PAYLOADS.find((p) => lexists(join(j, p)));
+  if (stale) {
+    throw new Fail(`couldn't delete ${relative(book.root, join(j, stale))}, left by an earlier sync of ${u.name}, so this sync can't start. `
+      + "Make it writable and delete it by hand, then sync again.");
+  }
   mkdirs(j);
-  writeText(join(j, ".gitignore"), "*\n");
+  ignoreAll(j);
   let made = u.vendor && !lexists(u.vendor) ? u.vendor : "";
   while (made && !lexists(dirname(made))) made = dirname(made);
   const record: Journal = {
@@ -355,20 +363,30 @@ function putReport(p: string, was: string): void {
   if (!exists(p) || !bytesEqual(readFileSync(p), data)) writeFileSync(p, data);
 }
 
-/** Delete a journal: its record first, so a kill leaves nothing to undo, and its `.gitignore` last, so git ignores what stays. Nothing else in it is needed once the record is gone, so a part it can't delete, such as a read-only folder in the old copy, moves into `left/`, out of the next journal's way, for a later sync to try again. */
+/** Delete a journal: its record first, so a kill leaves nothing to undo, and its `.gitignore` last, so git ignores what stays. Nothing else in it is needed once the record is gone, so the rest is best effort. A part it can't delete, such as a read-only folder in the old copy, moves into `left/`, out of the next journal's way, and whatever stays waits, ignored, for a later sync to try again. */
 function drop(j: string): void {
   if (lexists(j) && !lstatSync(j).isDirectory()) return rmSync(j);
   rmSync(join(j, "pin"), { force: true });
-  for (const payload of ["lock", "pin.tmp", "next", "old", "before", "left"]) {
-    try {
-      rmSync(join(j, payload), { recursive: true, force: true });
-    } catch {
-      if (payload === "left") return;
-      mkdirs(join(j, "left"));
-      renameSync(join(j, payload), join(j, "left", `${payload}-${Date.now()}`));
+  try {
+    for (const payload of PAYLOADS) {
+      try {
+        rmSync(join(j, payload), { recursive: true, force: true });
+      } catch {
+        mkdirs(join(j, "left"));
+        renameSync(join(j, payload), join(j, "left", `${payload}-${Date.now()}`));
+      }
     }
+    rmSync(join(j, "left"), { recursive: true, force: true });
+    rmSync(j, { recursive: true, force: true });
+  } catch {
+    ignoreAll(j);
   }
-  rmSync(j, { recursive: true, force: true });
+}
+
+/** Make git ignore all of a journal. Writing the file empties it for a moment, and `left/` may hold files then, so it is written only when it says something else. */
+function ignoreAll(j: string): void {
+  const p = join(j, ".gitignore");
+  if (!exists(p) || readText(p) !== "*\n") writeText(p, "*\n");
 }
 
 function warnLeft(book: Book, u: Upstream): void {
