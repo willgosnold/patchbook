@@ -50,13 +50,13 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   if (exists(dest)) throw new Fail(`${dest} already exists`);
   const clone = ["clone", "--quiet", "--origin", "upstream", ...(args.branch ? ["--branch", args.branch] : [])];
   git([...clone, args.url, dest], { cwd: dirname(dest) });
-  const url = git(["config", "--get", "remote.upstream.url"], { cwd: dest }); // git records a local path as absolute, so the fork can fetch it from its own root
+  const remote = git(["config", "--get", "remote.upstream.url"], { cwd: dest }); // git stores a local path as an absolute one
   const branch = git(["branch", "--show-current"], { cwd: dest });
   const commit = git(["rev-parse", "HEAD"], { cwd: dest });
   const inherited = lexists(join(dest, PB));
   if (inherited) rmSync(join(dest, PB), { recursive: true, force: true });
   const name = defaultName(args.url, "");
-  writeConfig(dest, "fork", upstreamToml(name, url, "", branch, ""));
+  writeConfig(dest, "fork", upstreamToml(name, remote, "", branch, ""));
   const book = await Book.open(dest);
   book.writeLock(name, commit, git(["rev-parse", "HEAD^{tree}"], { cwd: dest }));
   writeBuildLock(book, book.currentOutput());

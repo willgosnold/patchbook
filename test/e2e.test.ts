@@ -718,13 +718,13 @@ describe("ForkTest", () => {
     }
   });
 
-  forkTest("test_a_fork_cloned_from_a_relative_path_syncs", (t) => {
+  forkTest("test_a_fork_cloned_from_a_relative_path_pins_upstream_not_itself", (t) => {
     const sub = join(t.tmp, "sub");
     const bare = join(t.tmp, "up.git");
     mkdirSync(sub);
     sh(["git", "clone", "-q", "--bare", t.up.path, bare], { cwd: t.tmp });
     t.pb(["clone", "../upstream", "rel"], { cwd: sub });
-    t.pb(["clone", "../up"], { cwd: sub }); // git finds ../up.git, and from this fork's root ../up is the fork itself
+    t.pb(["clone", "../up", "up"], { cwd: sub });
     t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
     const head = t.up.commit("upstream edit");
     sh(["git", "push", "-q", bare, "main"], { cwd: t.up.path });

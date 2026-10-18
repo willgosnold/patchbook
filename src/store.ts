@@ -119,7 +119,6 @@ export class Upstream {
     if (!this.has(commit)) this.fetch(commit);
   }
 
-  /** Pin a commit with a ref, so gc keeps it. Only pins get one: a head that was just looked at stays prunable. A ref already there is not written again. */
   keep(commit: string): string {
     this.have(commit);
     if (!this.kept(commit)) git(["update-ref", `refs/pins/${commit}`, commit], { cwd: this.gitDir() });
