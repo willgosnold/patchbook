@@ -8540,22 +8540,38 @@ describe("VendorTest", () => {
     expect(read(join(t.repo.path, ".patchbook/changes/keep-the-skill/CHANGE.md"))).toContain("- add skills/hello/SKILL.md");
   });
 
-  vendorTest("test_record_reads_a_copy_shared_by_two_outputs_before_writing_either", (t) => {
-    t.missingScaffoldPatchBuild();
+  const holderAndTwin = (t: VendorCase, copy: string): string => {
     const changes = join(t.repo.path, ".patchbook/changes");
     mkdirSync(join(changes, "holder/ours/skills/hello"), { recursive: true });
-    writeFileSync(join(changes, "holder/ours/skills/hello/tpl.md.pb"), "Then {{snippet:greet}}\n");
+    writeFileSync(join(changes, "holder/ours/skills/hello/tpl.md.pb"), copy);
     writeFileSync(join(changes, "holder/CHANGE.md"), "# holder\n\nintent: Greet.\n\nedits:\n- add skills/hello/tpl.md\n");
     mkdirSync(join(changes, "twin"));
     writeFileSync(join(changes, "twin/CHANGE.md"), "# twin\n\nintent: Greet twice.\n\nedits:\n- copy skills/hello/tpl.md -> skills/hello/tpl2.md\n");
     const series = join(t.repo.path, ".patchbook/series");
     writeFileSync(series, (existsSync(series) ? read(series) : "") + "holder\ntwin\n");
     t.pb(["build"], { cwd: t.repo.path });
+    return join(changes, "holder/ours/skills/hello/tpl.md.pb");
+  };
+  const shared = (path: string, other: string) =>
+    `skipped  ${path}: its copy in holder also builds ${other}, which this record changes too; edit that copy directly\n`;
+
+  vendorTest("test_record_skips_two_outputs_that_share_one_copy_when_both_are_edited", (t) => {
+    t.missingScaffoldPatchBuild();
+    const copy = holderAndTwin(t, "Then hi.\n");
+    t.repo.write("skills/hello/tpl.md", "Then hey.\n");
+    t.repo.write("skills/hello/tpl2.md", "Then yo.\n");
+    expect(t.pb(["record"], { cwd: t.repo.path }).stdout).toBe(shared("hello/tpl.md", "hello/tpl2.md") + shared("hello/tpl2.md", "hello/tpl.md"));
+    expect(read(copy)).toBe("Then hi.\n");
+  });
+
+  vendorTest("test_record_skips_a_delete_and_an_edit_of_two_outputs_that_share_one_copy", (t) => {
+    t.missingScaffoldPatchBuild();
+    const copy = holderAndTwin(t, "Then {{snippet:greet}}\n");
     unlinkSync(join(t.repo.path, "skills/hello/tpl.md"));
     t.repo.write("skills/hello/tpl2.md", "Then hi.\n");
-    expect(t.pb(["record"], { cwd: t.repo.path }).stdout)
-      .toBe("unadd    hello/tpl.md (from holder)\nskipped  hello/tpl2.md: its copy in holder uses placeholders; edit that copy directly\n");
-    expect(existsSync(join(changes, "holder/ours/skills/hello/tpl.md.pb"))).toBe(false);
+    expect(t.pb(["record"], { cwd: t.repo.path }).stdout).toBe(shared("hello/tpl.md", "hello/tpl2.md") + shared("hello/tpl2.md", "hello/tpl.md"));
+    expect(read(copy)).toBe("Then {{snippet:greet}}\n");
+    expect(read(join(t.repo.path, ".patchbook/changes/holder/CHANGE.md"))).toContain("- add skills/hello/tpl.md");
   });
 
   vendorTest("test_record_ignores_output_the_patchbook_changed", (t) => {

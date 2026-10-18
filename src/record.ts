@@ -127,7 +127,30 @@ export type Snapshot = {
   plan(rel: string, path: string, built: File, now: File): Plan | string;
 };
 
-export function classify(s: Snapshot, path: string): Edited {
+/** When more than one output built from one copy changes, none is recorded, since each would overwrite the copy the others wrote. */
+export function classify(s: Snapshot, paths: readonly string[]): Edited[] {
+  const sharers = new Map<string, string[]>();
+  for (const p of paths) {
+    const copy = copyOf(s, p);
+    if (copy) sharers.set(copy.key, [...(sharers.get(copy.key) ?? []), p]);
+  }
+  return paths.map((path) => {
+    const copy = copyOf(s, path);
+    const others = copy ? sharers.get(copy.key)!.filter((p) => p !== path) : [];
+    if (!copy || !others.length) return classifyOne(s, path);
+    return { kind: "skip", path, reason: `${copy.said} also builds ${others.join(", ")}, which this record changes too; ${copy.fix}` };
+  });
+}
+
+/** The copy an edit to this output is recorded into. Deleting an upstream output only deletes that path, so it shares nothing. */
+function copyOf(s: Snapshot, path: string): { key: string; said: string; fix: string } | null {
+  const src = s.out.has(path) ? s.sources.get(path) : undefined;
+  if (src?.kind === "ours") return { key: `changes/${src.change}/${src.path}`, said: `its copy in ${src.change}`, fix: "edit that copy directly" };
+  if (src?.kind === "up" && s.current.has(path)) return { key: `upstream/${src.path}`, said: `upstream's ${src.path}`, fix: "edit only one of them" };
+  return null;
+}
+
+function classifyOne(s: Snapshot, path: string): Edited {
   const now = s.current.get(path);
   const built = s.out.get(path);
   const src = s.sources.get(path);
@@ -227,7 +250,7 @@ export function record(book: Book, change: string | null, intent: string | null,
   if (!edited.length) return { text: "no hand edits to the output since the last build; nothing to record\n" };
   refuseLinkTurnedFile(a, current, edited);
   const s = snapshot(book, a, current, changes);
-  const edits = edited.map((p) => classify(s, p));
+  const edits = classify(s, edited);
 
   const given = intent === null ? null : oneLine(intent) || null;
   const ask = asked(edits);

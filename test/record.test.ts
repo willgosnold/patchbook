@@ -61,25 +61,55 @@ const world: Snapshot = {
   plan: (rel) => plans.get(rel) ?? "no plan",
 };
 
+const one = (w: Snapshot, path: string): Edited => classify(w, [path])[0]!;
+
 test.each(cases)("%s", (path, _built, _disk, _source, is, needsName) => {
-  const e = classify(world, path);
+  const e = one(world, path);
   expect(e).toMatchObject({ path, ...is });
   expect(needOf(e).named).toBe(needsName);
 });
 
 test("an owned file edit goes to the very change that owns it", () => {
-  const e = classify(world, "owned.md");
+  const e = one(world, "owned.md");
   expect(e.kind === "file-edit" && e.to.kind === "owned" && e.to.change).toBe(owner);
 });
 
 test("a paragraph edit needs an intent only for its new entries that have none", () => {
   const w = { ...world, out: new Map([["para-new.md", f("up")]]), current: new Map([["para-new.md", f("edited")]]),
     sources: new Map([["para-new.md", up("skills/para-new.md")]]) };
-  expect(needOf(classify(w, "para-new.md"))).toEqual({ named: false, drafts: [fresh] });
-  expect(needOf(classify(world, "para.md"))).toEqual({ named: false, drafts: [] });
+  expect(needOf(one(w, "para-new.md"))).toEqual({ named: false, drafts: [fresh] });
+  expect(needOf(one(world, "para.md"))).toEqual({ named: false, drafts: [] });
 });
 
 test("a path built from nothing throws while classifying", () => {
   const w = { ...world, out: new Map([["ghost.md", f("x")]]), current: new Map([["ghost.md", f("y")]]) };
-  expect(() => classify(w, "ghost.md")).toThrow("ghost.md is built from nothing");
+  expect(() => one(w, "ghost.md")).toThrow("ghost.md is built from nothing");
+});
+
+const twins = (sources: [string, Source][], edits: Record<string, string | null>): Snapshot => ({
+  ...world,
+  out: new Map(sources.map(([p]) => [p, f("built")])),
+  current: new Map(Object.entries(edits).flatMap(([p, t]) => (t === null ? [] : [[p, f(t)] as const]))),
+  sources: new Map(sources),
+});
+
+test("outputs built from one ours copy are all skipped when more than one is edited or deleted", () => {
+  const w = twins([["new.md", ours(added, "skills/new.md")], ["new2.md", ours(added, "skills/new.md")], ["new3.md", ours(added, "skills/new.md")]],
+    { "new.md": "a", "new2.md": null, "new3.md": "built" });
+  expect(classify(w, ["new.md", "new2.md"])).toEqual([
+    { kind: "skip", path: "new.md", reason: "its copy in added also builds new2.md, which this record changes too; edit that copy directly" },
+    { kind: "skip", path: "new2.md", reason: "its copy in added also builds new.md, which this record changes too; edit that copy directly" },
+  ]);
+  expect(classify(w, ["new.md"])).toMatchObject([{ kind: "update-ours", path: "new.md" }]);
+});
+
+test("outputs built from one upstream file are all skipped when more than one is edited, but a delete stands alone", () => {
+  const w = twins([["plain.md", up("skills/plain.md")], ["plain2.md", up("skills/plain.md")], ["plain3.md", up("skills/plain.md")]],
+    { "plain.md": "a", "plain2.md": "b", "plain3.md": null });
+  expect(classify(w, ["plain.md", "plain2.md", "plain3.md"])).toMatchObject([
+    { kind: "skip", path: "plain.md", reason: "upstream's skills/plain.md also builds plain2.md, which this record changes too; edit only one of them" },
+    { kind: "skip", path: "plain2.md", reason: "upstream's skills/plain.md also builds plain.md, which this record changes too; edit only one of them" },
+    { kind: "delete-upstream", path: "plain3.md", staged: "skills/plain3.md" },
+  ]);
+  expect(classify(w, ["plain.md", "plain3.md"])).toMatchObject([{ kind: "file-edit", path: "plain.md" }, { kind: "delete-upstream", path: "plain3.md" }]);
 });
