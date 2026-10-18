@@ -17,7 +17,7 @@ import { quoteToml } from "./lib/toml.ts";
 import { cmdRecord } from "./record.ts";
 import { checkUpstreamRemote, notThisRepo } from "./remote.ts";
 import { cmdConfig } from "./settings.ts";
-import { installSkill, SCHEDULE } from "./skill.ts";
+import { cmdSkill, installSkill, recordSkill, SCHEDULE } from "./skill.ts";
 import { absoluteRemote, defaultName, cmdUpstream } from "./store.ts";
 import { cmdCheck, cmdSync, syncUpstream } from "./sync.ts";
 
@@ -70,10 +70,7 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   installHook(dest);
   if (installSkill(book)) {
     process.chdir(dest);
-    await cmdRecord({
-      change: "patchbook-update-skill",
-      intent: "Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.",
-    });
+    await recordSkill(book);
   }
   git(["add", "-A"], { cwd: dest });
   git(["commit", "--quiet", "-m", `Start a patchbook at upstream ${commit.slice(0, 7)}`], { cwd: dest, env: noHook() });
@@ -259,6 +256,11 @@ const COMMANDS = new Map<string, Command>([
     help: "install the pre-commit hook, or run it",
     positionals: [{ dest: "action", choices: ["install", "run"] }],
     run: (a) => cmdHook({ action: a.text("action") === "install" ? "install" : "run" }),
+  }],
+  ["skill", {
+    help: "write this patchbook's update skill into the repo",
+    positionals: [{ dest: "action", choices: ["install"] }],
+    run: () => cmdSkill(),
   }],
   ["config", {
     help: "show settings and where each comes from, or set one",
