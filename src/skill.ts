@@ -79,7 +79,6 @@ export function installSkill(book: Book): { changed: string[]; left: string[] } 
 
 const ownsSkill = (p: string) => p === FILE || p === LINK;
 
-/** Whether the file or link at `p` is already what `installSkill` writes. */
 function installed(book: Book, p: string): boolean {
   const at = join(book.root, p);
   if (p === FILE) return exists(at) && readText(at) === skill;
