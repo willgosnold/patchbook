@@ -51,6 +51,14 @@ const dropRefs = (store: string): void => {
   }
 };
 
+/** A script on the test's PATH that leaves a marker file when it runs, so a test can see whether git ran it. */
+const markerScript = (t: Case, name: string): string => {
+  const marker = join(t.tmp, `${name}-ran`);
+  writeFileSync(join(t.tmp, "bin", name), `#!/bin/sh\ntouch ${marker}\nexit 1\n`, { mode: 0o755 });
+  return marker;
+};
+const setRemote = (config: string, remote: string): void => writeFileSync(config, read(config).replace(/^remote = .*$/m, `remote = "${remote}"`));
+
 const snapshot = (dir: string): Record<string, string> =>
   Object.fromEntries(
     (readdirSync(dir, { recursive: true }) as string[]).filter((p) => statSync(join(dir, p)).isFile()).sort().map((p) => [p, read(join(dir, p))]),
@@ -805,6 +813,33 @@ describe("ForkTest", () => {
       expect(read(join(t.fork.path, ".patchbook/config.toml"))).toBe(config);
       expect(t.fork.read(".patchbook/upstream.lock")).toBe(lock);
     }
+  });
+
+  forkTest("test_a_remote_helper_in_a_cloned_forks_config_runs_only_if_the_users_git_config_allows_it_and_ext_never_runs", (t) => {
+    const helperRan = markerScript(t, "git-remote-pbtest");
+    const extRan = markerScript(t, "pbtest-ext");
+    const origin = join(t.tmp, "origin.git");
+    sh(["git", "init", "-q", "--bare", origin], { cwd: t.tmp });
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.commit("upstream edit");
+    t.pb(["sync"], { cwd: t.fork.path });
+    setRemote(join(t.fork.path, ".patchbook/config.toml"), "pbtest::x");
+    t.fork.commit("Sync upstream");
+    sh(["git", "push", "-q", origin, "HEAD:main"], { cwd: t.fork.path });
+    sh(["git", "clone", "-q", "-b", "main", origin, "fresh"], { cwd: t.tmp });
+    const fresh = join(t.tmp, "fresh");
+    for (const command of ["check", "status"]) {
+      expect(t.pb([command], { cwd: fresh, code: 1 }).stderr).toContain("transport 'pbtest' not allowed");
+    }
+    expect(existsSync(helperRan)).toBe(false);
+    const gitconfig = join(t.tmp, "gitconfig");
+    writeFileSync(gitconfig, '[protocol "pbtest"]\n\tallow = always\n[protocol "ext"]\n\tallow = always\n');
+    t.env["GIT_CONFIG_GLOBAL"] = gitconfig;
+    t.pb(["check"], { cwd: fresh, code: 1 });
+    expect(existsSync(helperRan)).toBe(true);
+    setRemote(join(fresh, ".patchbook/config.toml"), `ext::${join(t.tmp, "bin/pbtest-ext")}`);
+    expect(t.pb(["check"], { cwd: fresh, code: 1 }).stderr).toContain("transport 'ext' not allowed");
+    expect(existsSync(extRan)).toBe(false);
   });
 
   forkTest("test_init_pins_from_the_upstream_option_when_an_upstream_remote_points_elsewhere", (t) => {
@@ -1959,6 +1994,17 @@ exec '${Bun.which("git")}' "$@"
     expect(out.stderr).toContain("overlaps the vendored copy skills");
     expect(read(config)).toBe(before);
     t.pb(["track", "extra", extra.path], { cwd: t.repo.path });
+  });
+
+  vendorTest("test_a_remote_helper_in_a_cloned_config_is_refused_for_a_store_upstream", (t) => {
+    const helperRan = markerScript(t, "git-remote-pbtest");
+    setRemote(join(t.repo.path, ".patchbook/config.toml"), "pbtest::x");
+    t.repo.commit("follow a remote helper");
+    sh(["git", "clone", "-q", t.repo.path, "fresh"], { cwd: t.tmp });
+    for (const command of ["check", "status"]) {
+      expect(t.pb([command], { cwd: join(t.tmp, "fresh"), code: 1 }).stderr).toContain("transport 'pbtest' not allowed");
+    }
+    expect(existsSync(helperRan)).toBe(false);
   });
 
   vendorTest("test_build_never_changes_the_git_dir_of_a_linked_worktree", (t) => {
