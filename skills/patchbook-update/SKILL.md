@@ -57,7 +57,7 @@ Before you build, run `git status --porcelain`. If it lists anything but `.patch
 
 Run `patchbook build`. The pre-commit hook builds on each commit when the patchbook has no problems, so this usually changes nothing. The hook doesn't build when there are problems, when `hook.enabled` is false, or when the repo's pre-commit hook belongs to another tool and doesn't run `patchbook hook run`. If `patchbook build` fails, quote its message and ask (step 6). If `git status --porcelain` then lists more than `.patchbook/last-sync.json`, commit it as one build commit. It holds only what `patchbook build` wrote: output files and `.patchbook/build.lock`.
 
-Then run the config's `[test]` from the worktree's root: a `command` must exit 0, and an `instructions` file is a procedure to follow. Fix a failure if you can, with at most two attempts. Commit each fix on its own, as "Fix test: <what>", then do step 4 again.
+Then run the `[test]` from the config on `origin/$MAIN_BRANCH` (`git show origin/$MAIN_BRANCH:.patchbook/config.toml`), not the branch's copy, from the worktree's root: a `command` must exit 0, and an `instructions` file is a procedure to follow. Fix a failure if you can, with at most two attempts. Commit each fix on its own, as "Fix test: <what>", then do step 4 again.
 
 ## 5. Review
 
@@ -82,7 +82,7 @@ Ask it, per change: does the result meet the intent on upstream's new text, does
 Merge only when, on the commit you push, `patchbook status` exits 0, `patchbook build` exits 0 and `git status --porcelain --untracked-files=no` then prints nothing, and one of these signals holds:
 
 - **Clean.** Every upstream's report in `.patchbook/last-sync.json` has an empty `replaced_upstream_changed` list. Step 3 found nothing to handle, from a check or from reading upstream's changes. The only commit after the sync commit, if any, is step 4's build commit, and the rebase below brings in no commits. A repair, a retirement, a test fix or a review fix voids it.
-- **Tested.** The config's `[test]` has a `command`, and it exited 0 on the commit you push. After any later commit, a review fix included, do step 4 again.
+- **Tested.** The `[test]` on `origin/$MAIN_BRANCH` has a `command`, and it exited 0 on the commit you push. After any later commit, a review fix included, do step 4 again.
 
 An `instructions` test and the review are not signals, since an agent grades both.
 
@@ -93,7 +93,8 @@ Ask the user instead of merging when that doesn't hold, or when:
 - the second review round returns a fail for any change;
 - a test fails and you can't fix it. A failing `instructions` test counts, even though a passing one is not a signal;
 - a test leaves tracked files changed (`git status --porcelain --untracked-files=no` prints something), even if it passed;
-- a `replaced_upstream_changed` entry in any upstream's report has no step 3 commit that names its file.
+- a `replaced_upstream_changed` entry in any upstream's report has no step 3 commit that names its file;
+- the branch changes `[test]` in `.patchbook/config.toml` (see `git diff origin/$MAIN_BRANCH...HEAD -- .patchbook/config.toml`).
 
 To ask, push the branch (`git push -u origin HEAD`), open a pull request against `$MAIN_BRANCH` and link it with `link_pull_request`, then end with one short message that names the decision. Keep the worktree, since the pull request needs it, and leave the thread active.
 
