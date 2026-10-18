@@ -58,8 +58,8 @@ export class Upstream {
   readonly vendor: string | null;
 
   constructor(readonly book: Book, spec: Table) {
-    if (!Object.hasOwn(spec, "remote")) throw new Fail("an [[upstream]] needs a remote");
     this.remote = field(spec, "remote", "");
+    if (!this.remote) throw new Fail("an [[upstream]] needs a remote");
     this.path = strip(field(spec, "path", ""), "/");
     this.branch = field(spec, "branch", "main");
     this.name = field(spec, "name", "") || defaultName(this.remote, this.path);
