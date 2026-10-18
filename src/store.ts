@@ -23,13 +23,12 @@ export function defaultName(remote: string, path: string): string {
 
 const rstrip = (s: string) => s.replace(/\/+$/, "");
 
-/** git's rule: a remote with no `://`, and no `:` before its first `/`, is a local path. */
+/** git's url_is_local_not_ssh, so a remote is a local path exactly when git treats it as one. */
 function isLocalPath(remote: string): boolean {
   const colon = remote.indexOf(":");
   return !remote.includes("://") && (colon === -1 || remote.slice(0, colon).includes("/"));
 }
 
-/** A local upstream as an absolute path, so config.toml names the same repo from every folder. */
 export function absoluteRemote(remote: string): string {
   return isLocalPath(remote) ? posix.resolve(remote) : remote;
 }
