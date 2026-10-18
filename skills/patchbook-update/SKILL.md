@@ -9,7 +9,7 @@ This repo keeps its changes to one or more upstream repos in `.patchbook/`. Read
 
 Never edit the build output, or a vendored copy, by hand. Change the patchbook, then build. A pre-commit hook rebuilds on each commit once the patchbook has no problems, so a commit may include the rebuilt output. That's expected.
 
-Stage every commit with `git add -A -- . ':!.patchbook/last-sync.json'`. Never commit `.patchbook/last-sync.json`.
+Never commit `.patchbook/last-sync.json`. To stage everything, use `git add -A -- . ':!.patchbook/last-sync.json'`. To commit one thing, stage its paths.
 
 To read an upstream, use `patchbook upstream <name>`: `<name> <path>` prints a file at the pin, `--diff` shows what upstream changed in the last sync, and `--export <dir>` writes it all out for searching. Export outside the worktree.
 
@@ -53,7 +53,7 @@ Commit each change you repair or retire on its own, as "Carry <change> to upstre
 
 ## 4. Test
 
-Before you build, run `git status --porcelain`. Delete anything you or a test wrote that doesn't belong in the repo, such as an export or notes. If it then lists anything but `.patchbook/last-sync.json`, commit each change or fix it lists on its own, with a message that says what it is. If you can't say what something is, ask (step 6).
+Before you build, run `git status --porcelain`. Delete anything you or a test wrote that doesn't belong in the repo, such as an export or notes, but keep `.patchbook/last-sync.json`. If it then lists anything but `.patchbook/last-sync.json`, commit each change or fix it lists on its own, with a message that says what it is. If you can't say what something is, ask (step 6).
 
 Run `patchbook build`. The pre-commit hook builds on each commit when the patchbook has no problems, so this usually changes nothing. The hook doesn't build when there are problems, when `hook.enabled` is false, or when the repo's pre-commit hook belongs to another tool and doesn't run `patchbook hook run`. If `patchbook build` fails, quote its message and ask (step 6). If `git status --porcelain` then lists more than `.patchbook/last-sync.json`, commit it as one build commit. It holds only what `patchbook build` wrote: output files and `.patchbook/build.lock`.
 
