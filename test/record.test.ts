@@ -107,9 +107,10 @@ test("outputs built from one ours copy are all skipped when more than one is edi
   expect(classify(w, ["new.md"])).toMatchObject([{ kind: "update-ours", path: "new.md" }]);
 });
 
-test("deleting an output of an ours copy that another output still builds deletes it instead of dropping the copy", () => {
-  const w = twins([["new.md", ours(added, "skills/new.md")], ["new2.md", ours(added, "skills/new.md")]], { "new.md": "built", "new2.md": null });
-  expect(classify(w, ["new2.md"])).toMatchObject([{ kind: "delete-upstream", path: "new2.md", staged: "skills/new2.md" }]);
+test("deleting an output of an ours copy that a copy edit reads deletes it instead of dropping the copy", () => {
+  const copier = change("copier", [{ kind: "copy", path: "skills/new.md", dest: "skills/new2.md" }]);
+  const w = { ...twins([["new.md", ours(added, "skills/new.md")]], { "new.md": null }), changes: new Map([added, copier].map((c) => [c.name, c])) };
+  expect(classify(w, ["new.md"])).toMatchObject([{ kind: "delete-upstream", path: "new.md", staged: "skills/new.md" }]);
   const alone = twins([["new.md", ours(added, "skills/new.md")]], { "new.md": null });
   expect(classify(alone, ["new.md"])).toMatchObject([{ kind: "unadd", path: "new.md" }]);
 });

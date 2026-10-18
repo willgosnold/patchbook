@@ -7459,13 +7459,34 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(out.stdout).toBe("delete   docs/guide.md (replace removed from rep)\n");
   });
 
-  forkTest("test_record_deleting_the_output_of_a_replace_prints_no_note_when_a_change_cannot_be_saved", (t) => {
+  forkTest("test_record_deleting_the_output_of_a_replace_prints_no_note_when_the_second_change_cannot_be_saved", (t) => {
+    if (process.getuid?.() === 0) return;
     handChange(t, "rep", "Replace the guide.", ["replace docs/guide.md"], { "docs/guide.md": "replaced\n" });
+    handChange(t, "late", "Late.", ["add notes/late.txt"], { "notes/late.txt": "late\n" });
     t.pb(["build"], { cwd: t.fork.path });
     t.fork.rm("docs/guide.md");
-    mkdirSync(join(t.fork.path, ".patchbook/changes/dropguide/CHANGE.md"), { recursive: true });
-    const out = t.pb(["record", "dropguide", "--intent", "Drop the guide."], { cwd: t.fork.path, code: 1 });
-    expect(out.stdout).toBe("");
+    const dir = join(t.fork.path, ".patchbook/changes/late");
+    chmodSync(join(dir, "CHANGE.md"), 0o444);
+    chmodSync(dir, 0o555);
+    try {
+      const out = t.pb(["record", "late"], { cwd: t.fork.path, code: 1 });
+      expect(out.stdout).toBe("");
+    } finally {
+      chmodSync(dir, 0o755);
+    }
+  });
+
+  forkTest("test_record_deleting_the_source_of_a_copy_that_was_never_built_keeps_the_copy", (t) => {
+    handChange(t, "addn", "Add n.", ["add notes/n.txt"], { "notes/n.txt": "new\n" });
+    t.pb(["build"], { cwd: t.fork.path });
+    handChange(t, "cp", "Copy n.", ["copy notes/n.txt -> manual/n.txt"]);
+    t.fork.rm("notes/n.txt");
+    const out = t.pb(["record", "dropit", "--intent", "Drop it."], { cwd: t.fork.path });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(outputs(t)["manual/n.txt"]).toBe("new\n");
+    expect(existsSync(join(t.fork.path, "notes/n.txt"))).toBe(false);
+    expect(out.stdout).toBe("delete   notes/n.txt\n");
   });
 
   forkTest("test_record_unadd_that_empties_the_named_change_saves_it_and_keeps_it", (t) => {

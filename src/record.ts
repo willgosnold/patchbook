@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { Problem } from "./api.ts";
 import { assemble, type Assembly, blockFiles, describe, handEdits, readBuildLock, type Source, writeBuildLines } from "./assemble.ts";
 import { blockHash, blockSpans, type Entry, entriesPath, formatEntry, patchBlocks, PLACEHOLDER_HINT, readEntries, Rules } from "./blocks.ts";
-import { Book, PB } from "./book.ts";
+import { Book, PB, under } from "./book.ts";
 import { appendSeries, CHANGE_NAME, Change, notAChangeName, readSeries, Roster, saveChange } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
@@ -161,9 +161,9 @@ function sharedSource(s: Snapshot, path: string): Source | null {
 const stillBuilt = (s: Snapshot, rel: string): boolean =>
   Array.from(s.sources).some(([p, src]) => src.kind === "up" && src.path === rel && s.current.has(p));
 
-/** Whether another output on disk is still built from the same ours copy, as a `copy` destination is. */
-const copyOutlives = (s: Snapshot, path: string, src: Extract<Source, { kind: "ours" }>): boolean =>
-  Array.from(s.sources).some(([p, o]) => p !== path && o.kind === "ours" && o.change === src.change && o.path === src.path && s.current.has(p));
+/** Whether a move or copy edit reads the ours copy at `path`, even if its output was never built. */
+const readByMoveOrCopy = (s: Snapshot, path: string): boolean =>
+  Array.from(s.changes.values()).some((c) => c.edits.some((e) => (e.kind === "move" || e.kind === "copy") && under(path, e.path)));
 
 const unitKey = (src: Source) => JSON.stringify(src.kind === "ours" ? ["ours", src.change, src.path] : ["up", src.path]);
 
@@ -183,7 +183,7 @@ function classifyOne(s: Snapshot, path: string): Edited {
     if (now === undefined) {
       const staged = s.prefix + path;
       // A moved or copied output, or a copy another output still needs, is deleted. Dropping its add or replace would break the move or copy.
-      if (src.path !== staged || copyOutlives(s, path, src)) return { kind: "delete-upstream", path, staged, entries: null };
+      if (src.path !== staged || readByMoveOrCopy(s, src.path)) return { kind: "delete-upstream", path, staged, entries: null };
       return { kind: change.edits.some((e) => e.kind === "add" && e.path === src.path) ? "unadd" : "unreplace", ...copy };
     }
     if (decodeReplace(change.read("ours", src.path) ?? new Uint8Array()).search(PLACEHOLDER_HINT) !== -1) {
