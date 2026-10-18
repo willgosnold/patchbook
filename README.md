@@ -67,6 +67,7 @@ patchbook sync && patchbook status && patchbook build
 - Every change has an intent.
 - A change name is lowercase letters, digits and dashes, starting with a letter or digit. If a change has any other name, an edit path that isn't a clean path inside the tree (`../x`, `/x`, `./x`, `a//b`), or an edit that writes into `.patchbook` or `.git`, the hook refuses the commit and leaves everything as it was. Any other problem that `status` reports only skips the build, with a warning. The build's own safety checks still stop a commit.
 - `patchbook status` lists what's broken, and `patchbook build` won't run until it's fixed.
+- In a fork, take upstream's updates with `patchbook sync`, never by merging or pulling the `upstream` remote (`git merge upstream/main`, `git pull upstream`, or a bare `git pull` on a branch `clone` made). A git merge brings in upstream's files without moving the pin, so the next commit records upstream's changes as your own edits.
 
 ## More
 
