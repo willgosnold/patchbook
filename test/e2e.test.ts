@@ -6697,7 +6697,56 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
       expect(lastSync(t).upstream.to).toBe(second);
       expect(lock()).not.toBe(pinned);
     });
+
+    const secondEdits = [
+      ["merge", "four", "FOUR", "1 of ours merged cleanly, 0 conflicts", { merged: [{ change: "feature", path: "app.txt" }], conflicts: [] }],
+      ["conflict", "two", "TWO_UP", "0 of ours merged cleanly, 1 conflicts", { merged: [], conflicts: [{ change: "feature", path: "app.txt", count: 1 }] }],
+    ] as const;
+    for (const blocked of ["last-sync.json", "upstream.lock"]) {
+      for (const [kind, line, edited, summary, carried] of secondEdits) {
+        forkTest(`test_a_sync_that_cannot_write_${blocked}_after_a_${kind}_changes_nothing_and_reports_the_${kind}_when_run_again`, (t) => {
+          t.recordFeature();
+          t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+          const first = t.up.commit("first edit");
+          t.pb(["sync"], { cwd: t.fork.path });
+          t.up.write("app.txt", replace(t.up.read("app.txt"), line, edited));
+          const second = t.up.commit("second edit");
+          const file = join(t.fork.path, ".patchbook", blocked);
+          const before = tree(t.fork.path);
+          chmodSync(file, 0o444);
+          try {
+            t.pb(["sync"], { cwd: t.fork.path, code: 1 });
+          } finally {
+            chmodSync(file, 0o644);
+          }
+          expect(tree(t.fork.path)).toEqual(before);
+          expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain(summary);
+          expect(lastSync(t).upstream).toMatchObject({ from: first, to: second, ...carried });
+        });
+      }
+    }
   }
+
+  describe.skipIf(!!process.env["PATCHBOOK_CMD"])("killed by a preload, so only from source", () => {
+    forkTest("test_a_sync_of_one_upstream_first_undoes_a_killed_sync_of_another_and_its_report", (t) => {
+      const { lib } = twoMovedUpstreams(t);
+      t.pb(["sync"], { cwd: t.fork.path });
+      const reported = lastSync(t);
+      const lock = t.fork.read(".patchbook/upstream.lock");
+      t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
+      t.up.commit("second edit");
+      lib.write("src/lib.txt", "v3\n");
+      lib.commit("lib v3");
+      const env = { ...t.env, CRASH_BEFORE_WRITE: "/.patchbook/sync-upstream/lock" };
+      sh([process.execPath, "--preload", join(import.meta.dir, "crash.ts"), TOOL, "sync", "upstream"], { cwd: t.fork.path, env, check: false });
+      expect(t.fork.read(".patchbook/upstream.lock")).toBe(lock);
+      expect(lastSync(t).upstream).not.toEqual(reported.upstream);
+      t.pb(["sync", "lib"], { cwd: t.fork.path });
+      expect(lastSync(t).upstream).toEqual(reported.upstream);
+      t.pb(["sync"], { cwd: t.fork.path });
+      expect(lastSync(t).lib).toMatchObject({ from: reported.lib!.to, upstream: ["changed lib/lib.txt"] });
+    });
+  });
 
   forkTest("test_sync_replaces_a_last_sync_file_that_does_not_parse", (t) => {
     writeFileSync(join(t.fork.path, ".patchbook/last-sync.json"), "{ not json");
