@@ -16,7 +16,7 @@ import { rstrip, split, strRepr } from "./lib/py.ts";
 import { cmdRecord } from "./record.ts";
 import { cmdConfig } from "./settings.ts";
 import { installSkill, SCHEDULE } from "./skill.ts";
-import { defaultName, cmdUpstream } from "./store.ts";
+import { absoluteRemote, defaultName, cmdUpstream } from "./store.ts";
 import { cmdCheck, cmdSync, syncUpstream } from "./sync.ts";
 
 // The release build replaces process.env.PATCHBOOK_VERSION at compile time with --define.
@@ -50,13 +50,12 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   if (exists(dest)) throw new Fail(`${dest} already exists`);
   const clone = ["clone", "--quiet", "--origin", "upstream", ...(args.branch ? ["--branch", args.branch] : [])];
   git([...clone, args.url, dest], { cwd: dirname(dest) });
-  const remote = git(["config", "--get", "remote.upstream.url"], { cwd: dest }); // git stores a local path as an absolute one
   const branch = git(["branch", "--show-current"], { cwd: dest });
   const commit = git(["rev-parse", "HEAD"], { cwd: dest });
   const inherited = lexists(join(dest, PB));
   if (inherited) rmSync(join(dest, PB), { recursive: true, force: true });
   const name = defaultName(args.url, "");
-  writeConfig(dest, "fork", upstreamToml(name, remote, "", branch, ""));
+  writeConfig(dest, "fork", upstreamToml(name, args.url, "", branch, ""));
   const book = await Book.open(dest);
   book.writeLock(name, commit, git(["rev-parse", "HEAD^{tree}"], { cwd: dest }));
   writeBuildLock(book, book.currentOutput());
@@ -170,7 +169,7 @@ const COMMANDS = new Map<string, Command>([
     help: "fork an upstream repo, with its history, and start a patchbook",
     positionals: [{ dest: "url" }, { dest: "dir", nargs: "?" }],
     options: [{ flag: "--branch", takes: "value" }],
-    run: (a) => cmdClone({ url: a.text("url"), dir: a.maybe("dir"), branch: a.maybe("branch") }),
+    run: (a) => cmdClone({ url: absoluteRemote(a.text("url")), dir: a.maybe("dir"), branch: a.maybe("branch") }),
   }],
   ["init", {
     help: "start a patchbook in this repo",
@@ -184,7 +183,7 @@ const COMMANDS = new Map<string, Command>([
       { flag: "--vendor", takes: "value", help: "also keep a byte-for-byte copy of upstream in this folder" },
     ],
     run: (a) => cmdInit({
-      upstream: a.text("upstream"), name: a.maybe("name"), branch: a.text("branch"), path: a.text("path"),
+      upstream: absoluteRemote(a.text("upstream")), name: a.maybe("name"), branch: a.text("branch"), path: a.text("path"),
       outputTo: a.maybe("output_to"), outputFrom: a.text("output_from"), vendor: a.maybe("vendor"),
     }),
   }],
@@ -198,7 +197,7 @@ const COMMANDS = new Map<string, Command>([
       { flag: "--vendor", takes: "value", help: "also keep a byte-for-byte copy in this folder" },
     ],
     run: (a) => cmdTrack({
-      name: a.text("name"), url: a.text("url"), branch: a.text("branch"), path: a.text("path"), mount: a.maybe("mount"),
+      name: a.text("name"), url: absoluteRemote(a.text("url")), branch: a.text("branch"), path: a.text("path"), mount: a.maybe("mount"),
       vendor: a.maybe("vendor"),
     }),
   }],

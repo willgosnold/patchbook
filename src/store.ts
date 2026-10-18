@@ -23,6 +23,17 @@ export function defaultName(remote: string, path: string): string {
 
 const rstrip = (s: string) => s.replace(/\/+$/, "");
 
+/** git's rule: a remote with no `://`, and no `:` before its first `/`, is a local path. */
+function isLocalPath(remote: string): boolean {
+  const colon = remote.indexOf(":");
+  return !remote.includes("://") && (colon === -1 || remote.slice(0, colon).includes("/"));
+}
+
+/** A local upstream as an absolute path, so config.toml names the same repo from every folder. */
+export function absoluteRemote(remote: string): string {
+  return isLocalPath(remote) ? posix.resolve(remote) : remote;
+}
+
 function field(spec: Table, key: string, fallback: string): string {
   const value = Object.hasOwn(spec, key) ? spec[key] : fallback;
   if (typeof value !== "string") throw new Fail(`an [[upstream]]'s ${key} is a string, not ${JSON.stringify(value)}`);
@@ -53,6 +64,12 @@ export class Upstream {
     this.path = strip(field(spec, "path", ""), "/");
     this.branch = field(spec, "branch", "main");
     this.name = field(spec, "name", "") || defaultName(this.remote, this.path);
+    if (isLocalPath(this.remote) && !posix.isAbsolute(this.remote)) {
+      throw new Fail(
+        `upstream ${this.name}'s remote ${JSON.stringify(this.remote)} is a relative path, so it names a different repo from each folder. `
+          + "Set remote in .patchbook/config.toml to an absolute path or a URL.",
+      );
+    }
     this.mount = stagedFolder(field(spec, "mount", this.name), `the mount of ${this.name}`);
     const vendor = field(spec, "vendor", "");
     this.vendor = vendor ? pjoin(book.root, vendor) : null;
