@@ -7891,10 +7891,11 @@ describe("VendorTest", () => {
     expect(JSON.parse(t.repo.read(".patchbook/upstream.lock")).extra.tree).toBe(EMPTY_TREE);
     t.pb(["build"], { cwd: t.repo.path, code: null });
     t.repo.write("note.txt", "a note\n");
-    gitIn(t, ["add", "note.txt"]);
+    gitIn(t, ["add", "note.txt", ".patchbook/upstream.lock"]);
     const commit = hookedCommit(t, ["-qm", "empty pin"]);
     expect(commit.code).toBe(0);
-    expect(gitIn(t, ["ls-tree", "HEAD", "vendor/extra"]).trim().split(" ")[1]).not.toBe("blob");
+    expect(JSON.parse(gitIn(t, ["show", "HEAD:.patchbook/upstream.lock"])).extra.tree).toBe(EMPTY_TREE);
+    expect(gitIn(t, ["ls-tree", "HEAD", "vendor/extra"])).toBe("");
   });
 
   folderTest("test_an_unstaged_sync_then_an_unrelated_commit_leaves_the_vendored_copy_at_the_pin_in_head", (t) => {
