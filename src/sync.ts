@@ -82,8 +82,7 @@ export async function cmdSync(args: { name: string | null; ref: string | null })
   if (args.ref && !args.name && book.upstreams.length > 1) throw new Fail("name the upstream to sync to a ref: patchbook sync <name> <ref>");
   const targets = args.name ? [book.upstream(args.name)] : book.upstreams;
   const changes = readChanges(book, []);
-  const tore = (u: Upstream) => lexists(join(journal(book, u), "lock"));
-  for (const u of [...book.upstreams.filter(tore), ...book.upstreams.filter((u) => !tore(u))]) recover(book, u);
+  recoverAll(book);
   const path = join(book.dir, REPORT);
   const reports = savedReports(path);
   const save = () => {
@@ -122,7 +121,7 @@ function savedReports(path: string): Map<string, Json> {
 
 /** Move one upstream's pin and carry every change on its files forward. Returns the report, or null. */
 export function syncUpstream(book: Book, u: Upstream, ref: string | null, changes: readonly Change[], beforePin?: (report: Report) => void): Report | null {
-  recover(book, u);
+  recoverAll(book);
   const pin = u.pin();
   const commit = u.fetch(ref || u.branch);
   const tree = u.treeOf(commit);
@@ -181,7 +180,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
         throw new Fail(`the vendored copy of ${u.name} hashes to ${actual}, not upstream's ${tree}. Does a .gitignore hide upstream files?`);
       }
     }
-    saveBefore(book, j, [...writes.map((w) => w.c.content(w.side, w.path)), join(book.dir, REPORT)]);
+    saveBefore(book, j, writes.map((w) => w.c.content(w.side, w.path)));
     for (const w of writes) w.c.write(w.side, w.path, w.data);
     beforePin?.(report);
     const lock = join(book.dir, "upstream.lock");
@@ -223,6 +222,8 @@ function begin(book: Book, u: Upstream, from: Pin, to: Required<Pin>): void {
 function saveBefore(book: Book, j: string, files: string[]): void {
   mkdirs(join(j, "next"));
   for (const p of files.filter(lexists)) writeDisk(join(j, "next", relative(book.dir, p)), readDisk(p));
+  const report = join(book.dir, REPORT);
+  if (exists(report)) writeFileSync(join(j, "next", REPORT), readFileSync(report));
   renameSync(join(j, "next"), join(j, "before"));
 }
 
@@ -238,6 +239,12 @@ function takeVendor(vendor: string | null, to: string | null): void {
   if (!vendor || !lexists(vendor)) return;
   if (to) renameSync(vendor, to);
   else rmSync(vendor, { recursive: true });
+}
+
+/** Recover every upstream, torn locks first. Each journal saves last-sync.json, so none may start while another is pending. */
+function recoverAll(book: Book): void {
+  const tore = (u: Upstream) => lexists(join(journal(book, u), "lock"));
+  for (const u of [...book.upstreams.filter(tore), ...book.upstreams.filter((u) => !tore(u))]) recover(book, u);
 }
 
 function recover(book: Book, u: Upstream): void {
@@ -261,10 +268,10 @@ function recover(book: Book, u: Upstream): void {
     }
     const before = join(j, "before");
     const saved = lexists(before) ? readdirSync(before, { recursive: true, encoding: "utf8" }) : [];
-    for (const rel of saved) {
+    for (const rel of saved.filter((rel) => rel !== REPORT)) {
       if (!lstatSync(join(before, rel)).isDirectory()) putBack(join(book.dir, rel), readDisk(join(before, rel)));
     }
-    if (lexists(before) && !saved.includes(REPORT)) rmSync(join(book.dir, REPORT), { force: true });
+    if (lexists(before)) putReport(join(book.dir, REPORT), join(before, REPORT));
     if (torn) {
       const was = readFileSync(join(j, "lock"));
       if (was.length) writeFileSync(join(book.dir, "upstream.lock"), was);
@@ -304,6 +311,13 @@ function putBack(p: string, was: File): void {
   if (isSymlink(p)) unlinkSync(p);
   writeFileSync(p, was.data);
   if (readDisk(p).mode !== was.mode) chmodSync(p, was.mode);
+}
+
+/** The report is written through a link, like the lock, so it comes back by its bytes. */
+function putReport(p: string, was: string): void {
+  if (!lexists(was)) return rmSync(p, { force: true });
+  const data = readFileSync(was);
+  if (!exists(p) || !bytesEqual(readFileSync(p), data)) writeFileSync(p, data);
 }
 
 function drop(j: string): void {
