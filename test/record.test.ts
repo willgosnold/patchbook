@@ -1,4 +1,3 @@
-// How record classifies each edited output path: its kind, and whether it needs a change name and intent.
 import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -33,7 +32,6 @@ const plans = new Map([
   ["skills/para-new.md", { path: "", entries: new Map([[kept.hash, kept], [fresh.hash, fresh]]), notes: [] }],
 ]);
 
-// Output path, what was built, what is on disk, and where the build took it from, then what it must classify as.
 const cases: [path: string, built: string | null, disk: string | null, source: Source | null, is: Partial<Edited>, needsName: boolean][] = [
   ["fresh.md", null, "new", null, { kind: "add", staged: "skills/fresh.md" }, true],
   ["dropped.md", null, "back", up("skills/dropped.md"), { kind: "add", staged: "skills/dropped.md" }, true],
@@ -48,7 +46,7 @@ const cases: [path: string, built: string | null, disk: string | null, source: S
   ["plain.md", "up", "edited", up("skills/plain.md"), { kind: "file-edit", rel: "skills/plain.md", to: { kind: "recorded", base: f("upstream") } }, true],
   ["moved.md", "up", "edited", up("skills/orig.md"), { kind: "file-edit", rel: "skills/orig.md", to: { kind: "recorded", base: f("upstream") } }, true],
   ["para.md", "up", "edited", up("skills/para.md"), { kind: "paragraph-edit", plan: plans.get("skills/para.md")! }, false],
-  ["binary.md", "up", "edited", up("skills/binary.md"), { kind: "skip", reason: "it isn't text" }, false],
+  ["unplanned.md", "up", "edited", up("skills/unplanned.md"), { kind: "skip", reason: "no plan" }, false],
 ];
 const pick = (i: 1 | 2) => new Map(cases.flatMap((c) => (c[i] === null ? [] : [[c[0], f(c[i])] as const])));
 const world: Snapshot = {
@@ -58,15 +56,15 @@ const world: Snapshot = {
   upstream: new Map(cases.flatMap(([, , , s]) => (s?.kind === "up" ? [[s.path, f("upstream")] as const] : []))),
   changes: new Map([added, replaced, templated, owner].map((c) => [c.name, c])),
   owners: new Map([["skills/owned.md", owner]]),
-  blocks: new Set(["skills/dropped.md", "skills/gone-para.md", "skills/para.md", "skills/para-new.md", "skills/binary.md"]),
+  blocks: new Set(["skills/dropped.md", "skills/gone-para.md", "skills/para.md", "skills/para-new.md", "skills/unplanned.md"]),
   prefix: "skills/",
-  plan: (rel) => plans.get(rel) ?? "it isn't text",
+  plan: (rel) => plans.get(rel) ?? "no plan",
 };
 
 test.each(cases)("%s", (path, _built, _disk, _source, is, needsName) => {
   const e = classify(world, path);
   expect(e).toMatchObject({ path, ...is });
-  expect(needOf(e).name).toBe(needsName);
+  expect(needOf(e).named).toBe(needsName);
 });
 
 test("an owned file edit goes to the very change that owns it", () => {
@@ -77,8 +75,8 @@ test("an owned file edit goes to the very change that owns it", () => {
 test("a paragraph edit needs an intent only for its new entries that have none", () => {
   const w = { ...world, out: new Map([["para-new.md", f("up")]]), current: new Map([["para-new.md", f("edited")]]),
     sources: new Map([["para-new.md", up("skills/para-new.md")]]) };
-  expect(needOf(classify(w, "para-new.md"))).toEqual({ name: false, drafts: [fresh] });
-  expect(needOf(classify(world, "para.md"))).toEqual({ name: false, drafts: [] });
+  expect(needOf(classify(w, "para-new.md"))).toEqual({ named: false, drafts: [fresh] });
+  expect(needOf(classify(world, "para.md"))).toEqual({ named: false, drafts: [] });
 });
 
 test("a path built from nothing throws while classifying", () => {

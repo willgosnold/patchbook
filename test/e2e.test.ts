@@ -5389,7 +5389,7 @@ describe("ForkTest", () => {
     expect(read(join(t.fork.path, ".patchbook/changes/unnamed/CHANGE.md"))).not.toContain("second line too");
   });
 
-  forkTest("test_record_with_no_name_treats_a_change_named_unnamed_like_any_other", (t) => {
+  forkTest("test_record_with_no_name_does_not_default_to_a_change_named_unnamed", (t) => {
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
     t.fork.write("extra.txt", "ours\n");
     t.pb(["record", "unnamed", "--intent", "Shout and add extra.txt."], { cwd: t.fork.path });
@@ -5400,19 +5400,6 @@ describe("ForkTest", () => {
     expect(change).toContain("- file app.txt");
     expect(change).not.toContain("- add extra.txt");
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
-  });
-
-  forkTest("test_record_reads_a_copy_shared_by_two_outputs_before_writing_either", (t) => {
-    t.fork.write("extra.txt", "ours\n");
-    t.pb(["record", "feature", "--intent", "Add extra.txt."], { cwd: t.fork.path });
-    mkdirSync(join(t.fork.path, ".patchbook/changes/twin"));
-    writeFileSync(join(t.fork.path, ".patchbook/changes/twin/CHANGE.md"), "# twin\n\nintent: Copy extra.txt.\n\nedits:\n- copy extra.txt -> extra2.txt\n");
-    writeFileSync(join(t.fork.path, ".patchbook/series"), read(join(t.fork.path, ".patchbook/series")) + "twin\n");
-    t.pb(["build"], { cwd: t.fork.path });
-    t.fork.write("extra.txt", "ours {{snippet:v}}\n");
-    t.fork.write("extra2.txt", "plain\n");
-    expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe("update   extra.txt (in feature)\nupdate   extra2.txt (in feature)\n");
-    expect(read(join(t.fork.path, ".patchbook/changes/feature/ours/extra.txt.pb"))).toBe("plain\n");
   });
 
   forkTest("test_commit_records_and_builds", (t) => {
@@ -8551,6 +8538,24 @@ describe("VendorTest", () => {
     t.repo.write("skills/hello/SKILL.md", skill);
     expect(t.pb(["record", "--intent", "Keep the skill."], { cwd: t.repo.path }).stdout).toBe("keep-the-skill: Keep the skill.\nadd      hello/SKILL.md\n");
     expect(read(join(t.repo.path, ".patchbook/changes/keep-the-skill/CHANGE.md"))).toContain("- add skills/hello/SKILL.md");
+  });
+
+  vendorTest("test_record_reads_a_copy_shared_by_two_outputs_before_writing_either", (t) => {
+    t.missingScaffoldPatchBuild();
+    const changes = join(t.repo.path, ".patchbook/changes");
+    mkdirSync(join(changes, "holder/ours/skills/hello"), { recursive: true });
+    writeFileSync(join(changes, "holder/ours/skills/hello/tpl.md.pb"), "Then {{snippet:greet}}\n");
+    writeFileSync(join(changes, "holder/CHANGE.md"), "# holder\n\nintent: Greet.\n\nedits:\n- add skills/hello/tpl.md\n");
+    mkdirSync(join(changes, "twin"));
+    writeFileSync(join(changes, "twin/CHANGE.md"), "# twin\n\nintent: Greet twice.\n\nedits:\n- copy skills/hello/tpl.md -> skills/hello/tpl2.md\n");
+    const series = join(t.repo.path, ".patchbook/series");
+    writeFileSync(series, (existsSync(series) ? read(series) : "") + "holder\ntwin\n");
+    t.pb(["build"], { cwd: t.repo.path });
+    unlinkSync(join(t.repo.path, "skills/hello/tpl.md"));
+    t.repo.write("skills/hello/tpl2.md", "Then hi.\n");
+    expect(t.pb(["record"], { cwd: t.repo.path }).stdout)
+      .toBe("unadd    hello/tpl.md (from holder)\nskipped  hello/tpl2.md: its copy in holder uses placeholders; edit that copy directly\n");
+    expect(existsSync(join(changes, "holder/ours/skills/hello/tpl.md.pb"))).toBe(false);
   });
 
   vendorTest("test_record_ignores_output_the_patchbook_changed", (t) => {
