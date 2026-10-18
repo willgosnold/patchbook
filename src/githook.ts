@@ -8,7 +8,7 @@ import { cmdRecord } from "./record.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, isDir, isSymlink, lexists, mkdirs, readBytes, readDisk, readTextReplace, relative, resolve, sameFile, writeBytes, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
-import { loads } from "./lib/json.ts";
+import { JsonError, loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
 import { quote, sorted, strip } from "./lib/py.ts";
 import { bytesEqual, concat, decode, decodeReplace, encode } from "./lib/text.ts";
@@ -546,7 +546,15 @@ function refuseOtherRepo(book: Book): void {
 /** The tree each upstream is pinned to by the upstream.lock in the index, or null when the index holds no lock. */
 function stagedPins(book: Book): Map<string, string> | null {
   const staged = spawn(["git", "cat-file", "blob", `:${relative(book.root, join(book.dir, "upstream.lock"))}`], { cwd: book.root });
-  const data = staged.code === 0 ? loads(decode(staged.stdout)) : null;
+  if (staged.code !== 0) return null;
+  let data;
+  try {
+    data = loads(decode(staged.stdout));
+  } catch (e) {
+    if (!(e instanceof JsonError)) throw e;
+    throw new Fail(`the ${relative(book.root, join(book.dir, "upstream.lock"))} in the index can't be read (${e.message}), so the hook can't tell which copy to stage. `
+      + "Stage a good lock, or skip the hook once with PATCHBOOK_HOOK=0.");
+  }
   if (!(data instanceof Map)) return null;
   const pins = new Map<string, string>();
   for (const [name, pin] of data) {
@@ -585,19 +593,29 @@ function stageVendors(book: Book): void {
     if (stagedTree(book.root, rel) !== tree) stale.push({ name: u.name, rel, tree });
   }
   if (!stale.length) return;
+  for (const { name, tree } of stale) {
+    if (spawn(["git", "cat-file", "-e", `${tree}^{tree}`], { cwd: book.root }).code !== 0) {
+      throw new Fail(`the pin for ${name} names tree ${tree}, which this repo doesn't have, so the hook can't stage the copy. Run \`patchbook sync ${name}\` to fetch it.`);
+    }
+  }
   const was = indexTree(book.root);
-  for (const { rel, tree } of stale) {
-    git(["--literal-pathspecs", "rm", "-rqf", "--cached", "--ignore-unmatch", "--", rel], { cwd: book.root });
-    git(["read-tree", `--prefix=${rel}/`, tree], { cwd: book.root });
+  try {
+    for (const { rel, tree } of stale) {
+      git(["--literal-pathspecs", "rm", "-rqf", "--cached", "--ignore-unmatch", "--", rel], { cwd: book.root });
+      git(["read-tree", `--prefix=${rel}/`, tree], { cwd: book.root });
+    }
+    const head = headTree(book.root);
+    if (was && was !== head && indexTree(book.root) === head) {
+      throw new Fail(`nothing would be left to commit. The staged changes were all under ${stale.map((s) => s.rel).join(", ")}, `
+        + `which the pre-commit hook replaces with the pinned copy of ${stale.map((s) => s.name).join(", ")}. `
+        + "Record the change in the patchbook, or skip the hook once with PATCHBOOK_HOOK=0. "
+        + "If the change is the removal of the copy, delete the upstream's vendor line to stop vendoring it.");
+    }
+  } catch (e) {
+    if (was) git(["read-tree", was], { cwd: book.root });
+    throw e;
   }
-  const head = headTree(book.root);
-  if (was && was !== head && indexTree(book.root) === head) {
-    git(["read-tree", was], { cwd: book.root });
-    throw new Fail(`nothing would be left to commit. The staged changes were all under ${stale.map((s) => s.rel).join(", ")}, `
-      + `which the pre-commit hook replaces with the pinned copy of ${stale.map((s) => s.name).join(", ")}. `
-      + "Record the change in the patchbook, or skip the hook once with PATCHBOOK_HOOK=0.");
-  }
-  for (const { name, rel } of stale) process.stderr.write(`patchbook: staged changes under ${rel} were replaced by the pinned copy of ${name}\n`);
+  for (const { name, rel } of stale) process.stderr.write(`patchbook: the pre-commit hook staged the pinned copy of ${name} under ${rel}, in place of what the index held\n`);
 }
 
 export async function cmdHook(args: { action: "install" | "run" | "status" }) {
