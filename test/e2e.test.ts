@@ -367,7 +367,8 @@ test("test_skill_install_in_a_fork_refuses_to_replace_an_uncommitted_edit_to_the
     const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
     expect(out.stderr).toContain(SKILL_FILE);
     expect(out.stderr).not.toContain("app.txt");
-    expect(out.stderr).toContain("patchbook record");
+    expect(out.stderr).toContain("Commit them first");
+    expect(out.stderr).not.toContain("patchbook record");
     expect(tree(fork.path)).toEqual(before);
   } finally {
     t.cleanup();
@@ -541,6 +542,28 @@ test("test_init_in_a_fork_with_edits_of_its_own_records_the_skill_apart_from_the
   }
 }, TIMEOUT);
 
+test("test_init_in_a_fork_records_nothing_for_a_skill_it_did_not_write", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\ntwo\n");
+    up.commit("start");
+    sh(["git", "clone", "-q", up.path, join(t.tmp, "mine")], { cwd: t.tmp });
+    const mine = new Repo(join(t.tmp, "mine"));
+    mine.write(SKILL_FILE, SKILL_COPY);
+    mkdirSync(join(mine.path, ".claude/skills"), { recursive: true });
+    symlinkSync("../../.agents/skills/patchbook-update", join(mine.path, SKILL_LINK));
+    mine.commit("the skill, by hand");
+    const out = t.pb(["init", "--upstream", up.path], { cwd: mine.path }).stdout;
+    expect(out).not.toContain(SKILL_FILE);
+    expect(mine.read(".patchbook/series")).toBe("");
+    expect(modelWasAsked(t)).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("test_init_in_a_fork_takes_the_intent_from_the_series_not_from_a_leftover_folder", () => {
   const t = new Case();
   try {
@@ -626,29 +649,23 @@ test("test_skill_install_in_the_folder_layout_refuses_to_replace_an_uncommitted_
   }
 }, TIMEOUT);
 
-test("test_skill_install_names_record_first_when_the_link_was_deleted", () => {
+test("test_skill_install_recreates_a_link_that_was_deleted", () => {
   const t = new Case();
   try {
     Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
     const fork = skillFork(t);
     unlinkSync(join(fork.path, SKILL_LINK));
-    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
-    expect(out.stderr).toContain(SKILL_LINK);
-    const record = out.stderr.indexOf("patchbook record");
-    expect(record).toBeGreaterThan(-1);
-    expect(record).toBeLessThan(out.stderr.indexOf("commit"));
-
-    t.pb(["record"], { cwd: fork.path });
-    expect(t.pb(["skill", "install"], { cwd: fork.path }).stdout).toContain(`wrote ${SKILL_LINK}`);
-    expect(isSymlink(join(fork.path, SKILL_LINK))).toBe(true);
+    const out = t.pb(["skill", "install"], { cwd: fork.path });
+    expect(out.stdout).toContain(`wrote ${SKILL_LINK}`);
+    expect(readlinkSync(join(fork.path, SKILL_LINK))).toBe("../../.agents/skills/patchbook-update");
+    expect(sh(["git", "status", "--porcelain"], { cwd: fork.path }).stdout).toBe("");
     expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
   } finally {
     t.cleanup();
   }
 }, TIMEOUT);
 
-test("test_skill_install_that_cannot_make_the_link_leaves_the_stale_skill_alone", () => {
-  if (process.getuid?.() === 0) return;
+test.skipIf(process.getuid?.() === 0)("test_skill_install_that_cannot_make_the_link_leaves_the_stale_skill_alone", () => {
   const t = new Case();
   const skills = join(t.tmp, "fork/.claude/skills");
   try {
@@ -678,8 +695,7 @@ test("test_skill_install_that_cannot_make_the_link_leaves_the_stale_skill_alone"
   }
 }, TIMEOUT);
 
-test("test_skill_install_that_cannot_write_the_skill_takes_back_the_link_it_made", () => {
-  if (process.getuid?.() === 0) return;
+test.skipIf(process.getuid?.() === 0)("test_skill_install_that_cannot_write_the_skill_takes_back_the_link_it_made", () => {
   const t = new Case();
   const file = join(t.tmp, "fork", SKILL_FILE);
   try {
@@ -707,6 +723,168 @@ test("test_skill_install_that_cannot_write_the_skill_takes_back_the_link_it_made
     expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
   } finally {
     if (existsSync(file)) chmodSync(file, 0o644);
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+/** A folder-layout repo with the skill installed and committed. */
+function skillFolder(t: Case): Repo {
+  const up = new Repo(join(t.tmp, "upstream"));
+  up.write("a.md", "a\n");
+  up.commit("start");
+  const repo = new Repo(join(t.tmp, "adapted"));
+  repo.write("README.md", "mine\n");
+  repo.commit("start");
+  t.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: repo.path });
+  Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+  t.pb(["skill", "install"], { cwd: repo.path });
+  repo.commit("the skill");
+  return repo;
+}
+
+const retarget = (repo: Repo, to: string): void => {
+  unlinkSync(join(repo.path, SKILL_LINK));
+  symlinkSync(to, join(repo.path, SKILL_LINK));
+};
+
+test("test_skill_install_in_a_fork_does_not_lose_a_recorded_customization_that_is_not_committed", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const fork = skillFork(t);
+    fork.write(SKILL_FILE, SKILL_COPY + "My own line.\n");
+    const mine = fork.read(SKILL_FILE);
+    t.pb(["record"], { cwd: fork.path });
+    const before = tree(fork.path);
+    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain(SKILL_FILE);
+    expect(out.stderr).toContain("Commit them first");
+    expect(fork.read(SKILL_FILE)).toBe(mine);
+    expect(tree(fork.path)).toEqual(before);
+
+    fork.commit("my own line");
+    expect(t.pb(["skill", "install"], { cwd: fork.path }).stdout).toContain(`wrote ${SKILL_FILE}`);
+    expect(fork.read(SKILL_FILE)).toBe(SKILL_COPY);
+    expect(sh(["git", "log", "--all", "-p"], { cwd: fork.path }).stdout).toContain("+My own line.");
+    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_in_a_fork_does_not_lose_a_recorded_link_that_is_not_committed", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const fork = skillFork(t);
+    retarget(fork, "../../elsewhere");
+    t.pb(["record"], { cwd: fork.path });
+    const before = tree(fork.path);
+    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain(SKILL_LINK);
+    expect(readlinkSync(join(fork.path, SKILL_LINK))).toBe("../../elsewhere");
+    expect(tree(fork.path)).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_in_the_folder_layout_refuses_to_replace_an_uncommitted_link", () => {
+  const t = new Case();
+  try {
+    const repo = skillFolder(t);
+    retarget(repo, "../../elsewhere");
+    const before = tree(repo.path);
+    const out = t.pb(["skill", "install"], { cwd: repo.path, code: 1 });
+    expect(out.stderr).toContain(SKILL_LINK);
+    expect(out.stderr).toContain("Commit them first");
+    expect(readlinkSync(join(repo.path, SKILL_LINK))).toBe("../../elsewhere");
+    expect(tree(repo.path)).toEqual(before);
+
+    repo.commit("my link");
+    t.pb(["skill", "install"], { cwd: repo.path });
+    expect(readlinkSync(join(repo.path, SKILL_LINK))).toBe("../../.agents/skills/patchbook-update");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_in_the_folder_layout_refuses_to_replace_an_uncommitted_file_at_the_link", () => {
+  const t = new Case();
+  try {
+    const repo = skillFolder(t);
+    unlinkSync(join(repo.path, SKILL_LINK));
+    repo.write(SKILL_LINK, "My own file, not a link.\n");
+    const before = tree(repo.path);
+    const out = t.pb(["skill", "install"], { cwd: repo.path, code: 1 });
+    expect(out.stderr).toContain(SKILL_LINK);
+    expect(repo.read(SKILL_LINK)).toBe("My own file, not a link.\n");
+    expect(tree(repo.path)).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test.skipIf(process.getuid?.() === 0)("test_skill_install_that_cannot_write_the_skill_puts_back_a_link_it_replaced", () => {
+  const t = new Case();
+  let file = "";
+  try {
+    const repo = skillFolder(t);
+    file = join(repo.path, SKILL_FILE);
+    retarget(repo, "../../elsewhere");
+    repo.write(SKILL_FILE, STALE_SKILL);
+    repo.commit("a wrong link and an older skill");
+    chmodSync(file, 0o444);
+    const out = t.pb(["skill", "install"], { cwd: repo.path, code: 1 });
+    expect(out.stderr).toContain("couldn't install the update skill");
+    expect(readlinkSync(join(repo.path, SKILL_LINK))).toBe("../../elsewhere");
+    expect(sh(["git", "status", "--porcelain"], { cwd: repo.path }).stdout).toBe("");
+  } finally {
+    if (file && existsSync(file)) chmodSync(file, 0o644);
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test.skipIf(process.getuid?.() === 0)("test_skill_install_that_cannot_write_the_skill_puts_back_a_file_it_replaced", () => {
+  const t = new Case();
+  let file = "";
+  try {
+    const repo = skillFolder(t);
+    file = join(repo.path, SKILL_FILE);
+    unlinkSync(join(repo.path, SKILL_LINK));
+    repo.write(SKILL_LINK, "My own file, not a link.\n");
+    repo.write(SKILL_FILE, STALE_SKILL);
+    repo.commit("a file at the link and an older skill");
+    chmodSync(file, 0o444);
+    const out = t.pb(["skill", "install"], { cwd: repo.path, code: 1 });
+    expect(out.stderr).toContain("couldn't install the update skill");
+    expect(isSymlink(join(repo.path, SKILL_LINK))).toBe(false);
+    expect(repo.read(SKILL_LINK)).toBe("My own file, not a link.\n");
+    expect(sh(["git", "status", "--porcelain"], { cwd: repo.path }).stdout).toBe("");
+  } finally {
+    if (file && existsSync(file)) chmodSync(file, 0o644);
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test.skipIf(process.getuid?.() === 0)("test_skill_install_in_a_fork_puts_back_a_recorded_link_when_the_skill_cannot_be_written", () => {
+  const t = new Case();
+  let file = "";
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const fork = skillFork(t);
+    file = join(fork.path, SKILL_FILE);
+    fork.write(SKILL_FILE, STALE_SKILL);
+    retarget(fork, "../../elsewhere");
+    t.pb(["record"], { cwd: fork.path });
+    fork.commit("a wrong link and an older skill");
+    chmodSync(file, 0o444);
+    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain("couldn't install the update skill");
+    expect(readlinkSync(join(fork.path, SKILL_LINK))).toBe("../../elsewhere");
+    expect(sh(["git", "status", "--porcelain"], { cwd: fork.path }).stdout).toBe("");
+  } finally {
+    if (file && existsSync(file)) chmodSync(file, 0o644);
     t.cleanup();
   }
 }, TIMEOUT);
