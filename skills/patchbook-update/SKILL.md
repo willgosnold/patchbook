@@ -32,7 +32,7 @@ T3 gives each run its own worktree and branch. Work there.
    - `MAIN_CHECKOUT=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')`
 2. Run `git fetch origin && git rebase origin/$MAIN_BRANCH`. The branch must have no commits of its own yet. If this thread is in the main checkout instead of a worktree, create a branch, `patchbook/upstream-<date>`, first.
 3. Run `patchbook sync`. It moves every upstream that moved. Commit everything it changed except `.patchbook/last-sync.json` (`git add -A -- . ':!.patchbook/last-sync.json'`, then `PATCHBOOK_HOOK=0 git commit`) as "Sync upstream <name> to <short sha>", naming each upstream.
-4. Read `.patchbook/last-sync.json` (per upstream: what changed and what merged on its own) and `patchbook status --json` (what broke).
+4. Read `.patchbook/last-sync.json` (per upstream: what changed and what merged on its own) and `patchbook status --json` (what broke). Here and in steps 3 and 6, read only the reports of the upstreams that step 1's `patchbook check` listed as moved.
 
 ## 3. Repair
 
@@ -57,7 +57,7 @@ Before you build, run `git status --porcelain`. Delete anything you or a test wr
 
 Run `patchbook build`. Since no commit runs the hook, this is the run's only build. If it fails, quote its message and ask (step 6). If `git status --porcelain` then lists more than `.patchbook/last-sync.json`, commit it as one build commit (`git add -A -- . ':!.patchbook/last-sync.json'`, then `PATCHBOOK_HOOK=0 git commit`). It holds only what `patchbook build` wrote: output files and `.patchbook/build.lock`.
 
-Then run the `[test]` from the config on `origin/$MAIN_BRANCH` (`git show origin/$MAIN_BRANCH:.patchbook/config.toml`), not the branch's copy, from the worktree's root: a `command` must exit 0, and an `instructions` file, also read from `origin/$MAIN_BRANCH`, is a procedure to follow. If `git status --porcelain --untracked-files=no` then prints anything, ask (step 6), even if the test passed. Fix a failure if you can, with at most two attempts. Commit each fix on its own with `PATCHBOOK_HOOK=0 git commit`, as "Fix test: <what>", then do step 4 again.
+Then run the `[test]` from the config on `origin/$MAIN_BRANCH` (`git show origin/$MAIN_BRANCH:.patchbook/config.toml`), not the branch's copy, from the worktree's root: a `command` must exit 0, and an `instructions` file, also read from `origin/$MAIN_BRANCH` (`git show origin/$MAIN_BRANCH:<file>`), is a procedure to follow. If that `git show` fails, ask (step 6). If `git status --porcelain --untracked-files=no` then prints anything, ask (step 6), even if the test passed. Fix a failure if you can, with at most two attempts. A fix changes what the test checks, never the test, its scripts or its fixtures. If the only fix you can find changes one of those, ask (step 6). Commit each fix on its own with `PATCHBOOK_HOOK=0 git commit`, as "Fix test: <what>", then do step 4 again.
 
 ## 5. Review
 
@@ -75,13 +75,13 @@ Set `target` to the provider's `providerInstanceId`, the model's `id` (not its `
 - `git diff origin/$MAIN_BRANCH...HEAD -- .patchbook`;
 - the test results.
 
-Ask it, per change: does the result meet the intent on upstream's new text, and does it change anything beyond the intent. Ask it once: did upstream add anything that should have been handled. It answers each pass or fail, with reasons, without asking questions. A change or question it gives no pass or fail counts as a fail. On a fail, fix what it found, commit the fix on its own with `PATCHBOOK_HOOK=0 git commit` as "Fix review: <what>", do step 4 again, and start a new review round, with the earlier findings in the brief. Stop after two rounds.
+Ask it, per change: does the result meet the intent on upstream's new text, and does it change anything beyond the intent. Ask it once: did upstream add anything that should have been handled. It answers each pass or fail, with reasons, without asking questions. A change or question it gives no pass or fail counts as a fail. On a fail, fix what it found, commit the fix on its own with `PATCHBOOK_HOOK=0 git commit` as "Fix review: <what>", do step 4 again, and start a new review round, with the earlier findings in the brief. A timeout, a pending question or a missing verdict fails the round but finds nothing to fix, so it adds no commit: start the next round. Stop after two rounds.
 
 ## 6. Merge, or ask
 
 Merge only when, on the commit you push, `patchbook status` exits 0, `patchbook build` exits 0 and `git status --porcelain --untracked-files=no` then prints nothing, and one of these signals holds:
 
-- **Clean.** Every upstream's report in `.patchbook/last-sync.json` has an empty `replaced_upstream_changed` list. Step 3 found nothing to handle, from a check or from reading upstream's changes. The only commit after the sync commit, if any, is step 4's build commit, and the rebase below brings in no commits. A repair, a retirement, a test fix or a review fix voids it.
+- **Clean.** In `.patchbook/last-sync.json`, the report of each upstream this run moved has an empty `replaced_upstream_changed` list. Step 3 found nothing to handle, from a check or from reading upstream's changes. The only commit after the sync commit, if any, is step 4's build commit, and the rebase below brings in no commits. A repair, a retirement, a test fix or a review fix voids it.
 - **Tested.** The `[test]` on `origin/$MAIN_BRANCH` has a `command`, and it exited 0 on the commit you push. After any later commit, a review fix included, do step 4 again.
 
 An `instructions` test and the review are not signals, since an agent grades both.
@@ -91,11 +91,12 @@ Ask the user instead of merging when that doesn't hold, or when:
 - upstream removed or reworked something an intent depends on, and retiring the change would lose something the user wanted;
 - meeting an intent needs a choice that the intents and the guide don't settle;
 - the second review round returns any fail;
-- a test fails and you can't fix it. A failing `instructions` test counts, even though a passing one is not a signal;
+- a test fails and you can't fix it. A failing `instructions` test counts, even though a passing one is not a signal, and so does an `instructions` file you can't read from `origin/$MAIN_BRANCH`;
 - a test leaves tracked files changed (`git status --porcelain --untracked-files=no` prints something), even if it passed;
 - step 4's pre-build check lists a hand edit to the output;
-- a `replaced_upstream_changed` entry in any upstream's report has no step 3 commit that names its file;
-- the branch changes `[test]` in `.patchbook/config.toml` (see `git diff origin/$MAIN_BRANCH...HEAD -- .patchbook/config.toml`).
+- a `replaced_upstream_changed` entry in the report of an upstream this run moved has no step 3 commit that names its file;
+- the branch changes `[test]` in `.patchbook/config.toml` (see `git diff origin/$MAIN_BRANCH...HEAD -- .patchbook/config.toml`);
+- the only fix you can find for a failing test changes the test, its scripts or its fixtures.
 
 To ask, push the branch (`git push -u origin HEAD`), open a pull request against `$MAIN_BRANCH` and link it with `link_pull_request`, then end with one short message that names the decision. Keep the worktree, since the pull request needs it, and leave the thread active.
 
