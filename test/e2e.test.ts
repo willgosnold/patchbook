@@ -764,6 +764,36 @@ describe("ForkTest", () => {
     expect(status("", 1).stderr).toContain("an [[upstream]] needs a remote");
   });
 
+  forkTest("test_an_empty_upstream_argument_is_refused_and_pins_nothing", (t) => {
+    const mine = join(t.tmp, "mine");
+    sh(["git", "clone", "-q", t.up.path, mine], { cwd: t.tmp });
+    expect(t.pb(["init", "--upstream", ""], { cwd: mine, code: 1 }).stderr).toContain("an [[upstream]] needs a remote");
+    expect(existsSync(join(mine, ".patchbook"))).toBe(false);
+    expect(t.pb(["track", "again", ""], { cwd: t.fork.path, code: 1 }).stderr).toContain("an [[upstream]] needs a remote");
+    expect(read(join(t.fork.path, ".patchbook/config.toml"))).not.toContain("again");
+    const before = readdirSync(t.tmp);
+    t.pb(["clone", ""], { cwd: t.tmp, code: 1 });
+    expect(readdirSync(t.tmp)).toEqual(before);
+  });
+
+  forkTest("test_init_pins_from_the_upstream_option_when_an_upstream_remote_points_elsewhere", (t) => {
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "one", "ONE"));
+    const branched = t.up.commit("b1");
+    const mine = join(t.tmp, "mine");
+    sh(["git", "clone", "-q", t.up.path, mine], { cwd: t.tmp });
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "two", "TWO"));
+    t.up.commit("b2");
+    const other = join(t.tmp, "other");
+    sh(["git", "clone", "-q", t.up.path, other], { cwd: t.tmp });
+    sh(["git", "reset", "-q", "--hard", "HEAD~2"], { cwd: other });
+    const elsewhere = new Repo(other);
+    elsewhere.write("other.txt", "a1\n");
+    elsewhere.commit("a1");
+    sh(["git", "remote", "add", "upstream", other], { cwd: mine });
+    expect(t.pb(["init", "--upstream", t.up.path], { cwd: mine }).stdout).toContain(`pinned upstream at ${branched.slice(0, 7)}`);
+    expect(JSON.parse(read(join(mine, ".patchbook/upstream.lock"))).upstream.commit).toBe(branched);
+  });
+
   forkTest("test_a_shallow_clone_of_the_fork_fetches_only_the_pin", (t) => {
     const origin = join(t.tmp, "origin.git");
     sh(["git", "init", "-q", "--bare", origin], { cwd: t.tmp });
