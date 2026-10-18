@@ -76,6 +76,14 @@ const snapshot = (dir: string): Record<string, string> =>
     (readdirSync(dir, { recursive: true }) as string[]).filter((p) => statSync(join(dir, p)).isFile()).sort().map((p) => [p, read(join(dir, p))]),
   );
 
+const forkOf = (t: Case, up: Repo): Repo => {
+  sh(["git", "clone", "-q", up.path, "fork"], { cwd: t.tmp });
+  const fork = new Repo(join(t.tmp, "fork"));
+  fork.write("mine.txt", "mine\n");
+  fork.commit("mine");
+  return fork;
+};
+
 class ForkCase extends Case {
   readonly up: Repo;
   readonly fork: Repo;
@@ -536,6 +544,137 @@ for (const bad of ["no-such-repo", "unrelated"]) {
   }, TIMEOUT);
 }
 
+for (const [how, leave] of [
+  ["left_by_a_failed_init", (t: Case, fork: Repo, up: Repo) => {
+    mkdirSync(join(fork.path, ".patchbook"));
+    symlinkSync(join(t.tmp, "missing/config.toml"), join(fork.path, ".patchbook/config.toml"));
+    t.pb(["init", "--upstream", up.path], { cwd: fork.path, code: 1 });
+    rmSync(join(fork.path, ".patchbook/config.toml"));
+  }],
+  ["added_by_the_user", (_: Case, fork: Repo, up: Repo) => void sh(["git", "remote", "add", "upstream", up.path], { cwd: fork.path })],
+  ["listing_the_given_url_second", (t: Case, fork: Repo, up: Repo) => {
+    sh(["git", "remote", "add", "upstream", up.path], { cwd: fork.path });
+    sh(["git", "config", "--add", "remote.upstream.url", join(t.tmp, "moved")], { cwd: fork.path });
+  }],
+] as const) {
+  test(`test_a_fork_init_refuses_an_upstream_remote_that_fetches_another_url_${how}`, () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\n");
+      up.commit("start");
+      const fork = forkOf(t, up);
+      sh(["git", "clone", "-q", up.path, "moved"], { cwd: t.tmp });
+      const moved = new Repo(join(t.tmp, "moved"));
+      moved.write("app.txt", "two\n");
+      const head = moved.commit("two");
+      leave(t, fork, up);
+      const refused = t.pb(["init", "--upstream", moved.path], { cwd: fork.path, code: 1 });
+      expect(refused.stderr).toContain(`the upstream remote is ${up.path}, not ${moved.path}`);
+      expect(refused.stderr).toContain(`git config --replace-all remote.upstream.url ${moved.path}`);
+      expect(existsSync(join(fork.path, ".patchbook/config.toml"))).toBe(false);
+      sh(["git", "config", "--replace-all", "remote.upstream.url", moved.path], { cwd: fork.path });
+      t.pb(["init", "--upstream", moved.path], { cwd: fork.path });
+      expect(JSON.parse(t.pb(["check"], { cwd: fork.path, code: 10 }).stdout).upstreams.moved.head).toBe(head);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
+test("test_init_checks_the_hooks_before_it_writes_anything", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    up.commit("start");
+    const fork = forkOf(t, up);
+    fork.write(".patchbook/hooks.py", "def placeholder(kind, key):\n    return None\n");
+    const init = t.pb(["init", "--upstream", up.path], { cwd: fork.path, code: 1 });
+    expect(init.stderr).toContain(".patchbook/hooks.py is Python");
+    expect(readdirSync(join(fork.path, ".patchbook"))).toEqual(["hooks.py"]);
+    fork.rm(".patchbook/hooks.py");
+    t.pb(["init", "--upstream", up.path], { cwd: fork.path });
+    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_an_init_that_cannot_write_its_series_leaves_commits_working_and_can_be_retried", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    up.commit("start");
+    const fork = forkOf(t, up);
+    mkdirSync(join(fork.path, ".patchbook"));
+    symlinkSync(join(t.tmp, "missing/series"), join(fork.path, ".patchbook/series"));
+    t.pb(["init", "--upstream", up.path], { cwd: fork.path, code: 1 });
+    expect(existsSync(join(fork.path, ".patchbook/config.toml"))).toBe(false);
+    fork.write("more.txt", "more\n");
+    sh(["git", "add", "more.txt"], { cwd: fork.path });
+    sh(["git", "commit", "-q", "-m", "more"], { cwd: fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    rmSync(join(fork.path, ".patchbook/series"));
+    t.pb(["init", "--upstream", up.path], { cwd: fork.path });
+    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_a_folder_init_that_stops_before_its_config_can_be_retried_from_another_url", () => {
+  const t = new Case();
+  try {
+    const first = new Repo(join(t.tmp, "first"));
+    first.write("a.txt", "first\n");
+    first.commit("first");
+    const second = new Repo(join(t.tmp, "second"));
+    second.write("a.txt", "second\n");
+    const commit = second.commit("second");
+    const repo = new Repo(join(t.tmp, "repo"));
+    repo.write("README.md", "mine\n");
+    repo.commit("start");
+    const output = ["--name", "lib", "--output-from", "", "--output-to", "out"];
+    mkdirSync(join(repo.path, ".patchbook"));
+    symlinkSync(join(t.tmp, "missing/config.toml"), join(repo.path, ".patchbook/config.toml"));
+    t.pb(["init", "--upstream", first.path, ...output], { cwd: repo.path, code: 1 });
+    expect(Object.keys(JSON.parse(repo.read(".patchbook/upstream.lock")))).toEqual(["lib"]);
+    rmSync(join(repo.path, ".patchbook/config.toml"));
+    t.pb(["init", "--upstream", second.path, ...output], { cwd: repo.path });
+    expect(JSON.parse(repo.read(".patchbook/upstream.lock")).lib.commit).toBe(commit);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+for (const layout of ["fork", "folder"]) {
+  test(`test_a_${layout}_init_that_cannot_install_the_hook_still_starts_the_patchbook`, () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\n");
+      up.commit("start");
+      const fork = forkOf(t, up);
+      const hooks = join(fork.path, ".git/hooks");
+      mkdirSync(hooks, { recursive: true });
+      const output = layout === "folder" ? ["--output-from", "", "--output-to", "out"] : [];
+      sh(["chmod", "a-w", hooks], { cwd: fork.path });
+      try {
+        const init = t.pb(["init", "--upstream", up.path, ...output], { cwd: fork.path });
+        expect(init.stderr).toContain("couldn't install the pre-commit hook");
+      } finally {
+        sh(["chmod", "u+w", hooks], { cwd: fork.path });
+      }
+      const status = t.pb(["status"], { cwd: fork.path });
+      expect(status.stderr).toContain("installed a pre-commit hook");
+      expect(status.stdout).toContain("no problems");
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
 describe("ForkTest", () => {
   // Each layout puts a vendored copy where its own upstream's build writes, so a build would land in it.
   for (const [where, mount, vendor] of [
@@ -595,6 +734,26 @@ describe("ForkTest", () => {
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
     t.pb(["track", "lib", lib.path], { cwd: t.fork.path });
     expect(JSON.parse(read(join(book, "upstream.lock"))).lib.commit).toBe(commit);
+  });
+
+  forkTest("test_a_track_that_fails_writing_config_leaves_a_pin_nothing_reads", (t) => {
+    const lib = new Repo(join(t.tmp, "lib"));
+    lib.write("a.txt", "lib\n");
+    lib.commit("lib");
+    const other = new Repo(join(t.tmp, "other"));
+    other.write("a.txt", "other\n");
+    const commit = other.commit("other");
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    sh(["chmod", "a-w", config], { cwd: t.fork.path });
+    try {
+      t.pb(["track", "lib", lib.path], { cwd: t.fork.path, code: 1 });
+    } finally {
+      sh(["chmod", "u+w", config], { cwd: t.fork.path });
+    }
+    expect(Object.keys(JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path }).stdout).upstreams)).toEqual(["upstream"]);
+    expect(t.pb(["build"], { cwd: t.fork.path }).stdout).not.toContain("lib");
+    t.pb(["track", "lib", other.path], { cwd: t.fork.path });
+    expect(JSON.parse(read(join(t.fork.path, ".patchbook/upstream.lock"))).lib.commit).toBe(commit);
   });
 
   for (const [order, first, second] of [
