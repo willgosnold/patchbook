@@ -8597,7 +8597,9 @@ describe("VendorTest", () => {
     const lock = join(t.repo.path, ".patchbook/build.lock");
     chmodSync(lock, 0o444);
     try {
-      expect(t.pb(["record", "notes", "--intent", "Add notes."], { cwd: t.repo.path, code: 1 }).stdout).toBe("add      hello/notes.txt\n");
+      const r = t.pb(["record", "notes", "--intent", "Add notes."], { cwd: t.repo.path, code: 1 });
+      expect(r.stdout).toBe("add      hello/notes.txt\n");
+      expect(r.stderr).toContain("permission denied");
     } finally {
       chmodSync(lock, 0o644);
     }

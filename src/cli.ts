@@ -572,7 +572,8 @@ async function main(argv: readonly string[]): Promise<number> {
 try {
   process.exitCode = await main(process.argv.slice(2));
 } catch (thrown) {
-  const e = thrown instanceof Partway ? (process.stdout.write(thrown.said), thrown.error) : thrown;
+  if (thrown instanceof Partway) process.stdout.write(thrown.stdout);
+  const e = thrown instanceof Partway ? thrown.cause : thrown;
   if (e instanceof Exit) {
     (e.code === 0 ? process.stdout : process.stderr).write(e.text);
     process.exitCode = e.code;
