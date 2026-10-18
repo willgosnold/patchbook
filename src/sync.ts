@@ -82,19 +82,24 @@ export async function cmdSync(args: { name: string | null; ref: string | null })
   const changes = readChanges(book, []);
   const path = join(book.dir, "last-sync.json");
   const reports = savedReports(path);
-  let synced = false;
-  for (const u of targets) {
-    const report = syncUpstream(book, u, args.ref, changes);
-    if (!report) continue;
-    reports.set(u.name, report);
+  const save = () => {
     const current = new Map<string, Json>();
     for (const { name } of book.upstreams) {
       const kept = reports.get(name);
       if (kept) current.set(name, kept);
     }
     writeText(path, dumps({ upstreams: current }, 2) + "\n");
-    synced = true;
+  };
+  const stale = [...reports.keys()].some((name) => !book.upstreams.some((u) => u.name === name));
+  let synced = false;
+  for (const u of targets) {
+    const report = syncUpstream(book, u, args.ref, changes, (r) => {
+      reports.set(u.name, r);
+      save();
+    });
+    if (report) synced = true;
   }
+  if (stale && !synced) save();
   if (synced) process.stdout.write("Next: patchbook status\n");
   return 0;
 }
@@ -112,7 +117,7 @@ function savedReports(path: string): Map<string, Json> {
 }
 
 /** Move one upstream's pin and carry every change on its files forward. Returns the report, or null. */
-export function syncUpstream(book: Book, u: Upstream, ref: string | null, changes: readonly Change[]): Report | null {
+export function syncUpstream(book: Book, u: Upstream, ref: string | null, changes: readonly Change[], beforePin?: (report: Report) => void): Report | null {
   const pin = u.pin();
   const commit = u.fetch(ref || u.branch);
   const tree = u.treeOf(commit);
@@ -171,6 +176,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
       }
     }
 
+    beforePin?.(report);
     book.writeLock(u.name, commit, tree);
   } catch (e) {
     if (!held) u.unkeep(commit); // the commit did not become the pin
