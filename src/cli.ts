@@ -11,8 +11,9 @@ import { cmdShow } from "./changes.ts";
 import { cmdHook, installHook, installHookOrWarn } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, lexists, readText, resolve, writeText } from "./lib/fs.ts";
-import { git } from "./lib/proc.ts";
-import { quote, rstrip, split, strRepr } from "./lib/py.ts";
+import { git, redact, spawn } from "./lib/proc.ts";
+import { quote, rstrip, split, strip, strRepr } from "./lib/py.ts";
+import { decode, decodeReplace } from "./lib/text.ts";
 import { cmdRecord } from "./record.ts";
 import { cmdConfig } from "./settings.ts";
 import { installSkill, SCHEDULE } from "./skill.ts";
@@ -46,11 +47,23 @@ function writeConfig(root: string, text: string): void {
   writeText(join(d, "config.toml"), text);
 }
 
-/** What git fetches for a URL, so `insteadOf`, a trailing slash, file:// and a relative path don't make one repo look like two. */
-function repoOf(root: string, url: string): string {
-  const full = git(["ls-remote", "--get-url", url], { cwd: root });
-  const local = full.startsWith("file://") ? full.slice("file://".length) : /^([a-z][a-z0-9+.-]*:\/\/|[^/]*:)/i.test(full) ? null : full;
-  return local === null ? rstrip(full, "/") : resolve(isAbsolute(local) ? local : join(root, local));
+/** The commit a repo serves for the branch, or "" when it has none. git applies `insteadOf`, resolves paths and decodes URLs, so two spellings of one repo give one answer. */
+function tipOf(root: string, label: string, repo: string, branch: string, shown = repo): string {
+  const r = spawn(["git", "ls-remote", "--", repo, `refs/heads/${branch}`], { cwd: root });
+  if (r.code !== 0) throw new Fail(redact(`couldn't read ${label} ${shown}:\n${strip(decodeReplace(r.stderr))}`));
+  return split(strip(decode(r.stdout)))[0] ?? "";
+}
+
+/** A relative local path names the folder the user typed it in, not the repo root that git runs from. */
+function fromHere(root: string, url: string): string {
+  if (resolve(".") === root || isAbsolute(url) || /^([a-z][a-z0-9+.-]*:\/\/|[^/]*:)/i.test(url)) return url;
+  const here = resolve(url);
+  return exists(here) ? here : url;
+}
+
+function notAnOption(url: string): string {
+  if (url.startsWith("-")) throw new Fail(`an upstream can't start with a dash: ${redact(url)}`);
+  return url;
 }
 
 const noHook = () => ({ ...process.env, PATCHBOOK_HOOK: "0" });
@@ -94,9 +107,11 @@ async function cmdInit(args: {
 }) {
   const root = git(["rev-parse", "--show-toplevel"], { cwd: process.cwd() });
   if (exists(join(root, PB, "config.toml"))) throw new Fail(`${root} already has a patchbook. To follow another upstream: patchbook track`);
-  const name = args.name || defaultName(args.upstream, args.path);
+  const given = notAnOption(args.upstream);
+  const name = args.name || defaultName(given, args.path);
+  const upstream = fromHere(root, given);
   if (args.outputTo !== null) {
-    const text = configText("folder", upstreamToml(name, args.upstream, args.path, args.branch, "", args.vendor), [args.outputFrom, args.outputTo]);
+    const text = configText("folder", upstreamToml(name, upstream, args.path, args.branch, "", args.vendor), [args.outputFrom, args.outputTo]);
     const book = await Book.fromText(root, text);
     book.dropPin(name);
     syncUpstream(book, book.upstreams[0]!, args.branch, []);
@@ -106,21 +121,27 @@ async function cmdInit(args: {
     process.stdout.write(`Next: patchbook build, then commit.\n${SCHEDULE}\n`);
     return 0;
   }
-  const text = configText("fork", upstreamToml(name, args.upstream, args.path, args.branch, ""));
+  const text = configText("fork", upstreamToml(name, upstream, args.path, args.branch, ""));
   const book = await Book.fromText(root, text);
   const hasRemote = split(git(["remote"], { cwd: root })).includes("upstream");
   if (hasRemote) {
-    const fix = `To follow ${args.upstream}: git config --replace-all remote.upstream.url ${quote(args.upstream)}`;
+    const fix = `To follow ${redact(upstream)}: git config --replace-all remote.upstream.url ${quote(redact(upstream))}`;
     if (git(["config", "--get-all", "remote.upstream.url"], { cwd: root, check: false }) === "") throw new Fail(`the upstream remote has no url. ${fix}`);
-    if (repoOf(root, "upstream") !== repoOf(root, args.upstream)) {
-      const fetches = git(["remote", "get-url", "upstream"], { cwd: root });
-      throw new Fail(`the upstream remote and --upstream name different repos. The remote fetches ${fetches}, --upstream is ${args.upstream}. ${fix}`);
+    const fetches = git(["remote", "get-url", "upstream"], { cwd: root });
+    if (fetches !== upstream) {
+      const theirs = tipOf(root, "the upstream remote", "upstream", args.branch, fetches);
+      const mine = tipOf(root, "--upstream", upstream, args.branch);
+      if (theirs !== mine) {
+        const tip = (sha: string) => sha.slice(0, 7) || "missing";
+        throw new Fail(`the upstream remote and --upstream name different repos. The remote fetches ${redact(fetches)}, --upstream is ${redact(upstream)}. `
+          + `${args.branch} is ${tip(theirs)} on the remote and ${tip(mine)} on --upstream. ${fix}`);
+      }
     }
   }
-  git(["fetch", "--quiet", "--end-of-options", hasRemote ? "upstream" : args.upstream, args.branch], { cwd: root });
+  git(["fetch", "--quiet", "--end-of-options", hasRemote ? "upstream" : upstream, args.branch], { cwd: root });
   const base = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: root });
   book.writeLock(name, base, book.upstreams[0]!.treeOf(base));
-  if (!hasRemote) git(["remote", "add", "--end-of-options", "upstream", args.upstream], { cwd: root });
+  if (!hasRemote) git(["remote", "add", "--end-of-options", "upstream", upstream], { cwd: root });
   installSkill(book);
   writeConfig(root, text);
   installHookOrWarn(root);
@@ -133,6 +154,7 @@ async function cmdInit(args: {
 async function cmdTrack(args: { name: string; url: string; branch: string; path: string; mount: string | null; vendor: string | null }) {
   const book = await Book.find();
   if (book.upstreams.some((u) => u.name === args.name)) throw new Fail(`already following an upstream called ${args.name}`);
+  notAnOption(args.url);
   const config = join(book.dir, "config.toml");
   const mount = args.mount ?? args.name;
   const text = rstrip(readText(config), "\n") + "\n\n" + upstreamToml(args.name, args.url, args.path, args.branch, mount, args.vendor);
