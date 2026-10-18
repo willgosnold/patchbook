@@ -7396,6 +7396,149 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(t.fork.read("app.txt")).toContain("TWO");
   });
 
+  /** Writes a change by hand and lists it in the series, with the ours copies of the files it adds or replaces. */
+  const handChange = (t: ForkCase, name: string, intent: string, edits: string[], ours: Record<string, string> = {}): void => {
+    const dir = join(t.fork.path, ".patchbook/changes", name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "CHANGE.md"), `# ${name}\n\nintent: ${intent}\n\nedits:\n${edits.map((e) => `- ${e}\n`).join("")}`);
+    for (const [path, text] of Object.entries(ours)) {
+      mkdirSync(dirname(join(dir, "ours", `${path}.pb`)), { recursive: true });
+      writeFileSync(join(dir, "ours", `${path}.pb`), text);
+    }
+    const series = join(t.fork.path, ".patchbook/series");
+    writeFileSync(series, (existsSync(series) ? read(series) : "") + name + "\n");
+  };
+  const changeText = (t: ForkCase, name: string): string => read(join(t.fork.path, ".patchbook/changes", name, "CHANGE.md"));
+  const outputs = (t: ForkCase): Record<string, string> =>
+    Object.fromEntries(Object.entries(tree(t.fork.path)).filter(([p]) => !p.startsWith(".patchbook/")));
+  const without = (files: Record<string, string>, path: string): Record<string, string> =>
+    Object.fromEntries(Object.entries(files).filter(([p]) => p !== path));
+
+  forkTest("test_record_deleting_the_output_of_a_replace_moves_the_deletion_into_the_new_change", (t) => {
+    handChange(t, "rep", "Replace the guide.", ["replace docs/guide.md"], { "docs/guide.md": "replaced\n" });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("docs/guide.md")).toBe("replaced\n");
+    const before = outputs(t);
+    t.fork.rm("docs/guide.md");
+    const out = t.pb(["record", "dropguide", "--intent", "Drop the guide."], { cwd: t.fork.path });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(outputs(t)).toEqual(without(before, "docs/guide.md"));
+    expect(changeText(t, "rep")).not.toContain("replace");
+    expect(changeText(t, "rep")).toContain("intent: Replace the guide.");
+    expect(existsSync(join(t.fork.path, ".patchbook/changes/rep/ours/docs/guide.md.pb"))).toBe(false);
+    expect(changeText(t, "dropguide")).toContain("intent: Drop the guide.");
+    expect(changeText(t, "dropguide")).toContain("- delete docs/guide.md");
+    expect(read(join(t.fork.path, ".patchbook/series"))).toBe("rep\ndropguide\n");
+    expect(out.stdout).toBe("delete   docs/guide.md (replace removed from rep)\n");
+  });
+
+  forkTest("test_record_deleting_the_output_of_a_replace_asks_the_model_for_the_name_and_intent", (t) => {
+    handChange(t, "rep", "Replace the guide.", ["replace docs/guide.md"], { "docs/guide.md": "replaced\n" });
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.rm("docs/guide.md");
+    const out = t.pb(["record"], { cwd: t.fork.path });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    expect(changeText(t, "shout")).toContain("- delete docs/guide.md");
+    expect(changeText(t, "rep")).not.toContain("replace");
+    expect(out.stdout).toBe("shout: Shout the second line.\ndelete   docs/guide.md (replace removed from rep)\n");
+  });
+
+  forkTest("test_record_deleting_the_output_of_a_replace_in_the_named_change_that_owns_it", (t) => {
+    handChange(t, "rep", "Replace the guide.", ["replace docs/guide.md"], { "docs/guide.md": "replaced\n" });
+    t.pb(["build"], { cwd: t.fork.path });
+    const before = outputs(t);
+    t.fork.rm("docs/guide.md");
+    const out = t.pb(["record", "rep"], { cwd: t.fork.path });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(outputs(t)).toEqual(without(before, "docs/guide.md"));
+    expect(changeText(t, "rep")).toBe("# rep\n\nintent: Replace the guide.\n\nedits:\n- delete docs/guide.md\n");
+    expect(existsSync(join(t.fork.path, ".patchbook/changes/rep/ours/docs/guide.md.pb"))).toBe(false);
+    expect(read(join(t.fork.path, ".patchbook/series"))).toBe("rep\n");
+    expect(out.stdout).toBe("delete   docs/guide.md (replace removed from rep)\n");
+  });
+
+  forkTest("test_record_deleting_the_output_of_a_replace_prints_no_note_when_a_change_cannot_be_saved", (t) => {
+    handChange(t, "rep", "Replace the guide.", ["replace docs/guide.md"], { "docs/guide.md": "replaced\n" });
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.rm("docs/guide.md");
+    mkdirSync(join(t.fork.path, ".patchbook/changes/dropguide/CHANGE.md"), { recursive: true });
+    const out = t.pb(["record", "dropguide", "--intent", "Drop the guide."], { cwd: t.fork.path, code: 1 });
+    expect(out.stdout).toBe("");
+  });
+
+  forkTest("test_record_unadd_that_empties_the_named_change_saves_it_and_keeps_it", (t) => {
+    t.fork.write("extra.txt", "ours\n");
+    t.pb(["record", "ch", "--intent", "Add extra."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    const before = outputs(t);
+    t.fork.rm("extra.txt");
+    const out = t.pb(["record", "ch"], { cwd: t.fork.path });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(outputs(t)).toEqual(without(before, "extra.txt"));
+    expect(changeText(t, "ch")).toBe("# ch\n\nintent: Add extra.\n\nedits:\n");
+    expect(existsSync(join(t.fork.path, ".patchbook/changes/ch/ours/extra.txt.pb"))).toBe(false);
+    expect(read(join(t.fork.path, ".patchbook/series"))).toBe("ch\n");
+    expect(out.stdout).toBe("unadd    extra.txt (from ch)\n");
+  });
+
+  forkTest("test_record_unadd_that_empties_a_change_does_not_create_the_new_change_it_was_named_for", (t) => {
+    t.fork.write("extra.txt", "ours\n");
+    t.pb(["record", "ch", "--intent", "Add extra."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.rm("extra.txt");
+    expect(t.pb(["record", "other", "--intent", "Nothing to record."], { cwd: t.fork.path }).stdout).toBe("unadd    extra.txt (from ch)\n");
+    expect(existsSync(join(t.fork.path, ".patchbook/changes/other"))).toBe(false);
+    expect(read(join(t.fork.path, ".patchbook/series"))).toBe("ch\n");
+    expect(changeText(t, "ch")).toBe("# ch\n\nintent: Add extra.\n\nedits:\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  // What deleting the output of a move or a copy does, for upstream's file and for a file a change added.
+  const MOVES: { name: string; edit: string; added: boolean; gone: string }[] = [
+    { name: "test_record_deleting_the_destination_of_a_move_of_an_upstream_file", edit: "move docs/guide.md -> manual/guide.md", added: false, gone: "manual/guide.md" },
+    { name: "test_record_deleting_the_destination_of_a_copy_of_an_upstream_file", edit: "copy docs/guide.md -> manual/guide.md", added: false, gone: "manual/guide.md" },
+    { name: "test_record_deleting_the_source_of_a_copy_of_an_upstream_file", edit: "copy docs/guide.md -> manual/guide.md", added: false, gone: "docs/guide.md" },
+    { name: "test_record_deleting_the_destination_of_a_move_of_an_added_file", edit: "move notes/n.txt -> manual/n.txt", added: true, gone: "manual/n.txt" },
+    { name: "test_record_deleting_the_destination_of_a_copy_of_an_added_file", edit: "copy notes/n.txt -> manual/n.txt", added: true, gone: "manual/n.txt" },
+    { name: "test_record_deleting_the_source_of_a_copy_of_an_added_file", edit: "copy notes/n.txt -> manual/n.txt", added: true, gone: "notes/n.txt" },
+  ];
+  for (const { name, edit, added, gone } of MOVES) {
+    forkTest(name, (t) => {
+      if (added) handChange(t, "addn", "Add n.", ["add notes/n.txt"], { "notes/n.txt": "new\n" });
+      handChange(t, "mv", "Move or copy it.", [edit]);
+      t.pb(["build"], { cwd: t.fork.path });
+      const before = outputs(t);
+      expect(before[gone]).toBeDefined();
+      t.fork.rm(gone);
+      const out = t.pb(["record", "dropit", "--intent", "Drop it."], { cwd: t.fork.path });
+      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+      t.pb(["build"], { cwd: t.fork.path });
+      expect(outputs(t)).toEqual(without(before, gone));
+      expect(changeText(t, "dropit")).toContain(`- delete ${gone}`);
+      expect(changeText(t, "mv")).toContain(`- ${edit}`);
+      if (added) expect(changeText(t, "addn")).toContain("- add notes/n.txt");
+      expect(out.stdout).toBe(`delete   ${gone}\n`);
+    });
+  }
+
+  forkTest("test_record_deleting_the_source_of_a_copy_of_a_replaced_file_keeps_the_copy", (t) => {
+    handChange(t, "rep", "Replace the guide.", ["replace docs/guide.md"], { "docs/guide.md": "replaced\n" });
+    handChange(t, "cp", "Copy the guide.", ["copy docs/guide.md -> manual/guide.md"]);
+    t.pb(["build"], { cwd: t.fork.path });
+    const before = outputs(t);
+    expect(before["manual/guide.md"]).toBe("replaced\n");
+    t.fork.rm("docs/guide.md");
+    const out = t.pb(["record", "dropguide", "--intent", "Drop the guide."], { cwd: t.fork.path });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(outputs(t)).toEqual(without(before, "docs/guide.md"));
+    expect(changeText(t, "rep")).toContain("- replace docs/guide.md");
+    expect(out.stdout).toBe("delete   docs/guide.md\n");
+  });
+
   forkTest("test_added_symlink_stays_a_symlink", (t) => {
     symlinkSync("app.txt", join(t.fork.path, "link"));
     t.pb(["record", "link", "--intent", "Link to the app."], { cwd: t.fork.path });
