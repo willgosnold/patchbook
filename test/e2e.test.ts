@@ -2670,6 +2670,16 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     }
   });
 
+  forkTest("test_config_set_above_a_last_comment_that_ends_in_a_space_toml_does_not_count_as_blank_keeps_it", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    for (const mark of ["\u00A0", "\u2028", "\u3000", "\uFEFF"]) {
+      writeFileSync(user, `[intent]\nmodel = "old"\n# c${mark}\n`);
+      t.config(["intent.model", "new"]);
+      expect(read(user)).toBe(`[intent]\nmodel = "new"\n# c${mark}\n`);
+    }
+  });
+
   forkTest("test_config_set_on_a_file_with_a_long_run_of_spaces_before_the_end_is_fast", (t) => {
     const user = join(t.tmp, "config/patchbook/config.toml");
     mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
