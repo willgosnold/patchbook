@@ -7475,7 +7475,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
       expect(first.stderr).toContain("git ignores it");
       return extra;
     };
-    const unlock = (t: ForkCase): void => void sh(["chmod", "-R", "u+w", ".patchbook"], { cwd: t.fork.path });
+    const unlock = (t: ForkCase): void => void sh(["chmod", "-R", "u+w", "."], { cwd: t.fork.path });
 
     forkTest("test_sync_finishes_and_warns_when_the_old_vendored_copy_cannot_be_deleted", (t) => {
       try {

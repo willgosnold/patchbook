@@ -129,6 +129,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     if (rewrite) rewriteVendor(book, u, u.vendor, pin, u.files(commit), tree);
     const rest = rewrite ? "Rewrote the vendored copy, which did not." : "Nothing to do.";
     process.stdout.write(`${u.name}: upstream at ${commit.slice(0, 7)} matches the pin (tree ${tree.slice(0, 7)}). ${rest}\n`);
+    warnLeft(book, u);
     return null;
   }
   const raw = u.files(commit);
@@ -189,6 +190,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   drop(j);
   process.stdout.write(`${u.name}: pinned ${commit.slice(0, 7)}. ${report.upstream.length} upstream files changed, `
     + `${report.merged.length} of ours merged cleanly, ${report.conflicts.length} conflicts, ${report.gone.length} gone.\n`);
+  warnLeft(book, u);
   return report;
 }
 
@@ -353,8 +355,25 @@ function putReport(p: string, was: string): void {
   if (!exists(p) || !bytesEqual(readFileSync(p), data)) writeFileSync(p, data);
 }
 
+/** Delete a journal: its record first, so a kill leaves nothing to undo, and its `.gitignore` last, so git ignores what stays. Nothing else in it is needed once the record is gone, so a part it can't delete, such as a read-only folder in the old copy, moves into `left/`, out of the next journal's way, for a later sync to try again. */
 function drop(j: string): void {
+  if (lexists(j) && !lstatSync(j).isDirectory()) return rmSync(j);
   rmSync(join(j, "pin"), { force: true });
-  for (const payload of ["lock", "pin.tmp", "next", "old", "before"]) rmSync(join(j, payload), { recursive: true, force: true });
+  for (const payload of ["lock", "pin.tmp", "next", "old", "before", "left"]) {
+    try {
+      rmSync(join(j, payload), { recursive: true, force: true });
+    } catch {
+      if (payload === "left") return;
+      mkdirs(join(j, "left"));
+      renameSync(join(j, payload), join(j, "left", `${payload}-${Date.now()}`));
+    }
+  }
   rmSync(j, { recursive: true, force: true });
+}
+
+function warnLeft(book: Book, u: Upstream): void {
+  const j = journal(book, u);
+  if (!lexists(j)) return;
+  process.stderr.write(`patchbook: couldn't delete ${relative(book.root, j)}, which holds files a sync of ${u.name} no longer needs. `
+    + "git ignores it, but it still takes disk space. Make it writable and delete it by hand; the next sync tries again.\n");
 }
