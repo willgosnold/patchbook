@@ -915,6 +915,136 @@ test("test_skill_install_does_not_call_it_current_when_a_folder_is_in_the_way", 
   }
 }, TIMEOUT);
 
+test("test_skill_install_in_a_fork_refuses_to_replace_a_customization_that_git_ignores", () => {
+  const t = new Case();
+  try {
+    const fork = skillFork(t);
+    fork.write(".gitignore", ".agents/\n.claude/\n");
+    fork.commit("ignore the agents' folders");
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    t.pb(["skill", "install"], { cwd: fork.path });
+    fork.write(SKILL_FILE, SKILL_COPY + "My own line.\n");
+    const mine = fork.read(SKILL_FILE);
+    const before = tree(fork.path);
+    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain(SKILL_FILE);
+    expect(out.stderr).toContain("git ignores");
+    expect(out.stderr).not.toContain("Commit them first");
+    expect(out.stdout).not.toContain("wrote");
+    expect(fork.read(SKILL_FILE)).toBe(mine);
+    expect(tree(fork.path)).toEqual(before);
+
+    fork.write(SKILL_FILE, SKILL_COPY);
+    expect(t.pb(["skill", "install"], { cwd: fork.path }).stdout).toBe("the update skill is already current\n");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_in_the_folder_layout_refuses_to_replace_a_link_that_git_ignores", () => {
+  const t = new Case();
+  try {
+    const repo = skillFolder(t);
+    repo.write(".gitignore", ".claude/\n");
+    sh(["git", "rm", "-q", "--cached", SKILL_LINK], { cwd: repo.path });
+    repo.commit("ignore .claude");
+    retarget(repo, "../../elsewhere");
+    const before = tree(repo.path);
+    const out = t.pb(["skill", "install"], { cwd: repo.path, code: 1 });
+    expect(out.stderr).toContain(SKILL_LINK);
+    expect(out.stderr).toContain("git ignores");
+    expect(readlinkSync(join(repo.path, SKILL_LINK))).toBe("../../elsewhere");
+    expect(tree(repo.path)).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_in_a_fork_writes_and_records_nothing_when_an_untracked_folder_is_at_the_link", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const fork = skillFork(t);
+    fork.write(SKILL_FILE, STALE_SKILL);
+    t.pb(["record"], { cwd: fork.path });
+    fork.commit("an older skill");
+    sh(["git", "rm", "-q", "--cached", SKILL_LINK], { cwd: fork.path });
+    sh(["git", "commit", "-q", "-m", "untrack the link"], { cwd: fork.path });
+    rmSync(join(fork.path, SKILL_LINK));
+    fork.write(`${SKILL_LINK}/notes.txt`, "Mine.\n");
+    const before = tree(fork.path);
+    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain(`${SKILL_LINK} is a folder`);
+    expect(out.stderr).toContain(`the update skill was not installed at ${SKILL_LINK}`);
+    expect(out.stdout).toBe("");
+    expect(fork.read(SKILL_FILE)).toBe(STALE_SKILL);
+    expect(tree(fork.path)).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_in_the_folder_layout_writes_nothing_when_an_untracked_folder_is_at_the_link", () => {
+  const t = new Case();
+  try {
+    const repo = skillFolder(t);
+    repo.write(SKILL_FILE, STALE_SKILL);
+    repo.commit("an older skill");
+    rmSync(join(repo.path, SKILL_LINK));
+    repo.write(`${SKILL_LINK}/notes.txt`, "Mine.\n");
+    const before = tree(repo.path);
+    const out = t.pb(["skill", "install"], { cwd: repo.path, code: 1 });
+    expect(out.stderr).toContain(`${SKILL_LINK} is a folder`);
+    expect(out.stderr).toContain(`the update skill was not installed at ${SKILL_LINK}`);
+    expect(out.stderr).not.toContain("Commit them first");
+    expect(tree(repo.path)).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test.skipIf(process.getuid?.() === 0)("test_skill_install_that_cannot_write_the_skill_puts_back_the_mode_of_a_file_it_replaced", () => {
+  const t = new Case();
+  const umask = process.umask(0o022);
+  let file = "";
+  try {
+    const repo = skillFolder(t);
+    file = join(repo.path, SKILL_FILE);
+    unlinkSync(join(repo.path, SKILL_LINK));
+    repo.write(SKILL_LINK, "My own file, not a link.\n", 0o664);
+    repo.write(SKILL_FILE, STALE_SKILL);
+    repo.commit("a file at the link and an older skill");
+    chmodSync(file, 0o444);
+    t.pb(["skill", "install"], { cwd: repo.path, code: 1 });
+    expect(repo.read(SKILL_LINK)).toBe("My own file, not a link.\n");
+    expect(statSync(join(repo.path, SKILL_LINK)).mode & 0o7777).toBe(0o664);
+  } finally {
+    process.umask(umask);
+    if (file && existsSync(file)) chmodSync(file, 0o644);
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_says_which_committed_skill_paths_it_replaced", () => {
+  const t = new Case();
+  try {
+    const fork = skillFork(t);
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    expect(t.pb(["skill", "install"], { cwd: fork.path }).stdout).not.toContain("replaced");
+    fork.write(SKILL_FILE, STALE_SKILL);
+    retarget(fork, "../../elsewhere");
+    t.pb(["record"], { cwd: fork.path });
+    fork.commit("an older skill and a wrong link");
+    const out = t.pb(["skill", "install"], { cwd: fork.path }).stdout;
+    expect(out).toContain(`replaced ${SKILL_FILE}; your copy is in HEAD\n`);
+    expect(out).toContain(`replaced ${SKILL_LINK}; your copy is in HEAD\n`);
+    expect(fork.read(SKILL_FILE)).toBe(SKILL_COPY);
+    expect(t.pb(["skill", "install"], { cwd: fork.path }).stdout).toBe("the update skill is already current\n");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("test_skill_install_goes_ahead_when_a_sync_left_a_conflict", () => {
   const t = new Case();
   try {
