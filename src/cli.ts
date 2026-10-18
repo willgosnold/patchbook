@@ -50,7 +50,8 @@ function writeConfig(root: string, text: string): void {
 const noHook = () => ({ ...process.env, PATCHBOOK_HOOK: "0" });
 
 async function cmdClone(args: { url: string; dir: string | null; branch: string | null }) {
-  const dest = resolve(args.dir || basename(rstrip(args.url, "/")).replace(/\.git$/, ""));
+  const shown = redact(args.url);
+  const dest = resolve(args.dir || basename(rstrip(shown, "/")).replace(/\.git$/, ""));
   if (exists(dest)) throw new Fail(`${dest} already exists`);
   const clone = ["clone", "--quiet", "--origin", "upstream", ...(args.branch ? ["--branch", args.branch] : [])];
   git([...clone, "--end-of-options", args.url, dest], { cwd: dirname(dest) });
@@ -58,8 +59,8 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   const commit = git(["rev-parse", "HEAD"], { cwd: dest });
   const inherited = lexists(join(dest, PB));
   if (inherited) rmSync(join(dest, PB), { recursive: true, force: true });
-  const name = defaultName(args.url, "");
-  const text = configText("fork", upstreamToml(name, redact(args.url), "", branch, ""));
+  const name = defaultName(shown, "");
+  const text = configText("fork", upstreamToml(name, shown, "", branch, ""));
   await Book.fromText(dest, text);
   writeConfig(dest, text);
   const book = await Book.open(dest);
@@ -75,7 +76,7 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   }
   git(["add", "-A"], { cwd: dest });
   git(["commit", "--quiet", "-m", `Start a patchbook at upstream ${commit.slice(0, 7)}`], { cwd: dest, env: noHook() });
-  process.stdout.write(`cloned ${redact(args.url)} into ${dest}, pinned at ${commit.slice(0, 7)}.\n`
+  process.stdout.write(`cloned ${shown} into ${dest}, pinned at ${commit.slice(0, 7)}.\n`
     + (inherited ? `Upstream has a ${PB}/ of its own. It is not part of this fork, so patchbook removed it and builds leave it out.\n` : "")
     + "Make your changes and commit: the hook records them in the patchbook and rebuilds.\n"
     + `${SCHEDULE}\n`
@@ -89,7 +90,7 @@ async function cmdInit(args: {
   const root = git(["rev-parse", "--show-toplevel"], { cwd: process.cwd() });
   if (exists(join(root, PB, "config.toml"))) throw new Fail(`${root} already has a patchbook. To follow another upstream: patchbook track`);
   const given = notAnOption(args.upstream);
-  const name = args.name || defaultName(given, args.path);
+  const name = args.name || defaultName(redact(given), args.path);
   const upstream = resolveFromCwd(root, given);
   notThisRepo(root, upstream);
   if (args.outputTo !== null) {

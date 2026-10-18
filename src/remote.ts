@@ -3,11 +3,13 @@ import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Fail } from "./lib/fail.ts";
 import { exists, pjoin, resolve } from "./lib/fs.ts";
-import { git, redact, spawn } from "./lib/proc.ts";
+import { redact, run, spawn } from "./lib/proc.ts";
 import { quote, split } from "./lib/py.ts";
 import { decode, decodeReplace } from "./lib/text.ts";
 
 const NETWORK = /^([a-z][a-z0-9+.-]*:\/\/|[^/]*:)/i;
+
+const gitLine = (root: string, args: string[]) => decode(run(["git", ...args], { cwd: root })).replace(/\n$/, "");
 
 export function notAnOption(url: string): string {
   if (url.startsWith("-")) throw new Fail(`an upstream can't start with a dash: ${redact(url)}`);
@@ -41,7 +43,7 @@ function commonDir(root: string, url: string): string | null {
 }
 
 function isThisRepo(root: string, url: string): boolean {
-  const theirs = commonDir(root, git(["ls-remote", "--get-url", "--", url], { cwd: root }));
+  const theirs = commonDir(root, gitLine(root, ["ls-remote", "--get-url", "--", url]));
   return theirs !== null && theirs === commonDir(root, root);
 }
 
@@ -59,11 +61,10 @@ export function checkedRemoteUrl(root: string, upstream: string, branch: string)
   const shown = redact(upstream);
   const fillIn = shown === upstream ? "" : ", add the credentials from --upstream to the URL in this command, since patchbook does not print them";
   const fix = `To follow ${shown}${fillIn}: git config --replace-all remote.upstream.url ${quote(shown)}`;
-  const configured = git(["config", "--get-all", "remote.upstream.url"], { cwd: root, check: false });
-  if (configured === "") throw new Fail(`the upstream remote has no url. ${fix}`);
-  const fetches = git(["remote", "get-url", "upstream"], { cwd: root });
-  if (isThisRepo(root, fetches)) throw new Fail(`the upstream remote fetches this repo (${redact(fetches)}). ${fix}`);
-  const url = configured.split("\n")[0]!;
+  const url = decode(run(["git", "config", "-z", "--get-all", "remote.upstream.url"], { cwd: root, check: false })).split("\0")[0]!;
+  if (url === "") throw new Fail(`the upstream remote has no url. ${fix}`);
+  const fetches = gitLine(root, ["remote", "get-url", "upstream"]);
+  if (isThisRepo(root, "upstream")) throw new Fail(`the upstream remote fetches this repo (${redact(fetches)}). ${fix}`);
   if (fetches === upstream) return url;
   const theirs = tipOf(root, "the upstream remote", "upstream", branch, fetches);
   const mine = tipOf(root, "--upstream", upstream, branch);
