@@ -100,6 +100,9 @@ async function cmdInit(args: {
     process.stdout.write(`Next: patchbook build, then stage and commit.\n${SCHEDULE}\n`);
     return 0;
   }
+  if (args.vendor !== null) {
+    throw new Fail("--vendor needs --output-to: the root upstream of a fork builds into the whole repo, so no folder can hold a vendored copy of it. To vendor another upstream, use patchbook track --vendor.");
+  }
   const follows = redact(args.upstream);
   const text = configText("fork", upstreamToml(name, follows, args.path, args.branch, ""));
   const book = await Book.fromText(root, text);
