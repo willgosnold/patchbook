@@ -1955,6 +1955,118 @@ exec '${Bun.which("git")}' "$@"
     });
   }
 
+  const linkBecomesFolder = (t: VendorCase): void => {
+    t.missingScaffoldPatchBuild();
+    symlinkSync("../real", join(t.up.path, "plugin/skills/d"));
+    t.up.commit("d is a link");
+    t.pb(["sync"], { cwd: t.repo.path });
+    t.pb(["build"], { cwd: t.repo.path });
+    expect(isSymlink(join(t.repo.path, "skills/d"))).toBe(true);
+    t.repo.commit("built with the link");
+    t.up.rm("plugin/skills/d");
+    t.up.write("plugin/skills/d/f.md", "in a folder\n");
+    t.up.commit("d is a folder");
+    t.pb(["sync"], { cwd: t.repo.path });
+    t.pb(["build", "--force"], { cwd: t.repo.path });
+    expect(lstatSync(join(t.repo.path, "skills/d")).isDirectory()).toBe(true);
+    expect(sh(["git", "ls-files", "-s", "skills/d"], { cwd: t.repo.path }).stdout).toContain("120000");
+  };
+
+  vendorTest("test_build_after_a_link_in_the_output_became_a_folder", (t) => {
+    linkBecomesFolder(t);
+    const out = t.pb(["build"], { cwd: t.repo.path });
+    expect(out.stdout).toContain("built");
+    expect(out.stderr).not.toContain("EISDIR");
+    expect(t.repo.read("skills/d/f.md")).toBe("in a folder\n");
+  });
+
+  vendorTest("test_commit_after_a_link_in_the_output_became_a_folder", (t) => {
+    linkBecomesFolder(t);
+    t.repo.write("NOTES.md", "notes\n");
+    sh(["git", "add", "NOTES.md"], { cwd: t.repo.path });
+    const commit = sh(["git", "commit", "-qm", "notes"], { cwd: t.repo.path, check: false, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    expect(commit.stderr).not.toContain("EISDIR");
+    expect(commit.code).toBe(0);
+    expect(sh(["git", "show", "--stat", "--format=%s", "HEAD"], { cwd: t.repo.path }).stdout).toContain("NOTES.md");
+    expect(t.repo.read("skills/d/f.md")).toBe("in a folder\n");
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  const builtThenReplaced = (t: VendorCase, kind: "link" | "file", fill: (folder: string) => void): string => {
+    t.missingScaffoldPatchBuild();
+    t.repo.write(".gitignore", ".DS_Store\n");
+    if (kind === "link") symlinkSync("../real", join(t.up.path, "plugin/skills/x"));
+    else t.up.write("plugin/skills/x", "from upstream\n");
+    t.up.commit("x");
+    t.pb(["sync"], { cwd: t.repo.path });
+    t.pb(["build"], { cwd: t.repo.path });
+    t.repo.commit("built with x");
+    const at = join(t.repo.path, "skills/x");
+    unlinkSync(at);
+    mkdirSync(at);
+    fill(at);
+    return at;
+  };
+
+  const restored = (t: VendorCase, kind: "link" | "file", at: string): void => {
+    const out = t.pb(["build", "--force"], { cwd: t.repo.path });
+    expect(out.stdout).toContain("built");
+    expect(out.stderr).not.toContain("EISDIR");
+    if (kind === "link") expect(readlinkSync(at)).toBe("../real");
+    else expect(t.repo.read("skills/x")).toBe("from upstream\n");
+  };
+
+  for (const kind of ["link", "file"] as const) {
+    vendorTest(`test_build_force_over_an_empty_folder_that_replaced_a_${kind}`, (t) => {
+      const at = builtThenReplaced(t, kind, () => {});
+      expect(t.pb(["build"], { cwd: t.repo.path, code: 1 }).stderr).toContain("  x\n");
+      restored(t, kind, at);
+    });
+
+    vendorTest(`test_build_force_over_a_folder_of_empty_folders_that_replaced_a_${kind}`, (t) => {
+      const at = builtThenReplaced(t, kind, (folder) => mkdirSync(join(folder, "y/z"), { recursive: true }));
+      restored(t, kind, at);
+    });
+
+    vendorTest(`test_build_force_refuses_a_folder_of_ignored_files_that_replaced_a_${kind}`, (t) => {
+      const at = builtThenReplaced(t, kind, (folder) => writeFileSync(join(folder, ".DS_Store"), "kept\n"));
+      const edited = "hand edit\n";
+      t.repo.write("skills/hello/SKILL.md", edited);
+      const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
+      expect(out.stderr).toContain("x is a folder");
+      expect(out.stderr).toContain("Nothing was changed");
+      expect(out.stderr).not.toContain("EISDIR");
+      expect(read(join(at, ".DS_Store"))).toBe("kept\n");
+      expect(t.repo.read("skills/hello/SKILL.md")).toBe(edited);
+    });
+  }
+
+  for (const [what, below, named] of [["a_subfolder", "locked", "x/locked"], ["a_folder", "", "x"]] as const) {
+    test.skipIf(process.getuid?.() === 0)(`test_build_force_refuses_a_folder_with_${what}_it_cannot_read`, () => {
+      const t = new VendorCase();
+      let locked = "";
+      try {
+        const at = builtThenReplaced(t, "link", (folder) => {
+          locked = join(folder, below);
+          mkdirSync(locked, { recursive: true });
+          writeFileSync(join(locked, "x"), "kept\n");
+          chmodSync(locked, 0o000);
+        });
+        const edited = "hand edit\n";
+        t.repo.write("skills/hello/SKILL.md", edited);
+        const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
+        expect(out.stderr).toContain(`${named} is a folder that can't be read, so a build won't replace x.`);
+        expect(out.stderr).toContain("Nothing was changed");
+        expect(out.stderr).not.toContain("ENOTEMPTY");
+        expect(lstatSync(at).isDirectory()).toBe(true);
+        expect(t.repo.read("skills/hello/SKILL.md")).toBe(edited);
+      } finally {
+        if (locked) chmodSync(locked, 0o755);
+        t.cleanup();
+      }
+    }, TIMEOUT);
+  }
+
   for (const to of ["skills/.git", "skills/.git/x", "a/.git", "a/b/.git/c"]) {
     vendorTest(`test_output_folder_${to.replace(/\W/g, "_")}_has_a_git_segment_and_is_rejected`, (t) => {
       t.missingScaffoldPatchBuild();

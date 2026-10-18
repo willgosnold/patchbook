@@ -1,7 +1,7 @@
 // Files as pathlib reads and writes them: text with universal newlines, and bytes with a mode.
 import {
   accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync,
-  realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync,
+  realpathSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative as rel, resolve as absolute } from "node:path";
 import { compareParts } from "./py.ts";
@@ -107,14 +107,15 @@ export function writeDisk(p: string, { data, mode }: File): void {
   }
 }
 
-/** `sorted(Path(dir).rglob("*" + suffix))`, relative to dir, in pathlib's order: by path component. */
-export function rglob(dir: string, suffix: string): string[] {
+/** `sorted(Path(dir).rglob("*" + suffix))`, relative to dir, in pathlib's order: by path component. A folder it can't read is skipped, and listed in `unreadable` when given. */
+export function rglob(dir: string, suffix: string, unreadable?: string[]): string[] {
   const found: string[][] = [];
   const walk = (parts: string[]) => {
     let names: string[];
     try {
       names = readdirSync(join(dir, ...parts));
     } catch {
+      unreadable?.push(parts.join("/") || ".");
       return;
     }
     for (const name of names) {
@@ -139,3 +140,22 @@ export function foldersWith(dir: string, name: string): string[] {
 }
 
 export const isEmptyDir = (p: string) => readdirSync(p).length === 0;
+
+export function isRealDir(p: string): boolean {
+  try {
+    return lstatSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** Everything under dir that isn't a folder, relative to dir. A folder it can't read, which may hold more, goes in `unreadable` when given. */
+export function nonFolders(dir: string, unreadable?: string[]): string[] {
+  return rglob(dir, "", unreadable).filter((p) => !isRealDir(join(dir, p)));
+}
+
+/** Removes dir and the folders in it, deepest first. A rmdir fails on a file, so none is lost. */
+export function rmFolders(dir: string): void {
+  for (const p of rglob(dir, "").reverse()) rmdirSync(join(dir, p));
+  rmdirSync(dir);
+}
