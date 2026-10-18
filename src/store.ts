@@ -119,10 +119,10 @@ export class Upstream {
     if (!this.has(commit)) this.fetch(commit);
   }
 
-  /** Pin a commit in the store with a ref, so gc keeps it. Only pins get one: a head that was just looked at stays prunable. A ref already there is not written again. */
+  /** Pin a commit with a ref, so gc keeps it. Only pins get one: a head that was just looked at stays prunable. A ref already there is not written again. */
   keep(commit: string): string {
     this.have(commit);
-    if (!this.inRepo && !this.kept(commit)) git(["update-ref", `refs/pins/${commit}`, commit], { cwd: this.gitDir() });
+    if (!this.kept(commit)) git(["update-ref", `refs/pins/${commit}`, commit], { cwd: this.gitDir() });
     return commit;
   }
 
@@ -133,7 +133,7 @@ export class Upstream {
 
   /** Undo `keep` for a commit that did not become the pin. */
   unkeep(commit: string): void {
-    if (!this.inRepo) spawn(["git", "update-ref", "-d", `refs/pins/${commit}`], { cwd: this.gitDir() });
+    spawn(["git", "update-ref", "-d", `refs/pins/${commit}`], { cwd: this.gitDir() });
   }
 
   /** `keep` for a pin that is read: a store that cannot take the ref still serves the read, with a warning. */
