@@ -8,7 +8,7 @@ import {
 import { Book, GIT, PB, under } from "./book.ts";
 import { type Change, editText, readChanges } from "./changes.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isDir, isEmptyDir, LINK, lexists, mkdirs, readDisk, readText, resolve, rglob, sameFile, writeDisk, writeText } from "./lib/fs.ts";
+import { exists, type File, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, nonFolders, readDisk, readText, resolve, rglob, rmFolders, sameFile, writeDisk, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { dumps, loads } from "./lib/json.ts";
 import { git, spawn } from "./lib/proc.ts";
@@ -316,10 +316,22 @@ export function handEdits(book: Book, fresh: ReadonlyMap<string, File>): string[
   return sorted(Array.from(paths).filter((p) => current.get(p) !== last.get(p) && current.get(p) !== next.get(p)));
 }
 
+/** A folder where the build writes a file goes only if it holds nothing but folders and files this build removes. */
+function refuseIfFolderHoldsFiles(root: string, { stale, changed }: Changes): void {
+  const going = new Set(stale);
+  for (const p of changed) {
+    const at = join(root, p);
+    if (!isRealDir(at)) continue;
+    const kept = nonFolders(at).find((f) => !going.has(`${p}/${f}`));
+    if (kept) throw new Fail(`${p} is a folder that holds ${kept}, which isn't build output, so a build won't replace it. Nothing was changed.`);
+  }
+}
+
 export function writeOutput(book: Book, out: ReadonlyMap<string, File>): void {
   const root = book.outputRoot();
   const changes = changesOf(book.currentOutput(), out);
   refuseIfUncontained(book, changes);
+  refuseIfFolderHoldsFiles(root, changes);
   const { stale, changed } = changes;
   for (const p of stale) {
     if (!lexists(join(root, p))) continue;
@@ -328,7 +340,10 @@ export function writeOutput(book: Book, out: ReadonlyMap<string, File>): void {
       rmdirSync(parent);
     }
   }
-  for (const p of changed) writeDisk(join(root, p), out.get(p)!);
+  for (const p of changed) {
+    if (isRealDir(join(root, p))) rmFolders(join(root, p));
+    writeDisk(join(root, p), out.get(p)!);
+  }
   writeBuildLock(book, out);
 }
 

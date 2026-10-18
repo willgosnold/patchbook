@@ -1,7 +1,7 @@
 // Files as pathlib reads and writes them: text with universal newlines, and bytes with a mode.
 import {
   accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync,
-  realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync,
+  realpathSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative as rel, resolve as absolute } from "node:path";
 import { compareParts } from "./py.ts";
@@ -139,3 +139,20 @@ export function foldersWith(dir: string, name: string): string[] {
 }
 
 export const isEmptyDir = (p: string) => readdirSync(p).length === 0;
+
+export function isRealDir(p: string): boolean {
+  try {
+    return lstatSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** Everything under dir that isn't a folder, relative to dir. */
+export const nonFolders = (dir: string): string[] => rglob(dir, "").filter((p) => !isRealDir(join(dir, p)));
+
+/** Removes dir and the folders in it, deepest first. A rmdir fails on a file, so none is lost. */
+export function rmFolders(dir: string): void {
+  for (const p of rglob(dir, "").reverse()) rmdirSync(join(dir, p));
+  rmdirSync(dir);
+}
