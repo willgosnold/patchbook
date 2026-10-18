@@ -130,7 +130,7 @@ export class Upstream {
     const shallow = !this.inRepo || git(["rev-parse", "--is-shallow-repository"], { cwd }) === "true" ? ["--depth=1"] : [];
     const landing = `refs/patchbook/tmp/${process.pid}-${randomUUID()}`;
     try {
-      const fetched = spawn(["git", ...FROM_REPO, "fetch", "--quiet", "--no-tags", ...shallow, this.source(), `+${ref}:${landing}`], { cwd, env: fromRepo() });
+      const fetched = spawn(["git", ...FROM_REPO, "fetch", "--quiet", "--no-tags", ...shallow, "--end-of-options", this.source(), `+${ref}:${landing}`], { cwd, env: fromRepo() });
       if (fetched.code !== 0) throw new Fail(`git fetch ${this.source()} ${ref} failed:\n${strip(decodeReplace(fetched.stderr))}`);
       return git(["rev-parse", `${landing}^{commit}`], { cwd });
     } finally {
@@ -187,7 +187,7 @@ export class Upstream {
   }
 
   head(): string {
-    const out = git([...FROM_REPO, "ls-remote", this.source(), `refs/heads/${this.branch}`], { cwd: this.gitDir(), env: fromRepo() });
+    const out = git([...FROM_REPO, "ls-remote", "--end-of-options", this.source(), `refs/heads/${this.branch}`], { cwd: this.gitDir(), env: fromRepo() });
     if (!out) throw new Fail(`upstream ${this.name} has no branch ${this.branch}`);
     return split(out)[0]!;
   }

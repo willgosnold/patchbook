@@ -49,7 +49,7 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   const dest = resolve(args.dir || basename(rstrip(args.url, "/")).replace(/\.git$/, ""));
   if (exists(dest)) throw new Fail(`${dest} already exists`);
   const clone = ["clone", "--quiet", "--origin", "upstream", ...(args.branch ? ["--branch", args.branch] : [])];
-  git([...clone, args.url, dest], { cwd: dirname(dest) });
+  git([...clone, "--end-of-options", args.url, dest], { cwd: dirname(dest) });
   const branch = git(["branch", "--show-current"], { cwd: dest });
   const commit = git(["rev-parse", "HEAD"], { cwd: dest });
   const inherited = lexists(join(dest, PB));
@@ -93,8 +93,8 @@ async function cmdInit(args: {
     return 0;
   }
   writeConfig(root, "fork", upstreamToml(name, args.upstream, args.path, args.branch, ""));
-  if (!split(git(["remote"], { cwd: root })).includes("upstream")) git(["remote", "add", "upstream", args.upstream], { cwd: root });
-  git(["fetch", "--quiet", args.upstream, args.branch], { cwd: root });
+  if (!split(git(["remote"], { cwd: root })).includes("upstream")) git(["remote", "add", "--end-of-options", "upstream", args.upstream], { cwd: root });
+  git(["fetch", "--quiet", "--end-of-options", args.upstream, args.branch], { cwd: root });
   const base = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: root });
   const book = await Book.open(root);
   book.writeLock(name, base, book.upstreams[0]!.treeOf(base));
