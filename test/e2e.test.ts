@@ -1476,6 +1476,82 @@ describe("VendorTest", () => {
     }
   }, TIMEOUT);
 
+  vendorTest("test_output_folder_cannot_be_under_a_link_to_the_repo_root", (t) => {
+    t.missingScaffoldPatchBuild();
+    symlinkSync(".", join(t.repo.path, "lnkroot"));
+    setOutputFolder(t, "lnkroot/out");
+    t.repo.commit("a link to the repo root");
+    const before = tree(t.repo.path);
+    for (const args of [["build", "--force"], ["build"], ["status"]]) {
+      const out = t.pb(args, { cwd: t.repo.path, code: 1 });
+      expect(out.stderr).toContain("lnkroot, which is a link");
+      expect(tree(t.repo.path)).toEqual(before);
+    }
+  });
+
+  for (const to of [".GIT", ".Git/x", "out/.gIT/y"]) {
+    vendorTest(`test_output_folder_${to.replace(/\W/g, "_")}_has_a_git_segment_in_another_case_and_is_rejected`, (t) => {
+      t.missingScaffoldPatchBuild();
+      setOutputFolder(t, to);
+      const before = tree(t.repo.path);
+      for (const args of [["build", "--force"], ["status"]]) {
+        const out = t.pb(args, { cwd: t.repo.path, code: 1 });
+        expect(out.stderr).toContain("inside .git");
+        expect(tree(t.repo.path)).toEqual(before);
+      }
+    });
+  }
+
+  test("test_track_rejects_a_mount_with_a_git_segment_in_another_case_in_both_layouts", () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("a.md", "a\n");
+      up.commit("start");
+      const more = new Repo(join(t.tmp, "more"));
+      more.write("d/m.md", "m\n");
+      more.commit("start");
+      const folder = new Repo(join(t.tmp, "adapted"));
+      folder.write("README.md", "mine\n");
+      folder.commit("start");
+      t.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: folder.path });
+      t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+      for (const cwd of [folder.path, join(t.tmp, "fork")]) {
+        const config = join(cwd, ".patchbook/config.toml");
+        const before = { config: read(config), tree: tree(cwd) };
+        for (const mount of [".GIT/x", "a/.Git", "./.gIt/x"]) {
+          const tracked = t.pb(["track", "m", more.path, "--mount", mount], { cwd, code: 1 });
+          expect(tracked.stderr).toContain("inside .git");
+          expect(read(config)).toBe(before.config);
+          expect(tree(cwd)).toEqual(before.tree);
+        }
+      }
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+
+  vendorTest("test_an_absolute_output_folder_reached_through_a_link_above_the_repo_builds_twice", (t) => {
+    symlinkSync(t.tmp, join(t.tmp, "via"));
+    const config = join(t.repo.path, ".patchbook/config.toml");
+    writeFileSync(config, replace(read(config), 'to = "skills"', `to = "${join(t.tmp, "via/adapted/skills")}"`));
+    t.missingScaffoldPatchBuild();
+    t.pb(["build"], { cwd: t.repo.path });
+    t.pb(["build", "--force"], { cwd: t.repo.path });
+    expect(t.repo.read("skills/hello/SKILL.md")).toContain("Hello");
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  vendorTest("test_an_absolute_output_folder_reached_through_a_link_above_the_repo_but_outside_it_is_rejected", (t) => {
+    symlinkSync(t.tmp, join(t.tmp, "via"));
+    t.missingScaffoldPatchBuild();
+    setOutputFolder(t, join(t.tmp, "via/elsewhere"));
+    const before = tree(t.repo.path);
+    const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("is outside the repo");
+    expect(tree(t.repo.path)).toEqual(before);
+  });
+
   vendorTest("test_build_never_deletes_through_a_link_into_the_patchbook", (t) => {
     t.missingScaffoldPatchBuild();
     t.repo.write("skills/d/retired.md", "hand\n");
