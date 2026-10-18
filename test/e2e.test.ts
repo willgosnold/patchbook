@@ -776,6 +776,37 @@ describe("ForkTest", () => {
     expect(readdirSync(t.tmp)).toEqual(before);
   });
 
+  forkTest("test_a_remote_that_starts_with_a_dash_fails_sync_status_and_check_and_pins_nothing", (t) => {
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    const original = read(config);
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.commit("upstream edit");
+    const lock = t.fork.read(".patchbook/upstream.lock");
+    for (const remote of ["--bogus", "-x", "--bogus=a:b"]) {
+      writeFileSync(config, original.replace(`remote = "${t.up.path}"`, `remote = "${remote}"`));
+      for (const command of ["sync", "status", "check"]) {
+        const out = t.pb([command], { cwd: t.fork.path, code: 1 });
+        expect(out.stderr).toContain(`upstream upstream's remote "${remote}" starts with "-", so git would read it as an option.`);
+      }
+    }
+    expect(t.fork.read(".patchbook/upstream.lock")).toBe(lock);
+  });
+
+  forkTest("test_init_and_track_refuse_a_remote_that_starts_with_a_dash_and_change_nothing", (t) => {
+    const mine = join(t.tmp, "mine");
+    sh(["git", "clone", "-q", t.up.path, mine], { cwd: t.tmp });
+    const config = read(join(t.fork.path, ".patchbook/config.toml"));
+    const lock = t.fork.read(".patchbook/upstream.lock");
+    for (const remote of ["--bogus", "--bogus=a:b"]) {
+      const message = `remote "${remote}" starts with "-", so git would read it as an option.`;
+      expect(t.pb(["init", `--upstream=${remote}`], { cwd: mine, code: 1 }).stderr).toContain(message);
+      expect(existsSync(join(mine, ".patchbook"))).toBe(false);
+      expect(t.pb(["track", "again", "--", remote], { cwd: t.fork.path, code: 1 }).stderr).toContain(message);
+      expect(read(join(t.fork.path, ".patchbook/config.toml"))).toBe(config);
+      expect(t.fork.read(".patchbook/upstream.lock")).toBe(lock);
+    }
+  });
+
   forkTest("test_init_pins_from_the_upstream_option_when_an_upstream_remote_points_elsewhere", (t) => {
     t.up.write("app.txt", replace(t.up.read("app.txt"), "one", "ONE"));
     const branched = t.up.commit("b1");
