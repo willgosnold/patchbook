@@ -356,7 +356,7 @@ export class Book {
     const output = this.outputOf(staged);
     if (output === null) return null;
     const inRepo = this.inRepo(output);
-    return under(inRepo, PB) ? PB : namesGit(inRepo) ? GIT : null;
+    return under(inRepo.toLowerCase(), PB) ? PB : namesGit(inRepo) ? GIT : null;
   }
 
   private vendors(): string[] {
