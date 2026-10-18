@@ -7605,6 +7605,61 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(out.stdout).toBe("delete   docs/guide.md\n");
   });
 
+  // A change that owns `file app.txt`, whose ours copy has `text` where upstream has "three".
+  const ownedFileEdit = (t: ForkCase, text: string, placeholders: boolean): string => {
+    if (placeholders) {
+      const config = join(t.fork.path, ".patchbook/config.toml");
+      writeFileSync(config, read(config) + '\n[placeholders.snippet]\nfile = ".patchbook/snippets.md"\nformat = "sections"\n');
+      t.fork.write(".patchbook/snippets.md", "## v\n\nVERSION-1\n");
+    }
+    const ours = replace(t.fork.read("app.txt"), "three", text);
+    handChange(t, "ver", "Name the version.", ["file app.txt"], { "app.txt": ours });
+    const base = join(t.fork.path, ".patchbook/changes/ver/base/app.txt.pb");
+    mkdirSync(dirname(base), { recursive: true });
+    writeFileSync(base, t.fork.read("app.txt"));
+    t.pb(["build"], { cwd: t.fork.path });
+    return join(t.fork.path, ".patchbook/changes/ver/ours/app.txt.pb");
+  };
+  const SKIPPED = "skipped  app.txt: its copy in ver uses placeholders; edit that copy directly\n";
+
+  forkTest("test_record_skips_a_file_edit_whose_ours_copy_uses_a_placeholder", (t) => {
+    const copy = ownedFileEdit(t, "{{snippet:v}}", true);
+    const before = read(copy);
+    expect(t.fork.read("app.txt")).toContain("\nVERSION-1\n");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "one", "ONE"));
+    expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe(SKIPPED);
+    expect(read(copy)).toBe(before);
+    expect(read(copy)).toContain("{{snippet:v}}");
+    expect(t.fork.read("app.txt")).toStartWith("ONE\n");
+  });
+
+  forkTest("test_record_skips_a_file_edit_with_a_placeholder_and_still_records_another_edit", (t) => {
+    const copy = ownedFileEdit(t, "{{snippet:v}}", true);
+    const before = read(copy);
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "one", "ONE"));
+    t.fork.write("docs/guide.md", "a better guide\n");
+    expect(t.pb(["record", "guide", "--intent", "Improve the guide."], { cwd: t.fork.path }).stdout).toBe(SKIPPED + "file     docs/guide.md\n");
+    expect(read(copy)).toBe(before);
+    expect(changeText(t, "guide")).toContain("- file docs/guide.md");
+    expect(read(join(t.fork.path, ".patchbook/changes/guide/ours/docs/guide.md.pb"))).toBe("a better guide\n");
+    expect(t.fork.read("app.txt")).toStartWith("ONE\n");
+  });
+
+  forkTest("test_record_updates_a_file_edit_copy_that_has_placeholder_text_but_no_placeholders_configured", (t) => {
+    const copy = ownedFileEdit(t, "{{go:name}}", false);
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "one", "ONE"));
+    expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe("file     app.txt (in ver)\n");
+    expect(read(copy)).toBe("ONE\ntwo\n{{go:name}}\nfour\nfive\nsix\nseven\n");
+  });
+
+  forkTest("test_record_updates_an_added_copy_that_has_placeholder_text_but_no_placeholders_configured", (t) => {
+    handChange(t, "tpl", "Add a template.", ["add tpl.txt"], { "tpl.txt": "Hello {{go:name}}\n" });
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.write("tpl.txt", "Hello {{go:name}}!\n");
+    expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe("update   tpl.txt (in tpl)\n");
+    expect(read(join(t.fork.path, ".patchbook/changes/tpl/ours/tpl.txt.pb"))).toBe("Hello {{go:name}}!\n");
+  });
+
   forkTest("test_added_symlink_stays_a_symlink", (t) => {
     symlinkSync("app.txt", join(t.fork.path, "link"));
     t.pb(["record", "link", "--intent", "Link to the app."], { cwd: t.fork.path });
