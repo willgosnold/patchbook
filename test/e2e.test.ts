@@ -497,6 +497,30 @@ describe("VendorTest", () => {
     expect(diff).toContain("+For everyone.");
   });
 
+  vendorTest("test_store_keeps_a_pin_it_held_without_a_ref", (t) => {
+    const store = join(t.tmp, "store/upstreams", readdirSync(join(t.tmp, "store/upstreams"))[0]!);
+    for (const ref of sh(["git", "for-each-ref", "--format=%(refname)"], { cwd: store }).stdout.split("\n").filter(Boolean)) {
+      sh(["git", "update-ref", "-d", ref], { cwd: store });
+    }
+    expect(words(t.pb(["upstream", "plugin"], { cwd: t.repo.path }).stdout)).toEqual(["README.md", "agents/helper.md", "skills/hello/SKILL.md"]);
+    sh(["git", "gc", "-q", "--prune=now"], { cwd: store });
+    rmSync(t.up.path, { recursive: true });
+    expect(words(t.pb(["upstream", "plugin"], { cwd: t.repo.path }).stdout)).toEqual(["README.md", "agents/helper.md", "skills/hello/SKILL.md"]);
+  });
+
+  vendorTest("test_check_leaves_the_heads_it_fetches_to_gc", (t) => {
+    const store = join(t.tmp, "store/upstreams", readdirSync(join(t.tmp, "store/upstreams"))[0]!);
+    const pin = JSON.parse(read(join(t.repo.path, ".patchbook/upstream.lock"))).plugin.commit;
+    t.up.write("plugin/README.md", "For everyone.\n");
+    const head = t.up.commit("readme");
+    t.pb(["check"], { cwd: t.repo.path, code: 10 });
+    sh(["git", "gc", "-q", "--prune=now"], { cwd: store });
+    expect(sh(["git", "cat-file", "-e", `${pin}^{commit}`], { cwd: store, check: false }).code).toBe(0);
+    expect(sh(["git", "cat-file", "-e", `${head}^{commit}`], { cwd: store, check: false }).code).not.toBe(0);
+    rmSync(t.up.path, { recursive: true });
+    expect(words(t.pb(["upstream", "plugin"], { cwd: t.repo.path }).stdout)).toEqual(["README.md", "agents/helper.md", "skills/hello/SKILL.md"]);
+  });
+
   vendorTest("test_vendor_copy_is_guarded", (t) => {
     const extra = new Repo(join(t.tmp, "extra"));
     extra.write("a.md", "a\n");
