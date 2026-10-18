@@ -724,6 +724,8 @@ describe("ForkTest", () => {
     ["copy_into_the_patchbook", "copy app.txt -> .patchbook/notes.txt", ".patchbook/notes.txt", ".patchbook"],
     ["add_into_the_patchbook", "add .patchbook/new.md", ".patchbook/new.md", ".patchbook"],
     ["move_into_the_patchbook", "move docs/guide.md -> .patchbook/guide.md", ".patchbook/guide.md", ".patchbook"],
+    ["copy_into_dot_PATCHBOOK_config", "copy app.txt -> .PATCHBOOK/config.toml", ".PATCHBOOK/config.toml", ".patchbook"],
+    ["add_into_dot_PatchBook", "add .PatchBook/new.md", ".PatchBook/new.md", ".patchbook"],
     ["copy_into_git", "copy app.txt -> .git/x", ".git/x", ".git"],
     ["add_into_git", "add .git/new.md", ".git/new.md", ".git"],
     ["move_into_git", "move docs/guide.md -> .git/guide.md", ".git/guide.md", ".git"],
