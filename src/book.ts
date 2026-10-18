@@ -1,5 +1,5 @@
 // The repo, its config and its upstreams.
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Hooks, Problem } from "./api.ts";
 import { installHook } from "./githook.ts";
@@ -136,6 +136,11 @@ function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly str
   if (under(rel, GIT)) throw new Fail(`[output] to ${shown} is inside ${GIT}. Name a folder outside it.`);
   if (lexists(dir) && !exists(dir)) throw new Fail(`[output] to ${shown} is a link to nothing. Name a folder inside the repo.`);
   if (exists(dir) && !isDir(dir)) throw new Fail(`[output] to ${shown} is not a folder. Name a folder inside the repo.`);
+  for (let up = dirname(dir); up !== root && up !== dirname(up); up = dirname(up)) {
+    const name = relative(root, up);
+    if (lexists(up) && !exists(up)) throw new Fail(`[output] to ${shown} is under ${name}, which is a link to nothing. Name a folder inside the repo.`);
+    if (exists(up) && !isDir(up)) throw new Fail(`[output] to ${shown} is under ${name}, which is not a folder. Name a folder inside the repo.`);
+  }
   for (const v of vendors) {
     const vendor = relative(resolve(root), resolve(pjoin(root, v)));
     if (vendor === ".") throw new Fail(`[output] to ${shown} overlaps the vendored copy, which is the repo root. Name another folder.`);
