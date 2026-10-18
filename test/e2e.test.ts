@@ -1,7 +1,7 @@
 // End-to-end tests: each one builds a throwaway upstream repo and drives the CLI against it.
 
 import { describe, expect, test } from "bun:test";
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Case, Repo, dedent, lstrip, mkdirNew, partitionHead, replace, sh, words } from "./helpers";
 
@@ -887,6 +887,7 @@ describe("VendorTest", () => {
 
   vendorTest("test_upstream_rewords_a_patched_block", (t) => {
     t.missingScaffoldPatchBuild();
+    t.repo.commit("built");
     const skill = "plugin/skills/hello/SKILL.md";
     t.up.write(skill, replace(t.up.read(skill), "say hello", "say hi"));
     t.up.commit("reword");
@@ -1269,7 +1270,7 @@ describe("VendorTest", () => {
 
   const setOutputFolder = (t: VendorCase, to: string): void => {
     const config = join(t.repo.path, ".patchbook/config.toml");
-    writeFileSync(config, replace(read(config), 'to = "skills"', `to = ${JSON.stringify(to)}`));
+    writeFileSync(config, read(config).replace(/^to = .*$/m, () => `to = ${JSON.stringify(to)}`));
   };
 
   vendorTest("test_output_folder_cannot_be_the_repo_root", (t) => {
@@ -1287,6 +1288,7 @@ describe("VendorTest", () => {
   });
 
   vendorTest("test_output_folder_cannot_be_inside_the_patchbook", (t) => {
+    t.missingScaffoldPatchBuild();
     for (const to of [".patchbook", ".patchbook/out", join(t.repo.path, ".patchbook/changes")]) {
       setOutputFolder(t, to);
       const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
@@ -1296,6 +1298,7 @@ describe("VendorTest", () => {
   });
 
   vendorTest("test_output_folder_must_be_inside_the_repo", (t) => {
+    t.missingScaffoldPatchBuild();
     for (const to of ["..", "../elsewhere", join(t.tmp, "elsewhere")]) {
       setOutputFolder(t, to);
       const out = t.pb(["build"], { cwd: t.repo.path, code: 1 });
@@ -1305,6 +1308,7 @@ describe("VendorTest", () => {
   });
 
   vendorTest("test_output_folder_cannot_overlap_a_vendored_copy", (t) => {
+    t.missingScaffoldPatchBuild();
     const extra = new Repo(join(t.tmp, "extra"));
     extra.write("a.md", "a\n");
     extra.commit("a");
@@ -1330,6 +1334,109 @@ describe("VendorTest", () => {
       t.cleanup();
     }
   }, TIMEOUT);
+
+  vendorTest("test_output_folder_cannot_be_a_file", (t) => {
+    t.missingScaffoldPatchBuild();
+    setOutputFolder(t, "README.md");
+    const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("is not a folder");
+    expect(t.repo.read("README.md")).toBe("mine\n");
+  });
+
+  vendorTest("test_output_folder_cannot_be_inside_the_git_dir", (t) => {
+    t.missingScaffoldPatchBuild();
+    const gitConfig = t.repo.read(".git/config");
+    for (const to of [".git", ".git/hooks"]) {
+      setOutputFolder(t, to);
+      const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
+      expect(out.stderr).toContain("is inside .git");
+      expect(existsSync(join(t.repo.path, ".git/hello"))).toBe(false);
+      expect(existsSync(join(t.repo.path, ".git/hooks/hello"))).toBe(false);
+    }
+    expect(t.repo.read(".git/config")).toBe(gitConfig);
+  });
+
+  vendorTest("test_output_folder_cannot_be_a_dangling_link", (t) => {
+    t.missingScaffoldPatchBuild();
+    symlinkSync(".patchbook/nope", join(t.repo.path, "dangle"));
+    setOutputFolder(t, "dangle");
+    const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("is a link to nothing");
+    expect(existsSync(join(t.repo.path, ".patchbook/nope"))).toBe(false);
+  });
+
+  vendorTest("test_output_folder_overlaps_a_vendored_copy_at_the_repo_root", (t) => {
+    const config = join(t.repo.path, ".patchbook/config.toml");
+    writeFileSync(config, replace(read(config), 'name = "plugin"\n', 'name = "plugin"\nvendor = "."\n'));
+    const out = t.pb(["status"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("overlaps the vendored copy, which is the repo root");
+  });
+
+  vendorTest("test_build_never_deletes_through_a_link_into_the_patchbook", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.repo.write("skills/d/retired.md", "hand\n");
+    t.repo.commit("a file under skills/d");
+    rmSync(join(t.repo.path, "skills/d"), { recursive: true });
+    symlinkSync("../.patchbook", join(t.repo.path, "skills/d"));
+    t.repo.write(".gitignore", "/skills/d\n");
+    const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
+    expect(existsSync(join(t.repo.path, ".patchbook/retired.md"))).toBe(true);
+    expect(out.stderr).toContain("is really inside .patchbook");
+  });
+
+  vendorTest("test_build_never_deletes_a_patchbook_that_links_into_the_output", (t) => {
+    t.missingScaffoldPatchBuild();
+    renameSync(join(t.repo.path, ".patchbook"), join(t.repo.path, "skills/.pb"));
+    symlinkSync("skills/.pb", join(t.repo.path, ".patchbook"));
+    const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
+    for (const f of ["config.toml", "series", "retired.md"]) {
+      expect(existsSync(join(t.repo.path, "skills/.pb", f))).toBe(true);
+    }
+    expect(out.stderr).toContain("is really inside .patchbook");
+  });
+
+  test("test_a_rejected_init_can_be_retried", () => {
+    const t = new VendorCase();
+    try {
+      const repo = new Repo(join(t.tmp, "fresh"));
+      repo.write("README.md", "mine\n");
+      repo.commit("start");
+      t.pb(["init", "--upstream", t.up.path, "--output-to", ""], { cwd: repo.path, code: 1 });
+      expect(existsSync(join(repo.path, ".patchbook"))).toBe(false);
+      t.pb(["init", "--upstream", t.up.path, "--output-to", "out"], { cwd: repo.path });
+      expect(existsSync(join(repo.path, ".patchbook/config.toml"))).toBe(true);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+
+  test("test_init_rejects_a_vendored_copy_at_the_repo_root", () => {
+    const t = new VendorCase();
+    try {
+      const repo = new Repo(join(t.tmp, "fresh"));
+      repo.write("README.md", "mine\n");
+      repo.commit("start");
+      const out = t.pb(["init", "--upstream", t.up.path, "--output-to", "out", "--vendor", "."], { cwd: repo.path, code: 1 });
+      expect(out.stderr).toContain("overlaps the vendored copy, which is the repo root");
+      expect(repo.read("README.md")).toBe("mine\n");
+      expect(existsSync(join(repo.path, ".git"))).toBe(true);
+      expect(existsSync(join(repo.path, ".patchbook"))).toBe(false);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+
+  vendorTest("test_a_rejected_track_leaves_the_config_alone", (t) => {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "a\n");
+    extra.commit("a");
+    const config = join(t.repo.path, ".patchbook/config.toml");
+    const before = read(config);
+    const out = t.pb(["track", "extra", extra.path, "--vendor", "skills/extra"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("overlaps the vendored copy skills/extra");
+    expect(read(config)).toBe(before);
+    t.pb(["track", "extra", extra.path], { cwd: t.repo.path });
+  });
 
   vendorTest("test_absolute_placeholder_file_is_used_as_given", (t) => {
     const snippets = join(t.tmp, "snippets.md");
