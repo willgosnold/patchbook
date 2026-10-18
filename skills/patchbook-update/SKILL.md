@@ -1,6 +1,6 @@
 ---
 name: patchbook-update
-description: Pull upstreams into a repo that keeps its changes in a patchbook (.patchbook/), repair what broke from each change's intent, test and review, then merge and deploy only when the sync was clean or the test command passes, and otherwise open a pull request and ask. Use when a scheduled task or the user says to update a patchbook repo, or for /patchbook-update or $patchbook-update.
+description: Pull upstreams into a repo that keeps its changes in a patchbook (.patchbook/), repair what broke from each change's intent, test and review, then merge and deploy only when the sync was clean or the test command passes, and otherwise ask, opening a pull request when there are commits to push. Use when a scheduled task or the user says to update a patchbook repo, or for /patchbook-update or $patchbook-update.
 ---
 
 # Patchbook update
