@@ -811,7 +811,7 @@ test("test_track_rejects_a_url_that_starts_with_a_dash", () => {
     up.commit("start");
     const fork = forkOf(t, up);
     t.pb(["init", "--upstream", up.path], { cwd: fork.path });
-    const refused = t.pb(["track", "lib", "-x"], { cwd: fork.path, code: 1 });
+    const refused = t.pb(["track", "lib", "--", "-x"], { cwd: fork.path, code: 1 });
     expect(refused.stderr).toContain("patchbook: an upstream can't start with a dash: -x");
     expect(refused.stderr).not.toContain("usage");
   } finally {
