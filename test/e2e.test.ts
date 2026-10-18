@@ -631,6 +631,16 @@ describe("ForkTest", () => {
     expect(report.upstream).toEqual(["changed app.txt"]);
   });
 
+  for (const kind of ["annotated", "lightweight"]) {
+    forkTest(`test_sync_does_not_import_the_${kind}_tags_of_an_in_repo_upstream`, (t) => {
+      t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+      t.up.commit("upstream edit");
+      sh(["git", "tag", ...(kind === "annotated" ? ["-a", "-m", "release"] : []), "v6"], { cwd: t.up.path });
+      t.pb(["sync", "upstream"], { cwd: t.fork.path });
+      expect(sh(["git", "for-each-ref", "refs/tags"], { cwd: t.fork.path }).stdout).toBe("");
+    });
+  }
+
   forkTest("test_clone_keeps_history_and_pins", (t) => {
     const log = sh(["git", "log", "--oneline"], { cwd: t.fork.path }).stdout;
     expect(log).toContain("start");
@@ -1064,6 +1074,7 @@ describe("VendorTest", () => {
     const older = t.up.commit("older");
     t.up.write("plugin/README.md", "For everyone.\n");
     const head = t.up.commit("head");
+    sh(["git", "tag", "-a", "-m", "release", "v1"], { cwd: t.up.path });
     const bin = join(t.tmp, "bin/git");
     const raced = join(t.tmp, "raced");
     writeFileSync(bin, `#!/bin/sh
