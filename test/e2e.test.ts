@@ -7422,6 +7422,63 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     });
   }
 
+  const notAFolder: [string, (t: ForkCase, vendor: string) => string | null][] = [
+    ["a_file", (_, vendor) => {
+      writeFileSync(vendor, "a file\n");
+      return null;
+    }],
+    ["a_symlink_to_a_missing_path", (t, vendor) => {
+      symlinkSync(join(t.tmp, "nowhere"), vendor);
+      return null;
+    }],
+    ["a_symlink_to_a_folder_outside_the_repo", (t, vendor) => {
+      const outside = join(t.tmp, "outside");
+      mkdirSync(outside);
+      writeFileSync(join(outside, "a.md"), "outside\n");
+      symlinkSync(outside, vendor);
+      return join(outside, "a.md");
+    }],
+  ];
+  for (const [state, harm] of notAFolder) {
+    forkTest(`test_sync_rewrites_${state}_at_the_vendor_path_when_upstream_has_not_moved`, (t) => {
+      trackVendored(t);
+      const before = tree(t.fork.path);
+      const vendor = join(t.fork.path, "vendor/extra");
+      rmSync(vendor, { recursive: true });
+      const outside = harm(t, vendor);
+
+      const synced = t.pb(["sync", "extra"], { cwd: t.fork.path });
+      expect(synced.stdout).toContain("Rewrote the vendored copy, which did not.");
+      if (outside) expect(readFileSync(outside, "utf8")).toBe("outside\n");
+      expect(lstatSync(vendor).isDirectory()).toBe(true);
+      expect(tree(t.fork.path)).toEqual(before);
+      expect(staged(t)).toEqual([]);
+      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    });
+  }
+
+  forkTest("test_a_symlink_at_the_vendor_path_comes_back_as_a_link_when_the_rewrite_does_not_verify", (t) => {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "one\n");
+    extra.write("debug.log", "noise\n");
+    extra.commit("start");
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.fork.path });
+    t.fork.write(".gitignore", "vendor/extra/*.log\n");
+    t.fork.commit("track extra, hide its logs");
+    const outside = join(t.tmp, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "a.md"), "outside\n");
+    const vendor = join(t.fork.path, "vendor/extra");
+    rmSync(vendor, { recursive: true });
+    symlinkSync(outside, vendor);
+
+    expect(t.pb(["sync", "extra"], { cwd: t.fork.path, code: 1 }).stderr).toContain("Does a .gitignore hide upstream files?");
+    expect(lstatSync(vendor).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(vendor)).toBe(outside);
+    expect(readFileSync(join(outside, "a.md"), "utf8")).toBe("outside\n");
+    expect(readdirSync(outside)).toEqual(["a.md"]);
+  });
+
   forkTest("test_sync_leaves_a_vendored_copy_that_gitignore_hides_as_it_was_when_upstream_has_not_moved", (t) => {
     const extra = new Repo(join(t.tmp, "extra"));
     extra.write("a.md", "one\n");
@@ -8189,6 +8246,26 @@ exec '${Bun.which("git")}' "$@"
 
     expect(t.pb(["sync", "extra"], { cwd: t.repo.path }).stdout).toContain("Rewrote the vendored copy, which did not.");
     expect(tree(t.repo.path)).toEqual(before);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  vendorTest("test_a_symlink_at_the_vendor_path_comes_back_as_a_link_when_its_rewrite_is_killed", (t) => {
+    extraWithAChange(t, true);
+    rmSync(join(t.repo.path, "vendor/extra/scratch"));
+    t.repo.commit("follow extra");
+    const outside = join(t.tmp, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "a.md"), "outside\n");
+    const vendor = join(t.repo.path, "vendor/extra");
+    rmSync(vendor, { recursive: true });
+    symlinkSync(outside, vendor);
+    killSync(t, "write-tree --prefix=vendor/extra/");
+    expect(existsSync(join(t.repo.path, ".patchbook/sync-extra/pin"))).toBe(true);
+
+    expect(t.pb(["sync", "extra"], { cwd: t.repo.path }).stdout).toContain("Rewrote the vendored copy, which did not.");
+    expect(lstatSync(vendor).isDirectory()).toBe(true);
+    expect(readdirSync(outside)).toEqual(["a.md"]);
+    expect(readFileSync(join(outside, "a.md"), "utf8")).toBe("outside\n");
     expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
   });
 
