@@ -2,7 +2,7 @@
 import { mkdtempSync, rmdirSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { InChange, InEdit, InOutput, Problem } from "./api.ts";
+import type { InChange, InEdit, InOutput, Problem, StatusJson } from "./api.ts";
 import {
   entriesPath, type Entry, formatEntry, leakScan, orphan, patchBlocks, readEntries, Rules, type Unmatched,
 } from "./blocks.ts";
@@ -14,7 +14,7 @@ import {
   exists, type File, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, nonFolders, readDisk, readText, relative, resolve, rglob, rmFolders, sameFile, writeDisk, writeText,
 } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
-import { dumps, loads } from "./lib/json.ts";
+import { dumps, type Json, loads } from "./lib/json.ts";
 import { type Env, git, run, spawn } from "./lib/proc.ts";
 import { floatRepr, ljust, rstrip, sorted, sortedBy, strip } from "./lib/py.ts";
 import { bytesEqual, decode, encode, isText } from "./lib/text.ts";
@@ -439,7 +439,9 @@ export async function cmdStatus(args: { json: boolean }) {
   const lastSync = join(book.dir, "last-sync.json");
   const report = exists(lastSync) ? loads(readText(lastSync)) : null;
   if (args.json) {
-    const status = { upstreams: book.lock(), applied: a.applied, problems: a.problems, last_sync: report };
+    const status: Omit<StatusJson, "upstreams" | "last_sync"> & { upstreams: Json; last_sync: Json } = {
+      version: 1, upstreams: book.lock(), applied: a.applied, problems: a.problems, last_sync: report,
+    };
     process.stdout.write(dumps(status, 2) + "\n");
   } else {
     for (const p of a.problems) process.stdout.write(describe(p) + "\n");

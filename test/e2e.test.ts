@@ -5083,6 +5083,81 @@ describe("ForkTest", () => {
     expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("gone");
   });
 
+  forkTest("test_check_prints_a_versioned_document", (t) => {
+    const pinned = JSON.parse(t.fork.read(".patchbook/upstream.lock")).upstream.commit;
+    expect(JSON.parse(t.pb(["check"], { cwd: t.fork.path }).stdout)).toEqual({
+      version: 1,
+      moved: false,
+      upstreams: { upstream: { pinned, head: pinned, moved: false, files: [] } },
+    });
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    const head = t.up.commit("upstream edit");
+    const out = t.pb(["check"], { cwd: t.fork.path, code: 10 }).stdout;
+    expect(Object.keys(JSON.parse(out))).toEqual(["version", "moved", "upstreams"]);
+    expect(JSON.parse(out)).toEqual({
+      version: 1,
+      moved: true,
+      upstreams: { upstream: { pinned, head, moved: true, files: ["changed app.txt"] } },
+    });
+  });
+
+  forkTest("test_sync_writes_a_versioned_report", (t) => {
+    t.recordFeature();
+    const from = JSON.parse(t.fork.read(".patchbook/upstream.lock")).upstream.commit;
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    const to = t.up.commit("upstream edit");
+    t.pb(["sync"], { cwd: t.fork.path });
+    const written = JSON.parse(t.fork.read(".patchbook/last-sync.json"));
+    expect(Object.keys(written)).toEqual(["version", "upstreams"]);
+    expect(written).toEqual({
+      version: 1,
+      upstreams: {
+        upstream: {
+          from,
+          to,
+          upstream: ["changed app.txt"],
+          merged: [{ change: "feature", path: "app.txt" }],
+          conflicts: [],
+          gone: [],
+          replaced_upstream_changed: [],
+        },
+      },
+    });
+  });
+
+  forkTest("test_status_json_prints_a_versioned_document", (t) => {
+    const empty = JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path }).stdout);
+    expect(Object.keys(empty)).toEqual(["version", "upstreams", "applied", "problems", "last_sync"]);
+    expect(empty.version).toBe(1);
+    expect(empty.last_sync).toBeNull();
+    t.recordFeature();
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "two", "deux"));
+    t.up.commit("conflicting edit");
+    t.pb(["sync"], { cwd: t.fork.path });
+    const status = JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path, code: 1 }).stdout);
+    expect(status.version).toBe(1);
+    expect(Object.keys(status.upstreams.upstream)).toEqual(["commit", "tree"]);
+    expect(status.problems.map((p: { problem: string }) => p.problem)).toEqual(["conflict", "conflict"]);
+    expect(status.last_sync.version).toBe(1);
+    expect(status.last_sync.upstreams.upstream.conflicts).toEqual([{ change: "feature", path: "app.txt", count: 1 }]);
+  });
+
+  forkTest("test_a_last_sync_written_before_versions_still_reads", (t) => {
+    t.recordFeature();
+    const from = JSON.parse(t.fork.read(".patchbook/upstream.lock")).upstream.commit;
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.commit("upstream edit");
+    t.pb(["sync"], { cwd: t.fork.path });
+    const path = join(t.fork.path, ".patchbook/last-sync.json");
+    const { upstreams } = JSON.parse(read(path));
+    writeFileSync(path, JSON.stringify({ upstreams }, null, 2) + "\n");
+    const status = JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path }).stdout);
+    expect(status.version).toBe(1);
+    expect(status.last_sync).toEqual({ upstreams });
+    expect(t.pb(["upstream", "upstream", "--diff"], { cwd: t.fork.path }).stdout).toContain("SIX");
+    expect(upstreams.upstream.from).toBe(from);
+  });
+
   forkTest("test_record_writes_the_name_and_intent", (t) => {
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
     const out = t.pb(["record"], { cwd: t.fork.path });
