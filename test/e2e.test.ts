@@ -1080,6 +1080,26 @@ test("test_skill_install_does_not_write_through_a_symlink_at_the_skill_file", ()
   }
 }, TIMEOUT);
 
+test("test_skill_install_does_not_ask_for_a_commit_when_the_skill_file_is_an_uncommitted_symlink", () => {
+  const t = new Case();
+  try {
+    const fork = skillFork(t);
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const notes = join(t.tmp, "notes.md");
+    writeFileSync(notes, "Notes kept outside the repo.\n");
+    mkdirSync(join(fork.path, ".agents/skills/patchbook-update"), { recursive: true });
+    symlinkSync(notes, join(fork.path, SKILL_FILE));
+    const before = tree(fork.path);
+    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain(`${SKILL_FILE} is a symlink`);
+    expect(out.stderr).not.toContain("Commit them first");
+    expect(read(notes)).toBe("Notes kept outside the repo.\n");
+    expect(tree(fork.path)).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("test_skill_install_does_not_write_through_a_symlink_at_a_folder_above_the_skill", () => {
   const t = new Case();
   try {
