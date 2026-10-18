@@ -223,6 +223,11 @@ export class Book {
         if (a !== b && a.mount && under(b.mount, a.mount)) throw new Fail(`upstreams ${a.name} and ${b.name} mount at overlapping folders`);
       }
     }
+    for (const u of this.upstreams) {
+      const out = this.outputFolder(u);
+      const own = out === null ? undefined : [PB, ".git"].find((reserved) => under(out, reserved));
+      if (own) throw new Fail(`${u.name} mounts at ${shown(u.mount)}, inside ${own}. patchbook never builds into ${own}, so those files would never land. Change mount for ${u.name}.`);
+    }
     this.checkVendors();
   }
 
@@ -237,6 +242,14 @@ export class Book {
         throw new Fail(
           `the vendored copy of ${a.name} (${shown(vendored)}) overlaps the folder ${a.name} builds into (${shown(own)}). ${written} Change ${change} for ${a.name}.`,
         );
+      }
+      for (const b of this.upstreams.slice(0, this.upstreams.indexOf(a))) {
+        const other = b.vendor ? this.folderOf(b.vendor) : null;
+        if (other !== null && (underOrRoot(other, vendored) || underOrRoot(vendored, other))) {
+          throw new Fail(
+            `the vendored copy of ${a.name} (${shown(vendored)}) overlaps the vendored copy of ${b.name} (${shown(other)}). The outer copy would hold the inner one's files, and a vendored copy must match upstream exactly. Change vendor for ${b.name} or ${a.name}.`,
+          );
+        }
       }
       for (const b of this.upstreams) {
         const out = a === b ? null : this.outputFolder(b);
@@ -356,11 +369,14 @@ export class Book {
     return staged;
   }
 
-  buildable(files: ReadonlyMap<string, File>): Map<string, File> {
+  /** Pass `noted = false` for a tree the build will not use, so the notice counts only what it leaves out. */
+  buildable(files: ReadonlyMap<string, File>, noted = true): Map<string, File> {
     const kept = new Map<string, File>();
     for (const [p, f] of files) {
       const vendored = this.vendorHolding(p);
-      if (vendored !== null) leftOut.set(vendored, (leftOut.get(vendored) ?? new Set()).add(p));
+      if (vendored !== null) {
+        if (noted) leftOut.set(vendored, (leftOut.get(vendored) ?? new Set()).add(p));
+      }
       else if (!this.isPatchbook(p)) kept.set(p, f);
     }
     return kept;
