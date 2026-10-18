@@ -29,6 +29,8 @@ function isLocalPath(remote: string): boolean {
   return !remote.includes("://") && (colon === -1 || remote.slice(0, colon).includes("/"));
 }
 
+const namesNoHelper = (remote: string): boolean => isLocalPath(remote) || remote.startsWith("file://");
+
 export function absoluteRemote(remote: string): string {
   return remote && !remote.startsWith("-") && isLocalPath(remote) ? posix.resolve(remote) : remote;
 }
@@ -193,16 +195,15 @@ export class Upstream {
   }
 
   /**
-   * A remote other than a local path or file:// comes from a repo, as a submodule URL does, so it gets git's rule for those: a helper git does not ship
+   * A repo chose the remote, as it chooses a submodule URL, so a remote that can name a helper gets git's rule for those: a helper git does not ship
    * runs only if the user allows it, with protocol.<name>.allow or protocol.allow set to always, or with GIT_ALLOW_PROTOCOL.
    * ext:: runs only through GIT_ALLOW_PROTOCOL.
    */
-  private onRemote(args: string[], shown: string, cwd: string): string {
-    const remote = this.source();
-    const done = isLocalPath(remote) || remote.startsWith("file://")
+  private onRemote(args: string[], asTyped: string, cwd: string): string {
+    const done = namesNoHelper(this.source())
       ? spawn(["git", ...args], { cwd })
       : spawn(["git", "-c", "protocol.ext.allow=never", ...args], { cwd, env: { ...process.env, GIT_PROTOCOL_FROM_USER: "0" } });
-    if (done.code !== 0) throw new Fail(`${shown} failed:\n${strip(decodeReplace(done.stderr))}`);
+    if (done.code !== 0) throw new Fail(`${asTyped} failed:\n${strip(decodeReplace(done.stderr))}`);
     return strip(decode(done.stdout));
   }
 
