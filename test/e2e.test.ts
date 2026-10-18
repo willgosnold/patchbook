@@ -1084,6 +1084,22 @@ test("test_a_fork_init_records_a_remote_url_that_ends_in_a_space_as_it_is", () =
   }
 }, TIMEOUT);
 
+test("test_a_fork_init_with_no_upstream_remote_refuses_an_upstream_that_names_another_remote", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    up.commit("start");
+    const fork = forkOf(t, up);
+    const refused = t.pb(["init", "--upstream", "origin"], { cwd: fork.path, code: 1 });
+    expect(refused.stderr).toContain("--upstream origin names a remote of this repo, not a URL");
+    expect(existsSync(join(fork.path, ".patchbook"))).toBe(false);
+    expect(sh(["git", "remote"], { cwd: fork.path }).stdout.trim()).toBe("origin");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("test_init_checks_the_hooks_before_it_writes_anything", () => {
   const t = new Case();
   try {
