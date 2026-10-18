@@ -65,7 +65,7 @@ patchbook sync && patchbook status && patchbook build
 
 - Edits to the build output are kept only once they're recorded. The hook does that on commit; `patchbook build --force` drops them instead.
 - Every change has an intent.
-- A change name is lowercase letters, digits and dashes, starting with a letter or digit. If a change has any other name, or an edit path that isn't inside the repo, the hook refuses the commit and leaves everything as it was. Other problems only skip the build, with a warning.
+- A change name is lowercase letters, digits and dashes, starting with a letter or digit. If a change has any other name, an edit path that isn't a clean path inside the tree (`../x`, `/x`, `./x`, `a//b`), or an edit that writes into `.patchbook` or `.git`, the hook refuses the commit and leaves everything as it was. Any other problem that `status` reports only skips the build, with a warning. The build's own safety checks still stop a commit.
 - `patchbook status` lists what's broken, and `patchbook build` won't run until it's fixed.
 
 ## More
