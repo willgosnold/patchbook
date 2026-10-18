@@ -155,18 +155,17 @@ export function readChanges(book: Book, problems: Problem[], names: readonly str
   return changes;
 }
 
-/** The names the series lists, and the changes among them that parse. A listed name is a change whatever is on disk; a stray is anything else under `changes/`. */
 export class Roster {
   private constructor(
-    readonly listed: ReadonlyMap<string, Change>,
+    readonly parsed: ReadonlyMap<string, Change>,
     private readonly names: ReadonlySet<string>,
     private readonly dir: string,
   ) {}
 
   static read(book: Book, problems: Problem[] = []): Roster {
     const names = readSeries(book);
-    const listed = new Map(readChanges(book, problems, names).map((c) => [c.name, c]));
-    return new Roster(listed, new Set(names), join(book.dir, "changes"));
+    const parsed = new Map(readChanges(book, problems, names).map((c) => [c.name, c]));
+    return new Roster(parsed, new Set(names), join(book.dir, "changes"));
   }
 
   known(name: string): boolean {
@@ -181,7 +180,7 @@ export class Roster {
 
   free(base: string): string {
     let name = base;
-    for (let n = 2; this.listed.has(name) || this.stray(name); n++) name = `${base}-${n}`;
+    for (let n = 2; this.parsed.has(name) || this.stray(name); n++) name = `${base}-${n}`;
     return name;
   }
 }

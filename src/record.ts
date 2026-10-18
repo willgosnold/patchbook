@@ -208,7 +208,7 @@ function nameAndIntent(
   model: (name: string | null, named: boolean) => [string | null, string | null],
 ): Naming {
   if (name && !CHANGE_NAME.test(name)) throw new Fail(notAChangeName(name));
-  const changes = roster.listed;
+  const changes = roster.parsed;
 
   const stray = name ? roster.stray(name) : null;
   if (stray === "folder") {
@@ -248,7 +248,7 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
 export function record(book: Book, change: string | null, intent: string | null, opts: { current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean } = {}): RecordResult {
   const problems: Problem[] = [];
   const roster = Roster.read(book, problems);
-  const changes = roster.listed;
+  const changes = roster.parsed;
   const badName = problems.find((p) => p.file === "series" && "refuse" in p);
   if (badName) throw new Fail(`refusing to record: ${describe(badName)}\nRename it to lowercase letters, digits and dashes in series and changes/ first.`);
   const a = assemble(book);
