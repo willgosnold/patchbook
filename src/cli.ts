@@ -2,17 +2,17 @@
 // The command line: a table of subcommands, parsed and reported the way Python's argparse does.
 // Also the commands that start a patchbook or follow another upstream, which use every other part.
 import { mkdirSync, rmSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import pkg from "../package.json" with { type: "json" };
 import { cmdBuild, cmdScaffold, cmdStatus, writeBuildLock } from "./assemble.ts";
 import { cmdBlocks } from "./blocks.ts";
 import { Book, noticeLeftOut, PB } from "./book.ts";
 import { cmdShow } from "./changes.ts";
-import { cmdHook, installHook } from "./githook.ts";
+import { cmdHook, installHook, installHookOrWarn } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, lexists, readText, resolve, writeText } from "./lib/fs.ts";
 import { git } from "./lib/proc.ts";
-import { rstrip, split, strRepr } from "./lib/py.ts";
+import { quote, rstrip, split, strRepr } from "./lib/py.ts";
 import { cmdRecord } from "./record.ts";
 import { cmdConfig } from "./settings.ts";
 import { installSkill, SCHEDULE } from "./skill.ts";
@@ -46,13 +46,11 @@ function writeConfig(root: string, text: string): void {
   writeText(join(d, "config.toml"), text);
 }
 
-function installHookOrWarn(root: string): void {
-  try {
-    installHook(root);
-  } catch (e) {
-    if (!(e instanceof Error && "errno" in e)) throw e;
-    process.stderr.write(`patchbook: couldn't install the pre-commit hook: ${e.message}\n`);
-  }
+/** What git fetches for a URL, so `insteadOf`, a trailing slash, file:// and a relative path don't make one repo look like two. */
+function repoOf(root: string, url: string): string {
+  const full = git(["ls-remote", "--get-url", url], { cwd: root });
+  const local = full.startsWith("file://") ? full.slice("file://".length) : /^([a-z][a-z0-9+.-]*:\/\/|[^/]*:)/i.test(full) ? null : full;
+  return local === null ? rstrip(full, "/") : resolve(isAbsolute(local) ? local : join(root, local));
 }
 
 const noHook = () => ({ ...process.env, PATCHBOOK_HOOK: "0" });
@@ -112,8 +110,12 @@ async function cmdInit(args: {
   const book = await Book.fromText(root, text);
   const hasRemote = split(git(["remote"], { cwd: root })).includes("upstream");
   if (hasRemote) {
-    const [url] = git(["config", "--get-all", "remote.upstream.url"], { cwd: root }).split("\n");
-    if (url !== args.upstream) throw new Fail(`the upstream remote is ${url}, not ${args.upstream}. To follow ${args.upstream}: git config --replace-all remote.upstream.url ${args.upstream}`);
+    const fix = `To follow ${args.upstream}: git config --replace-all remote.upstream.url ${quote(args.upstream)}`;
+    if (git(["config", "--get-all", "remote.upstream.url"], { cwd: root, check: false }) === "") throw new Fail(`the upstream remote has no url. ${fix}`);
+    if (repoOf(root, "upstream") !== repoOf(root, args.upstream)) {
+      const fetches = git(["remote", "get-url", "upstream"], { cwd: root });
+      throw new Fail(`the upstream remote and --upstream name different repos. The remote fetches ${fetches}, --upstream is ${args.upstream}. ${fix}`);
+    }
   }
   git(["fetch", "--quiet", "--end-of-options", hasRemote ? "upstream" : args.upstream, args.branch], { cwd: root });
   const base = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: root });

@@ -2,7 +2,7 @@
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Hooks, Problem } from "./api.ts";
-import { installHook } from "./githook.ts";
+import { installHookOrWarn } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, isDir, isMode, isSymlink, lexists, mkdirs, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
@@ -251,7 +251,7 @@ export class Book {
     const here = resolve(start ?? process.cwd());
     for (let d = here; ; d = join(d, "..")) {
       if (exists(join(d, PB, "config.toml"))) {
-        installHook(d);
+        installHookOrWarn(d);
         return Book.open(d);
       }
       if (d === "/") break;

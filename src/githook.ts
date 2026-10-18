@@ -55,6 +55,16 @@ export function installHook(root: string, verbose = false): void {
   }
 }
 
+/** Install the hook, or warn why not. Until it is installed, a commit doesn't record hand edits. */
+export function installHookOrWarn(root: string): void {
+  try {
+    installHook(root);
+  } catch (e) {
+    if (!(e instanceof Error && "errno" in e)) throw e;
+    process.stderr.write(`patchbook: couldn't install the pre-commit hook: ${e.message}\nUntil it is installed, a commit doesn't record hand edits to the build output in the patchbook.\n`);
+  }
+}
+
 /** {path: blob id, or null if deleted} for every path git status lists. */
 function dirty(root: string): Map<string, string | null> {
   const out = new Map<string, string | null>();
