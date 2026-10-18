@@ -18,11 +18,12 @@ type Draft = Omit<Entry, "intent"> & { intent: string | null };
 type Plan = { path: string; entries: Map<string, Draft>; notes: [string, string][] };
 
 export async function cmdRecord(args: { change: string | null; intent: string | null }) {
-  if (args.change !== null && !CHANGE_NAME.test(args.change)) throw new Fail(notAChangeName(args.change));
   const book = await Book.find();
+  const changes = new Map(readChanges(book, []).map((c) => [c.name, c]));
+  const asked = args.change || null;
+  if (asked !== null && !changes.has(asked) && !CHANGE_NAME.test(asked)) throw new Fail(notAChangeName(asked));
   const a = assemble(book);
   const current = book.currentOutput();
-  const changes = new Map(readChanges(book, []).map((c) => [c.name, c]));
   const fileOwner = new Map<string, Change>();
   for (const c of changes.values()) for (const e of c.edits) if (e.kind === "file") fileOwner.set(e.path, c);
   const hasBlocks = new Set(rglob(join(book.dir, "blocks"), ".entries").map((p) => p.slice(0, -".entries".length)));
@@ -58,7 +59,7 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
     }
   }
 
-  let name = args.change;
+  let name = asked;
   const given = args.intent === null ? null : oneLine(args.intent) || null;
   let intent = given;
   const pending = Array.from(paragraphs, ([p, plan]) => Array.from(plan.entries.values(), (e) => [p, e] as const)).flat()

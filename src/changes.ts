@@ -21,6 +21,12 @@ export const CHANGE_NAME = /^[a-z0-9][a-z0-9-]*$/;
 export const notAChangeName = (name: string) =>
   `${JSON.stringify(name)} isn't a valid change name; use lowercase letters, digits and hyphens, starting with a letter or digit`;
 
+/** A name already in a book is read as one folder under `changes/`, so it only has to be a single safe path segment. */
+export const isReadableName = (name: string) => name !== "" && name !== "." && name !== ".." && !/[\\/]/.test(name);
+
+export const notASafeName = (name: string) =>
+  `${JSON.stringify(name)} isn't a safe change name; it must be one folder name, not empty, not . or .., and with no / or \\`;
+
 export function editText(e: Edit): string {
   return `${e.kind} ${e.path}` + ("dest" in e && e.dest ? ` -> ${e.dest}` : "");
 }
@@ -33,6 +39,7 @@ export class Change {
     readonly dir: string,
     public intent: string | null = "",
     public edits: Edit[] = [],
+    readonly held: string[] = [],
   ) {}
 
   content(side: Side, path: string): string {
@@ -73,7 +80,7 @@ function isEditKind(kind: string): kind is EditKind {
   return EDIT_KINDS.some((k) => k === kind);
 }
 
-/** Read a CHANGE.md. An edit whose path is not a clean path inside the tree is left out and given to `reject`. */
+/** Read a CHANGE.md. An edit whose path is not a clean path inside the tree is left out of `edits`, kept as written in `held`, and given to `reject`. */
 export function parseChange(path: string, reject: (edit: string, detail: string) => void): Change {
   const change = new Change(basename(dirname(path)), dirname(path));
   let section: "intent" | "edits" | null = null;
@@ -92,8 +99,10 @@ export function parseChange(path: string, reject: (edit: string, detail: string)
       const [, , src = "", dest] = m;
       if ((kind === "move" || kind === "copy") !== Boolean(dest)) throw new Fail(`${path}:${n}: only move and copy take \`-> <path>\``);
       const unsafe = unsafePath(src) ?? (dest === undefined ? null : unsafePath(dest));
-      if (unsafe) reject(strip(line).slice(2), unsafe);
-      else {
+      if (unsafe) {
+        change.held.push(line);
+        reject(strip(line).slice(2), unsafe);
+      } else {
         change.edits.push(
           kind === "move" || kind === "copy" ? { kind, path: strip(src, "/"), dest: strip(dest ?? "", "/") } : { kind, path: strip(src, "/") },
         );
@@ -104,7 +113,7 @@ export function parseChange(path: string, reject: (edit: string, detail: string)
 }
 
 export function formatChange(change: Change): string {
-  const edits = change.edits.map((e) => `- ${editText(e)}\n`).join("");
+  const edits = change.edits.map((e) => `- ${editText(e)}\n`).join("") + change.held.map((l) => `${l}\n`).join("");
   return `# ${change.name}\n\nintent: ${change.intent ?? "None"}\n\nedits:\n${edits}`;
 }
 
@@ -127,8 +136,8 @@ export function readChanges(book: Book, problems: Problem[]): Change[] {
   const changes: Change[] = [];
   const series = readSeries(book);
   for (const name of series) {
-    if (!CHANGE_NAME.test(name)) {
-      problems.push({ problem: "invalid", file: "series", detail: notAChangeName(name) });
+    if (!isReadableName(name)) {
+      problems.push({ problem: "invalid", file: "series", detail: notASafeName(name) });
       continue;
     }
     const path = join(book.dir, "changes", name, "CHANGE.md");
@@ -141,7 +150,7 @@ export function readChanges(book: Book, problems: Problem[]): Change[] {
   const listed = new Set(changes.map((c) => c.name));
   for (const name of foldersWith(join(book.dir, "changes"), "CHANGE.md")) {
     if (listed.has(name) || series.includes(name)) continue;
-    const detail = CHANGE_NAME.test(name) ? `change ${name} is not in the series` : notAChangeName(name);
+    const detail = isReadableName(name) ? `change ${name} is not in the series` : notASafeName(name);
     problems.push({ problem: "invalid", file: "series", detail });
   }
   for (const c of changes) {
@@ -153,7 +162,7 @@ export function readChanges(book: Book, problems: Problem[]): Change[] {
 export async function cmdShow(args: { change: string }) {
   const book = await Book.find();
   const path = join(book.dir, "changes", args.change, "CHANGE.md");
-  if (!CHANGE_NAME.test(args.change) || !exists(path)) throw new Fail(`no change called ${args.change}`);
+  if (!isReadableName(args.change) || !exists(path)) throw new Fail(`no change called ${args.change}`);
   const rejected: string[] = [];
   const c = parseChange(path, (edit, detail) => rejected.push(`invalid ${edit}: ${detail}\n`));
   process.stdout.write(`${c.name}: ${c.intent}\n\n`);

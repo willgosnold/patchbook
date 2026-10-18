@@ -159,7 +159,7 @@ export function writeIntent(
   const given = fields.get("change") ?? "";
   let chosen = typeof given === "string" ? given : "";
   let intent: string | null = oneLine(str(fields.has("intent") ? fields.get("intent")! : ""));
-  if (!CHANGE_NAME.test(chosen) || !intent) {
+  if (!(CHANGE_NAME.test(chosen) || changes.has(chosen)) || !intent) {
     throw new Fail(`${provider} didn't return a usable name and intent:\n${slice(strip(reply), 0, 500)}\nPass a name and --intent instead.`);
   }
   if (name && chosen !== name) chosen = name;

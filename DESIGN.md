@@ -124,9 +124,15 @@ Patchbook doesn't read a `hooks.py` from the Python version. It stops and asks y
 
 ## Trust
 
-`.patchbook/hooks.ts` runs on every command, including `status`, `check` and the pre-commit hook. Nothing sandboxes it. Anyone who can change `.patchbook/`, whether through a pull request or through upstream, runs code on your machine at your next command. Read a change to `hooks.ts` as you would a change to a build script, and before you run any command in a repo you just fetched.
+`.patchbook/hooks.ts` runs on every command that opens the book, including `status`, `check` and the pre-commit hook. `--version`, `help` and `hook install` don't open it. Nothing sandboxes it. Anyone who can change the book repo itself, through a pull request, a merge or a pull, runs code on your machine at your next command. Upstream can't: `clone` removes upstream's own `.patchbook/`, and the build, `check` and `sync` ignore it. Read a change to `hooks.ts` as you would a change to a build script, and before you run any command in a repo you just fetched.
 
-The rest of `.patchbook/` is data, and patchbook checks it as data. A change name must match `[a-z0-9][a-z0-9-]*`, the rule already applied to names a model chooses, and `record` refuses any other. A path in an edit of a `CHANGE.md` must be a clean path inside the tree. An absolute path, or one with an empty, `.` or `..` segment (`./x`, `a//b`, `a/../b`), is reported as `invalid`, so `status`, `build` and the hook all see it, and nothing is read or written outside the output folder or the change's own folder. A name in `series` or a folder in `changes/` that breaks the name rule is reported the same way and is not read. Block entries need no such check, since their file names come from the files on disk under `blocks/`.
+The rest of `.patchbook/` is data, and patchbook checks the names and paths in it by how they are spelled.
+
+- **Change names.** A name patchbook creates, in `record <name>`, must match `[a-z0-9][a-z0-9-]*`, the rule already applied to names a model chooses. `record` also accepts the name of a change that already exists, and an empty name means no name. A name already in the book, in `series`, in a folder of `changes/` or given to `show`, only has to be one folder name: not empty, not `.` or `..`, with no `/` or `\`. A book made before the creation rule, with a change called `My_Fix`, keeps working. A name that breaks the folder rule is reported as `invalid` and not read.
+- **Edit paths.** A path in an edit of a `CHANGE.md` must be a clean path inside the tree. An absolute path, or one with an empty, `.` or `..` segment (`./x`, `a//b`, `a/../b`), is reported as `invalid`, so `status`, `build` and the hook all see it, and the edit is not applied. A command that rewrites a `CHANGE.md` keeps such a line as written.
+- **Block entries.** Their file names come from the files under `blocks/`, so they can't be spelled with such a path.
+
+Patchbook does not check for links inside `.patchbook/`. A link in `blocks/` is read and written through, and a link at `changes/<name>/ours` is read through, so a link there can make patchbook read or write outside the repo. This is why a change to `.patchbook/` needs the same review as a change to `hooks.ts`.
 
 ## Sync
 
