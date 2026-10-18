@@ -76,8 +76,8 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     needs: () => NOTHING,
     apply: (e) => {
       e.change.edits = e.change.edits.filter((x) => !(x.kind === "add" && x.path === e.staged));
-      e.change.drop("ours", e.staged);
-      return { touched: [e.change], notes: [`unadd    ${e.path} (from ${e.change.name})`], waitsForSave: true };
+      const afterSave = () => e.change.drop("ours", e.staged);
+      return { touched: [e.change], notes: [`unadd    ${e.path} (from ${e.change.name})`], waitsForSave: true, afterSave };
     },
   },
   "unreplace": {
@@ -85,9 +85,9 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     apply: (e, r) => {
       const c = r.target!;
       e.change.edits = e.change.edits.filter((x) => !(x.kind === "replace" && x.path === e.staged));
-      e.change.drop("ours", e.staged);
       c.edits.push({ kind: "delete", path: e.staged });
-      return { touched: [e.change, c], notes: [`delete   ${e.path} (replace removed from ${e.change.name})`], waitsForSave: true };
+      const afterSave = () => e.change.drop("ours", e.staged);
+      return { touched: [e.change, c], notes: [`delete   ${e.path} (replace removed from ${e.change.name})`], waitsForSave: true, afterSave };
     },
   },
   "update-ours": {
