@@ -343,7 +343,7 @@ test("test_init_rejects_a_vendor_folder_inside_the_output_before_it_writes_anyth
     repo.commit("start");
     const init = t.pb(["init", "--upstream", up.path, "--output-to", "out", "--vendor", "out/vendored"], { cwd: repo.path, code: 1 });
     expect(init.stderr).toContain("the vendored copy of upstream (out/vendored) overlaps the folder upstream builds into (out)");
-    expect(init.stderr).toContain("Change vendor or [output] to for upstream");
+    expect(init.stderr).toContain("Change vendor for upstream or [output] to.");
     expect(init.stderr).not.toContain("mount");
     expect(existsSync(join(repo.path, ".patchbook"))).toBe(false);
     expect(existsSync(join(repo.path, "out"))).toBe(false);

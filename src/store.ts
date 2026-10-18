@@ -1,7 +1,7 @@
 // The upstreams: one bare repo per remote in the user's store, fetched shallowly, read at the pin.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, posix } from "node:path";
 import { Book } from "./book.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, mkdirs, normMode, pjoin, readDisk, readText, relative, resolve, writeDisk } from "./lib/fs.ts";
@@ -28,6 +28,15 @@ function field(spec: Table, key: string, fallback: string): string {
   return value;
 }
 
+/** A folder of the staged tree, normalised so every later comparison sees one spelling: `""` is the root. */
+export function stagedFolder(raw: string, what: string): string {
+  const folder = posix.normalize(raw);
+  if (raw.startsWith("/") || folder === ".." || folder.startsWith("../")) {
+    throw new Fail(`${what} ${JSON.stringify(raw)} must be a folder inside the staged tree, not an absolute path or one that climbs out with ..`);
+  }
+  return folder === "." || folder === "./" ? "" : strip(folder, "/");
+}
+
 /** One upstream repo, or a folder of one, mounted at a folder of the staged tree. */
 export class Upstream {
   readonly remote: string;
@@ -44,7 +53,7 @@ export class Upstream {
     this.path = strip(field(spec, "path", ""), "/");
     this.branch = field(spec, "branch", "main");
     this.name = field(spec, "name", "") || defaultName(this.remote, this.path);
-    this.mount = strip(field(spec, "mount", this.name), "/");
+    this.mount = stagedFolder(field(spec, "mount", this.name), `the mount of ${this.name}`);
     const vendor = field(spec, "vendor", "");
     this.vendor = vendor ? pjoin(book.root, vendor) : null;
     this.remoteName = field(spec, "remote_name", "upstream");

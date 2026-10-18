@@ -8,9 +8,9 @@ import { Fail } from "./lib/fail.ts";
 import { exists, type File, isMode, lexists, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
 import { dumps, loads } from "./lib/json.ts";
 import { git } from "./lib/proc.ts";
-import { length, type PyValue, sortedBy, strip, strRepr } from "./lib/py.ts";
+import { length, type PyValue, sortedBy, strRepr } from "./lib/py.ts";
 import { isTable, parseToml, type Table } from "./settings.ts";
-import { Upstream } from "./store.ts";
+import { stagedFolder, Upstream } from "./store.ts";
 
 export const PB = ".patchbook";
 
@@ -182,7 +182,7 @@ export class Book {
     if (kind === "folder") {
       const out = Object.hasOwn(this.config, "output") ? this.config["output"] : {};
       if (!isTable(out) || !Object.hasOwn(out, "to")) throw new Fail("a folder layout needs [output] with to = <folder>");
-      const from = strip(text(out, "from", "", "[output] from"), "/");
+      const from = stagedFolder(text(out, "from", "", "[output] from"), "[output] from");
       this.layout = { kind, from, dir: pjoin(root, text(out, "to", "", "[output] to")) };
     } else this.layout = { kind };
     this.checkMounts();
@@ -226,7 +226,10 @@ export class Book {
     for (const u of this.upstreams) {
       const out = this.outputFolder(u);
       const own = out === null ? undefined : [PB, ".git"].find((reserved) => under(out, reserved));
-      if (own) throw new Fail(`${u.name} mounts at ${shown(u.mount)}, inside ${own}. patchbook never builds into ${own}, so those files would never land. Change mount for ${u.name}.`);
+      if (own) {
+        const where = this.layout.kind === "fork" ? `mounts at ${shown(u.mount)}` : `builds into ${shown(out ?? "")}`;
+        throw new Fail(`${u.name} ${where}, inside ${own}. patchbook never builds into ${own}, so those files would never land. Change ${this.outputKnob(u)}.`);
+      }
     }
     this.checkVendors();
   }
@@ -238,9 +241,9 @@ export class Book {
       const written = "A build writes there, but a vendored copy must match upstream exactly.";
       const own = this.outputFolder(a);
       if (own !== null && (underOrRoot(own, vendored) || underOrRoot(vendored, own))) {
-        const change = a.mount ? "vendor or mount" : "vendor";
+        const change = this.layout.kind === "fork" ? `${a.mount ? "vendor or mount" : "vendor"} for ${a.name}` : `vendor for ${a.name} or [output] to`;
         throw new Fail(
-          `the vendored copy of ${a.name} (${shown(vendored)}) overlaps the folder ${a.name} builds into (${shown(own)}). ${written} Change ${change} for ${a.name}.`,
+          `the vendored copy of ${a.name} (${shown(vendored)}) overlaps the folder ${a.name} builds into (${shown(own)}). ${written} Change ${change}.`,
         );
       }
       for (const b of this.upstreams.slice(0, this.upstreams.indexOf(a))) {
@@ -255,7 +258,7 @@ export class Book {
         const out = a === b ? null : this.outputFolder(b);
         if (out !== null && underOrRoot(out, vendored)) {
           throw new Fail(
-            `the vendored copy of ${a.name} (${shown(vendored)}) contains the folder ${b.name} builds into (${shown(out)}). ${written} Change vendor for ${a.name} or mount for ${b.name}.`,
+            `the vendored copy of ${a.name} (${shown(vendored)}) contains the folder ${b.name} builds into (${shown(out)}). ${written} Change vendor for ${a.name} or ${this.outputKnob(b)}.`,
           );
         }
       }
@@ -265,6 +268,11 @@ export class Book {
   private folderOf(path: string): string {
     const rel = relative(this.root, path);
     return rel === "." ? "" : rel;
+  }
+
+  /** What the user can change to move the output folder: in the folder layout `init` has no mount, so it is `[output] to`. */
+  private outputKnob(u: Upstream): string {
+    return this.layout.kind === "fork" ? `mount for ${u.name}` : "[output] to";
   }
 
   private outputFolder(u: Upstream): string | null {
