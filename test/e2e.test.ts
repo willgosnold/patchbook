@@ -570,7 +570,7 @@ for (const [how, leave] of [
       const head = moved.commit("two");
       leave(t, fork, up);
       const refused = t.pb(["init", "--upstream", moved.path], { cwd: fork.path, code: 1 });
-      expect(refused.stderr).toContain("name different repos");
+      expect(refused.stderr).toContain("the upstream remote and --upstream serve different commits for main");
       expect(refused.stderr).toContain(`The remote fetches ${up.path}, --upstream is ${moved.path}`);
       expect(refused.stderr).toContain(`git config --replace-all remote.upstream.url ${moved.path}`);
       expect(existsSync(join(fork.path, ".patchbook/config.toml"))).toBe(false);
@@ -602,7 +602,7 @@ for (const [how, remote, given] of [
       sh(["git", "remote", "add", "upstream", remote(up.path)], { cwd: fork.path });
       const init = t.pb(["init", "--upstream", given(up.path)], { cwd: fork.path });
       expect(init.stdout).toContain(`pinned upstream at ${base.slice(0, 7)}`);
-      expect(existsSync(join(fork.path, ".patchbook/config.toml"))).toBe(true);
+      expect(fork.read(".patchbook/config.toml")).toContain(`remote = "${remote(up.path)}"`);
     } finally {
       t.cleanup();
     }
@@ -685,7 +685,7 @@ for (const [how, repoName, remote, given] of [
       sh(["git", "remote", "add", "upstream", remote(up.path)], { cwd: fork.path });
       const init = t.pb(["init", "--upstream", given(up.path)], { cwd: fork.path });
       expect(init.stdout).toContain(`pinned upstream at ${base.slice(0, 7)}`);
-      expect(existsSync(join(fork.path, ".patchbook/config.toml"))).toBe(true);
+      expect(fork.read(".patchbook/config.toml")).toContain(`remote = "${remote(up.path)}"`);
     } finally {
       delete process.env["GIT_SSH_COMMAND"];
       t.cleanup();
@@ -706,7 +706,7 @@ test("test_a_fork_init_refuses_an_upstream_remote_that_serves_a_different_tip_th
     moved.write("app.txt", "two\n");
     const head = moved.commit("two");
     const refused = t.pb(["init", "--upstream", moved.path], { cwd: fork.path, code: 1 });
-    expect(refused.stderr).toContain("name different repos");
+    expect(refused.stderr).toContain("the upstream remote and --upstream serve different commits for main");
     expect(refused.stderr).toContain(`main is ${base.slice(0, 7)} on the remote and ${head.slice(0, 7)} on --upstream`);
   } finally {
     t.cleanup();
@@ -745,9 +745,9 @@ test("test_a_fork_init_from_a_subfolder_takes_a_relative_upstream_from_where_it_
       mkdirSync(join(fork.path, "sub"));
       const init = t.pb(["init", "--upstream", "../../upstream"], { cwd: join(fork.path, "sub") });
       expect(init.stdout).toContain(`pinned upstream at ${base.slice(0, 7)}`);
-      const upPath = realpathSync(up.path);
-      expect(readFileSync(join(fork.path, ".patchbook/config.toml"), "utf8")).toContain(`remote = "${upPath}"`);
-      expect(sh(["git", "remote", "get-url", "upstream"], { cwd: fork.path }).stdout.trim()).toBe(hasRemote ? up.path : upPath);
+      const follows = hasRemote ? up.path : realpathSync(up.path);
+      expect(readFileSync(join(fork.path, ".patchbook/config.toml"), "utf8")).toContain(`remote = "${follows}"`);
+      expect(sh(["git", "remote", "get-url", "upstream"], { cwd: fork.path }).stdout.trim()).toBe(follows);
     } finally {
       t.cleanup();
     }
@@ -833,7 +833,7 @@ test("test_a_refused_fork_init_does_not_print_the_password_in_a_remote", () => {
     moved.write("app.txt", "two\n");
     moved.commit("two");
     const refused = t.pb(["init", "--upstream", `ssh://user:s3cretpw@fake${moved.path}`], { cwd: fork.path, code: 1 });
-    expect(refused.stderr).toContain("name different repos");
+    expect(refused.stderr).toContain("the upstream remote and --upstream serve different commits for main");
     expect(refused.stderr).toContain(`The remote fetches ssh://user@fake${up.path}, --upstream is ssh://user@fake${moved.path}`);
     expect(refused.stderr).not.toContain("s3cretpw");
   } finally {
@@ -861,6 +861,185 @@ for (const [how, hasRemote] of [["unreachable_remote", true], ["unreachable_give
     }
   }, TIMEOUT);
 }
+
+test("test_a_fork_init_records_the_url_its_upstream_remote_fetches_which_sync_follows", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    up.commit("start");
+    const fork = forkOf(t, up);
+    sh(["git", "remote", "add", "upstream", up.path], { cwd: fork.path });
+    sh(["git", "clone", "-q", up.path, "sametip"], { cwd: t.tmp });
+    const init = t.pb(["init", "--upstream", join(t.tmp, "sametip")], { cwd: fork.path });
+    expect(init.stdout).toContain(`branched from ${up.path}.`);
+    expect(fork.read(".patchbook/config.toml")).toContain(`remote = "${up.path}"`);
+    up.write("later.txt", "later\n");
+    const later = up.commit("later");
+    t.pb(["sync"], { cwd: fork.path });
+    expect(JSON.parse(fork.read(".patchbook/upstream.lock")).sametip.commit).toBe(later);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+for (const hasRemote of [true, false]) {
+  test(`test_a_fork_init_names_the_repo_it_follows_without_the_password${hasRemote ? "_of_its_upstream_remote" : ""}`, () => {
+    const t = new Case();
+    try {
+      fakeSsh(t);
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\n");
+      up.commit("start");
+      const fork = forkOf(t, up);
+      const secret = `ssh://user:s3cretpw@fake${up.path}`;
+      if (hasRemote) sh(["git", "remote", "add", "upstream", secret], { cwd: fork.path });
+      const init = t.pb(["init", "--upstream", hasRemote ? `ssh://user@fake${up.path}` : secret], { cwd: fork.path });
+      expect(init.stdout).toContain(`branched from ssh://user@fake${up.path}.`);
+      expect(init.stdout).not.toContain("s3cretpw");
+      expect(fork.read(".patchbook/config.toml")).toContain(`remote = "ssh://user@fake${up.path}"`);
+    } finally {
+      delete process.env["GIT_SSH_COMMAND"];
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
+for (const [how, branch] of [["a_stale_mirror", "main"], ["a_branch_only_the_given_url_has", "feature"]] as const) {
+  test(`test_a_fork_init_says_the_remote_serves_different_commits_for_${how}`, () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\n");
+      up.commit("start");
+      const fork = forkOf(t, up);
+      sh(["git", "clone", "-q", up.path, "mirror"], { cwd: t.tmp });
+      sh(["git", "remote", "add", "upstream", join(t.tmp, "mirror")], { cwd: fork.path });
+      up.write("app.txt", "two\n");
+      up.commit("two");
+      sh(["git", "branch", "feature"], { cwd: up.path });
+      const refused = t.pb(["init", "--upstream", up.path, "--branch", branch], { cwd: fork.path, code: 1 });
+      expect(refused.stderr).toContain(`the upstream remote and --upstream serve different commits for ${branch}`);
+      expect(refused.stderr).not.toContain("different repos");
+      expect(refused.stderr).toContain(`git config --replace-all remote.upstream.url ${up.path}`);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
+test("test_clone_does_not_print_or_commit_the_password_in_the_url", () => {
+  const t = new Case();
+  try {
+    fakeSsh(t);
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    up.commit("start");
+    const clone = t.pb(["clone", `ssh://user:s3cretpw@fake${up.path}`, "fork"], { cwd: t.tmp });
+    expect(clone.stdout).toContain(`cloned ssh://user@fake${up.path} into`);
+    expect(clone.stdout).not.toContain("s3cretpw");
+    expect(read(join(t.tmp, "fork/.patchbook/config.toml"))).toContain(`remote = "ssh://user@fake${up.path}"`);
+  } finally {
+    delete process.env["GIT_SSH_COMMAND"];
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+for (const [how, hasRemote] of [["remote", true], ["given_url", false]] as const) {
+  test(`test_a_fork_init_does_not_print_a_password_with_an_at_sign_hash_or_question_mark_in_the_${how}`, () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\n");
+      up.commit("start");
+      const fork = forkOf(t, up);
+      for (const password of ["p@s3cret", "p#s3cret", "p?s3cret"]) {
+        const secret = `https://user:${password}@host.invalid/team/up`;
+        if (hasRemote) sh(["git", "remote", "remove", "upstream"], { cwd: fork.path, check: false });
+        if (hasRemote) sh(["git", "remote", "add", "upstream", secret], { cwd: fork.path });
+        const refused = t.pb(["init", "--upstream", hasRemote ? up.path : secret], { cwd: fork.path, code: 1 });
+        expect(refused.stderr).toContain("host.invalid/team/up");
+        expect(refused.stderr).not.toContain("s3cret");
+      }
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
+test("test_a_refused_fork_init_says_to_add_back_the_password_it_does_not_print", () => {
+  const t = new Case();
+  try {
+    fakeSsh(t);
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    up.commit("start");
+    const fork = forkOf(t, up);
+    sh(["git", "remote", "add", "upstream", up.path], { cwd: fork.path });
+    sh(["git", "clone", "-q", up.path, "moved"], { cwd: t.tmp });
+    const moved = new Repo(join(t.tmp, "moved"));
+    moved.write("app.txt", "two\n");
+    moved.commit("two");
+    const given = `ssh://user:s3cretpw@fake${moved.path}`;
+    const refused = t.pb(["init", "--upstream", given], { cwd: fork.path, code: 1 });
+    expect(refused.stderr).toContain("add the credentials from --upstream to the URL in this command");
+    const fix = /^.*To follow .*?: (git config --replace-all remote\.upstream\.url .*)$/m.exec(refused.stderr)?.[1];
+    expect(fix).toBe(`git config --replace-all remote.upstream.url ssh://user@fake${moved.path}`);
+    sh(["sh", "-c", fix!.replace("ssh://user@", "ssh://user:s3cretpw@")], { cwd: fork.path });
+    t.pb(["init", "--upstream", given], { cwd: fork.path });
+    expect(existsSync(join(fork.path, ".patchbook/config.toml"))).toBe(true);
+  } finally {
+    delete process.env["GIT_SSH_COMMAND"];
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+for (const [how, dir, given] of [
+  ["dot_dot_from_a_subfolder", "sub", () => ".."],
+  ["dot_at_the_root", "", () => "."],
+  ["a_file_url_of_the_root", "", (fork: string) => `file://${fork}`],
+  ["a_linked_worktree", "", () => "../worktree"],
+  ["an_insteadof_alias", "", () => "self:"],
+] as const) {
+  test(`test_a_fork_init_refuses_an_upstream_that_is_the_repo_itself_given_as_${how}`, () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\n");
+      up.commit("start");
+      const fork = forkOf(t, up);
+      mkdirSync(join(fork.path, "sub"));
+      sh(["git", "worktree", "add", "-q", "--detach", "../worktree"], { cwd: fork.path });
+      sh(["git", "config", `url.${fork.path}.insteadOf`, "self:"], { cwd: fork.path });
+      const refused = t.pb(["init", "--upstream", given(fork.path)], { cwd: join(fork.path, dir), code: 1 });
+      expect(refused.stderr).toContain("is this repo");
+      expect(existsSync(join(fork.path, ".patchbook"))).toBe(false);
+      expect(sh(["git", "remote"], { cwd: fork.path }).stdout.trim()).toBe("origin");
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
+test("test_a_fork_init_refuses_an_upstream_remote_that_fetches_the_repo_itself", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    const base = up.commit("start");
+    sh(["git", "clone", "-q", up.path, "fork"], { cwd: t.tmp });
+    const fork = new Repo(join(t.tmp, "fork"));
+    sh(["git", "remote", "add", "upstream", "."], { cwd: fork.path });
+    const refused = t.pb(["init", "--upstream", up.path], { cwd: fork.path, code: 1 });
+    expect(refused.stderr).toContain("the upstream remote fetches this repo (.)");
+    expect(existsSync(join(fork.path, ".patchbook"))).toBe(false);
+    const fix = /^.*To follow .*?: (git config --replace-all remote\.upstream\.url .*)$/m.exec(refused.stderr)?.[1];
+    sh(["sh", "-c", fix!], { cwd: fork.path });
+    expect(t.pb(["init", "--upstream", up.path], { cwd: fork.path }).stdout).toContain(`pinned upstream at ${base.slice(0, 7)}`);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
 
 test("test_init_checks_the_hooks_before_it_writes_anything", () => {
   const t = new Case();
