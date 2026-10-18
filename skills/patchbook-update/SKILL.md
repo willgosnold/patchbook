@@ -47,7 +47,7 @@ Also read the upstream changes in the sync report for new files or features the 
 
 To retire a change, remove it from `series` and its folder, and add it to `retired.md` with the reason.
 
-Commit each change you repair or retire on its own, as "Carry <change> to upstream <short sha>" or "Retire <change>".
+Commit each change you repair or retire on its own, as "Carry <change> to upstream <short sha>" or "Retire <change>". Handle each `replaced_upstream_changed` entry in such a commit, whose message names the file and says what you carried over, or what you left out and why. If you carried over nothing, commit with `--allow-empty`.
 
 ## 4. Test
 
@@ -88,7 +88,8 @@ Ask the user instead of merging when that doesn't hold, or when:
 - meeting an intent needs a choice that the intents and the guide don't settle;
 - the review fails twice;
 - a test fails and you can't fix it. A failing `instructions` test counts, even though a passing one is not a signal;
-- a test leaves tracked files changed (`git status --porcelain --untracked-files=no` prints something), even if it passed.
+- a test leaves tracked files changed (`git status --porcelain --untracked-files=no` prints something), even if it passed;
+- a `replaced_upstream_changed` entry in any upstream's report has no step 3 commit that names its file.
 
 To ask, push the branch (`git push -u origin HEAD`), open a pull request against `$MAIN_BRANCH` and link it with `link_pull_request`, then end with one short message that names the decision. Keep the worktree, since the pull request needs it, and leave the thread active.
 
