@@ -915,17 +915,16 @@ describe("ForkTest", () => {
     });
   }
 
-  forkTest("test_a_series_line_that_is_not_a_change_name_is_invalid_and_its_folder_is_not_read", (t) => {
+  forkTest("test_a_series_line_that_is_not_one_folder_name_is_invalid_and_its_folder_is_not_read", (t) => {
     mkdirNew(join(t.fork.path, ".patchbook/elsewhere"));
     writeFileSync(join(t.fork.path, ".patchbook/elsewhere/CHANGE.md"), "# elsewhere\n\nintent: Not a change.\n\nedits:\n- delete app.txt\n");
-    mkdirNew(join(t.fork.path, ".patchbook/changes/Shout"));
-    writeFileSync(join(t.fork.path, ".patchbook/changes/Shout/CHANGE.md"), "# Shout\n\nintent: Capitalised.\n\nedits:\n- delete app.txt\n");
-    writeFileSync(join(t.fork.path, ".patchbook/series"), "../elsewhere\nShout\n");
+    writeFileSync(join(t.fork.path, ".patchbook/series"), "../elsewhere\n..\n.\na/b\n/abs\n");
     const status = t.pb(["status"], { cwd: t.fork.path, code: 1 });
-    expect(status.stdout).toContain(`"../elsewhere" isn't a valid change name`);
-    expect(status.stdout).toContain(`"Shout" isn't a valid change name`);
+    for (const name of ["../elsewhere", "..", ".", "a/b", "/abs"]) {
+      expect(status.stdout).toContain(`"${name}" isn't a safe change name`);
+    }
     expect(status.stdout).toContain("0 edits apply");
-    expect(status.stdout).toContain("2 invalid");
+    expect(status.stdout).toContain("5 invalid");
     const shown = t.pb(["show", "../elsewhere"], { cwd: t.fork.path, code: 1 });
     expect(shown.stderr).toContain("no change called ../elsewhere");
     expect(shown.stdout).not.toContain("Not a change");
@@ -934,13 +933,138 @@ describe("ForkTest", () => {
     expect(tree(t.fork.path)).toEqual(before);
   });
 
-  forkTest("test_a_change_folder_that_is_not_a_change_name_and_not_in_the_series_is_invalid", (t) => {
-    mkdirNew(join(t.fork.path, ".patchbook/changes/Loose_Name"));
-    writeFileSync(join(t.fork.path, ".patchbook/changes/Loose_Name/CHANGE.md"), "# Loose_Name\n\nintent: Loose.\n\nedits:\n- delete app.txt\n");
+  forkTest("test_a_change_folder_with_a_backslash_and_not_in_the_series_is_invalid_and_a_plain_one_is_just_unlisted", (t) => {
+    for (const name of ["we\\ird", "Loose_Name"]) {
+      mkdirNew(join(t.fork.path, ".patchbook/changes", name));
+      writeFileSync(join(t.fork.path, ".patchbook/changes", name, "CHANGE.md"), `# ${name}\n\nintent: Loose.\n\nedits:\n- delete app.txt\n`);
+    }
     const status = t.pb(["status"], { cwd: t.fork.path, code: 1 });
-    expect(status.stdout).toContain(`"Loose_Name" isn't a valid change name`);
-    expect(status.stdout).toContain("1 invalid");
+    expect(status.stdout).toContain(`"we\\\\ird" isn't a safe change name`);
+    expect(status.stdout).toContain("change Loose_Name is not in the series");
+    expect(status.stdout).toContain("2 invalid");
   });
+
+  const legacy = (t: ForkCase, name = "My_Fix"): void => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "tmp-fix", "--intent", "Shout the second line."], { cwd: t.fork.path });
+    const changes = join(t.fork.path, ".patchbook/changes");
+    renameSync(join(changes, "tmp-fix"), join(changes, name));
+    writeFileSync(join(changes, name, "CHANGE.md"), read(join(changes, name, "CHANGE.md")).replace("# tmp-fix", `# ${name}`));
+    writeFileSync(join(t.fork.path, ".patchbook/series"), `${name}\n`);
+    t.pb(["build", "--force"], { cwd: t.fork.path });
+    t.fork.commit("legacy");
+  };
+
+  forkTest("test_a_change_named_outside_the_creation_rule_still_works_in_status_build_and_show", (t) => {
+    legacy(t);
+    const status = t.pb(["status"], { cwd: t.fork.path });
+    expect(status.stdout).toContain("no problems");
+    expect(t.pb(["status", "--json"], { cwd: t.fork.path }).stdout).toContain('"problems": []');
+    expect(t.pb(["show", "My_Fix"], { cwd: t.fork.path }).stdout).toContain("+TWO");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout).toBe("");
+  });
+
+  forkTest("test_a_hand_edit_to_a_file_a_legacy_change_owns_goes_to_that_change", (t) => {
+    legacy(t);
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE"));
+    sh(["git", "commit", "-qam", "more"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Shout the third line." } });
+    expect(readdirSync(join(t.fork.path, ".patchbook/changes"))).toEqual(["My_Fix"]);
+    expect(read(join(t.fork.path, ".patchbook/series"))).toBe("My_Fix\n");
+    expect(t.pb(["show", "My_Fix"], { cwd: t.fork.path }).stdout).toContain("+THREE");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app.txt")).toContain("THREE");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_can_add_to_an_existing_change_named_outside_the_creation_rule", (t) => {
+    legacy(t);
+    t.fork.write("extra.txt", "ours\n");
+    t.pb(["record", "My_Fix", "--intent", "Shout, and add extra."], { cwd: t.fork.path });
+    expect(readdirSync(join(t.fork.path, ".patchbook/changes"))).toEqual(["My_Fix"]);
+    expect(read(join(t.fork.path, ".patchbook/changes/My_Fix/CHANGE.md"))).toContain("- add extra.txt");
+    expect(read(join(t.fork.path, ".patchbook/series"))).toBe("My_Fix\n");
+  });
+
+  forkTest("test_record_accepts_a_model_choosing_an_existing_change_named_outside_the_creation_rule", (t) => {
+    legacy(t);
+    writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "My_Fix", "intent": "Shout the second line."}'\n`);
+    t.fork.write("extra.txt", "ours\n");
+    t.pb(["record"], { cwd: t.fork.path });
+    expect(readdirSync(join(t.fork.path, ".patchbook/changes"))).toEqual(["My_Fix"]);
+    expect(read(join(t.fork.path, ".patchbook/changes/My_Fix/CHANGE.md"))).toContain("- add extra.txt");
+  });
+
+  forkTest("test_record_refuses_to_create_a_change_named_outside_the_creation_rule_when_none_exists", (t) => {
+    legacy(t);
+    t.fork.write("extra.txt", "ours\n");
+    const refused = t.pb(["record", "Other_Fix", "--intent", "Add extra."], { cwd: t.fork.path, code: 1 });
+    expect(refused.stderr).toContain(`"Other_Fix" isn't a valid change name`);
+    expect(readdirSync(join(t.fork.path, ".patchbook/changes"))).toEqual(["My_Fix"]);
+  });
+
+  forkTest("test_record_with_an_empty_name_names_the_change_from_the_intent", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "", "--intent", "Make the second line loud."], { cwd: t.fork.path });
+    expect(readdirSync(join(t.fork.path, ".patchbook/changes"))).toEqual(["make-the-second-line"]);
+  });
+
+  const keepsRejected = (name: string, setup: (t: ForkCase) => void, edit: (t: ForkCase) => void, record: (t: ForkCase) => void): void => {
+    forkTest(name, (t) => {
+      setup(t);
+      const file = join(t.fork.path, ".patchbook/changes/fix/CHANGE.md");
+      writeFileSync(file, read(file) + "- add ../outside.txt\n- copy app.txt -> /abs.txt\n");
+      edit(t);
+      record(t);
+      const after = read(file);
+      expect(after).toContain("- add ../outside.txt\n");
+      expect(after).toContain("- copy app.txt -> /abs.txt\n");
+      expect(after).toMatch(/^# fix\n\nintent: .+\n\nedits:\n/);
+      const status = t.pb(["status"], { cwd: t.fork.path, code: 1 });
+      expect(status.stdout).toContain("changes/fix add ../outside.txt");
+      expect(status.stdout).toContain("changes/fix copy app.txt -> /abs.txt");
+      expect(existsSync(join(t.tmp, "outside.txt"))).toBe(false);
+    });
+  };
+  const fix = (t: ForkCase): void => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "fix", "--intent", "Shout the second line."], { cwd: t.fork.path });
+    t.pb(["build", "--force"], { cwd: t.fork.path });
+    t.fork.commit("fix");
+  };
+  const hook = (t: ForkCase): void => {
+    sh(["git", "commit", "-qam", "hand"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Shout more." } });
+  };
+
+  keepsRejected(
+    "test_record_keeps_an_edit_line_it_rejected_when_it_updates_the_change_that_owns_the_file",
+    fix,
+    (t) => t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE")),
+    (t) => void t.pb(["record", "--intent", "Shout more."], { cwd: t.fork.path }),
+  );
+  keepsRejected(
+    "test_the_hook_keeps_an_edit_line_it_rejected_when_it_updates_the_change_that_owns_the_file",
+    fix,
+    (t) => t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE")),
+    hook,
+  );
+  keepsRejected(
+    "test_record_keeps_an_edit_line_it_rejected_when_it_adds_an_edit_to_that_change",
+    fix,
+    (t) => t.fork.write("extra.txt", "ours\n"),
+    (t) => void t.pb(["record", "fix", "--intent", "Shout, and add extra."], { cwd: t.fork.path }),
+  );
+  keepsRejected(
+    "test_record_keeps_an_edit_line_it_rejected_when_it_unadds_a_file_of_that_change",
+    (t) => {
+      t.fork.write("extra.txt", "ours\n");
+      t.pb(["record", "fix", "--intent", "Shout the second line."], { cwd: t.fork.path });
+      t.pb(["build", "--force"], { cwd: t.fork.path });
+      t.fork.commit("fix");
+    },
+    (t) => t.fork.rm("extra.txt"),
+    (t) => void t.pb(["record", "--intent", "Drop extra."], { cwd: t.fork.path }),
+  );
 
   forkTest("test_check_and_sync_leave_out_what_the_build_ignores", (t) => {
     const extra = new Repo(join(t.tmp, "extra"));
