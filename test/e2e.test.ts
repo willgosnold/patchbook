@@ -7662,6 +7662,18 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(read(join(t.fork.path, ".patchbook/changes/tpl/ours/tpl.txt.pb"))).toBe("Hello {{go:name}}!\n");
   });
 
+  forkTest("test_record_skips_an_added_copy_that_uses_a_configured_placeholder", (t) => {
+    configureSnippets(t);
+    handChange(t, "tpl", "Add a template.", ["add tpl.txt"], { "tpl.txt": "Uses {{snippet:v}}\n" });
+    t.pb(["build"], { cwd: t.fork.path });
+    const copy = join(t.fork.path, ".patchbook/changes/tpl/ours/tpl.txt.pb");
+    expect(t.fork.read("tpl.txt")).toBe("Uses VERSION-1\n");
+    t.fork.write("tpl.txt", "Uses VERSION-1!\n");
+    expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe("skipped  tpl.txt: its copy in tpl uses placeholders; edit that copy directly\n");
+    expect(read(copy)).toBe("Uses {{snippet:v}}\n");
+    expect(t.fork.read("tpl.txt")).toBe("Uses VERSION-1!\n");
+  });
+
   // Placeholders are expanded only in text, so a copy that isn't text has nothing to protect.
   const NOT_TEXT = "\u0000\u00ff {{snippet:v}}\n";
 
