@@ -7615,6 +7615,16 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(sh(["git", "show", "HEAD:vendor/extra/a.md"], { cwd: t.fork.path }).stdout).toBe("one\n");
   });
 
+  forkTest("test_init_refuses_vendor_in_the_fork_layout_and_writes_nothing", (t) => {
+    sh(["git", "clone", "-q", t.up.path, "plain"], { cwd: t.tmp });
+    const plain = join(t.tmp, "plain");
+    const init = t.pb(["init", "--upstream", t.up.path, "--vendor", "lib"], { cwd: plain, code: 1 });
+    expect(init.stderr).toContain("--vendor needs --output-to");
+    expect(init.stderr).toContain("the root upstream of a fork builds into the whole repo");
+    expect(existsSync(join(plain, ".patchbook"))).toBe(false);
+    expect(sh(["git", "remote"], { cwd: plain }).stdout).not.toContain("upstream");
+  });
+
   const trackHidden = (t: ForkCase): void => {
     const extra = new Repo(join(t.tmp, "extra"));
     extra.write("a.md", "one\n");
