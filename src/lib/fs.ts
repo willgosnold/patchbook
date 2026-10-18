@@ -107,14 +107,15 @@ export function writeDisk(p: string, { data, mode }: File): void {
   }
 }
 
-/** `sorted(Path(dir).rglob("*" + suffix))`, relative to dir, in pathlib's order: by path component. */
-export function rglob(dir: string, suffix: string): string[] {
+/** `sorted(Path(dir).rglob("*" + suffix))`, relative to dir, in pathlib's order: by path component. A folder it can't read is skipped, and listed in `unreadable` when given. */
+export function rglob(dir: string, suffix: string, unreadable?: string[]): string[] {
   const found: string[][] = [];
   const walk = (parts: string[]) => {
     let names: string[];
     try {
       names = readdirSync(join(dir, ...parts));
     } catch {
+      unreadable?.push(parts.join("/") || ".");
       return;
     }
     for (const name of names) {
@@ -148,8 +149,12 @@ export function isRealDir(p: string): boolean {
   }
 }
 
-/** Everything under dir that isn't a folder, relative to dir. */
-export const nonFolders = (dir: string): string[] => rglob(dir, "").filter((p) => !isRealDir(join(dir, p)));
+/** Everything under dir that isn't a folder, relative to dir, and any folder in it that can't be read, since it may hold more. */
+export function nonFolders(dir: string): string[] {
+  const unreadable: string[] = [];
+  const files = rglob(dir, "", unreadable).filter((p) => !isRealDir(join(dir, p)));
+  return [...files, ...unreadable];
+}
 
 /** Removes dir and the folders in it, deepest first. A rmdir fails on a file, so none is lost. */
 export function rmFolders(dir: string): void {
