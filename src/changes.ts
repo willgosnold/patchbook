@@ -65,15 +65,15 @@ export class Change {
 const EDIT_LINE = new RegExp(`^- ([${W}]+) (.+?)(?: -> (.+))?$`, "su");
 
 function unsafePath(raw: string): string | null {
-  if (!raw.startsWith("/") && !raw.split("/").includes("..")) return null;
-  return `${JSON.stringify(raw)} must be a path inside the tree, not an absolute path or one that climbs out with ..`;
+  if (!raw.startsWith("/") && !strip(raw, "/").split("/").some((part) => part === "" || part === "." || part === "..")) return null;
+  return `${JSON.stringify(raw)} must be a path inside the tree: not absolute, with no empty, . or .. segment`;
 }
 
 function isEditKind(kind: string): kind is EditKind {
   return EDIT_KINDS.some((k) => k === kind);
 }
 
-/** Read a CHANGE.md. An edit whose path is absolute or climbs out with `..` is left out and given to `reject`. */
+/** Read a CHANGE.md. An edit whose path is not a clean path inside the tree is left out and given to `reject`. */
 export function parseChange(path: string, reject: (edit: string, detail: string) => void): Change {
   const change = new Change(basename(dirname(path)), dirname(path));
   let section: "intent" | "edits" | null = null;
