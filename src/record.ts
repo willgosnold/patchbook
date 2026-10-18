@@ -4,8 +4,8 @@ import { join } from "node:path";
 import type { Problem } from "./api.ts";
 import { assemble, type Assembly, blockFiles, describe, handEdits, readBuildLock, type Source, writeBuildLines } from "./assemble.ts";
 import { blockHash, blockSpans, type Entry, entriesPath, formatEntry, patchBlocks, PLACEHOLDER_HINT, readEntries, Rules } from "./blocks.ts";
-import { Book } from "./book.ts";
-import { appendSeries, CHANGE_NAME, Change, notAChangeName, readChanges, readSeries, saveChange } from "./changes.ts";
+import { Book, PB } from "./book.ts";
+import { appendSeries, CHANGE_NAME, Change, notAChangeName, readRoster, readSeries, type Roster, saveChange } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
@@ -204,21 +204,26 @@ function asked(edits: readonly Edited[]): Asked {
 type Naming = { name: string | null; intent: string | null; said: string | null };
 
 function nameAndIntent(
-  ask: Asked, name: string | null, given: string | null, changes: ReadonlyMap<string, Change>,
+  ask: Asked, name: string | null, given: string | null, roster: Roster,
   model: (name: string | null, named: boolean) => [string | null, string | null],
 ): Naming {
   if (name && !CHANGE_NAME.test(name)) throw new Fail(notAChangeName(name));
+  const changes = roster.listed;
+  if (name && roster.unlisted(name)) {
+    throw new Fail(`change ${name} is not in the series: add it to ${PB}/series, or remove ${PB}/changes/${name}`);
+  }
   const named = ask.named.length > 0;
   if (given) {
     if (!named || name) return { name, intent: given, said: null };
-    const derived = nameFromIntent(given, changes);
+    const derived = nameFromIntent(given, roster);
     return { name: derived, intent: given, said: `${derived}: ${given}` };
   }
   const known = name === null ? undefined : changes.get(name);
   if (known) return { name, intent: known.intent, said: null };
   if (!named && !ask.drafts.length) return { name, intent: null, said: null };
-  const [chosen, intent] = model(name, named);
+  const [picked, intent] = model(name, named);
   if (!named) return { name: null, intent, said: `intent: ${intent}` };
+  const chosen = picked === null || changes.has(picked) ? picked : roster.free(picked);
   return { name: chosen, intent, said: chosen !== null && changes.has(chosen) ? `adding to ${chosen}` : `${chosen}: ${intent}` };
 }
 
@@ -239,7 +244,8 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
 
 export function record(book: Book, change: string | null, intent: string | null, opts: { current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean } = {}): RecordResult {
   const problems: Problem[] = [];
-  const changes = new Map(readChanges(book, problems).map((c) => [c.name, c]));
+  const roster = readRoster(book, problems);
+  const changes = roster.listed;
   const badName = problems.find((p) => p.file === "series" && "refuse" in p);
   if (badName) throw new Fail(`refusing to record: ${describe(badName)}\nRename it to lowercase letters, digits and dashes in series and changes/ first.`);
   const a = assemble(book);
@@ -253,7 +259,7 @@ export function record(book: Book, change: string | null, intent: string | null,
 
   const given = intent === null ? null : oneLine(intent) || null;
   const ask = asked(edits);
-  const naming = nameAndIntent(ask, change, given, changes, (n, named) => writeIntent(book, changes, modelDiff(a, current, ask), n, named));
+  const naming = nameAndIntent(ask, change, given, roster, (n, named) => writeIntent(book, changes, modelDiff(a, current, ask), n, named));
   const target = naming.name ? changes.get(naming.name) ?? new Change(naming.name, join(book.dir, "changes", naming.name), naming.intent) : null;
   if (target && given) target.intent = given;
 

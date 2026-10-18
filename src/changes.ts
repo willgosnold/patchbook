@@ -156,6 +156,34 @@ export function readChanges(book: Book, problems: Problem[]): Change[] {
   return changes;
 }
 
+/** The changes in the series, and the names under `changes/` that are taken: those, and anything else that sits there. */
+export class Roster {
+  constructor(
+    readonly listed: ReadonlyMap<string, Change>,
+    private readonly dir: string,
+  ) {}
+
+  taken(name: string): boolean {
+    return this.listed.has(name) || lexists(join(this.dir, name));
+  }
+
+  /** Whether `name` is on disk but not in the series, so recording into it would overwrite what is there. */
+  unlisted(name: string): boolean {
+    return !this.listed.has(name) && this.taken(name);
+  }
+
+  /** `base`, or the first of `base-2`, `base-3`, ... that is not taken. */
+  free(base: string): string {
+    let name = base;
+    for (let n = 2; this.taken(name); n++) name = `${base}-${n}`;
+    return name;
+  }
+}
+
+export function readRoster(book: Book, problems: Problem[] = []): Roster {
+  return new Roster(new Map(readChanges(book, problems).map((c) => [c.name, c])), join(book.dir, "changes"));
+}
+
 export async function cmdShow(args: { change: string }) {
   const book = await Book.find();
   const path = join(book.dir, "changes", args.change, "CHANGE.md");
