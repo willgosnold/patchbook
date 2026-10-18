@@ -1094,6 +1094,13 @@ exec '${Bun.which("git")}' "$@"
     expect(sh(["git", "for-each-ref", "refs/tags"], { cwd: store }).stdout).toBe("");
   });
 
+  vendorTest("test_a_failed_fetch_names_the_upstream_and_the_ref_it_was_asked_for", (t) => {
+    const err = t.pb(["sync", "plugin", "no-such-ref"], { cwd: t.repo.path, code: 1 }).stderr;
+    expect(err).toContain(`git fetch ${t.up.path} no-such-ref failed:`);
+    expect(err).toContain("fatal:");
+    expect(err).not.toContain("refs/patchbook");
+  });
+
   vendorTest("test_store_keeps_pinned_commits_through_gc", (t) => {
     t.up.write("plugin/README.md", "For everyone.\n");
     t.up.commit("readme");
