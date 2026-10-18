@@ -542,7 +542,7 @@ test("test_init_in_a_fork_with_edits_of_its_own_records_the_skill_apart_from_the
   }
 }, TIMEOUT);
 
-const SKILL_REFUSED = "Commit them, then run `patchbook skill install`";
+const SKILL_REFUSED = "Commit them, or move them away, then run `patchbook skill install`";
 
 test("test_init_in_a_fork_keeps_an_uncommitted_edit_to_the_skill_and_records_nothing", () => {
   const t = new Case();
@@ -1061,6 +1061,106 @@ test("test_skill_install_in_the_folder_layout_refuses_to_replace_a_link_that_git
     expect(out.stderr).toContain("git ignores");
     expect(readlinkSync(join(repo.path, SKILL_LINK))).toBe("../../elsewhere");
     expect(tree(repo.path)).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+for (const flag of ["--skip-worktree", "--assume-unchanged"]) {
+  test(`test_skill_install_in_a_fork_refuses_to_replace_an_edit_that_git_hides_with_${flag.slice(2).replace("-", "_")}`, () => {
+    const t = new Case();
+    try {
+      Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+      const fork = skillFork(t);
+      t.pb(["skill", "install"], { cwd: fork.path });
+      fork.write(SKILL_FILE, SKILL_COPY + "My own line.\n");
+      const mine = fork.read(SKILL_FILE);
+      sh(["git", "update-index", flag, SKILL_FILE], { cwd: fork.path });
+      expect(sh(["git", "status", "--porcelain"], { cwd: fork.path }).stdout).toBe("");
+      const before = tree(fork.path);
+      const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+      expect(out.stderr).toContain(SKILL_FILE);
+      expect(out.stdout).not.toContain("your copy is in HEAD");
+      expect(out.stdout).not.toContain("wrote");
+      expect(fork.read(SKILL_FILE)).toBe(mine);
+      expect(tree(fork.path)).toEqual(before);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
+test("test_skill_install_in_the_folder_layout_refuses_to_replace_a_link_that_git_hides", () => {
+  const t = new Case();
+  try {
+    const repo = skillFolder(t);
+    retarget(repo, "../../elsewhere");
+    sh(["git", "update-index", "--assume-unchanged", SKILL_LINK], { cwd: repo.path });
+    expect(sh(["git", "status", "--porcelain"], { cwd: repo.path }).stdout).toBe("");
+    const before = tree(repo.path);
+    const out = t.pb(["skill", "install"], { cwd: repo.path, code: 1 });
+    expect(out.stderr).toContain(SKILL_LINK);
+    expect(out.stdout).not.toContain("your copy is in HEAD");
+    expect(readlinkSync(join(repo.path, SKILL_LINK))).toBe("../../elsewhere");
+    expect(tree(repo.path)).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_replaces_a_committed_customization_and_names_the_commit_that_keeps_it", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const fork = skillFork(t);
+    fork.write(SKILL_FILE, STALE_SKILL + "My own line.\n");
+    const mine = fork.read(SKILL_FILE);
+    t.pb(["record"], { cwd: fork.path });
+    fork.commit("my own line");
+    const out = t.pb(["skill", "install"], { cwd: fork.path }).stdout;
+    expect(out).toContain(`replaced ${SKILL_FILE}; your copy is in HEAD`);
+    expect(fork.read(SKILL_FILE)).toBe(SKILL_COPY);
+    expect(sh(["git", "show", `HEAD:${SKILL_FILE}`], { cwd: fork.path }).stdout).toBe(mine);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_refuses_to_replace_an_edit_when_git_cannot_read_head", () => {
+  const t = new Case();
+  try {
+    const repo = skillFolder(t);
+    repo.write(SKILL_FILE, "My own guidance.\n");
+    sh(["git", "symbolic-ref", "HEAD", "refs/heads/unborn"], { cwd: repo.path });
+    const before = tree(repo.path);
+    const out = t.pb(["skill", "install"], { cwd: repo.path, code: 1 });
+    expect(out.stderr).toContain(SKILL_FILE);
+    expect(out.stdout).not.toContain("your copy is in HEAD");
+    expect(repo.read(SKILL_FILE)).toBe("My own guidance.\n");
+    expect(tree(repo.path)).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_init_in_a_fork_keeps_a_customized_skill_that_git_ignores_and_records_nothing", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\ntwo\n");
+    up.commit("start");
+    sh(["git", "clone", "-q", up.path, join(t.tmp, "mine")], { cwd: t.tmp });
+    const mine = new Repo(join(t.tmp, "mine"));
+    mine.write(".gitignore", ".agents/\n");
+    mine.commit("ignore the agents' folder");
+    mine.write(SKILL_FILE, STALE_SKILL + "My own line.\n");
+    const out = t.pb(["init", "--upstream", up.path], { cwd: mine.path });
+    expect(mine.read(SKILL_FILE)).toBe(STALE_SKILL + "My own line.\n");
+    expect(out.stderr).toContain(SKILL_FILE);
+    expect(out.stderr).toContain(SKILL_REFUSED);
+    expect(isSymlink(join(mine.path, SKILL_LINK)) || existsSync(join(mine.path, SKILL_LINK))).toBe(false);
+    expect(mine.read(".patchbook/series")).toBe("");
   } finally {
     t.cleanup();
   }
