@@ -132,6 +132,7 @@ function isProblem(value: unknown): value is Problem {
 /** A `[[check]]`: the output files it covers and the pattern a block mustn't match without an entry. */
 export type Check = { files: RegExp[]; exclude: RegExp[]; pattern: RegExp };
 export type Placeholder = { file: string | null; format: string };
+export type Reserved = { place: string; refuse: boolean };
 export type Layout = { kind: "fork" } | { kind: "folder"; from: string; dir: string };
 
 /** How `path` spells the repo root: its outermost ancestor that resolves into the repo, or null when that one is a link into a folder of the repo. */
@@ -329,16 +330,38 @@ export class Book {
     return underOrRoot(from, u.mount) ? to : null;
   }
 
+  private inRepo(outputPath: string): string {
+    return this.layout.kind === "folder" ? joinPath(this.folderOf(this.layout.dir), outputPath) : outputPath;
+  }
+
   private heldBy(outputPath: string): string | null {
-    const inRepo = this.layout.kind === "folder" ? joinPath(this.folderOf(this.layout.dir), outputPath) : outputPath;
+    const inRepo = this.inRepo(outputPath);
     return this.vendors().find((v) => underOrRoot(inRepo, v)) ?? null;
   }
 
-  vendorHolding(staged: string): string | null {
-    if (this.layout.kind === "fork") return this.heldBy(staged);
+  private outputOf(staged: string): string | null {
+    if (this.layout.kind === "fork") return staged;
     const { from } = this.layout;
     if (from && !staged.startsWith(from + "/")) return null;
-    return this.heldBy(from ? staged.slice(from.length + 1) : staged);
+    return from ? staged.slice(from.length + 1) : staged;
+  }
+
+  vendorHolding(staged: string): string | null {
+    const output = this.outputOf(staged);
+    return output === null ? null : this.heldBy(output);
+  }
+
+  /** Where an output path can't be written. A vendored copy is skipped with a warning, `.patchbook` and `.git` are refused. */
+  reservedOutput(output: string): Reserved | null {
+    const vendored = this.heldBy(output);
+    if (vendored !== null) return { place: `the vendored copy ${vendored}`, refuse: false };
+    const inRepo = this.inRepo(output);
+    return under(inRepo.toLowerCase(), PB) ? { place: PB, refuse: true } : namesGit(inRepo) ? { place: GIT, refuse: true } : null;
+  }
+
+  reservedHolding(staged: string): Reserved | null {
+    const output = this.outputOf(staged);
+    return output === null ? null : this.reservedOutput(output);
   }
 
   private vendors(): string[] {

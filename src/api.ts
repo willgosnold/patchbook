@@ -6,10 +6,13 @@ export type InChange = { file: string; change: string };
 export type InOutput = { file: string; output: string };
 export type InBlock = { file: string; output: string; line: number; hash: string };
 type Detail = { detail: string };
+/** Marks a problem the pre-commit hook refuses the commit for, where any other only skips the build with a warning. */
+type Refuse = { refuse: true };
 
 /** What status reports, keyed on `problem`. Each kind has exactly the fields it's built with, in order. */
 export type Problem =
   | ({ problem: "invalid" } & (InFile | InEdit | InChange | InOutput | InBlock) & Detail)
+  | ({ problem: "invalid" } & (InFile | InEdit | InChange) & Detail & Refuse)
   | ({ problem: "gone" } & (InEdit | InChange) & Detail)
   | ({ problem: "stale" } & InChange & Detail)
   | ({ problem: "conflict" } & (InFile | InChange) & Detail)
