@@ -359,7 +359,9 @@ test("test_init_rejects_a_vendor_folder_inside_the_output_before_it_writes_anyth
     repo.write("README.md", "mine\n");
     repo.commit("start");
     const init = t.pb(["init", "--upstream", up.path, "--output-to", "out", "--vendor", "out/vendored"], { cwd: repo.path, code: 1 });
-    expect(init.stderr).toContain("[output] to 'out' overlaps the vendored copy out/vendored");
+    expect(init.stderr).toContain("the vendored copy of upstream (out/vendored) overlaps the folder upstream builds into (out)");
+    expect(init.stderr).toContain("Change vendor for upstream or [output] to.");
+    expect(init.stderr).not.toContain("mount");
     expect(existsSync(join(repo.path, ".patchbook"))).toBe(false);
     expect(existsSync(join(repo.path, "out"))).toBe(false);
   } finally {
@@ -1388,6 +1390,79 @@ describe("VendorTest", () => {
     const out = t.pb(["status"], { cwd: t.repo.path, code: 1 });
     expect(out.stderr).toContain("overlaps the vendored copy, which is the repo root");
   });
+
+  vendorTest("test_a_vendored_copy_inside_another_upstreams_output_folder_builds_and_checks_clean", (t) => {
+    t.missingScaffoldPatchBuild();
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("b.md", "b\n");
+    extra.commit("b");
+    t.pb(["track", "other", extra.path, "--mount", "skills/other", "--vendor", "skills/vendored-other"], { cwd: t.repo.path });
+    const built = t.pb(["build"], { cwd: t.repo.path });
+    expect(built.stdout).toContain("built");
+    expect(t.repo.read("skills/other/b.md")).toBe("b\n");
+    expect(t.repo.read("skills/vendored-other/b.md")).toBe("b\n");
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  for (const [where, to, link] of [["itself", "out", "out"], ["an ancestor", "lnk/out", "lnk"]] as const) {
+    vendorTest(`test_output_folder_cannot_be_${where === "itself" ? "a_link" : "under_a_link"}`, (t) => {
+      t.missingScaffoldPatchBuild();
+      t.repo.write("real/keep.md", "keep\n");
+      symlinkSync("real", join(t.repo.path, link));
+      setOutputFolder(t, to);
+      t.repo.commit("a link to a folder in the repo");
+      const before = tree(t.repo.path);
+      for (const args of [["build", "--force"], ["build"], ["status"]]) {
+        const out = t.pb(args, { cwd: t.repo.path, code: 1 });
+        expect(out.stderr).toContain("is a link");
+        expect(out.stderr).not.toContain("outside the output folder");
+        expect(tree(t.repo.path)).toEqual(before);
+      }
+      expect(isSymlink(join(t.repo.path, link))).toBe(true);
+    });
+  }
+
+  for (const to of ["skills/.git", "skills/.git/x", "a/.git", "a/b/.git/c"]) {
+    vendorTest(`test_output_folder_${to.replace(/\W/g, "_")}_has_a_git_segment_and_is_rejected`, (t) => {
+      t.missingScaffoldPatchBuild();
+      setOutputFolder(t, to);
+      const before = tree(t.repo.path);
+      for (const args of [["build", "--force"], ["status"]]) {
+        const out = t.pb(args, { cwd: t.repo.path, code: 1 });
+        expect(out.stderr).toContain("inside .git");
+        expect(tree(t.repo.path)).toEqual(before);
+      }
+    });
+  }
+
+  test("test_track_rejects_a_mount_that_puts_the_output_under_a_git_folder_in_the_folder_layout", () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("a.md", "a\n");
+      up.commit("start");
+      const more = new Repo(join(t.tmp, "more"));
+      more.write("d/m.md", "m\n");
+      more.commit("start");
+      const repo = new Repo(join(t.tmp, "adapted"));
+      repo.write("README.md", "mine\n");
+      repo.commit("start");
+      const bare = t.pb(["init", "--upstream", up.path, "--output-to", "out/.git/x"], { cwd: repo.path, code: 1 });
+      expect(bare.stderr).toContain("inside .git");
+      expect(existsSync(join(repo.path, ".patchbook"))).toBe(false);
+      t.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: repo.path });
+      const config = join(repo.path, ".patchbook/config.toml");
+      const before = { config: read(config), tree: tree(repo.path) };
+      for (const mount of [".git/x", "a/.git", "./.git/x", "x/../.git/y"]) {
+        const tracked = t.pb(["track", "m", more.path, "--mount", mount], { cwd: repo.path, code: 1 });
+        expect(tracked.stderr).toContain("inside .git");
+        expect(read(config)).toBe(before.config);
+        expect(tree(repo.path)).toEqual(before.tree);
+      }
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
 
   vendorTest("test_build_never_deletes_through_a_link_into_the_patchbook", (t) => {
     t.missingScaffoldPatchBuild();
