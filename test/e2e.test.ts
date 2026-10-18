@@ -6237,6 +6237,70 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(isExecutable(join(t.fork.path, "bin/run.sh"))).toBe(true);
   });
 
+  const twoMovedUpstreams = (t: ForkCase): { lib: Repo; away: string } => {
+    const lib = new Repo(join(t.tmp, "lib"));
+    lib.write("src/lib.txt", "v1\n");
+    lib.commit("lib");
+    t.pb(["track", "lib", lib.path, "--path", "src"], { cwd: t.fork.path });
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.commit("upstream edit");
+    lib.write("src/lib.txt", "v2\n");
+    lib.commit("lib v2");
+    return { lib, away: join(t.tmp, "lib.away") };
+  };
+  type Report = { from: string; to: string; upstream: string[] };
+  const lastSync = (t: ForkCase): { upstream: Report; lib?: Report } =>
+    JSON.parse(read(join(t.fork.path, ".patchbook/last-sync.json"))).upstreams;
+
+  forkTest("test_sync_keeps_the_report_of_an_upstream_when_a_later_one_fails", (t) => {
+    const { lib, away } = twoMovedUpstreams(t);
+    const before = JSON.parse(t.fork.read(".patchbook/upstream.lock")).upstream.commit;
+    renameSync(lib.path, away);
+    t.pb(["sync"], { cwd: t.fork.path, code: 1 });
+    const pin = JSON.parse(t.fork.read(".patchbook/upstream.lock")).upstream.commit;
+    expect(pin).not.toBe(before);
+    expect(Object.keys(lastSync(t))).toEqual(["upstream"]);
+    expect(lastSync(t).upstream).toMatchObject({ from: before, to: pin, upstream: ["changed app.txt"] });
+    renameSync(away, lib.path);
+    const again = t.pb(["sync"], { cwd: t.fork.path }).stdout;
+    expect(again).toContain("Nothing to do");
+    expect(Object.keys(lastSync(t))).toEqual(["upstream", "lib"]);
+    expect(lastSync(t).upstream).toMatchObject({ from: before, to: pin, upstream: ["changed app.txt"] });
+    expect(lastSync(t).lib!.upstream).toEqual(["changed lib/lib.txt"]);
+    expect(t.pb(["upstream", "upstream", "--diff"], { cwd: t.fork.path }).stdout).toContain("+SIX");
+  });
+
+  forkTest("test_sync_of_one_upstream_keeps_the_report_of_another", (t) => {
+    const { lib } = twoMovedUpstreams(t);
+    t.pb(["sync", "upstream"], { cwd: t.fork.path });
+    const first = lastSync(t).upstream;
+    lib.write("src/lib.txt", "v3\n");
+    lib.commit("lib v3");
+    t.pb(["sync", "lib"], { cwd: t.fork.path });
+    expect(Object.keys(lastSync(t))).toEqual(["upstream", "lib"]);
+    expect(lastSync(t).upstream).toEqual(first);
+  });
+
+  forkTest("test_sync_drops_the_report_of_an_upstream_no_longer_in_the_config", (t) => {
+    twoMovedUpstreams(t);
+    t.pb(["sync"], { cwd: t.fork.path });
+    expect(Object.keys(lastSync(t))).toEqual(["upstream", "lib"]);
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    writeFileSync(config, read(config).replace(/\n\[\[upstream\]\]\nname = "lib"[\s\S]*$/, "\n"));
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
+    t.up.commit("another edit");
+    t.pb(["sync"], { cwd: t.fork.path });
+    expect(Object.keys(lastSync(t))).toEqual(["upstream"]);
+  });
+
+  forkTest("test_sync_replaces_a_last_sync_file_that_does_not_parse", (t) => {
+    writeFileSync(join(t.fork.path, ".patchbook/last-sync.json"), "{ not json");
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.commit("upstream edit");
+    t.pb(["sync"], { cwd: t.fork.path });
+    expect(Object.keys(lastSync(t))).toEqual(["upstream"]);
+  });
+
   forkTest("test_fork_tracks_a_second_upstream", (t) => {
     const lib = new Repo(join(t.tmp, "lib"));
     lib.write("src/lib.txt", "v1\n");
