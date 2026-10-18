@@ -172,7 +172,7 @@ This repo ships a `patchbook-update` skill, built into the `patchbook` binary. `
 2. Works on the branch of the worktree T3 made for the thread, rebased onto `origin/main`. Runs `patchbook sync` and commits the sync on its own.
 3. Resolves each problem from the change's intent and the repo's guide (`guide` in the config). One commit per change.
 4. Deletes its own scratch files, then commits anything else left in the worktree on its own, or asks if it can't tell what it is. Builds and commits what the build wrote, then runs the `test` from the config on `origin/main`, which is a command or an instruction file for the agent. It commits each test fix on its own, then builds and tests again.
-5. Starts a review in a fresh subagent, on another provider's model when T3 can run one, otherwise on the same model. The reviewer gets each intent, the upstream change, and our result, and says per change whether the result meets the intent. A change with no verdict counts as a fail. It waits up to an hour for the verdict before step 6, and a review that times out or stops on a question counts as a fail. At most two rounds.
+5. Starts a review in a fresh subagent, on another provider's model when T3 can run one, otherwise on the same model. The reviewer gets each intent, the upstream change, and our result, and says per change whether the result meets the intent, and once whether upstream added anything that should have been handled. A change or question with no verdict counts as a fail. It waits up to an hour for the verdict before step 6, and a review that times out or stops on a question counts as a fail. At most two rounds.
 6. If, on the commit it pushes, `patchbook status` and `patchbook build` exit 0 and `git status --porcelain --untracked-files=no` prints nothing after the build, and the sync was clean or the test command exited 0, pushes its branch to `main`, runs the config's `deploy`, removes its worktree, and settles the thread with a short summary. The sync was clean when every upstream's report has an empty `replaced_upstream_changed`, step 3 found nothing to handle, nothing came after the sync commit but files the build wrote, and the rebase brought in no commits.
 
 It stops and asks instead of merging when:
@@ -180,7 +180,7 @@ It stops and asks instead of merging when:
 - the condition in step 6 doesn't hold;
 - upstream removed or reworked something an intent depends on, and retiring the change would lose something the user wanted;
 - meeting an intent needs a choice the intents and the guide don't settle;
-- the second review round returns a fail for any change;
+- the second review round returns any fail;
 - a test fails and it can't fix it, an instruction-file test included;
 - a test leaves tracked files changed, even if it passed;
 - a `replaced_upstream_changed` entry has no step 3 commit that names its file;
