@@ -1,12 +1,14 @@
 // Recording hand edits to the output: as block entries, as edits to a change that owns the file, or as a new change.
 import { unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { assemble, handEdits, readBuildLock, writeBuildLines } from "./assemble.ts";
+import type { Problem } from "./api.ts";
+import { assemble, describe, handEdits, readBuildLock, writeBuildLines } from "./assemble.ts";
 import { blockHash, blockSpans, type Entry, entriesPath, formatEntry, patchBlocks, PLACEHOLDER_HINT, readEntries, Rules } from "./blocks.ts";
 import { Book } from "./book.ts";
-import { appendSeries, Change, readChanges, readSeries, saveChange } from "./changes.ts";
+import { appendSeries, CHANGE_NAME, Change, notAChangeName, readChanges, readSeries, saveChange } from "./changes.ts";
 import { nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
+import { Fail } from "./lib/fail.ts";
 import { exists, rglob, sameFile, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { replace, splitlines, strip } from "./lib/py.ts";
@@ -18,9 +20,14 @@ type Plan = { path: string; entries: Map<string, Draft>; notes: [string, string]
 
 export async function cmdRecord(args: { change: string | null; intent: string | null }) {
   const book = await Book.find();
+  const problems: Problem[] = [];
+  const changes = new Map(readChanges(book, problems).map((c) => [c.name, c]));
+  const asked = args.change || null;
+  if (asked !== null && !CHANGE_NAME.test(asked)) throw new Fail(notAChangeName(asked));
+  const badName = problems.find((p) => p.file === "series" && "refuse" in p);
+  if (badName) throw new Fail(`refusing to record: ${describe(badName)}\nRename it to lowercase letters, digits and dashes in series and changes/ first.`);
   const a = assemble(book);
   const current = book.currentOutput();
-  const changes = new Map(readChanges(book, []).map((c) => [c.name, c]));
   const fileOwner = new Map<string, Change>();
   for (const c of changes.values()) for (const e of c.edits) if (e.kind === "file") fileOwner.set(e.path, c);
   const hasBlocks = new Set(rglob(join(book.dir, "blocks"), ".entries").map((p) => p.slice(0, -".entries".length)));
@@ -56,7 +63,7 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
     }
   }
 
-  let name = args.change;
+  let name = asked;
   const given = args.intent === null ? null : oneLine(args.intent) || null;
   let intent = given;
   const pending = Array.from(paragraphs, ([p, plan]) => Array.from(plan.entries.values(), (e) => [p, e] as const)).flat()

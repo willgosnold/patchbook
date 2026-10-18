@@ -1,6 +1,7 @@
 // The pre-commit hook: on each commit, record hand edits to the output, rebuild, and stage both.
 import { chmodSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { Problem } from "./api.ts";
 import { assemble, describe, handEdits, writeOutput } from "./assemble.ts";
 import { Book } from "./book.ts";
 import { cmdRecord } from "./record.ts";
@@ -81,9 +82,15 @@ export async function cmdHook(args: { action: "install" | "run" }) {
   const before = dirty(book.root);
   let a = assemble(book);
   const refused = a.problems.filter((p) => "refuse" in p);
+  const named = refused.filter((p) => p.file === "series");
+  const edits = refused.filter((p) => p.file !== "series");
   if (refused.length) {
-    throw new Fail("refusing this commit: a change writes where a build must not.\n" + refused.map((p) => `  ${describe(p)}\n`).join("")
-      + "Edit or remove that line in the change's CHANGE.md, or skip the hook once with PATCHBOOK_HOOK=0.");
+    const lines = (ps: Problem[]) => ps.map((p) => `  ${describe(p)}\n`).join("");
+    const skip = "or skip the hook once with PATCHBOOK_HOOK=0.";
+    throw new Fail([
+      ...(named.length ? [`refusing this commit: a change name isn't valid.\n${lines(named)}Rename it to lowercase letters, digits and dashes in series and changes/, ${skip}`] : []),
+      ...(edits.length ? [`refusing this commit: a change writes where a build must not.\n${lines(edits)}Edit or remove that line in the change's CHANGE.md, ${skip}`] : []),
+    ].join("\n"));
   }
   const edited = handEdits(book, a.out);
   for (const p of edited.filter((p) => !a.out.has(p))) {

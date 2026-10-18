@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Assembly } from "./assemble.ts";
 import type { Book } from "./book.ts";
-import type { Change } from "./changes.ts";
+import { CHANGE_NAME, type Change } from "./changes.ts";
 import { unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import type { File } from "./lib/fs.ts";
@@ -159,7 +159,7 @@ export function writeIntent(
   const given = fields.get("change") ?? "";
   let chosen = typeof given === "string" ? given : "";
   let intent: string | null = oneLine(str(fields.has("intent") ? fields.get("intent")! : ""));
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(chosen) || !intent) {
+  if (!CHANGE_NAME.test(chosen) || !intent) {
     throw new Fail(`${provider} didn't return a usable name and intent:\n${slice(strip(reply), 0, 500)}\nPass a name and --intent instead.`);
   }
   if (name && chosen !== name) chosen = name;
