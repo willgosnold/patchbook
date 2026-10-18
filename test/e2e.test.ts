@@ -1022,6 +1022,8 @@ for (const [how, dir, given] of [
   ["a_file_url_of_the_root", "", (fork: string) => `file://${fork}`],
   ["a_file_url_with_a_host", "", (fork: string) => `file://example.invalid${fork}`],
   ["a_file_url_with_an_encoded_slash_after_the_host", "", (fork: string) => `file://example.invalid%2F${fork.slice(1)}`],
+  ["a_file_url_whose_host_is_not_utf_8", "", (fork: string) => `file://%ff${fork}`],
+  ["a_path_that_git_reads_from_its_closing_bracket", "", () => "x@[y]"],
   ["a_path_that_git_finds_with_dot_git_added", "", (fork: string) => `${fork}-self`],
   ["a_path_from_the_home_folder", "", (fork: string) => `~/${relative(process.env["HOME"]!, fork)}`],
   ["a_linked_worktree", "", () => "../worktree"],
@@ -1038,6 +1040,7 @@ for (const [how, dir, given] of [
       sh(["git", "worktree", "add", "-q", "--detach", "../worktree"], { cwd: fork.path });
       sh(["git", "config", `url.${fork.path}.insteadOf`, "self:"], { cwd: fork.path });
       symlinkSync(fork.path, `${fork.path}-self.git`);
+      symlinkSync(fork.path, join(fork.path, "]"));
       const refused = t.pb(["init", "--upstream", given(fork.path)], { cwd: join(fork.path, dir), code: 1 });
       expect(refused.stderr).toContain("is this repo");
       expect(existsSync(join(fork.path, ".patchbook"))).toBe(false);
@@ -1053,6 +1056,7 @@ for (const [how, remote] of [
   ["an_alias_that_another_insteadof_would_rewrite", () => "self:"],
   ["a_file_url_with_a_host", (fork: string) => `file://example.invalid${fork}`],
   ["a_file_url_with_an_encoded_slash_after_the_host", (fork: string) => `file://example.invalid%2F${fork.slice(1)}`],
+  ["a_file_url_whose_host_is_not_utf_8", (fork: string) => `file://%ff${fork}`],
 ] as const) {
   test(`test_a_fork_init_refuses_an_upstream_remote_that_fetches_the_repo_itself_as_${how}`, () => {
     const t = new Case();
