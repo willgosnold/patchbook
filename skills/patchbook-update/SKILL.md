@@ -51,7 +51,7 @@ Commit each change you repair or retire on its own, as "Carry <change> to upstre
 
 ## 4. Test
 
-Run `patchbook build`. The pre-commit hook builds on each commit when the patchbook has no problems, so this usually changes nothing. The hook doesn't build when there are problems, when `hook.enabled` is false, or when the repo's pre-commit hook belongs to another tool. If `patchbook build` fails, problems remain and `patchbook status` exits 1, so ask (step 6). If `git status --porcelain` then lists more than `.patchbook/last-sync.json`, commit the rest, which is build output and `.patchbook/build.lock`. Never commit `.patchbook/last-sync.json`.
+Run `patchbook build`. The pre-commit hook builds on each commit when the patchbook has no problems, so this usually changes nothing. The hook doesn't build when there are problems, when `hook.enabled` is false, or when the repo's pre-commit hook belongs to another tool. If `patchbook build` fails, problems remain and `patchbook status` exits 1, so ask (step 6). If `git status --porcelain` then lists more than `.patchbook/last-sync.json`, commit the rest as one build commit. It holds only what `patchbook build` wrote: output files and `.patchbook/build.lock`. Never commit `.patchbook/last-sync.json`.
 
 Then run the config's `[test]` from the worktree's root: a `command` must exit 0, and an `instructions` file is a procedure to follow. Fix a failure if you can, with at most two attempts, and run the test again after each fix.
 
@@ -77,8 +77,8 @@ Ask it, per change: does the result meet the intent on upstream's new text, does
 
 Merge only when `patchbook status` exits 0 on the commit you push, and one of these signals holds:
 
-- **Clean.** No upstream's report in `.patchbook/last-sync.json` has a `replaced_upstream_changed` entry. Step 3 found nothing to handle, from a check or from reading upstream's changes. Every commit after the sync commit is build output from step 4, and the rebase below brings in nothing. A repair, a retirement, a test fix or a review fix voids it.
-- **Tested.** The config's `[test]` has a `command`, and it exited 0 on the commit you push. After any later commit, a review fix included, do step 4 again.
+- **Clean.** Every upstream's report in `.patchbook/last-sync.json` has an empty `replaced_upstream_changed` list. Step 3 found nothing to handle, from a check or from reading upstream's changes. The only commit after the sync commit, if any, is step 4's build commit, and the rebase below brings in nothing. A repair, a retirement, a test fix or a review fix voids it.
+- **Tested.** The config's `[test]` has a `command`, and it exited 0 on the commit you push and left tracked files unchanged (`git status --porcelain --untracked-files=no` prints nothing). After any later commit, a review fix included, do step 4 again.
 
 An `instructions` test and the review are not signals, since an agent grades both.
 
