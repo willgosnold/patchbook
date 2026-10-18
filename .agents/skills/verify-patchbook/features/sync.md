@@ -38,4 +38,3 @@ Preconditions:
 - `check` exits 10 when upstream moved. That's not a failure, so don't stop on a non-zero exit there.
 - `.patchbook/last-sync.json` is left untracked. `git commit -a` doesn't add it, which is fine.
 - A fresh clone of the fork can't read upstream after the first sync and commit, because the pin isn't in the fork's history (#2). The sandbox's single checkout hides this. Cloning the fork into a second folder shows it.
-- The store keeps pins only until `git gc` prunes them (#5). A sandbox lives too short to see that unless you run `git -C "$PATCHBOOK_HOME"/upstreams/* gc --prune=now`.
