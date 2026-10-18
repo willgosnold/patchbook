@@ -705,6 +705,31 @@ describe("ForkTest", () => {
     expect(existsSync(join(t.tmp, "prompt.txt"))).toBe(false);
   });
 
+  forkTest("test_record_keeps_a_given_intent_when_no_name_is_given", (t) => {
+    const prompt = join(t.tmp, "prompt.txt");
+    const intent = "Make the second line loud so it stands out.";
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    const out = t.pb(["record", "--intent", intent], { cwd: t.fork.path });
+    expect(existsSync(prompt)).toBe(false);
+    expect(out.stdout).toContain(`make-the-second-line: ${intent}`);
+    const change = join(t.fork.path, ".patchbook/changes/make-the-second-line/CHANGE.md");
+    expect(read(change)).toContain(`intent: ${intent}`);
+    t.fork.write("extra.txt", "ours\n");
+    t.pb(["record", "--intent", "Make the second line of the new file ours."], { cwd: t.fork.path });
+    expect(existsSync(prompt)).toBe(false);
+    expect(read(join(t.fork.path, ".patchbook/changes/make-the-second-line-2/CHANGE.md"))).toContain("- add extra.txt");
+    expect(read(change)).toContain(`intent: ${intent}`);
+  });
+
+  forkTest("test_commit_with_an_intent_does_not_need_the_model", (t) => {
+    writeFileSync(join(t.tmp, "bin/claude"), "#!/bin/sh\nexit 1\n");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    const intent = "Make the second line loud.";
+    sh(["git", "commit", "-qam", "shout"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: intent } });
+    expect(read(join(t.fork.path, ".patchbook/changes/make-the-second-line/CHANGE.md"))).toContain(`intent: ${intent}`);
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout).toBe("");
+  });
+
   forkTest("test_commit_records_and_builds", (t) => {
     expect(read(join(t.fork.path, ".git/hooks/pre-commit"))).toContain("Installed by patchbook");
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
