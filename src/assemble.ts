@@ -12,7 +12,7 @@ import { installHookOrWarn, warnUnhooked } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import {
   exists, type File, gitMode, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, type Mode, nonFolders, parseGitMode, readText, relative, resolve, rglob, rmFolders, sameFile,
-  sameMode, writeDisk, writeText,
+  sameMode, setsMode, writeDisk, writeText,
 } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { dumps, type Json, loads } from "./lib/json.ts";
@@ -162,8 +162,7 @@ export function assemble(book: Book): Assembly {
         problems.push({ problem: "stale", ...where, detail: "its base differs from upstream at the pin; run sync" });
       }
       if (isText(ours.data) && hasConflictMarker(decode(ours.data))) problems.push({ problem: "conflict", ...where, detail: "ours has conflict markers" });
-      // A mode that still matches the base copy's was never changed by the change, so upstream's current mode stands.
-      content.set(e.path, { data: ours.data, mode: sameMode(ours.mode, base.mode, book.tracksExecBit()) ? up.mode : ours.mode });
+      content.set(e.path, { data: ours.data, mode: setsMode(ours, base, book.tracksExecBit()) ? ours.mode : up.mode });
       applied++;
     }
   }
@@ -251,7 +250,6 @@ export function assemble(book: Book): Assembly {
 
 export const buildLockPath = (book: Book) => join(book.dir, "build.lock");
 
-/** What `build.lock` holds for a built file. A line written before modes were kept has none, so it compares content only. */
 export type Stamp = { oid: string; mode: Mode | null };
 
 export const stampOf = (f: File): Stamp => ({ oid: blobOid(f.data), mode: f.mode });
@@ -280,7 +278,6 @@ export function parseBuildLock(text: string): Map<string, Stamp> {
   return entries;
 }
 
-/** One line per built file, as `<mode> <blob id> <path>` with git's own mode names, such as `100755`. */
 export function writeBuildLines(book: Book, lock: ReadonlyMap<string, Stamp>): void {
   const line = (p: string, { oid, mode }: Stamp) => (mode === null ? `${oid} ${p}\n` : `${gitMode(mode)} ${oid} ${p}\n`);
   writeText(buildLockPath(book), sortedBy(lock, ([p]) => p).map(([p, stamp]) => line(p, stamp)).join(""));
@@ -344,7 +341,6 @@ export function builtAs(file: File | undefined, stamp: Stamp | undefined, tracks
   return blobOid(file.data) === stamp.oid && (stamp.mode === null || sameMode(stamp.mode, file.mode, tracksExecBit));
 }
 
-/** A mode change counts, unless git ignores the executable bit here. */
 export function handEdits(
   book: Book, fresh: ReadonlyMap<string, File>, files: ReadonlyMap<string, File>, builds: (BuildLock | null)[] = [readBuildLock(book)],
 ): string[] {

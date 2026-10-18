@@ -8,7 +8,7 @@ import { type Change, readChanges, type Side } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isSymlink, LINK, lexists, mkdirs, type Mode, pjoin, readDisk, readText, readTextReplace, sameFile, writeDisk, writeText } from "./lib/fs.ts";
+import { exists, type File, isSymlink, LINK, lexists, mkdirs, type Mode, pjoin, readDisk, readText, readTextReplace, sameFile, setsMode, writeDisk, writeText } from "./lib/fs.ts";
 import { dumps, JsonError, loads } from "./lib/json.ts";
 import { spawn } from "./lib/proc.ts";
 import { sorted } from "./lib/py.ts";
@@ -78,12 +78,11 @@ function mergeFile(ours: Uint8Array, base: Uint8Array, theirs: Uint8Array): { me
 /** A write sync makes to a change's copy, saved in the journal first. No mode keeps the copy's. */
 type Write = { c: Change; side: Side; path: string; data: Uint8Array; mode?: Mode };
 
-/** Upstream's mode for the change's copies. Ours keeps a mode the change set itself, one that differs from base's. */
 function carryMode(c: Change, path: string, theirs: Mode): Write[] {
   const base = c.file("base", path)!;
   const ours = c.file("ours", path)!;
   const writes: Write[] = [{ c, side: "base", path, data: base.data, mode: theirs }];
-  if (ours.mode === base.mode) writes.push({ c, side: "ours", path, data: ours.data, mode: theirs });
+  if (!setsMode(ours, base)) writes.push({ c, side: "ours", path, data: ours.data, mode: theirs });
   return writes;
 }
 

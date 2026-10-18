@@ -36,8 +36,7 @@ type Data = {
   "unreplace": Copy;
   "update-ours": Copy & { now: File; built: File };
   "file-edit": { rel: string; now: File; to: Destination };
-  /** `unrecorded` says why a mode change that came with the edit was not recorded. */
-  "paragraph-edit": { plan: Plan; unrecorded: string | null };
+  "paragraph-edit": { plan: Plan; modeNotRecorded: string | null };
   "skip": { reason: string };
 };
 
@@ -118,7 +117,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     apply: (e, r) => {
       saveParagraphs(e.plan.path, withIntent(e.plan, r.intent));
       const notes = e.plan.notes.map(([h, what]) => `entry    ${e.path} [${h}] ${what}`);
-      if (e.unrecorded !== null) notes.push(`skipped  ${e.path}: ${e.unrecorded}`);
+      if (e.modeNotRecorded !== null) notes.push(`skipped  ${e.path}: ${e.modeNotRecorded}`);
       return { touched: [], notes };
     },
   },
@@ -198,10 +197,10 @@ function classifyOne(s: Snapshot, path: string): Edited {
   if (s.blocks.has(src.path)) {
     const plan = s.plan(src.path, path, built, now);
     if (typeof plan === "string") return { kind: "skip", path, reason: plan };
-    if (now.mode === built.mode || now.mode === LINK || built.mode === LINK) return { kind: "paragraph-edit", path, plan, unrecorded: null };
-    const unrecorded = `block entries hold no mode, so the mode change was not recorded; to set it, make your finish hook in ${PB}/hooks.ts run `
+    if (now.mode === built.mode || now.mode === LINK || built.mode === LINK) return { kind: "paragraph-edit", path, plan, modeNotRecorded: null };
+    const modeNotRecorded = `block entries hold no mode, so the mode change was not recorded; to set it, make your finish hook in ${PB}/hooks.ts run `
       + `out.get(${JSON.stringify(path)})!.mode = 0o${now.mode.toString(8)};`;
-    return bytesEqual(built.data, now.data) ? { kind: "skip", path, reason: unrecorded } : { kind: "paragraph-edit", path, plan, unrecorded };
+    return bytesEqual(built.data, now.data) ? { kind: "skip", path, reason: modeNotRecorded } : { kind: "paragraph-edit", path, plan, modeNotRecorded };
   }
   const owner = s.owners.get(src.path);
   if (owner && s.uses(owner.read("ours", src.path))) return skipPlaceholders(path, owner);
