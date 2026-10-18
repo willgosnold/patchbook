@@ -292,8 +292,9 @@ function recover(book: Book, u: Upstream): void {
     const now = locked(u);
     const wrote = lexists(join(j, "lock"));
     const torn = now === null && wrote;
+    const stillVendored = rewrite && u.vendor !== null && path === relative(book.root, u.vendor);
     if (!rewrite && now === to) return drop(j);
-    if (!rewrite && now !== from && !torn) {
+    if (!stillVendored && now !== from && !torn) {
       if (now !== null && !wrote) release(book, u, added);
       throw stuck(book, u, "upstream.lock has changed since");
     }
