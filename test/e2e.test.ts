@@ -378,6 +378,59 @@ describe("ForkTest", () => {
     expect(read(config)).toBe(before);
   });
 
+  for (const [order, first, second] of [
+    ["holding", "vendor/inner", "vendor"],
+    ["inside", "vendor", "vendor/inner"],
+    ["equal_to", "vendor", "vendor"],
+  ] as const) {
+    forkTest(`test_a_vendor_folder_${order}_another_upstreams_vendor_folder_is_rejected`, (t) => {
+      const one = new Repo(join(t.tmp, "one"));
+      one.write("a.txt", "a\n");
+      one.commit("one");
+      const two = new Repo(join(t.tmp, "two"));
+      two.write("b.txt", "b\n");
+      two.commit("two");
+      t.pb(["track", "one", one.path, "--mount", "m1", "--vendor", first], { cwd: t.fork.path });
+      const config = join(t.fork.path, ".patchbook/config.toml");
+      const before = read(config);
+      const tracked = t.pb(["track", "two", two.path, "--mount", "m2", "--vendor", second], { cwd: t.fork.path, code: 1 });
+      expect(tracked.stderr).toContain(`the vendored copy of two (${second}) overlaps the vendored copy of one (${first})`);
+      expect(tracked.stderr).toContain("Change vendor for one or two");
+      expect(read(config)).toBe(before);
+    });
+  }
+
+  forkTest("test_check_and_sync_count_only_what_the_new_pin_leaves_out", (t) => {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("x.md", "extra\n");
+    extra.commit("extra");
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.fork.path });
+    t.up.write("vendor/extra/a.md", "a\n");
+    t.up.commit("ship a");
+    t.pb(["sync", "upstream"], { cwd: t.fork.path });
+    t.fork.commit("sync");
+    t.up.rm("vendor/extra/a.md");
+    t.up.write("vendor/extra/b.md", "b\n");
+    t.up.commit("ship b instead");
+    const notice = "patchbook: left 1 upstream files out of the build because they would land in a vendored copy: vendor/extra (1).\n";
+    expect(t.pb(["check"], { cwd: t.fork.path, code: 10 }).stderr).toBe(notice);
+    expect(t.pb(["sync", "upstream"], { cwd: t.fork.path }).stderr).toBe(notice);
+  });
+
+  for (const folder of [".patchbook/pbx", ".git/x", ".patchbook", ".git"]) {
+    forkTest(`test_a_mount_at_${folder.replace(/\W/g, "_")}_is_rejected`, (t) => {
+      const lib = new Repo(join(t.tmp, "lib"));
+      lib.write("d/p.md", "p\n");
+      lib.commit("lib");
+      const config = join(t.fork.path, ".patchbook/config.toml");
+      const before = read(config);
+      const tracked = t.pb(["track", "lib", lib.path, "--mount", folder], { cwd: t.fork.path, code: 1 });
+      expect(tracked.stderr).toContain(`lib mounts at ${folder}`);
+      expect(tracked.stderr).toContain("patchbook never builds into");
+      expect(read(config)).toBe(before);
+    });
+  }
+
   forkTest("test_a_vendor_folder_inside_another_upstreams_mount_leaves_that_upstreams_files_out", (t) => {
     const lib = new Repo(join(t.tmp, "lib"));
     lib.write("a.txt", "a\n");
