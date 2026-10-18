@@ -3,7 +3,7 @@ import { chmodSync, lstatSync, mkdtempSync, readdirSync, readFileSync, renameSyn
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
-import { Book, unsafeVendor } from "./book.ts";
+import { Book, refuseNestedGit, unsafeVendor } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
@@ -121,6 +121,7 @@ function savedReports(path: string): Map<string, SyncReport> {
 /** Move one upstream's pin and carry every change on its files forward. Returns the report, or null. */
 export function syncUpstream(book: Book, u: Upstream, ref: string | null, changes: readonly Change[], beforePin?: (report: SyncReport) => void): SyncReport | null {
   recoverAll(book);
+  if (u.vendor) refuseNestedGit(book.root, u.name, u.vendor);
   const pin = u.pin();
   const commit = u.fetch(ref || u.branch);
   const tree = u.treeOf(commit);

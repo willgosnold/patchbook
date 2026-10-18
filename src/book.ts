@@ -1,4 +1,5 @@
 // The repo, its config and its upstreams.
+import { readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Hooks, Problem } from "./api.ts";
@@ -195,9 +196,42 @@ export function unsafeVendor(root: string, vendor: string): string | null {
   const rel = relative(resolve(root), join(resolve(dirname(vendor)), basename(vendor)));
   if (rel === ".") return "is the repo root";
   if (under(rel, "..")) return "is outside the repo";
-  if (under(rel, PB)) return `is inside ${PB}`;
+  if (rel.split("/")[0]!.toLowerCase() === PB) return `is inside ${PB}`;
   if (rel.split("/").some((segment) => segment.toLowerCase() === GIT)) return `is inside ${GIT}`;
+  // resolve() keeps a link that leads nowhere as a plain name, so the copy would look like it stays in the repo.
+  for (let up = dirname(vendor); up !== dirname(up); up = dirname(up)) {
+    if (lexists(up) && !exists(up)) return `is under ${under(up, root) ? relative(root, up) : up}, which is a link to nothing`;
+  }
   return null;
+}
+
+/** The first `.git` in any letter case in `dir`, as a path inside `dir`, or null. Links are not followed. */
+function findGit(dir: string): string | null {
+  if (isSymlink(dir)) return null;
+  const todo = [""];
+  for (let here = todo.pop(); here !== undefined; here = todo.pop()) {
+    let entries;
+    try {
+      entries = readdirSync(join(dir, here), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    const hit = entries.find((e) => e.name.toLowerCase() === GIT);
+    if (hit) return joinPath(here, hit.name);
+    for (const e of entries.reverse()) if (e.isDirectory()) todo.push(joinPath(here, e.name));
+  }
+  return null;
+}
+
+/** A `.git` inside the vendored copy is the user's: upstream can't hold one, and a sync would move it away and delete it. */
+export function refuseNestedGit(root: string, name: string, vendor: string): void {
+  const found = findGit(vendor);
+  if (found === null) return;
+  const folder = relative(root, vendor);
+  throw new Fail(
+    `the vendored copy of ${name} (${folder}) holds ${joinPath(folder, found)}, a git repo of its own. Every sync replaces the copy and would delete it. Move it out of the folder, or change vendor for ${name}.`,
+  );
 }
 
 /** `**` matches any number of folders, `*` and `?` stay within one. */
@@ -317,6 +351,10 @@ export class Book {
     for (const a of this.upstreams) {
       if (!a.vendor) continue;
       const vendored = this.folderOf(a.vendor);
+      const unsafe = unsafeVendor(this.root, a.vendor);
+      if (unsafe) {
+        throw new Fail(`the vendored copy of ${a.name} (${vendored || "."}) ${unsafe}. Every sync replaces it. Change vendor for ${a.name} to a folder inside the repo, other than ${PB} and ${GIT}.`);
+      }
       const written = "A build writes there, but a vendored copy must match upstream exactly.";
       const own = this.outputFolder(a);
       if (own !== null && (underOrRoot(own, vendored) || underOrRoot(vendored, own))) {
@@ -324,10 +362,6 @@ export class Book {
         throw new Fail(
           `the vendored copy of ${a.name} (${shown(vendored)}) overlaps the folder ${a.name} builds into (${shown(own)}). ${written} Change ${change}.`,
         );
-      }
-      const unsafe = unsafeVendor(this.root, a.vendor);
-      if (unsafe) {
-        throw new Fail(`the vendored copy of ${a.name} (${vendored || "."}) ${unsafe}. Every sync replaces it. Change vendor for ${a.name} to a folder inside the repo, other than ${PB} and ${GIT}.`);
       }
       for (const b of this.upstreams.slice(0, this.upstreams.indexOf(a))) {
         const other = b.vendor ? this.folderOf(b.vendor) : null;
