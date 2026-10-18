@@ -7,7 +7,7 @@ import { Fail } from "./lib/fail.ts";
 import { exists, type File, mkdirs, normMode, pjoin, readDisk, readText, relative, resolve, writeDisk } from "./lib/fs.ts";
 import { sha1 } from "./lib/hash.ts";
 import { loads } from "./lib/json.ts";
-import { git, run, spawn } from "./lib/proc.ts";
+import { git, literal, run, spawn } from "./lib/proc.ts";
 import { type PyValue, slice, sorted, split, strip } from "./lib/py.ts";
 import { decode, decodeReplace, encode } from "./lib/text.ts";
 import { storeDir, type Table } from "./settings.ts";
@@ -234,9 +234,9 @@ export function indexFiles(root: string, rel: string): { files: Files; tree: str
   try {
     const env = { ...process.env, GIT_INDEX_FILE: join(tmp, "index") };
     git(["read-tree", "--empty"], { cwd: root, env });
-    git(["add", "--", rel], { cwd: root, env });
+    git(["add", "--", literal(rel)], { cwd: root, env });
     tree = git(["write-tree", `--prefix=${rel}/`], { cwd: root, env });
-    staged = git(["ls-files", "-s", "-z", "--", rel], { cwd: root, env });
+    staged = git(["ls-files", "-s", "-z", "--", literal(rel)], { cwd: root, env });
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

@@ -23,6 +23,9 @@ export function spawn(args: readonly string[], { cwd, input, env, capture = true
   return { code: result.exitCode, stdout: result.stdout ?? empty, stderr: result.stderr ?? empty };
 }
 
+/** A path for git's pathspec arguments that names that path alone, not a glob or pathspec magic. */
+export const literal = (path: string): string => `:(literal)${path}`;
+
 /** Run a command and return its stdout, failing if it exits non-zero. */
 export function run(args: readonly string[], options: SpawnOptions & { check?: boolean } = {}): Uint8Array {
   const result = spawn(args, options);
