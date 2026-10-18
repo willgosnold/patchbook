@@ -8,6 +8,7 @@ import { cmdRecord } from "./record.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, isDir, isSymlink, lexists, mkdirs, readBytes, readDisk, readTextReplace, relative, resolve, sameFile, writeBytes, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
+import { loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
 import { quote, sorted, strip } from "./lib/py.ts";
 import { bytesEqual, concat, decode, decodeReplace, encode } from "./lib/text.ts";
@@ -542,18 +543,61 @@ function refuseOtherRepo(book: Book): void {
     + `Run \`patchbook hook install\` in ${book.root}, or start a patchbook here with \`patchbook init\`.`);
 }
 
-/** Put the pinned copy into the index for each vendor folder where the index holds anything else. Never reads the working tree. */
+/** The tree each upstream is pinned to by the upstream.lock in the index, or null when the index holds no lock. */
+function stagedPins(book: Book): Map<string, string> | null {
+  const staged = spawn(["git", "cat-file", "blob", `:${relative(book.root, join(book.dir, "upstream.lock"))}`], { cwd: book.root });
+  const data = staged.code === 0 ? loads(decode(staged.stdout)) : null;
+  if (!(data instanceof Map)) return null;
+  const pins = new Map<string, string>();
+  for (const [name, pin] of data) {
+    const tree = pin instanceof Map ? pin.get("tree") : null;
+    if (typeof tree === "string" && tree) pins.set(name, tree);
+  }
+  return pins;
+}
+
+/** The tree git would commit from the index, or null when it can't write one, as with unmerged paths. */
+function indexTree(root: string): string | null {
+  const out = spawn(["git", "write-tree"], { cwd: root });
+  return out.code === 0 ? strip(decode(out.stdout)) : null;
+}
+
+function headTree(root: string): string {
+  const head = spawn(["git", "rev-parse", "--verify", "--quiet", "HEAD^{tree}"], { cwd: root });
+  if (head.code === 0) return strip(decode(head.stdout));
+  return strip(decode(run(["git", "hash-object", "-t", "tree", "--stdin"], { cwd: root, input: new Uint8Array() })));
+}
+
+/**
+ * Put the pinned copy into the index for each vendor folder where the index holds anything else. The pin is the one the index's own
+ * upstream.lock names, and a folder whose upstream the index has no pin for is left alone. Git has already decided what the commit holds
+ * from the index it read before the hook, so a step that leaves nothing to commit says so and refuses, and any other replacement says so too.
+ */
 function stageVendors(book: Book): void {
-  // `git commit -- <paths>` runs the hook on a temporary index that becomes the commit, and that commit takes only what the user named.
-  if (!["index", "index.lock"].includes(basename(process.env["GIT_INDEX_FILE"] ?? "index"))) return;
+  if (partialCommit(book.root) !== null) return;
+  const pins = stagedPins(book);
+  if (!pins) return;
+  const stale: { name: string; rel: string; tree: string }[] = [];
   for (const u of book.upstreams) {
-    const tree = u.pin().tree;
+    const tree = pins.get(u.name);
     if (!u.vendor || !tree) continue;
     const rel = relative(book.root, u.vendor);
-    if (stagedTree(book.root, rel) === tree) continue;
+    if (stagedTree(book.root, rel) !== tree) stale.push({ name: u.name, rel, tree });
+  }
+  if (!stale.length) return;
+  const was = indexTree(book.root);
+  for (const { rel, tree } of stale) {
     git(["--literal-pathspecs", "rm", "-rqf", "--cached", "--ignore-unmatch", "--", rel], { cwd: book.root });
     git(["read-tree", `--prefix=${rel}/`, tree], { cwd: book.root });
   }
+  const head = headTree(book.root);
+  if (was && was !== head && indexTree(book.root) === head) {
+    git(["read-tree", was], { cwd: book.root });
+    throw new Fail(`nothing would be left to commit. The staged changes were all under ${stale.map((s) => s.rel).join(", ")}, `
+      + `which the pre-commit hook replaces with the pinned copy of ${stale.map((s) => s.name).join(", ")}. `
+      + "Record the change in the patchbook, or skip the hook once with PATCHBOOK_HOOK=0.");
+  }
+  for (const { name, rel } of stale) process.stderr.write(`patchbook: staged changes under ${rel} were replaced by the pinned copy of ${name}\n`);
 }
 
 export async function cmdHook(args: { action: "install" | "run" | "status" }) {

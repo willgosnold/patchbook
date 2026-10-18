@@ -386,12 +386,13 @@ function hidingRule(root: string, rel: string): { source: string; line: string; 
   }
 }
 
-/** The tree git has staged under the folder rel, which is the empty tree when it holds nothing there, a file at rel included. */
-export function stagedTree(root: string, rel: string): string {
+/** The tree git has staged under the folder rel, which is the empty tree when it holds nothing there. Null when the index holds a file at rel itself, which no tree matches. */
+export function stagedTree(root: string, rel: string): string | null {
   const tmp = mkdtempSync(join(tmpdir(), "tmp"));
   try {
     const env = { ...process.env, GIT_INDEX_FILE: join(tmp, "index") };
-    const entries = run(["git", "--literal-pathspecs", "ls-files", "-s", "-z", "--", `${rel}/`], { cwd: root });
+    const entries = run(["git", "--literal-pathspecs", "ls-files", "-s", "-z", "--", rel], { cwd: root });
+    if (decode(entries).split("\0").some((item) => item.slice(item.indexOf("\t") + 1) === rel)) return null;
     git(["read-tree", "--empty"], { cwd: root, env });
     if (entries.length) run(["git", "update-index", "-z", "--index-info"], { cwd: root, env, input: entries });
     return git(entries.length ? ["write-tree", `--prefix=${rel}/`] : ["write-tree"], { cwd: root, env });
