@@ -576,6 +576,47 @@ describe("VendorTest", () => {
     expect(inStore(store, pin)).toBe(true);
   });
 
+  vendorTest("test_check_keeps_the_pin_when_the_head_has_not_moved", (t) => {
+    const store = storeOf(t);
+    const pin = pinOf(t);
+    dropRefs(store);
+    t.pb(["check"], { cwd: t.repo.path });
+    gc(store);
+    expect(inStore(store, pin)).toBe(true);
+    rmSync(t.up.path, { recursive: true });
+    expect(words(t.pb(["upstream", "plugin"], { cwd: t.repo.path }).stdout)).toEqual(["README.md", "agents/helper.md", "skills/hello/SKILL.md"]);
+  });
+
+  vendorTest("test_check_passes_when_the_pin_is_gone_from_the_store_and_from_upstream", (t) => {
+    const store = storeOf(t);
+    const pin = pinOf(t);
+    dropRefs(store);
+    gc(store);
+    expect(inStore(store, pin)).toBe(false);
+    sh(["git", "commit", "-q", "--amend", "-m", "amended"], { cwd: t.up.path });
+    sh(["git", "reflog", "expire", "--expire=now", "--all"], { cwd: t.up.path });
+    sh(["git", "gc", "-q", "--prune=now"], { cwd: t.up.path });
+    const out = JSON.parse(t.pb(["check"], { cwd: t.repo.path }).stdout);
+    expect(out.moved).toBe(false);
+    expect(out.upstreams.plugin.moved).toBe(false);
+    expect(inStore(store, pin)).toBe(false);
+  });
+
+  vendorTest("test_sync_keeps_no_ref_for_a_commit_whose_vendored_copy_does_not_match", (t) => {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "a\n");
+    extra.commit("a");
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    t.repo.write(".gitignore", "*.log\n");
+    extra.write("c.log", "hidden\n");
+    const head = extra.commit("log");
+    expect(t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 }).stderr).toContain("the vendored copy of extra hashes to");
+    const stores = readdirSync(join(t.tmp, "store/upstreams")).map((d) => join(t.tmp, "store/upstreams", d));
+    for (const store of stores) {
+      expect(sh(["git", "rev-parse", "--verify", "--quiet", `refs/pins/${head}`], { cwd: store, check: false }).code).not.toBe(0);
+    }
+  });
+
   for (const command of ["status", "build"]) {
     vendorTest(`test_${command}_keeps_a_pin_it_held_without_a_ref`, (t) => {
       const store = storeOf(t);
