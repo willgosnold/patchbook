@@ -7457,6 +7457,89 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     trackHidden(t);
     expect(readdirSync(join(t.fork.path, "deep"))).toEqual(["notes.txt"]);
   });
+
+  const leftover = "couldn't delete .patchbook/sync-extra";
+  const inJournal = (t: ForkCase): string[] => staged(t).filter((p) => p.startsWith(".patchbook/sync-"));
+  const outsideJournal = (t: ForkCase): Record<string, string> =>
+    Object.fromEntries(Object.entries(tree(t.fork.path)).filter(([p]) => !p.startsWith(".patchbook/sync-")));
+
+  describe.skipIf(process.getuid?.() === 0)("where chmod blocks deletes, so not as root", () => {
+    const moveWithAReadOnlyOldCopy = (t: ForkCase): Repo => {
+      const extra = trackVendored(t);
+      chmodSync(join(t.fork.path, "vendor/extra/lib"), 0o555);
+      extra.write("a.md", "two\n");
+      extra.commit("move");
+      const first = t.pb(["sync", "extra"], { cwd: t.fork.path });
+      expect(first.stdout).toContain("extra: pinned");
+      expect(first.stderr).toContain(leftover);
+      expect(first.stderr).toContain("git ignores it");
+      return extra;
+    };
+    const unlock = (t: ForkCase): void => void sh(["chmod", "-R", "u+w", ".patchbook"], { cwd: t.fork.path });
+
+    forkTest("test_sync_finishes_and_warns_when_the_old_vendored_copy_cannot_be_deleted", (t) => {
+      try {
+        const extra = moveWithAReadOnlyOldCopy(t);
+        expect(t.fork.read("vendor/extra/a.md")).toBe("two\n");
+        expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+        expect(inJournal(t)).toEqual([]);
+
+        const unmoved = t.pb(["sync", "extra"], { cwd: t.fork.path });
+        expect(unmoved.stdout).toContain("Nothing to do.");
+        expect(unmoved.stderr).toContain(leftover);
+
+        extra.write("a.md", "three\n");
+        extra.commit("move again");
+        const moved = t.pb(["sync", "extra"], { cwd: t.fork.path });
+        expect(moved.stdout).toContain("extra: pinned");
+        expect(moved.stderr).toContain(leftover);
+        expect(t.fork.read("vendor/extra/a.md")).toBe("three\n");
+        expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+        expect(inJournal(t)).toEqual([]);
+      } finally {
+        unlock(t);
+      }
+      const cleared = t.pb(["sync", "extra"], { cwd: t.fork.path });
+      expect(cleared.stderr).toBe("");
+      expect(existsSync(join(t.fork.path, ".patchbook/sync-extra"))).toBe(false);
+    });
+
+    forkTest("test_a_sync_that_fails_after_an_old_copy_could_not_be_deleted_puts_back_the_copy_it_found", (t) => {
+      try {
+        const extra = moveWithAReadOnlyOldCopy(t);
+        t.fork.commit("sync extra");
+        t.fork.write(".gitignore", "*.log\n");
+        extra.write("c.log", "hidden\n");
+        extra.commit("ship a log");
+        const before = outsideJournal(t);
+
+        const failed = t.pb(["sync", "extra"], { cwd: t.fork.path, code: 1 });
+        expect(failed.stderr).toContain("Does a .gitignore hide upstream files?");
+        expect(outsideJournal(t)).toEqual(before);
+        expect(t.fork.read("vendor/extra/a.md")).toBe("two\n");
+      } finally {
+        unlock(t);
+      }
+    });
+  });
+
+  for (const moved of [false, true]) {
+    forkTest(`test_sync_deletes_a_plain_file_at_its_journal_path_when_upstream_${moved ? "has" : "has_not"}_moved`, (t) => {
+      const extra = trackVendored(t);
+      const j = join(t.fork.path, ".patchbook/sync-extra");
+      writeFileSync(j, "not a folder\n");
+      if (moved) {
+        extra.write("a.md", "two\n");
+        extra.commit("move");
+      }
+
+      const synced = t.pb(["sync", "extra"], { cwd: t.fork.path });
+      expect(synced.stdout).toContain(moved ? "extra: pinned" : "Nothing to do.");
+      expect(synced.stderr).toBe("");
+      expect(existsSync(j)).toBe(false);
+      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    });
+  }
 });
 
 describe("VendorTest", () => {
