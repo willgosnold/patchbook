@@ -418,6 +418,26 @@ test("test_the_commit_hook_stages_only_the_output_file_it_names_when_the_folder_
   }
 }, TIMEOUT);
 
+test("test_a_vendored_folder_with_glob_characters_builds_only_its_own_files", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("a.md", "a\n");
+    up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    repo.write("README.md", "mine\n");
+    repo.write("v*/a.md", "a\n");
+    repo.write("vx/n.md", "n\n");
+    repo.commit("start");
+    t.pb(["init", "--upstream", up.path, "--output-to", "out", "--vendor", "v*"], { cwd: repo.path });
+    const built = t.pb(["build"], { cwd: repo.path });
+    expect(built.stdout).toContain("built 1 files");
+    expect(Object.keys(tree(join(repo.path, "out")))).toEqual(["a.md"]);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 describe("ForkTest", () => {
   // Each layout puts a vendored copy where its own upstream's build writes, so a build would land in it.
   for (const [where, mount, vendor] of [
