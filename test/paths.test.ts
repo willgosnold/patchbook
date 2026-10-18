@@ -232,6 +232,7 @@ describe("the codex provider", () => {
       t.edit();
       const failed = t.record([], null);
       expect(failed.stderr).toContain(reply);
+      expect(t.changeText()).not.toMatch(/^intent: $/m);
       for (const taken of ["Not Kebab Case", "not-kebab-case", "codex-shout", "Shout."]) expect(t.changeText()).not.toContain(taken);
     });
   }
