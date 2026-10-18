@@ -7,7 +7,7 @@ import { cmdRecord } from "./record.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, isDir, lexists, mkdirs, readDisk, readTextReplace, relative, sameFile, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
-import { git, literal, run } from "./lib/proc.ts";
+import { git, run } from "./lib/proc.ts";
 import { length, slice, sorted } from "./lib/py.ts";
 import { decode } from "./lib/text.ts";
 import { setting } from "./settings.ts";
@@ -102,6 +102,6 @@ export async function cmdHook(args: { action: "install" | "run" }) {
   const outRel = relative(book.root, book.outputRoot());
   const changed = Array.from(new Set([...before.keys(), ...after.keys()])).filter((p) => (before.get(p) ?? null) !== (after.get(p) ?? null));
   const stage = sorted(new Set([...changed, ...edited.map((p) => (outRel !== "." ? `${outRel}/${p}` : p))]));
-  if (stage.length) git(["add", "-A", "--", ...stage.map(literal)], { cwd: book.root });
+  if (stage.length) git(["add", "-A", "--", ...stage], { cwd: book.root });
   return 0;
 }

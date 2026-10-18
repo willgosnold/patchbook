@@ -7,7 +7,7 @@ import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, isDir, isMode, isSymlink, lexists, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
 import { dumps, loads } from "./lib/json.ts";
-import { git, literal } from "./lib/proc.ts";
+import { git } from "./lib/proc.ts";
 import { length, type PyValue, sortedBy, strRepr } from "./lib/py.ts";
 import { isTable, parseToml, type Table } from "./settings.ts";
 import { stagedFolder, Upstream } from "./store.ts";
@@ -438,7 +438,7 @@ export class Book {
     const out = new Map<string, File>();
     if (!exists(root)) return out;
     const rel = root !== this.root ? relative(this.root, root) : "";
-    const listed = git(["ls-files", "-z", "-co", "--exclude-standard", ...(rel ? ["--", literal(rel)] : [])], { cwd: this.root });
+    const listed = git(["ls-files", "-z", "-co", "--exclude-standard", ...(rel ? ["--", rel] : [])], { cwd: this.root });
     for (const path of listed.split("\0")) {
       if (!path) continue;
       const p = join(this.root, path);
