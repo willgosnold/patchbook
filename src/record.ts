@@ -4,9 +4,10 @@ import { join } from "node:path";
 import { assemble, handEdits, readBuildLock, writeBuildLines } from "./assemble.ts";
 import { blockHash, blockSpans, type Entry, entriesPath, formatEntry, patchBlocks, PLACEHOLDER_HINT, readEntries, Rules } from "./blocks.ts";
 import { Book } from "./book.ts";
-import { appendSeries, Change, readChanges, readSeries, saveChange } from "./changes.ts";
+import { appendSeries, CHANGE_NAME, Change, notAChangeName, readChanges, readSeries, saveChange } from "./changes.ts";
 import { nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
+import { Fail } from "./lib/fail.ts";
 import { exists, rglob, sameFile, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { replace, splitlines, strip } from "./lib/py.ts";
@@ -17,6 +18,7 @@ type Draft = Omit<Entry, "intent"> & { intent: string | null };
 type Plan = { path: string; entries: Map<string, Draft>; notes: [string, string][] };
 
 export async function cmdRecord(args: { change: string | null; intent: string | null }) {
+  if (args.change !== null && !CHANGE_NAME.test(args.change)) throw new Fail(notAChangeName(args.change));
   const book = await Book.find();
   const a = assemble(book);
   const current = book.currentOutput();

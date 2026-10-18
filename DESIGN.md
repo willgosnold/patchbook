@@ -122,6 +122,12 @@ Hooks run on Bun, inside the `patchbook` binary, so running one needs no separat
 
 Patchbook doesn't read a `hooks.py` from the Python version. It stops and asks you to port the file. The hooks keep their names, except `block_terms`, which is now `blockTerms`.
 
+## Trust
+
+`.patchbook/hooks.ts` runs on every command, including `status`, `check` and the pre-commit hook. Nothing sandboxes it. Anyone who can change `.patchbook/`, whether through a pull request or through upstream, runs code on your machine at your next command. Read a change to `hooks.ts` as you would a change to a build script, and before you run any command in a repo you just fetched.
+
+The rest of `.patchbook/` is data, and patchbook checks it as data. A change name must match `[a-z0-9][a-z0-9-]*`, the rule already applied to names a model chooses, and `record` refuses any other. A path in an edit of a `CHANGE.md` must be a path inside the tree. An absolute path or one with a `..` segment is reported as `invalid`, so `status`, `build` and the hook all see it, and nothing is read or written outside the output folder or the change's own folder. A name in `series` or a folder in `changes/` that breaks the name rule is reported the same way and is not read. Block entries need no such check, since their file names come from the files on disk under `blocks/`.
+
 ## Sync
 
 - `patchbook check` compares each upstream's head with its pin. It exits 0 when all are up to date and 10 when any has moved, and prints JSON.
