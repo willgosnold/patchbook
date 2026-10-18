@@ -112,6 +112,14 @@ function askModel(provider: string, spec: Provider, model: string, effort: strin
   return decodeReplace(result.stdout);
 }
 
+/** A kebab-case change name from the first words of an intent, unique among the existing changes. */
+export function nameFromIntent(intent: string, changes: ReadonlyMap<string, Change>): string {
+  const base = intent.toLowerCase().match(/[a-z0-9]+/g)?.slice(0, 4).join("-") || "change";
+  let name = base;
+  for (let n = 2; changes.has(name); n++) name = `${base}-${n}`;
+  return name;
+}
+
 /** Ask the chosen model for the change's name and intent. Returns the name (null if not named) and the intent. */
 export function writeIntent(
   book: Book, changes: ReadonlyMap<string, Change>, diff: string, name: string | null, named: boolean,

@@ -849,7 +849,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     t.pb(["track", "lib", lib.path, "--path", "src"], { cwd: t.fork.path });
     t.pb(["build", "--commit"], { cwd: t.fork.path });
     t.fork.write("lib/lib.txt", "A\nb\nc\nd\ne\n");
-    t.pb(["record", "--intent", "Shout the first line."], { cwd: t.fork.path });
+    t.pb(["record", "shout", "--intent", "Shout the first line."], { cwd: t.fork.path });
     const before = sh(["git", "status", "--porcelain", "--untracked-files=all"], { cwd: t.fork.path }).stdout;
     const lock = read(join(t.fork.path, ".patchbook/upstream.lock"));
     const changes = join(t.fork.path, ".patchbook/changes/shout");

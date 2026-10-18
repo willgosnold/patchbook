@@ -5,7 +5,7 @@ import { assemble, handEdits, readBuildLock, writeBuildLines } from "./assemble.
 import { blockHash, blockSpans, type Entry, entriesPath, formatEntry, patchBlocks, PLACEHOLDER_HINT, readEntries, Rules } from "./blocks.ts";
 import { Book } from "./book.ts";
 import { appendSeries, Change, readChanges, readSeries, saveChange } from "./changes.ts";
-import { pendingDiff, writeIntent } from "./intent.ts";
+import { nameFromIntent, pendingDiff, writeIntent } from "./intent.ts";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
 import { exists, rglob, sameFile, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
@@ -62,6 +62,10 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
     .filter(([, e]) => e.intent === null);
   const needsIntent = pending.length > 0;
   const named = fresh.length > 0;
+  if (named && !name && intent) {
+    name = nameFromIntent(intent, changes);
+    process.stdout.write(`${name}: ${intent}\n`);
+  }
   if ((named && (!name || (!changes.has(name) && !intent))) || (needsIntent && !intent && !(name !== null && changes.has(name)))) {
     const diff = pendingDiff(a, current, fresh) + pending
       .map(([p, e]) => unifiedDiff(splitlines(e.upstream + "\n", true), splitlines(e.patched + "\n", true), `upstream/${p}`, `disk/${p}`))
