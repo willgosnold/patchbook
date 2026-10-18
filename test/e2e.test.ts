@@ -697,6 +697,21 @@ describe("ForkTest", () => {
     expect(words(sh(["git", "rev-list", "--parents", "-n1", "HEAD"], { cwd: fresh.path }).stdout)[2]).toBe(head);
   });
 
+  forkTest("test_a_fork_cloned_from_a_relative_path_syncs", (t) => {
+    const sub = join(t.tmp, "sub");
+    const bare = join(t.tmp, "up.git");
+    mkdirSync(sub);
+    sh(["git", "clone", "-q", "--bare", t.up.path, bare], { cwd: t.tmp });
+    t.pb(["clone", "../upstream", "rel"], { cwd: sub });
+    t.pb(["clone", "../up"], { cwd: sub }); // git finds ../up.git, and from this fork's root ../up is the fork itself
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    const head = t.up.commit("upstream edit");
+    sh(["git", "push", "-q", bare, "main"], { cwd: t.up.path });
+    for (const fork of ["rel", "up"]) {
+      expect(t.pb(["sync"], { cwd: join(sub, fork) }).stdout).toContain(`pinned ${head.slice(0, 7)}.`);
+    }
+  });
+
   forkTest("test_conflict_and_gone", (t) => {
     t.recordFeature();
     t.up.write("app.txt", replace(t.up.read("app.txt"), "two", "deux"));

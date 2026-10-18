@@ -46,7 +46,6 @@ export class Upstream {
   readonly name: string;
   readonly mount: string;
   readonly vendor: string | null;
-  readonly remoteName: string;
 
   constructor(readonly book: Book, spec: Table) {
     if (!Object.hasOwn(spec, "remote")) throw new Fail("an [[upstream]] needs a remote");
@@ -57,7 +56,6 @@ export class Upstream {
     this.mount = stagedFolder(field(spec, "mount", this.name), `the mount of ${this.name}`);
     const vendor = field(spec, "vendor", "");
     this.vendor = vendor ? pjoin(book.root, vendor) : null;
-    this.remoteName = field(spec, "remote_name", "upstream");
   }
 
   /** A fork's own upstream is the repo itself. The others are fetched into the store. */
@@ -97,7 +95,7 @@ export class Upstream {
   }
 
   source(): string {
-    return this.inRepo ? this.remoteName : this.remote;
+    return this.remote;
   }
 
   fetch(ref: string): string {
