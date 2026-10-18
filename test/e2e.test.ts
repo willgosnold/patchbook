@@ -6252,6 +6252,11 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
   const lastSync = (t: ForkCase): { upstream: Report; lib?: Report } =>
     JSON.parse(read(join(t.fork.path, ".patchbook/last-sync.json"))).upstreams;
 
+  const dropLibFromConfig = (t: ForkCase): void => {
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    writeFileSync(config, read(config).replace(/\n\[\[upstream\]\]\nname = "lib"[\s\S]*$/, "\n"));
+  };
+
   forkTest("test_sync_keeps_the_report_of_an_upstream_when_a_later_one_fails", (t) => {
     const { lib, away } = twoMovedUpstreams(t);
     const before = JSON.parse(t.fork.read(".patchbook/upstream.lock")).upstream.commit;
@@ -6285,13 +6290,46 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     twoMovedUpstreams(t);
     t.pb(["sync"], { cwd: t.fork.path });
     expect(Object.keys(lastSync(t))).toEqual(["upstream", "lib"]);
-    const config = join(t.fork.path, ".patchbook/config.toml");
-    writeFileSync(config, read(config).replace(/\n\[\[upstream\]\]\nname = "lib"[\s\S]*$/, "\n"));
+    dropLibFromConfig(t);
     t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
     t.up.commit("another edit");
     t.pb(["sync"], { cwd: t.fork.path });
     expect(Object.keys(lastSync(t))).toEqual(["upstream"]);
   });
+
+  forkTest("test_sync_drops_the_report_of_a_removed_upstream_when_nothing_moved", (t) => {
+    twoMovedUpstreams(t);
+    t.pb(["sync"], { cwd: t.fork.path });
+    expect(Object.keys(lastSync(t))).toEqual(["upstream", "lib"]);
+    dropLibFromConfig(t);
+    expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("Nothing to do");
+    expect(Object.keys(lastSync(t))).toEqual(["upstream"]);
+  });
+
+  if (process.getuid?.() !== 0) {
+    forkTest("test_sync_keeps_the_pin_when_the_report_cannot_be_written", (t) => {
+      const file = join(t.fork.path, ".patchbook/last-sync.json");
+      const lock = (): string => t.fork.read(".patchbook/upstream.lock");
+      t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+      t.up.commit("first edit");
+      t.pb(["sync"], { cwd: t.fork.path });
+      const reported = read(file);
+      const pinned = lock();
+      t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
+      const second = t.up.commit("second edit");
+      chmodSync(file, 0o444);
+      try {
+        t.pb(["sync"], { cwd: t.fork.path, code: 1 });
+        expect(lock()).toBe(pinned);
+        expect(read(file)).toBe(reported);
+      } finally {
+        chmodSync(file, 0o644);
+      }
+      t.pb(["sync"], { cwd: t.fork.path });
+      expect(lastSync(t).upstream.to).toBe(second);
+      expect(lock()).not.toBe(pinned);
+    });
+  }
 
   forkTest("test_sync_replaces_a_last_sync_file_that_does_not_parse", (t) => {
     writeFileSync(join(t.fork.path, ".patchbook/last-sync.json"), "{ not json");
