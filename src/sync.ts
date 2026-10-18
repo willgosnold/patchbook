@@ -83,8 +83,8 @@ export async function cmdSync(args: { name: string | null; ref: string | null })
   const targets = args.name ? [book.upstream(args.name)] : book.upstreams;
   const changes = readChanges(book, []);
   const tore = (u: Upstream) => lexists(join(journal(book, u), "lock"));
-  for (const u of [...targets.filter(tore), ...targets.filter((u) => !tore(u))]) recover(book, u);
-  const path = join(book.dir, "last-sync.json");
+  for (const u of [...book.upstreams.filter(tore), ...book.upstreams.filter((u) => !tore(u))]) recover(book, u);
+  const path = join(book.dir, REPORT);
   const reports = savedReports(path);
   const save = () => {
     const current = new Map<string, Json>();
@@ -181,7 +181,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
         throw new Fail(`the vendored copy of ${u.name} hashes to ${actual}, not upstream's ${tree}. Does a .gitignore hide upstream files?`);
       }
     }
-    saveBefore(book, j, writes.map((w) => w.c.content(w.side, w.path)));
+    saveBefore(book, j, [...writes.map((w) => w.c.content(w.side, w.path)), join(book.dir, REPORT)]);
     for (const w of writes) w.c.write(w.side, w.path, w.data);
     beforePin?.(report);
     const lock = join(book.dir, "upstream.lock");
@@ -196,6 +196,8 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     + `${report.merged.length} of ours merged cleanly, ${report.conflicts.length} conflicts, ${report.gone.length} gone.\n`);
   return report;
 }
+
+const REPORT = "last-sync.json";
 
 const journal = (book: Book, u: Upstream) => join(book.dir, `sync-${encodeURIComponent(u.name)}`);
 
@@ -220,7 +222,7 @@ function begin(book: Book, u: Upstream, from: Pin, to: Required<Pin>): void {
 
 function saveBefore(book: Book, j: string, files: string[]): void {
   mkdirs(join(j, "next"));
-  for (const p of files) writeDisk(join(j, "next", relative(book.dir, p)), readDisk(p));
+  for (const p of files.filter(lexists)) writeDisk(join(j, "next", relative(book.dir, p)), readDisk(p));
   renameSync(join(j, "next"), join(j, "before"));
 }
 
@@ -262,6 +264,7 @@ function recover(book: Book, u: Upstream): void {
     for (const rel of saved) {
       if (!lstatSync(join(before, rel)).isDirectory()) putBack(join(book.dir, rel), readDisk(join(before, rel)));
     }
+    if (lexists(before) && !saved.includes(REPORT)) rmSync(join(book.dir, REPORT), { force: true });
     if (torn) {
       const was = readFileSync(join(j, "lock"));
       if (was.length) writeFileSync(join(book.dir, "upstream.lock"), was);
@@ -284,7 +287,7 @@ function stuck(book: Book, u: Upstream, why: string): Fail {
   const j = journal(book, u);
   const held = [
     lexists(join(j, "old")) && "old/ holds the vendored copy as it was",
-    lexists(join(j, "before")) && "before/ holds the change files as they were",
+    lexists(join(j, "before")) && "before/ holds the files it wrote over as they were",
   ].filter(Boolean);
   return new Fail(`${relative(book.root, j)} holds a sync of ${u.name} that stopped partway, but ${why}. `
     + (held.length ? `In it, ${held.join(", and ")}. Put back what you need, then delete the folder.` : "Delete the folder."));
