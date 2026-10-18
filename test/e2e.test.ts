@@ -842,6 +842,20 @@ describe("ForkTest", () => {
     expect(existsSync(extRan)).toBe(false);
   });
 
+  forkTest("test_init_and_clone_give_git_an_option_like_branch_or_url_as_a_value_and_pin_nothing", (t) => {
+    for (const [i, value] of ["--bogus", "--bogus=a:b"].entries()) {
+      const mine = join(t.tmp, `mine${i}`);
+      sh(["git", "clone", "-q", t.up.path, mine], { cwd: t.tmp });
+      const init = t.pb(["init", `--upstream=${t.up.path}`, `--branch=${value}`], { cwd: mine, code: 1 }).stderr;
+      expect(init).not.toContain("unknown option");
+      expect(init).toContain("couldn't find remote ref --bogus");
+      expect(existsSync(join(mine, ".patchbook/upstream.lock"))).toBe(false);
+      const dest = join(t.tmp, `clone${i}`);
+      expect(t.pb(["clone", "--", value, dest], { cwd: t.tmp, code: 1 }).stderr).not.toContain("unknown option");
+      expect(existsSync(dest)).toBe(false);
+    }
+  });
+
   forkTest("test_init_pins_from_the_upstream_option_when_an_upstream_remote_points_elsewhere", (t) => {
     t.up.write("app.txt", replace(t.up.read("app.txt"), "one", "ONE"));
     const branched = t.up.commit("b1");
