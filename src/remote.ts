@@ -22,20 +22,27 @@ export function resolveFromCwd(root: string, url: string): string {
 }
 
 function localPath(root: string, url: string): string | null {
-  const file = /^file:\/\/[^/]*(\/.*)/is.exec(url);
-  if (file) {
+  if (url.startsWith("file://")) {
+    let rest: string;
     try {
-      return decodeURIComponent(file[1]!.replace(/%(?![0-9a-f]{2})/gi, "%25"));
+      rest = decodeURIComponent(url.slice(7).replace(/%(?!(?!00)[0-9a-f]{2})/gi, "%25"));
     } catch {
       return null;
     }
+    const at = rest.indexOf("@[");
+    const start = at < 0 ? 0 : at + 1;
+    const close = rest[start] === "[" ? rest.indexOf("]", start + 1) : -1;
+    const slash = rest.indexOf("/", Math.max(close, 0));
+    return slash < 0 ? null : rest.slice(slash);
   }
-  return NETWORK.test(url) ? null : pjoin(root, url);
+  if (NETWORK.test(url)) return null;
+  if (/^~(\/|$)/.test(url)) return process.env["HOME"] ? process.env["HOME"] + url.slice(1) : null;
+  return pjoin(root, url);
 }
 
 function commonDir(root: string, url: string): string | null {
-  const path = localPath(root, url);
-  for (const gitDir of path === null ? [] : [pjoin(path, ".git"), path]) {
+  const path = localPath(root, url)?.replace(/(.)\/+$/, "$1");
+  for (const gitDir of path === undefined ? [] : [`${path}/.git`, path, `${path}.git/.git`, `${path}.git`]) {
     const r = spawn(["git", "--git-dir", gitDir, "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root });
     if (r.code === 0) return resolve(decode(r.stdout).trim());
   }
@@ -65,6 +72,8 @@ function checkedRemoteUrl(root: string, upstream: string, branch: string): strin
   const url = urls[urls.lastIndexOf("") + 1] ?? "";
   if (url === "") throw new Fail(`the upstream remote has no url. ${fix}`);
   const fetches = gitLine(root, ["remote", "get-url", "upstream"]);
+  const expanded = gitLine(root, ["ls-remote", "--get-url", "--", url]);
+  if (expanded !== fetches) throw new Fail(`the upstream remote fetches ${redact(fetches)}, but its url ${redact(url)} expands to ${redact(expanded)}. ${fix}`);
   if (isThisRepo(root, fetches)) throw new Fail(`the upstream remote fetches this repo (${redact(fetches)}). ${fix}`);
   if (fetches === upstream) return url;
   const theirs = tipOf(root, "the upstream remote", "upstream", branch, fetches);
