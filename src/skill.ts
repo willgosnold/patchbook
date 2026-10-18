@@ -192,22 +192,34 @@ const folders = (book: Book) => wanted(book).filter((p) =>
  * What HEAD holds at `p` as a file or a link, read from its tree, which neither skip-worktree nor assume-unchanged hides.
  * Null when HEAD holds neither, and when git fails to say: an unreadable HEAD keeps nothing.
  */
-function headEntry(book: Book, p: string): { link: boolean; bytes: Uint8Array } | null {
+function headEntry(book: Book, p: string): { link: boolean; sha: string } | null {
   const listed = spawn(["git", "ls-tree", "HEAD", "--", p], { cwd: book.root });
   if (listed.code !== 0) return null;
   const [, mode, sha, path] = /^(100644|100755|120000) blob (\w+)\t(.*)$/.exec(strip(decode(listed.stdout))) ?? [];
-  if (!sha || path !== p) return null;
-  const blob = spawn(["git", "cat-file", "blob", sha], { cwd: book.root });
-  return blob.code === 0 ? { link: mode === "120000", bytes: blob.stdout } : null;
+  return sha && path === p ? { link: mode === "120000", sha } : null;
 }
 
-/** Whether HEAD holds what is on disk at `p`: the same bytes for a file, the same target for a link. */
+/** The blob id git would store for the file at `p`, after the eol and filter rules it applies on commit. Null on a git failure. */
+function stored(book: Book, p: string): string | null {
+  const hashed = spawn(["git", "hash-object", `--path=${p}`, "--", p], { cwd: book.root });
+  return hashed.code === 0 ? strip(decode(hashed.stdout)) : null;
+}
+
+/** The blob id of a link's target text. Null on a git failure. */
+function storedTarget(book: Book, p: string): string | null {
+  const hashed = spawn(["git", "hash-object", "--no-filters", "--stdin"], { cwd: book.root, input: readlinkSync(join(book.root, p), "buffer") });
+  return hashed.code === 0 ? strip(decode(hashed.stdout)) : null;
+}
+
+/** With `core.symlinks=false`, checkout writes a link as a plain file holding its target, and git reads that file as the link. */
+const symlinksOff = (book: Book) => strip(decode(spawn(["git", "config", "--bool", "core.symlinks"], { cwd: book.root }).stdout)) === "false";
+
+/** Whether HEAD holds what git would store for the file or link on disk at `p`. */
 function inHead(book: Book, p: string): boolean {
   const held = headEntry(book, p);
   if (!held) return false;
-  const at = join(book.root, p);
-  if (isSymlink(at)) return held.link && bytesEqual(readlinkSync(at, "buffer"), held.bytes);
-  return !held.link && bytesEqual(readBytes(at), held.bytes);
+  if (isSymlink(join(book.root, p))) return held.link && storedTarget(book, p) === held.sha;
+  return (!held.link || symlinksOff(book)) && stored(book, p) === held.sha;
 }
 
 /**

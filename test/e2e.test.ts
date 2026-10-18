@@ -1126,6 +1126,65 @@ test("test_skill_install_replaces_a_committed_customization_and_names_the_commit
   }
 }, TIMEOUT);
 
+test("test_skill_install_replaces_a_committed_customization_that_checkout_wrote_with_crlf", () => {
+  const t = new Case();
+  try {
+    const repo = skillFolder(t);
+    repo.write(".gitattributes", "*.md eol=crlf\n");
+    repo.commit("crlf checkout");
+    repo.write(SKILL_FILE, STALE_SKILL + "My own line.\n");
+    const mine = repo.read(SKILL_FILE);
+    repo.commit("my own line");
+    repo.rm(SKILL_FILE);
+    sh(["git", "checkout", "--", SKILL_FILE], { cwd: repo.path });
+    expect(repo.read(SKILL_FILE)).toBe(mine.replaceAll("\n", "\r\n"));
+    expect(sh(["git", "status", "--porcelain"], { cwd: repo.path }).stdout).toBe("");
+    const out = t.pb(["skill", "install"], { cwd: repo.path }).stdout;
+    expect(out).toContain(`replaced ${SKILL_FILE}; your copy is in HEAD`);
+    expect(repo.read(SKILL_FILE)).toBe(SKILL_COPY);
+    expect(sh(["git", "show", `HEAD:${SKILL_FILE}`], { cwd: repo.path }).stdout).toBe(mine);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_clone_installs_the_skill_over_a_committed_copy_that_checkout_wrote_with_crlf", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write(".gitattributes", "*.md eol=crlf\n");
+    up.write(SKILL_FILE, SKILL_COPY);
+    up.commit("start");
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const out = t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+    expect(out.stderr).not.toContain("was not installed");
+    const fork = new Repo(join(t.tmp, "fork"));
+    expect(fork.read(SKILL_FILE)).toBe(SKILL_COPY);
+    expect(existsSync(join(fork.path, SKILL_LINK))).toBe(true);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_replaces_a_committed_link_that_checkout_wrote_as_a_file_without_symlinks", () => {
+  const t = new Case();
+  try {
+    const repo = skillFolder(t);
+    retarget(repo, "../../elsewhere");
+    repo.commit("a wrong link");
+    sh(["git", "config", "core.symlinks", "false"], { cwd: repo.path });
+    repo.rm(SKILL_LINK);
+    sh(["git", "checkout", "--", SKILL_LINK], { cwd: repo.path });
+    expect(lstatSync(join(repo.path, SKILL_LINK)).isSymbolicLink()).toBe(false);
+    expect(sh(["git", "status", "--porcelain"], { cwd: repo.path }).stdout).toBe("");
+    const out = t.pb(["skill", "install"], { cwd: repo.path }).stdout;
+    expect(out).toContain(`replaced ${SKILL_LINK}; your copy is in HEAD`);
+    expect(sh(["git", "show", `HEAD:${SKILL_LINK}`], { cwd: repo.path }).stdout).toBe("../../elsewhere");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("test_skill_install_refuses_to_replace_an_edit_when_git_cannot_read_head", () => {
   const t = new Case();
   try {
