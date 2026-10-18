@@ -9,6 +9,8 @@ This repo keeps its changes to one or more upstream repos in `.patchbook/`. Read
 
 Never edit the build output, or a vendored copy, by hand. Change the patchbook, then build. A pre-commit hook rebuilds on each commit once the patchbook has no problems, so a commit may include the rebuilt output. That's expected.
 
+Stage every commit with `git add -A -- . ':!.patchbook/last-sync.json'`. Never commit `.patchbook/last-sync.json`.
+
 To read an upstream, use `patchbook upstream <name>`: `<name> <path>` prints a file at the pin, `--diff` shows what upstream changed in the last sync, and `--export <dir>` writes it all out for searching.
 
 ## 1. Check
@@ -50,8 +52,6 @@ To retire a change, remove it from `series` and its folder, and add it to `retir
 Commit each change you repair or retire on its own, as "Carry <change> to upstream <short sha>" or "Retire <change>". Handle each `replaced_upstream_changed` entry in such a commit, whose message names the file and says what you carried over, or what you left out and why. If you carried over nothing, commit with `--allow-empty`.
 
 ## 4. Test
-
-Stage each commit in this step as step 2.3 does, with `git add -A -- . ':!.patchbook/last-sync.json'`.
 
 Before you build, run `git status --porcelain`. If it lists anything but `.patchbook/last-sync.json`, commit it first as its own commit, with a message that says what it is. If you can't say what it is, ask (step 6).
 
