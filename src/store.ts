@@ -101,11 +101,12 @@ export class Upstream {
   }
 
   fetch(ref: string): string {
-    const shallow = this.inRepo ? [] : ["--depth=1", "--no-tags"];
+    const shallow = this.inRepo ? [] : ["--depth=1"];
     const cwd = this.gitDir();
     const landing = `refs/patchbook/tmp/${process.pid}-${randomUUID()}`;
     try {
-      git(["fetch", "--quiet", ...shallow, this.source(), `+${ref}:${landing}`], { cwd });
+      const fetched = spawn(["git", "fetch", "--quiet", "--no-tags", ...shallow, this.source(), `+${ref}:${landing}`], { cwd });
+      if (fetched.code !== 0) throw new Fail(`git fetch ${this.source()} ${ref} failed:\n${strip(decodeReplace(fetched.stderr))}`);
       return git(["rev-parse", `${landing}^{commit}`], { cwd });
     } finally {
       spawn(["git", "update-ref", "-d", landing], { cwd });
