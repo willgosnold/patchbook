@@ -1,7 +1,8 @@
 // End-to-end tests: each one builds a throwaway upstream repo and drives the CLI against it.
 
 import { describe, expect, test } from "bun:test";
-import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { Case, Repo, dedent, lstrip, mkdirNew, partitionHead, replace, sh, words } from "./helpers";
 
@@ -194,6 +195,17 @@ function forkTest(name: string, body: (t: ForkCase) => void): void {
     }
   }, TIMEOUT);
 }
+
+const caseSensitiveFs = (() => {
+  const dir = mkdtempSync(join(tmpdir(), "case"));
+  try {
+    writeFileSync(join(dir, "a"), "");
+    return !existsSync(join(dir, "A"));
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+})();
+const forkTestOnCaseSensitiveFs = caseSensitiveFs ? forkTest : (name: string, _body: (t: ForkCase) => void) => test.skip(name, () => {});
 
 function vendorTest(name: string, body: (t: VendorCase) => void): void {
   test(name, () => {
@@ -809,7 +821,7 @@ describe("ForkTest", () => {
     ["an_untracked_file_under_dot_GIT", "a/.GIT/y", false, ".git"],
   ] as const;
   for (const [name, path, staged, place] of handAdded) {
-    forkTest(`test_hook_refuses_${name}_before_recording_it`, (t) => {
+    forkTestOnCaseSensitiveFs(`test_hook_refuses_${name}_before_recording_it`, (t) => {
       t.fork.write(path, "ours\n");
       if (staged) sh(["git", "add", "--", path], { cwd: t.fork.path });
       const files = tree(t.fork.path);
