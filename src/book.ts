@@ -136,8 +136,9 @@ function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly str
   if (lexists(dir) && !exists(dir)) throw new Fail(`[output] to ${shown} is a link to nothing. Name a folder inside the repo.`);
   if (isSymlink(dir)) throw new Fail(`[output] to ${shown} is a link, and a build would replace it with a folder. Name the folder it points to.`);
   if (exists(dir) && !isDir(dir)) throw new Fail(`[output] to ${shown} is not a folder. Name a folder inside the repo.`);
-  for (let up = dirname(dir); up !== root && up !== dirname(up); up = dirname(up)) {
-    const name = relative(root, up);
+  const realRoot = resolve(root);
+  for (let up = dirname(dir); resolve(up) !== realRoot && up !== dirname(up); up = dirname(up)) {
+    const name = under(up, root) ? relative(root, up) : up;
     if (lexists(up) && !exists(up)) throw new Fail(`[output] to ${shown} is under ${name}, which is a link to nothing. Name a folder inside the repo.`);
     if (isSymlink(up)) throw new Fail(`[output] to ${shown} is under ${name}, which is a link. Name a folder that is not behind a link.`);
     if (exists(up) && !isDir(up)) throw new Fail(`[output] to ${shown} is under ${name}, which is not a folder. Name a folder inside the repo.`);
