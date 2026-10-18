@@ -186,59 +186,87 @@ function edited(text: string, config: Table, name: Name, value: unknown, refuse:
 function patched(text: string, name: Name, value: unknown, refuse: (cause: string) => Fail): string {
   try {
     const doc = new TomlDocument(text);
-    doc.patch(withSetting(doc.toJsObject, name, value), { trailingNewline: 1, bracketSpacing: false });
+    const trailing = text.length - text.replace(/\n+$/, "").length;
+    doc.patch(withSetting(doc.toJsObject, name, value), { trailingNewline: text.trim() === "" ? 1 : trailing, bracketSpacing: false });
     return doc.toTomlString;
   } catch (e) {
     throw refuse(`the TOML library failed on it (${e instanceof Error ? `${e.name}: ${e.message}` : String(e)})`);
   }
 }
 
-const MARKER = 7243981605;
+type Node = {
+  type?: unknown;
+  loc?: { start?: { line?: unknown }; end?: { line?: unknown } };
+  key?: { value?: unknown; item?: { value?: unknown } };
+  items?: unknown;
+};
+
+/**
+ * The first and last line (1-based) of the plain `key = value` that sets `name`, read from the
+ * parser's own syntax tree, or null when the setting is not a line of its own: a member of an inline
+ * table, or a table with dotted keys under it. `cst` is marked internal, so this reads only `type`,
+ * `loc.*.line`, `key.value`, `key.item.value` and `items`; a test pins that shape.
+ */
+function linesOfSetting(text: string, name: Name): [number, number] | null {
+  const parts = name.split(".");
+  const strings = (value: unknown): string[] => (Array.isArray(value) ? value.map(String) : []);
+  const found: [number, number][] = [];
+  let nested = false;
+  const visit = (node: Node, table: string[]) => {
+    const path = [...table, ...strings(node.key?.value)];
+    if (!parts.every((part, i) => path[i] === part)) return;
+    const [start, end] = [node.loc?.start?.line, node.loc?.end?.line];
+    if (path.length === parts.length && typeof start === "number" && typeof end === "number") found.push([start, end]);
+    else nested = true;
+  };
+  for (const block of new TomlDocument(text).cst as unknown as Node[]) {
+    if (block.type === "KeyValue") visit(block, []);
+    if (block.type !== "Table" || !Array.isArray(block.items)) continue;
+    for (const item of block.items as Node[]) if (item.type === "KeyValue") visit(item, strings(block.key?.item?.value));
+  }
+  return !nested && found.length === 1 ? found[0]! : null;
+}
 
 /**
  * The library drops the comments above a key it deletes, and leaves the comments inside a multi-line
- * value as orphan lines when it rewrites one. So a plain `key = value` is cut out of the text. A
- * marker number set in its place shows which line the key is on, and the value ends at the first line
- * where the lines from the key parse.
+ * value as orphan lines. So a setting on lines of its own is cut out of the text, from its first line
+ * to the end of its value and the comment after it. Anything else goes to the library, and then every
+ * comment line of the file must still be there.
  */
 function withoutSetting(text: string, name: Name, refuse: (cause: string) => Fail): string {
+  const span = linesOfSetting(text, name);
   const lines = text.split("\n");
-  const marked = patched(text, name, MARKER, refuse).split("\n");
-  const at = marked.findIndex((line, i) => line !== lines[i]);
-  if (at !== -1 && new RegExp(`^\\s*[^=#\\s][^=]*=\\s*${MARKER}\\s*(#.*)?$`).test(marked[at]!)) {
-    for (let end = at; end < lines.length; end++) {
-      if (parses(lines.slice(at, end + 1))) return [...lines.slice(0, at), ...lines.slice(end + 1)].join("\n");
-    }
+  if (span !== null) return [...lines.slice(0, span[0] - 1), ...lines.slice(span[1])].join("\n");
+  const out = patched(text, name, null, refuse);
+  const left = new Map<string, number>();
+  for (const line of out.split("\n")) if (line.trim().startsWith("#")) left.set(line, (left.get(line) ?? 0) + 1);
+  for (const line of lines) {
+    if (!line.trim().startsWith("#")) continue;
+    const n = left.get(line) ?? 0;
+    if (n === 0) throw refuse(`the TOML library would drop the comment ${JSON.stringify(line.trim())}`);
+    left.set(line, n - 1);
   }
-  return patched(text, name, null, refuse);
-}
-
-function parses(lines: string[]): boolean {
-  try {
-    Bun.TOML.parse(lines.join("\n"));
-    return true;
-  } catch {
-    return false;
-  }
+  return out;
 }
 
 /** `out` with each line the ending it had in `raw`. Lines the edit changed take the ending of the file's first line. */
 function withEndingsOf(raw: string, out: string): string {
-  if (!raw.includes("\r\n")) return out;
-  const lines = (text: string) => text.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
-  const ends = raw.split("\n").map((line) => (line.endsWith("\r") ? "\r\n" : "\n"));
-  ends[ends.length - 1] = ends[0]!;
-  const was = lines(raw);
-  const now = lines(out);
+  if (!/\r/.test(raw)) return out;
+  const marks = raw.match(/\r\n|\r|\n/g) ?? [];
+  const body = (lines: string[]) => (lines[lines.length - 1] === "" ? lines.slice(0, -1) : lines);
+  const was = body(raw.split(/\r\n|\r|\n/));
+  const outLines = out.split("\n");
+  const now = body(outLines);
+  const mark = (i: number) => marks[i] ?? marks[0] ?? "\n";
   let head = 0;
   while (head < Math.min(was.length, now.length) && was[head] === now[head]) head++;
   let tail = 0;
   while (tail < Math.min(was.length, now.length) - head && was[was.length - 1 - tail] === now[now.length - 1 - tail]) tail++;
+  const finalNewline = outLines.length > now.length;
   return now
     .map((line, i) => {
-      if (i === now.length - 1) return line;
-      const from = i < head ? i : i >= now.length - tail ? was.length - (now.length - i) : -1;
-      return line + (from === -1 ? ends[0]! : ends[from]!);
+      if (i === now.length - 1 && !finalNewline) return line;
+      return line + (i < head ? mark(i) : i >= now.length - tail ? mark(was.length - (now.length - i)) : mark(0));
     })
     .join("");
 }
