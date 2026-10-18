@@ -97,8 +97,8 @@ test("outputs built from one ours copy are all skipped when more than one is edi
   const w = twins([["new.md", ours(added, "skills/new.md")], ["new2.md", ours(added, "skills/new.md")], ["new3.md", ours(added, "skills/new.md")]],
     { "new.md": "a", "new2.md": null, "new3.md": "built" });
   expect(classify(w, ["new.md", "new2.md"])).toEqual([
-    { kind: "skip", path: "new.md", reason: "its copy in added also builds new2.md, which this record changes too; edit added directly" },
-    { kind: "skip", path: "new2.md", reason: "its copy in added also builds new.md, which this record changes too; edit added directly" },
+    { kind: "skip", path: "new.md", reason: "its copy in added also builds new2.md, which this record changes too; edit added directly, or to give them different text, replace the copy edit with an add of its destination" },
+    { kind: "skip", path: "new2.md", reason: "its copy in added also builds new.md, which this record changes too; edit added directly, or to give them different text, replace the copy edit with an add of its destination" },
   ]);
   expect(classify(w, ["new.md"])).toMatchObject([{ kind: "update-ours", path: "new.md" }]);
 });
@@ -107,8 +107,8 @@ test("outputs built from one upstream file are all skipped when more than one is
   const w = twins([["plain.md", up("skills/plain.md")], ["plain2.md", up("skills/plain.md")], ["plain3.md", up("skills/plain.md")]],
     { "plain.md": "a", "plain2.md": "b", "plain3.md": null });
   expect(classify(w, ["plain.md", "plain2.md", "plain3.md"])).toMatchObject([
-    { kind: "skip", path: "plain.md", reason: "upstream's skills/plain.md also builds plain2.md, which this record changes too; edit only one of them" },
-    { kind: "skip", path: "plain2.md", reason: "upstream's skills/plain.md also builds plain.md, which this record changes too; edit only one of them" },
+    { kind: "skip", path: "plain.md", reason: "upstream's skills/plain.md also builds plain2.md, which this record changes too; edit only one of them, or to give them different text, replace the copy edit with an add of its destination" },
+    { kind: "skip", path: "plain2.md", reason: "upstream's skills/plain.md also builds plain.md, which this record changes too; edit only one of them, or to give them different text, replace the copy edit with an add of its destination" },
     { kind: "delete-upstream", path: "plain3.md", staged: "skills/plain3.md" },
   ]);
   expect(classify(w, ["plain.md", "plain3.md"])).toMatchObject([{ kind: "file-edit", path: "plain.md" }, { kind: "delete-upstream", path: "plain3.md" }]);

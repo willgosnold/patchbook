@@ -5426,7 +5426,7 @@ describe("ForkTest", () => {
     t.fork.write("docs/guide.md", "a guide!\n");
     t.fork.write("docs/guide2.md", "a second guide\n");
     const skip = (path: string, other: string) =>
-      `skipped  ${path}: upstream's docs/guide.md also builds ${other}, which this record changes too; edit only one of them\n`;
+      `skipped  ${path}: upstream's docs/guide.md also builds ${other}, which this record changes too; edit only one of them, or to give them different text, replace the copy edit with an add of its destination\n`;
     expect(t.pb(["record", "--intent", "Shout."], { cwd: t.fork.path }).stdout)
       .toBe(skip("docs/guide.md", "docs/guide2.md") + skip("docs/guide2.md", "docs/guide.md"));
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
@@ -8604,7 +8604,7 @@ describe("VendorTest", () => {
     return join(changes, "holder/ours/skills/hello/tpl.md.pb");
   };
   const shared = (path: string, other: string) =>
-    `skipped  ${path}: its copy in holder also builds ${other}, which this record changes too; edit holder directly\n`;
+    `skipped  ${path}: its copy in holder also builds ${other}, which this record changes too; edit holder directly, or to give them different text, replace the copy edit with an add of its destination\n`;
 
   vendorTest("test_record_skips_two_outputs_that_share_one_copy_when_both_are_edited", (t) => {
     t.missingScaffoldPatchBuild();

@@ -136,7 +136,7 @@ export function classify(s: Snapshot, paths: readonly string[]): Edited[] {
     if (!src || !others.length) return classifyOne(s, path);
     const from = src.kind === "ours" ? `its copy in ${src.change}` : `upstream's ${src.path}`;
     const fix = src.kind === "ours" ? `edit ${src.change} directly` : "edit only one of them";
-    return { kind: "skip", path, reason: `${from} also builds ${others.join(", ")}, which this record changes too; ${fix}` };
+    return { kind: "skip", path, reason: `${from} also builds ${others.join(", ")}, which this record changes too; ${fix}, or to give them different text, replace the copy edit with an add of its destination` };
   });
 }
 
