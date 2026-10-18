@@ -193,9 +193,7 @@ export class Upstream {
   }
 
   /**
-   * Run git on the remote. A failure names only `shown`, the command as the user would type it.
-   * A local path or file:// URL cannot name a remote helper, so git reads it under the user's own config.
-   * Any other remote comes from a repo, as a submodule URL does, so it gets git's rule for those: a helper git does not ship
+   * A remote other than a local path or file:// comes from a repo, as a submodule URL does, so it gets git's rule for those: a helper git does not ship
    * runs only if the user allows it, with protocol.<name>.allow or protocol.allow set to always, or with GIT_ALLOW_PROTOCOL.
    * ext:: runs only through GIT_ALLOW_PROTOCOL.
    */
