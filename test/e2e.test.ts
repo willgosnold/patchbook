@@ -870,6 +870,17 @@ describe("ForkTest", () => {
     }
   });
 
+  forkTest("test_a_committed_remote_with_control_characters_reaches_the_terminal_escaped", (t) => {
+    const fresh = cloneFollowing(t, "https://example.invalid/\\u001b[31mRED\\u001b]0;TITLE\\u0007x");
+    for (const command of ["check", "status"]) {
+      const stderr = t.pb([command], { cwd: fresh, code: 1 }).stderr;
+      expect(stderr).not.toContain("\x1b");
+      expect(stderr).not.toContain("\x07");
+      expect(stderr).toContain("example.invalid/");
+      expect(stderr).toContain("RED");
+    }
+  });
+
   forkTest("test_init_and_clone_give_git_an_option_like_branch_or_url_as_a_value_and_pin_nothing", (t) => {
     for (const [i, value] of ["--bogus", "--bogus=a:b"].entries()) {
       const mine = join(t.tmp, `mine${i}`);
