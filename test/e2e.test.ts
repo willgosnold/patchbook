@@ -2041,6 +2041,32 @@ exec '${Bun.which("git")}' "$@"
     });
   }
 
+  for (const [what, below, named] of [["a_subfolder", "locked", "locked"], ["a_folder", "", "."]] as const) {
+    test.skipIf(process.getuid?.() === 0)(`test_build_force_refuses_a_folder_with_${what}_it_cannot_read`, () => {
+      const t = new VendorCase();
+      let locked = "";
+      try {
+        const at = builtThenReplaced(t, "link", (folder) => {
+          locked = join(folder, below);
+          mkdirSync(locked, { recursive: true });
+          writeFileSync(join(locked, "x"), "kept\n");
+          chmodSync(locked, 0o000);
+        });
+        const edited = "hand edit\n";
+        t.repo.write("skills/hello/SKILL.md", edited);
+        const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
+        expect(out.stderr).toContain(`x is a folder that holds ${named},`);
+        expect(out.stderr).toContain("Nothing was changed");
+        expect(out.stderr).not.toContain("ENOTEMPTY");
+        expect(lstatSync(at).isDirectory()).toBe(true);
+        expect(t.repo.read("skills/hello/SKILL.md")).toBe(edited);
+      } finally {
+        if (locked) chmodSync(locked, 0o755);
+        t.cleanup();
+      }
+    }, TIMEOUT);
+  }
+
   for (const to of ["skills/.git", "skills/.git/x", "a/.git", "a/b/.git/c"]) {
     vendorTest(`test_output_folder_${to.replace(/\W/g, "_")}_has_a_git_segment_and_is_rejected`, (t) => {
       t.missingScaffoldPatchBuild();
