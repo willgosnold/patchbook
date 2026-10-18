@@ -191,13 +191,16 @@ function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly str
   return rel;
 }
 
+/** git takes a folder named this, in any letter case, for its own. */
+const namesGit = (segment: string): boolean => segment.toLowerCase() === GIT;
+
 /** Why a sync must never replace `vendor` (an absolute path), or null. Links above it are resolved, but not the last name: a sync moves or deletes a link there, never what it points to. */
 export function unsafeVendor(root: string, vendor: string): string | null {
   const rel = relative(resolve(root), join(resolve(dirname(vendor)), basename(vendor)));
   if (rel === ".") return "is the repo root";
   if (under(rel, "..")) return "is outside the repo";
-  if (rel.split("/")[0]!.toLowerCase() === PB) return `is inside ${PB}`;
-  if (rel.split("/").some((segment) => segment.toLowerCase() === GIT)) return `is inside ${GIT}`;
+  if (under(rel.toLowerCase(), PB)) return `is inside ${PB}`;
+  if (rel.split("/").some(namesGit)) return `is inside ${GIT}`;
   // resolve() keeps a link that leads nowhere as a plain name, so the copy would look like it stays in the repo.
   for (let up = dirname(vendor); up !== dirname(up); up = dirname(up)) {
     if (lexists(up) && !exists(up)) return `is under ${under(up, root) ? relative(root, up) : up}, which is a link to nothing`;
@@ -205,33 +208,50 @@ export function unsafeVendor(root: string, vendor: string): string | null {
   return null;
 }
 
-/** The first `.git` in any letter case in `dir`, as a path inside `dir`, or null. Links are not followed. */
-function findGit(dir: string): string | null {
+/** What a walk of the vendored copy stopped at: a `.git`, or a folder it couldn't list and so couldn't clear. Paths are inside `dir`, "" for `dir` itself. */
+type Stop = { kind: "git" | "unreadable"; path: string };
+
+/** The first `.git` in any letter case in `dir`, or the first folder that can't be listed. Links are not followed. A folder that is missing, or not a folder, holds nothing. */
+function findGit(dir: string): Stop | null {
   if (isSymlink(dir)) return null;
   const todo = [""];
   for (let here = todo.pop(); here !== undefined; here = todo.pop()) {
     let entries;
     try {
       entries = readdirSync(join(dir, here), { withFileTypes: true });
-    } catch {
-      continue;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") continue;
+      return { kind: "unreadable", path: here };
     }
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    const hit = entries.find((e) => e.name.toLowerCase() === GIT);
-    if (hit) return joinPath(here, hit.name);
+    const hit = entries.find((e) => namesGit(e.name));
+    if (hit) return { kind: "git", path: joinPath(here, hit.name) };
     for (const e of entries.reverse()) if (e.isDirectory()) todo.push(joinPath(here, e.name));
   }
   return null;
 }
 
-/** A `.git` inside the vendored copy is the user's: upstream can't hold one, and a sync would move it away and delete it. */
-export function refuseNestedGit(root: string, name: string, vendor: string): void {
-  const found = findGit(vendor);
-  if (found === null) return;
+/**
+ * A `.git` inside the vendored copy is the user's: upstream can't hold one that git would stage, and a sync would move it away and delete it.
+ * A folder the walk can't read might hold one, so it refuses too. `journal` is set when the copy is a killed sync's, which finishing would delete.
+ */
+export function refuseNestedGit(root: string, name: string, vendor: string, journal?: string): void {
+  const stop = findGit(vendor);
+  if (stop === null) return;
   const folder = relative(root, vendor);
-  throw new Fail(
-    `the vendored copy of ${name} (${folder}) holds ${joinPath(folder, found)}, a git repo of its own. Every sync replaces the copy and would delete it. Move it out of the folder, or change vendor for ${name}.`,
-  );
+  const at = joinPath(folder, stop.path);
+  const stalled = journal ? `${journal} holds a sync of ${name} that stopped partway, and the vendored copy (${folder})` : `the vendored copy of ${name} (${folder})`;
+  if (stop.kind === "unreadable") {
+    const then = journal
+      ? `Finishing the sync would delete one. Make it readable, then sync again. The sync stays where it is until then.`
+      : `Every sync replaces the copy and would delete one. Make it readable, move it out of the folder, or change vendor for ${name}.`;
+    throw new Fail(`${stalled} can't be searched for a git repo of your own, since patchbook can't read ${at}. ${then}`);
+  }
+  const then = journal
+    ? "Finishing the sync would delete it. Move it out of the folder, then sync again. The sync stays where it is until then."
+    : `Every sync replaces the copy and would delete it. Move it out of the folder, or change vendor for ${name}.`;
+  throw new Fail(`${stalled} holds ${at}, a git repo of its own. ${then}`);
 }
 
 /** `**` matches any number of folders, `*` and `?` stay within one. */

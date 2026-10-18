@@ -190,6 +190,8 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
 }
 
 function journaled(book: Book, u: Upstream, from: Pin, to: Required<Pin> | null, write: (j: string) => void): void {
+  // The check at the top of syncUpstream fails fast. This one, right before the copy is taken, leaves a gap of the journal's setup, not the fetch.
+  if (u.vendor) refuseNestedGit(book.root, u.name, u.vendor);
   const j = journal(book, u);
   try {
     begin(book, u, from, to);
@@ -298,6 +300,7 @@ function recover(book: Book, u: Upstream): void {
     const vendor = path ? pjoin(book.root, path) : null;
     const unsafe = vendor && unsafeVendor(book.root, vendor);
     if (unsafe) throw stuck(book, u, `its record names the vendor folder ${JSON.stringify(path)}, which ${unsafe}`);
+    if (vendor) refuseNestedGit(book.root, u.name, vendor, relative(book.root, j));
     const now = locked(u);
     const wrote = lexists(join(j, "lock"));
     const torn = now === null && wrote;
