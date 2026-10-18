@@ -186,9 +186,9 @@ function edited(text: string, config: Table, name: Name, value: unknown, refuse:
 function patched(text: string, name: Name, value: unknown, refuse: (cause: string) => Fail): string {
   try {
     const doc = new TomlDocument(text);
-    const trailing = text.length - text.replace(/\n+$/, "").length;
-    doc.patch(withSetting(doc.toJsObject, name, value), { trailingNewline: text.trim() === "" ? 1 : trailing, bracketSpacing: false });
-    return doc.toTomlString;
+    doc.patch(withSetting(doc.toJsObject, name, value), { trailingNewline: 1, bracketSpacing: false });
+    const out = doc.toTomlString;
+    return text.trim() === "" ? out : out.replace(/\s*$/, "") + (text.match(/\s*$/)?.[0] ?? "");
   } catch (e) {
     throw refuse(`the TOML library failed on it (${e instanceof Error ? `${e.name}: ${e.message}` : String(e)})`);
   }
@@ -236,17 +236,30 @@ function linesOfSetting(text: string, name: Name): [number, number] | null {
 function withoutSetting(text: string, name: Name, refuse: (cause: string) => Fail): string {
   const span = linesOfSetting(text, name);
   const lines = text.split("\n");
-  if (span !== null) return [...lines.slice(0, span[0] - 1), ...lines.slice(span[1])].join("\n");
+  if (span !== null) {
+    const bom = span[0] === 1 && text.startsWith("\uFEFF") ? "\uFEFF" : "";
+    return bom + [...lines.slice(0, span[0] - 1), ...lines.slice(span[1])].join("\n");
+  }
   const out = patched(text, name, null, refuse);
   const left = new Map<string, number>();
-  for (const line of out.split("\n")) if (line.trim().startsWith("#")) left.set(line, (left.get(line) ?? 0) + 1);
-  for (const line of lines) {
-    if (!line.trim().startsWith("#")) continue;
-    const n = left.get(line) ?? 0;
-    if (n === 0) throw refuse(`the TOML library would drop the comment ${JSON.stringify(line.trim())}`);
-    left.set(line, n - 1);
+  for (const comment of commentsOf(out)) left.set(comment, (left.get(comment) ?? 0) + 1);
+  for (const comment of commentsOf(text)) {
+    const n = left.get(comment) ?? 0;
+    if (n === 0) throw refuse(`the TOML library would drop the comment ${JSON.stringify(comment)}`);
+    left.set(comment, n - 1);
   }
   return out;
+}
+
+/** Every comment the parser finds in `text`, as written. A `#` line inside a multi-line string is not one. */
+function commentsOf(text: string): string[] {
+  const comments: string[] = [];
+  for (const block of new TomlDocument(text).cst as unknown as { type?: unknown; raw?: unknown; items?: unknown }[]) {
+    for (const node of [block, ...(Array.isArray(block.items) ? (block.items as typeof block[]) : [])]) {
+      if (node.type === "Comment" && typeof node.raw === "string") comments.push(node.raw.trim());
+    }
+  }
+  return comments;
 }
 
 /** `out` with each line the ending it had in `raw`. Lines the edit changed take the ending of the file's first line. */
