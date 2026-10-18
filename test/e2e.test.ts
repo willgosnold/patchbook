@@ -8721,7 +8721,7 @@ describe("VendorTest", () => {
     expect(existsSync(kept)).toBe(true);
   });
 
-  vendorTest("test_commit_deleting_a_file_with_block_entries_removes_its_block_entries", (t) => {
+  vendorTest("test_hook_recording_a_delete_removes_the_block_entries_from_the_tree", (t) => {
     const entries = t.missingScaffoldPatchBuild();
     t.pb(["hook", "install"], { cwd: t.repo.path });
     sh(["git", "add", "-A"], { cwd: t.repo.path });
@@ -8731,6 +8731,48 @@ describe("VendorTest", () => {
     expect(read(join(t.repo.path, ".patchbook/changes/drop-the-skill/CHANGE.md"))).toContain("- delete skills/hello/SKILL.md");
     expect(existsSync(entries)).toBe(false);
     expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  const copyOfHello = (t: VendorCase): void => {
+    mkdirSync(join(t.repo.path, ".patchbook/changes/dup"), { recursive: true });
+    writeFileSync(join(t.repo.path, ".patchbook/changes/dup/CHANGE.md"), "# dup\n\nintent: Copy the skill.\n\nedits:\n- copy skills/hello/SKILL.md -> skills/copy/SKILL.md\n");
+    writeFileSync(join(t.repo.path, ".patchbook/series"), "dup\n");
+    t.pb(["build"], { cwd: t.repo.path });
+    expect(read(join(t.repo.path, "skills/copy/SKILL.md"))).toContain("Say hello in T3.");
+  };
+
+  vendorTest("test_record_deleting_one_output_keeps_the_block_entries_another_output_still_uses", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    copyOfHello(t);
+    unlinkSync(join(t.repo.path, "skills/copy/SKILL.md"));
+    t.pb(["record", "--intent", "Drop the copy."], { cwd: t.repo.path });
+    expect(existsSync(entries)).toBe(true);
+    t.pb(["build"], { cwd: t.repo.path });
+    expect(read(join(t.repo.path, "skills/hello/SKILL.md"))).toContain("Say hello in T3.");
+  });
+
+  vendorTest("test_record_deleting_every_output_of_one_file_removes_its_block_entries", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    copyOfHello(t);
+    unlinkSync(join(t.repo.path, "skills/hello/SKILL.md"));
+    unlinkSync(join(t.repo.path, "skills/copy/SKILL.md"));
+    t.pb(["record", "--intent", "Drop both."], { cwd: t.repo.path });
+    expect(existsSync(entries)).toBe(false);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  vendorTest("test_record_that_cannot_save_the_delete_keeps_the_block_entries", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    unlinkSync(join(t.repo.path, "skills/hello/SKILL.md"));
+    const changes = join(t.repo.path, ".patchbook/changes");
+    mkdirSync(changes, { recursive: true });
+    chmodSync(changes, 0o555);
+    try {
+      expect(t.pb(["record", "--intent", "Drop the skill."], { cwd: t.repo.path, code: 1 }).stdout).toBe("drop-the-skill: Drop the skill.\n");
+    } finally {
+      chmodSync(changes, 0o755);
+    }
+    expect(existsSync(entries)).toBe(true);
   });
 
   vendorTest("test_record_notes_come_in_path_order", (t) => {

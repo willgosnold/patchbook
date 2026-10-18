@@ -128,7 +128,7 @@ export function nameFromIntent(intent: string, roster: Roster): string {
   return roster.free(base || "change");
 }
 
-/** Ask the chosen model for the change's name and intent. Returns the name (null if not named) and the intent. */
+/** Ask the chosen model for the change's name and intent. Returns the name and the intent; the name means nothing when `named` is false. */
 export function writeIntent(
   book: Book, changes: ReadonlyMap<string, Change>, diff: string, name: string | null, named: boolean,
 ): [string, string] {

@@ -48,7 +48,7 @@ const NOTHING: Need = { named: false, drafts: [] };
 const NAMED: Need = { named: true, drafts: [] };
 
 type Recording = { target: Change | null; intent: string | null };
-type Done = { touched: Change | null; notes: readonly string[]; waitsForSave?: true };
+type Done = { touched: Change | null; notes: readonly string[]; waitsForSave?: true; afterSave?: () => void };
 
 type Row<K extends Kind> = { needs(e: Edited<K>): Need; apply(e: Edited<K>, r: Recording): Done };
 
@@ -67,8 +67,9 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     apply: (e, r) => {
       const c = r.target!;
       c.edits.push({ kind: "delete", path: e.staged });
-      if (e.entries !== null) unlinkSync(e.entries);
-      return { touched: c, notes: [`delete   ${e.path}`], waitsForSave: true };
+      const entries = e.entries;
+      const afterSave = () => { if (entries !== null && exists(entries)) unlinkSync(entries); };
+      return { touched: c, notes: [`delete   ${e.path}`], waitsForSave: true, afterSave };
     },
   },
   "unadd": { needs: () => NOTHING, apply: unadd },
@@ -147,6 +148,9 @@ function sharedSource(s: Snapshot, path: string): Source | null {
   return src && (src.kind === "ours" || !deleted) ? src : null;
 }
 
+const stillBuilt = (s: Snapshot, rel: string): boolean =>
+  Array.from(s.sources).some(([p, src]) => src.kind === "up" && src.path === rel && s.current.has(p));
+
 const unitKey = (src: Source) => JSON.stringify(src.kind === "ours" ? ["ours", src.change, src.path] : ["up", src.path]);
 
 function classifyOne(s: Snapshot, path: string): Edited {
@@ -168,7 +172,7 @@ function classifyOne(s: Snapshot, path: string): Edited {
     }
     return { kind: "update-ours", ...copy, now, built };
   }
-  if (now === undefined) return { kind: "delete-upstream", path, staged: s.prefix + path, entries: s.blocks.has(src.path) ? s.entriesAt(src.path) : null };
+  if (now === undefined) return { kind: "delete-upstream", path, staged: s.prefix + path, entries: s.blocks.has(src.path) && !stillBuilt(s, src.path) ? s.entriesAt(src.path) : null };
   if (s.blocks.has(src.path)) {
     const plan = s.plan(src.path, path, built, now);
     return typeof plan === "string" ? { kind: "skip", path, reason: plan } : { kind: "paragraph-edit", path, plan };
@@ -270,21 +274,27 @@ export function record(book: Book, change: string | null, intent: string | null,
   if (target && given) target.intent = given;
 
   const touched = new Map<string, Change>(target ? [[target.name, target]] : []);
-  const notes: { text: string; waits: Change | null }[] = [];
+  const notes: { text: string; waits: Change | null; after: (() => void) | null }[] = [];
   const saved = new Set<Change>();
+  const finished = new Set<() => void>();
   const printed = () => (naming.said !== null ? naming.said + "\n" : "")
-    + notes.filter((n) => n.waits === null || saved.has(n.waits)).map((n) => n.text + "\n").join("");
+    + notes.filter((n) => (n.waits === null || saved.has(n.waits)) && (n.after === null || finished.has(n.after))).map((n) => n.text + "\n").join("");
   try {
     for (const e of edits) {
       const done = row(e).apply(e, { target, intent: naming.intent });
       if (done.touched) touched.set(done.touched.name, done.touched);
-      for (const text of done.notes) notes.push({ text, waits: done.waitsForSave ? done.touched : null });
+      for (const text of done.notes) notes.push({ text, waits: done.waitsForSave ? done.touched : null, after: done.afterSave ?? null });
     }
     for (const c of touched.values()) {
       if (c.edits.length || c !== target) saveChange(c);
       saved.add(c);
     }
     if (target?.edits.length && !readSeries(book).includes(target.name)) appendSeries(book, target.name);
+    for (const n of notes) {
+      if (n.after === null || finished.has(n.after)) continue;
+      n.after();
+      finished.add(n.after);
+    }
     // The recorded output is now what the patchbook builds, so it no longer counts as a hand edit.
     const lock = readBuildLock(book);
     if (lock !== null) {
@@ -411,7 +421,6 @@ function mapLine(ops: readonly Opcode[], i: number, end: number): number {
   return end;
 }
 
-/** The plan's entries with the recording's intent on those that still need one. */
 function withIntent(plan: Plan, intent: string | null): Map<string, Entry> {
   return new Map(Array.from(plan.entries, ([h, d]) => {
     const own = d.intent ?? intent;
