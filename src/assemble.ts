@@ -1,14 +1,14 @@
 // Assembling the output from the pinned upstreams and the patchbook, and writing it.
 import { rmdirSync, unlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { InChange, InEdit, InOutput, Problem } from "./api.ts";
 import {
   entriesPath, type Entry, formatEntry, leakScan, orphan, patchBlocks, readEntries, Rules, type Unmatched,
 } from "./blocks.ts";
-import { Book, under } from "./book.ts";
+import { Book, GIT, PB, under } from "./book.ts";
 import { type Change, editText, readChanges } from "./changes.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isEmptyDir, LINK, mkdirs, readDisk, readText, rglob, sameFile, writeDisk, writeText } from "./lib/fs.ts";
+import { exists, type File, isEmptyDir, LINK, mkdirs, readDisk, readText, resolve, rglob, sameFile, writeDisk, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { dumps, loads } from "./lib/json.ts";
 import { git, spawn } from "./lib/proc.ts";
@@ -266,17 +266,32 @@ export function handEdits(book: Book, fresh: ReadonlyMap<string, File>): string[
   return sorted(Array.from(paths).filter((p) => current.get(p) !== last.get(p) && current.get(p) !== next.get(p)));
 }
 
+function refuseIfRealPathIsKept(book: Book, root: string, paths: readonly string[]): void {
+  const kept = [PB, GIT].map((name) => [name, resolve(join(book.root, name))] as const);
+  const parents = new Map<string, string>();
+  for (const p of paths) {
+    const at = join(root, p);
+    const dir = dirname(at);
+    if (!parents.has(dir)) parents.set(dir, resolve(dir));
+    const real = join(parents.get(dir)!, basename(at));
+    const hit = kept.find(([, k]) => under(real, k));
+    if (hit) throw new Fail(`${p} is really inside ${hit[0]}, so a build must not change it. Nothing was changed.`);
+  }
+}
+
 export function writeOutput(book: Book, out: ReadonlyMap<string, File>): void {
   const root = book.outputRoot();
   const current = book.currentOutput();
-  for (const p of current.keys()) {
-    if (out.has(p)) continue;
+  const stale = Array.from(current.keys()).filter((p) => !out.has(p));
+  const changed = Array.from(out.keys()).filter((p) => !sameFile(current.get(p), out.get(p)));
+  refuseIfRealPathIsKept(book, root, [...stale, ...changed]);
+  for (const p of stale) {
     unlinkSync(join(root, p));
     for (let parent = dirname(join(root, p)); parent !== root && exists(parent) && isEmptyDir(parent); parent = dirname(parent)) {
       rmdirSync(parent);
     }
   }
-  for (const [p, f] of out) if (!sameFile(current.get(p), f)) writeDisk(join(root, p), f);
+  for (const p of changed) writeDisk(join(root, p), out.get(p)!);
   writeBuildLock(book, out);
 }
 

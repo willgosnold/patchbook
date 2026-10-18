@@ -5,7 +5,7 @@ import type { Hooks, Problem } from "./api.ts";
 import { installHook } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isMode, lexists, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
+import { exists, type File, isDir, isMode, lexists, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
 import { dumps, loads } from "./lib/json.ts";
 import { git } from "./lib/proc.ts";
 import { length, type PyValue, sortedBy, strRepr } from "./lib/py.ts";
@@ -13,6 +13,7 @@ import { isTable, parseToml, type Table } from "./settings.ts";
 import { stagedFolder, Upstream } from "./store.ts";
 
 export const PB = ".patchbook";
+export const GIT = ".git";
 
 export function under(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(prefix + "/");
@@ -125,6 +126,23 @@ export type Check = { files: RegExp[]; exclude: RegExp[]; pattern: RegExp };
 export type Placeholder = { file: string | null; format: string };
 export type Layout = { kind: "fork" } | { kind: "folder"; from: string; dir: string };
 
+function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly string[]): void {
+  const dir = pjoin(root, to);
+  const rel = relative(resolve(root), resolve(dir));
+  const shown = strRepr(to);
+  if (rel === ".") throw new Fail(`[output] to ${shown} is the repo root. Name a folder inside the repo.`);
+  if (under(rel, "..")) throw new Fail(`[output] to ${shown} is outside the repo. Name a folder inside it.`);
+  if (under(rel, PB)) throw new Fail(`[output] to ${shown} is inside ${PB}. Name a folder outside it.`);
+  if (under(rel, GIT)) throw new Fail(`[output] to ${shown} is inside ${GIT}. Name a folder outside it.`);
+  if (lexists(dir) && !exists(dir)) throw new Fail(`[output] to ${shown} is a link to nothing. Name a folder inside the repo.`);
+  if (exists(dir) && !isDir(dir)) throw new Fail(`[output] to ${shown} is not a folder. Name a folder inside the repo.`);
+  for (const v of vendors) {
+    const vendor = relative(resolve(root), resolve(pjoin(root, v)));
+    if (vendor === ".") throw new Fail(`[output] to ${shown} overlaps the vendored copy, which is the repo root. Name another folder.`);
+    if (under(rel, vendor) || under(vendor, rel)) throw new Fail(`[output] to ${shown} overlaps the vendored copy ${vendor}. Name another folder.`);
+  }
+}
+
 /** `**` matches any number of folders, `*` and `?` stay within one. */
 export function globRe(pattern: string): RegExp {
   const chars = Array.from(pattern);
@@ -184,9 +202,8 @@ export class Book {
       if (!isTable(out) || !Object.hasOwn(out, "to")) throw new Fail("a folder layout needs [output] with to = <folder>");
       const from = stagedFolder(text(out, "from", "", "[output] from"), "[output] from");
       const to = text(out, "to", "", "[output] to");
-      const dir = pjoin(root, to);
-      this.checkOutputIsSafeToWipe(to, dir);
-      this.layout = { kind, from, dir };
+      checkOutputIsSafeToWipe(root, to, this.vendors());
+      this.layout = { kind, from, dir: pjoin(root, to) };
     } else this.layout = { kind };
     this.checkMounts();
     this.readChecks();
@@ -300,19 +317,6 @@ export class Book {
 
   private vendors(): string[] {
     return this.upstreams.flatMap((u) => (u.vendor ? [this.folderOf(u.vendor)] : []));
-  }
-
-  private checkOutputIsSafeToWipe(to: string, dir: string): void {
-    const rel = relative(resolve(this.root), resolve(dir));
-    const shown = strRepr(to);
-    if (rel === ".") throw new Fail(`[output] to ${shown} is the repo root. Name a folder inside the repo.`);
-    if (under(rel, "..")) throw new Fail(`[output] to ${shown} is outside the repo. Name a folder inside it.`);
-    if (under(rel, PB)) throw new Fail(`[output] to ${shown} is inside ${PB}. Name a folder outside it.`);
-    for (const u of this.upstreams) {
-      if (!u.vendor) continue;
-      const vendor = relative(resolve(this.root), resolve(u.vendor));
-      if (under(rel, vendor) || under(vendor, rel)) throw new Fail(`[output] to ${shown} overlaps the vendored copy ${vendor}. Name another folder.`);
-    }
   }
 
   private readChecks(): void {
