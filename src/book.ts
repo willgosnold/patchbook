@@ -126,7 +126,8 @@ export type Check = { files: RegExp[]; exclude: RegExp[]; pattern: RegExp };
 export type Placeholder = { file: string | null; format: string };
 export type Layout = { kind: "fork" } | { kind: "folder"; from: string; dir: string };
 
-function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly string[]): void {
+/** The repo-relative folder `to` names once links above the repo are resolved, after the checks that keep a build inside it. */
+function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly string[]): string {
   const dir = pjoin(root, to);
   const rel = relative(resolve(root), resolve(dir));
   const shown = strRepr(to);
@@ -137,7 +138,9 @@ function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly str
   if (isSymlink(dir)) throw new Fail(`[output] to ${shown} is a link, and a build would replace it with a folder. Name the folder it points to.`);
   if (exists(dir) && !isDir(dir)) throw new Fail(`[output] to ${shown} is not a folder. Name a folder inside the repo.`);
   const realRoot = resolve(root);
-  for (let up = dirname(dir); resolve(up) !== realRoot && up !== dirname(up); up = dirname(up)) {
+  // A link above the repo (macOS /var) can spell the repo's own path, so that spelling ends the walk. A link inside it never does.
+  const atRepo = (p: string) => p === root || (!under(p, root) && resolve(p) === realRoot);
+  for (let up = dirname(dir); !atRepo(up) && up !== dirname(up); up = dirname(up)) {
     const name = under(up, root) ? relative(root, up) : up;
     if (lexists(up) && !exists(up)) throw new Fail(`[output] to ${shown} is under ${name}, which is a link to nothing. Name a folder inside the repo.`);
     if (isSymlink(up)) throw new Fail(`[output] to ${shown} is under ${name}, which is a link. Name a folder that is not behind a link.`);
@@ -148,6 +151,7 @@ function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly str
     if (vendor === ".") throw new Fail(`[output] to ${shown} overlaps the vendored copy, which is the repo root. Name another folder.`);
     if (under(rel, vendor)) throw new Fail(`[output] to ${shown} overlaps the vendored copy ${vendor}. Name another folder.`);
   }
+  return rel;
 }
 
 /** `**` matches any number of folders, `*` and `?` stay within one. */
@@ -209,8 +213,7 @@ export class Book {
       if (!isTable(out) || !Object.hasOwn(out, "to")) throw new Fail("a folder layout needs [output] with to = <folder>");
       const from = stagedFolder(text(out, "from", "", "[output] from"), "[output] from");
       const to = text(out, "to", "", "[output] to");
-      checkOutputIsSafeToWipe(root, to, this.vendors());
-      this.layout = { kind, from, dir: pjoin(root, to) };
+      this.layout = { kind, from, dir: pjoin(root, checkOutputIsSafeToWipe(root, to, this.vendors())) };
     } else this.layout = { kind };
     this.checkMounts();
     this.readChecks();
@@ -252,7 +255,7 @@ export class Book {
     }
     for (const u of this.upstreams) {
       const out = this.outputFolder(u);
-      const own = out === null ? undefined : under(out, PB) ? PB : out.split("/").includes(GIT) ? GIT : undefined;
+      const own = out === null ? undefined : under(out, PB) ? PB : out.split("/").some((segment) => segment.toLowerCase() === GIT) ? GIT : undefined;
       if (own) {
         const where = this.layout.kind === "fork" ? `mounts at ${shown(u.mount)}` : `builds into ${shown(out ?? "")}`;
         throw new Fail(`${u.name} ${where}, inside ${own}. patchbook never builds into ${own}, so those files would never land. Change ${this.outputKnob(u)}.`);
