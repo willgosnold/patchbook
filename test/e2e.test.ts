@@ -1,7 +1,7 @@
 // End-to-end tests: each one builds a throwaway upstream repo and drives the CLI against it.
 
 import { describe, expect, test } from "bun:test";
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { Case, Repo, dedent, lstrip, mkdirNew, partitionHead, replace, sh, words } from "./helpers";
 
@@ -631,6 +631,16 @@ describe("ForkTest", () => {
     expect(report.upstream).toEqual(["changed app.txt"]);
   });
 
+  for (const kind of ["annotated", "lightweight"]) {
+    forkTest(`test_sync_does_not_import_the_${kind}_tags_of_an_in_repo_upstream`, (t) => {
+      t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+      t.up.commit("upstream edit");
+      sh(["git", "tag", ...(kind === "annotated" ? ["-a", "-m", "release"] : []), "v6"], { cwd: t.up.path });
+      t.pb(["sync", "upstream"], { cwd: t.fork.path });
+      expect(sh(["git", "for-each-ref", "refs/tags"], { cwd: t.fork.path }).stdout).toBe("");
+    });
+  }
+
   forkTest("test_clone_keeps_history_and_pins", (t) => {
     const log = sh(["git", "log", "--oneline"], { cwd: t.fork.path }).stdout;
     expect(log).toContain("start");
@@ -1057,6 +1067,38 @@ describe("VendorTest", () => {
     const diff = t.pb(["upstream", "plugin", "--diff"], { cwd: t.repo.path }).stdout;
     expect(diff).toContain("-For Cursor users.");
     expect(diff).toContain("a/README.md");
+  });
+
+  vendorTest("test_sync_pins_the_head_when_another_fetch_lands_in_the_store", (t) => {
+    t.up.write("plugin/README.md", "For others.\n");
+    const older = t.up.commit("older");
+    t.up.write("plugin/README.md", "For everyone.\n");
+    const head = t.up.commit("head");
+    sh(["git", "tag", "-a", "-m", "release", "v1"], { cwd: t.up.path });
+    const bin = join(t.tmp, "bin/git");
+    const raced = join(t.tmp, "raced");
+    writeFileSync(bin, `#!/bin/sh
+if [ "$1" = fetch ] && [ ! -e '${raced}' ]; then
+  : > '${raced}'
+  '${Bun.which("git")}' "$@" || exit $?
+  exec '${Bun.which("git")}' fetch --quiet --depth=1 '${t.up.path}' ${older}
+fi
+exec '${Bun.which("git")}' "$@"
+`);
+    chmodSync(bin, 0o755);
+    t.pb(["sync"], { cwd: t.repo.path });
+    expect(existsSync(raced)).toBe(true);
+    expect(pinOf(t)).toBe(head);
+    const store = join(t.tmp, "store/upstreams", readdirSync(join(t.tmp, "store/upstreams"))[0]!);
+    expect(sh(["git", "for-each-ref", "refs/patchbook"], { cwd: store }).stdout).toBe("");
+    expect(sh(["git", "for-each-ref", "refs/tags"], { cwd: store }).stdout).toBe("");
+  });
+
+  vendorTest("test_a_failed_fetch_names_the_upstream_and_the_ref_it_was_asked_for", (t) => {
+    const err = t.pb(["sync", "plugin", "no-such-ref"], { cwd: t.repo.path, code: 1 }).stderr;
+    expect(err).toContain(`git fetch ${t.up.path} no-such-ref failed:`);
+    expect(err).toContain("fatal:");
+    expect(err).not.toContain("refs/patchbook");
   });
 
   vendorTest("test_store_keeps_pinned_commits_through_gc", (t) => {
