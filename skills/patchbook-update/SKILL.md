@@ -31,8 +31,8 @@ T3 gives each run its own worktree and branch. Work there.
    - `MAIN_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##')`
    - `MAIN_CHECKOUT=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')`
 2. Run `git fetch origin && git rebase origin/$MAIN_BRANCH`. The branch must have no commits of its own yet. If this thread is in the main checkout instead of a worktree, create a branch, `patchbook/upstream-<date>`, first.
-3. Run `patchbook sync`. It moves every upstream that moved. Commit everything it changed except `.patchbook/last-sync.json` (`git add -A -- . ':!.patchbook/last-sync.json'`, then `PATCHBOOK_HOOK=0 git commit`) as "Sync upstream <name> to <short sha>", naming each upstream.
-4. Read `.patchbook/last-sync.json` (per upstream: what changed and what merged on its own) and `patchbook status --json` (what broke). Here and in steps 3 and 6, read only the reports of the upstreams that step 1's `patchbook check` listed as moved.
+3. Run `patchbook sync`. It moves every upstream that moved, and prints `<name>: pinned <short sha>` for each one. Commit everything it changed except `.patchbook/last-sync.json` (`git add -A -- . ':!.patchbook/last-sync.json'`, then `PATCHBOOK_HOOK=0 git commit`) as "Sync upstream <name> to <short sha>", naming each upstream.
+4. Read `.patchbook/last-sync.json` (per upstream: what changed and what merged on its own) and `patchbook status --json` (what broke). Here and in steps 3 and 6, read only the reports of the upstreams `patchbook sync` printed `pinned` for. An upstream can move after step 1, so this list can be longer than `patchbook check`'s.
 
 ## 3. Repair
 
@@ -81,7 +81,7 @@ Ask it, per change: does the result meet the intent on upstream's new text, and 
 
 Merge only when, on the commit you push, `patchbook status` exits 0, `patchbook build` exits 0 and `git status --porcelain --untracked-files=no` then prints nothing, and one of these signals holds:
 
-- **Clean.** In `.patchbook/last-sync.json`, the report of each upstream this run moved has an empty `replaced_upstream_changed` list. Step 3 found nothing to handle, from a check or from reading upstream's changes. The only commit after the sync commit, if any, is step 4's build commit, and the rebase below brings in no commits. A repair, a retirement, a test fix or a review fix voids it.
+- **Clean.** In `.patchbook/last-sync.json`, the report of each upstream `patchbook sync` printed `pinned` for has an empty `replaced_upstream_changed` list. Step 3 found nothing to handle, from a check or from reading upstream's changes. The only commit after the sync commit, if any, is step 4's build commit, and the rebase below brings in no commits. A repair, a retirement, a test fix or a review fix voids it.
 - **Tested.** The `[test]` on `origin/$MAIN_BRANCH` has a `command`, and it exited 0 on the commit you push. After any later commit, a review fix included, do step 4 again.
 
 An `instructions` test and the review are not signals, since an agent grades both.
@@ -94,7 +94,7 @@ Ask the user instead of merging when that doesn't hold, or when:
 - a test fails and you can't fix it. A failing `instructions` test counts, even though a passing one is not a signal, and so does an `instructions` file you can't read from `origin/$MAIN_BRANCH`;
 - a test leaves tracked files changed (`git status --porcelain --untracked-files=no` prints something), even if it passed;
 - step 4's pre-build check lists a hand edit to the output or a vendored copy;
-- a `replaced_upstream_changed` entry in the report of an upstream this run moved has no step 3 commit that names its file;
+- a `replaced_upstream_changed` entry in the report of an upstream `patchbook sync` printed `pinned` for has no step 3 commit that names its file;
 - the branch changes `[test]` in `.patchbook/config.toml` (see `git diff origin/$MAIN_BRANCH...HEAD -- .patchbook/config.toml`);
 - the only fix you can find for a failing test changes the test, its scripts or its fixtures.
 
