@@ -1292,6 +1292,29 @@ test("test_clone_and_init_print_no_folder_note_for_a_claude_skills_link_to_the_a
   }
 }, TIMEOUT);
 
+test("test_skill_install_and_clone_install_the_codex_copy_when_the_shared_link_dangles", () => {
+  const t = new Case();
+  try {
+    const fork = skillFork(t);
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    commitLink(fork, ".claude/skills", "../.agents/skills");
+    const installed = t.pb(["skill", "install"], { cwd: fork.path });
+    expect(installed.stderr).toBe("");
+    expect(fork.read(SKILL_FILE)).toBe(SKILL_COPY);
+    expect(isSymlink(join(fork.path, ".claude/skills"))).toBe(true);
+
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("a.txt", "a\n");
+    commitLink(up, ".claude/skills", "../.agents/skills");
+    const cloned = t.pb(["clone", up.path, "fork2"], { cwd: t.tmp });
+    expect(cloned.stderr).not.toContain("is a symlink");
+    expect(cloned.stderr).not.toContain("is a folder");
+    expect(read(join(t.tmp, "fork2", SKILL_FILE))).toBe(SKILL_COPY);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 const NOT_UTF8 = Buffer.from([0x62, 0x61, 0x64, 0x20, 0xff, 0xfe, 0x20, 0x62, 0x79, 0x74, 0x65, 0x73, 0x0a]);
 
 function writeBytes(repo: Repo, rel: string, data: Uint8Array): void {
