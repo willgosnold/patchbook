@@ -2557,6 +2557,39 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     );
   });
 
+  forkTest("test_config_unset_leaves_no_fragment_of_a_multi_line_value", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    const unset = (before: string, after: string) => {
+      writeFileSync(user, before);
+      t.config(["--unset", "start.agents"]);
+      expect(read(user)).toBe(after);
+    };
+    unset(
+      '[start]\n# agents I install for\nagents = [ # open\n  "claude-code", # first\n  # between\n  "codex"\n] # close\nby_host = []\n',
+      "[start]\n# agents I install for\nby_host = []\n",
+    );
+    unset(
+      '# top\n[start]\n\n# agents\n# more\nagents = [\n  "claude-code", # first\n  "codex",\n]\n# about by_host\nby_host = []\n',
+      "# top\n[start]\n\n# agents\n# more\n# about by_host\nby_host = []\n",
+    );
+    unset(
+      '[intent]\nmodel = "x"\n[start]\nagents = [ # open\n  "codex",\n]\n',
+      '[intent]\nmodel = "x"\n[start]\n',
+    );
+  });
+
+  forkTest("test_config_keeps_each_lines_own_ending_in_a_file_with_mixed_endings", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    const before = '# my settings\r\n[start]\nagents = ["claude-code"]\r\nnote = """\na\nb"""\r\n[intent]\nmodel = "x"\n';
+    writeFileSync(user, before);
+    t.config(["start.agents", "codex"]);
+    expect(read(user)).toBe(replace(before, '["claude-code"]', '["codex"]'));
+    t.config(["--unset", "intent.model"]);
+    expect(read(user)).toBe('# my settings\r\n[start]\nagents = ["codex"]\r\nnote = """\na\nb"""\r\n[intent]\n');
+  });
+
   forkTest("test_config_keeps_the_line_endings_of_a_crlf_file", (t) => {
     const user = join(t.tmp, "config/patchbook/config.toml");
     mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
@@ -2570,16 +2603,29 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(read(user)).not.toMatch(/[^\r]\n/);
   });
 
-  forkTest("test_config_says_when_an_integer_is_too_big_for_bun_to_read", (t) => {
+  forkTest("test_a_config_with_an_integer_too_big_for_bun_says_so_in_either_scope", (t) => {
     const user = join(t.tmp, "config/patchbook/config.toml");
+    const project = join(t.fork.path, ".patchbook/config.toml");
     mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    const before = "[other]\nbig = 9007199254740993\n";
-    writeFileSync(user, before);
-    const out = t.pb(["config", "intent.model", "x"], { cwd: t.fork.path, code: 1 });
-    expect(out.stderr).toContain(`can't change intent.model in ${user}`);
-    expect(out.stderr).toContain("Bun can't represent");
-    expect(out.stderr).not.toContain("isn't valid TOML");
-    expect(read(user)).toBe(before);
+    const big = "[other]\nbig = 9007199254740993\n";
+    writeFileSync(user, big);
+    for (const args of [["config", "intent.model", "x"], ["config", "--unset", "start.agents"], ["config", "intent.model"]]) {
+      const out = t.pb(args, { cwd: t.fork.path, code: 1 });
+      expect(out.stderr).toContain(`${user} holds an integer`);
+      expect(out.stderr).toContain("Bun can't represent");
+      expect(out.stderr).not.toContain("isn't valid TOML");
+    }
+    expect(read(user)).toBe(big);
+    unlinkSync(user);
+    const before = read(project);
+    writeFileSync(project, before + big);
+    for (const args of [["config", "--project", "hook.enabled", "false"], ["config", "--project", "--unset", "hook.enabled"], ["status"], ["build"]]) {
+      const out = t.pb(args, { cwd: t.fork.path, code: 1 });
+      expect(out.stderr).toContain(`${project} holds an integer`);
+      expect(out.stderr).toContain("Bun can't represent");
+      expect(out.stderr).not.toContain("isn't valid TOML");
+    }
+    expect(read(project)).toBe(before + big);
   });
 
   forkTest("test_config_starts_a_user_config_that_does_not_exist", (t) => {
