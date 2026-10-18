@@ -2196,7 +2196,7 @@ test("test_a_missing_vendor_folder_is_named_by_its_plain_path_in_the_error", () 
     t.pb(["init", "--upstream", up.path, "--output-to", "out", "--vendor", "nope"], { cwd: repo.path });
     rmSync(join(repo.path, "nope"), { recursive: true, force: true });
     const built = t.pb(["build"], { cwd: repo.path, code: 1 });
-    expect(built.stderr).toContain("patchbook: nope (tree ");
+    expect(built.stderr).toContain("(nope) is empty or missing");
     expect(built.stderr).not.toContain(":(literal)");
   } finally {
     t.cleanup();

@@ -379,7 +379,8 @@ function hidingRule(root: string, rel: string): { source: string; line: string; 
     const files = (flags: string[]) => decode(run(["git", "ls-files", "-o", ...flags, "--exclude-standard", "-z", "--", rel], { cwd: root, env })).split("\0")[0];
     const hidden = files(["-i"]);
     if (!hidden || files([])) return null;
-    const found = /^(.+):(\d+):(.*)\t/.exec(git(["check-ignore", "-v", "--no-index", "--", hidden], { cwd: root, check: false }));
+    // Not git(): check-ignore refuses the literal pathspec magic git() sets, and it reads hidden as a path, not a pattern.
+    const found = /^(.+):(\d+):(.*)\t/.exec(decode(run(["git", "check-ignore", "-v", "--no-index", "--", hidden], { cwd: root, check: false })));
     return found ? { source: found[1]!, line: found[2]!, pattern: found[3]! } : null;
   } finally {
     rmSync(tmp, { recursive: true, force: true });
