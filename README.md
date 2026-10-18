@@ -76,6 +76,7 @@ patchbook track <name> <url>        # follow another upstream
 patchbook upstream <name> [path]    # read an upstream at its pin; --diff shows its last change
 patchbook show <change>             # a change as a diff
 patchbook config [name] [value]     # settings: yours, or the project's with --project
+patchbook skill install             # write this patchbook's update skill into the repo
 patchbook --help
 ```
 
