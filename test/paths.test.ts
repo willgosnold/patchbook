@@ -218,23 +218,23 @@ describe("the codex provider", () => {
     expect(t.changeText()).not.toContain("Shout.");
   });
 
-  forkTest("an answer codex garbles is named in stderr, and no change takes a name or intent from it", (t) => {
-    t.env["PATCHBOOK_PROVIDER"] = "codex";
-    t.edit();
-    for (const reply of [
-      "I could not decide.",
-      "{not json}",
-      answer("Not Kebab Case", "Shout."),
-      answer("codex-shout", ""),
-      '{"change": 5, "intent": "Shout."}',
-      '{"intent": "Shout."}',
-    ]) {
+  for (const reply of [
+    "I could not decide.",
+    "{not json}",
+    answer("Not Kebab Case", "Shout."),
+    answer("codex-shout", ""),
+    '{"change": 5, "intent": "Shout."}',
+    '{"intent": "Shout."}',
+  ]) {
+    forkTest(`an answer codex garbles (${reply}) is named in stderr, and no change takes a name or intent from it`, (t) => {
+      t.env["PATCHBOOK_PROVIDER"] = "codex";
       t.fake("codex", reply);
+      t.edit();
       const failed = t.record([], null);
       expect(failed.stderr).toContain(reply);
       for (const taken of ["Not Kebab Case", "not-kebab-case", "codex-shout", "Shout."]) expect(t.changeText()).not.toContain(taken);
-    }
-  });
+    });
+  }
 });
 
 describe("the model CLI patchbook picks when no provider is set", () => {
@@ -504,7 +504,7 @@ describe("planning paragraph edits", () => {
   });
 
   for (const [what, old, repl] of [
-    ["an extra blank line inside a paragraph", "Then wave.\n\nThen sit.", "Then wave.\n\n\nThen sit."],
+    ["an extra blank line added between two paragraphs", "Then wave.\n\nThen sit.", "Then wave.\n\n\nThen sit."],
     ["a dropped final newline", "Bye.\n", "Bye."],
   ] as const) {
     docTest(`${what} doesn't map onto whole paragraphs, so record skips the file and changes no entry`, (t) => {
