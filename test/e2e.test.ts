@@ -2459,6 +2459,60 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(t.config(["start.agents"])).toContain("user");
   });
 
+  forkTest("test_config_changes_a_dotted_key_or_inline_table_in_place", (t) => {
+    const project = join(t.fork.path, ".patchbook/config.toml");
+    const original = read(project);
+    for (const on of ["hook.enabled = true", "hook = { enabled = true }"]) {
+      const before = replace(original, 'layout = "fork"\n', `layout = "fork"\n${on}\n`);
+      writeFileSync(project, before);
+      t.config(["--project", "hook.enabled", "false"]);
+      expect(t.config(["hook.enabled"], { PATCHBOOK_HOOK: "" })).toMatch(/false .*project/);
+      expect(read(project)).toBe(replace(before, on, replace(on, "true", "false")));
+    }
+  });
+
+  forkTest("test_config_set_and_unset_keep_the_rest_of_a_commented_file", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    const before = dedent(`
+      # my patchbook settings
+      [start]
+      # agents I install for, by machine
+      by_host = [
+        ["laptop", "claude-code"],
+        ["server", "codex"],
+      ]
+      agents = ["claude-code"] # for now
+
+      [intent]
+      model = "claude-haiku-5-5"
+    `);
+    writeFileSync(user, before);
+    t.config(["start.agents", "codex"]);
+    expect(t.config(["start.agents"])).toMatch(/\["codex"\] .*user/);
+    expect(read(user)).toBe(replace(before, 'agents = ["claude-code"] # for now', 'agents = ["codex"] # for now'));
+    t.config(["--unset", "start.agents"]);
+    expect(t.config(["start.agents"])).toMatch(/\["claude-code", "codex"\] .*default/);
+    expect(read(user)).toBe(replace(before, 'agents = ["claude-code"] # for now\n', ""));
+  });
+
+  forkTest("test_config_replaces_a_value_that_spans_lines", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    writeFileSync(user, '[start]\nagents = [\n  "claude-code",\n  "codex",\n]\n');
+    t.config(["start.agents", "codex"]);
+    expect(t.config(["start.agents"])).toMatch(/\["codex"\] .*user/);
+    expect(Bun.TOML.parse(read(user))).toEqual({ start: { agents: ["codex"] } });
+  });
+
+  forkTest("test_config_starts_a_user_config_that_does_not_exist", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    expect(existsSync(user)).toBe(false);
+    t.config(["start.agents", "codex"]);
+    expect(read(user)).toBe('[start]\nagents = ["codex"]\n');
+    expect(t.config(["start.agents"])).toMatch(/\["codex"\] .*user/);
+  });
+
   forkTest("test_track_writes_awkward_values_so_they_read_back_as_given", (t) => {
     const lib = new Repo(join(t.tmp, AWKWARD("lib")));
     lib.write(`${AWKWARD("plug")}/a.txt`, "a\n");
