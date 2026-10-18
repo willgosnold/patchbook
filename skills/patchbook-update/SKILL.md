@@ -1,6 +1,6 @@
 ---
 name: patchbook-update
-description: Pull upstreams into a repo that keeps its changes in a patchbook (.patchbook/), repair what broke from each change's intent, test, review, merge and deploy, and ask the user only when it can't decide. Use when a scheduled task or the user says to update a patchbook repo, or for /patchbook-update or $patchbook-update.
+description: Pull upstreams into a repo that keeps its changes in a patchbook (.patchbook/), repair what broke from each change's intent, test and review, then merge and deploy only when the sync was clean or the test command passes, and otherwise open a pull request and ask. Use when a scheduled task or the user says to update a patchbook repo, or for /patchbook-update or $patchbook-update.
 ---
 
 # Patchbook update
@@ -49,13 +49,13 @@ To retire a change, remove it from `series` and its folder, and add it to `retir
 
 Commit each change you repair on its own, as "Carry <change> to upstream <short sha>".
 
-## 4. Build and test
+## 4. Test
 
-Run `patchbook build` and commit the output. Then run the config's `[test]`: a `command` must exit 0, and an `instructions` file is a procedure to follow. Fix a failure if you can, with at most two attempts.
+Run `patchbook build`. The hook builds on each commit, so this usually changes nothing. If it changes files, commit them. Then run the config's `[test]`: a `command` must exit 0, and an `instructions` file is a procedure to follow. Fix a failure if you can, with at most two attempts.
 
 ## 5. Review
 
-Start a reviewer with `delegate_task`, on this thread's model and effort (omit `target`). Its brief holds:
+Start a reviewer with `delegate_task`. Call `orchestrator_capabilities` first. If it lists a provider other than `inheritedProviderInstanceId` with `canRunCrossProviderChildTask` true, set `target` to that provider and the strongest model it lists, with its reasoning option at `high` if it has one. Otherwise omit `target`, so the reviewer runs on this thread's model and effort. Its brief holds:
 
 - the guide's path;
 - each repaired or retired change, with its intent;
@@ -67,7 +67,14 @@ Ask it, per change: does the result meet the intent on upstream's new text, does
 
 ## 6. Merge, or ask
 
-Ask the user instead of merging when:
+Merge only on one of these signals:
+
+- **Clean.** After the sync, `patchbook status` exited 0 and the sync report had no `replaced_upstream_changed`, and every commit after the sync commit is build output from step 4. A repair, a retirement or a test fix voids it.
+- **Tested.** The config's `[test]` has a `command`, and it exits 0 on the branch's last commit.
+
+An `instructions` test and the review are not signals, since an agent grades both.
+
+Ask the user instead of merging when neither signal holds, or when:
 
 - upstream removed or reworked something an intent depends on, and retiring the change would lose something the user wanted;
 - meeting an intent needs a choice that the intents and the guide don't settle;
@@ -78,7 +85,7 @@ To ask, push the branch (`git push -u origin HEAD`), open a pull request against
 
 Otherwise:
 
-1. Run `git fetch origin && git rebase origin/$MAIN_BRANCH`. If that brought in new commits, build and test again.
+1. Run `git fetch origin && git rebase origin/$MAIN_BRANCH`. If that brought in new commits, Clean no longer holds, so do step 4 again and merge only if Tested holds, or ask.
 2. Push to the main branch: `git push origin HEAD:$MAIN_BRANCH`.
 3. Fast-forward the main checkout, if it is on `$MAIN_BRANCH` and clean: `git -C "$MAIN_CHECKOUT" pull --ff-only`.
 4. Run the config's `[deploy]` command from this worktree's root, and report its output.
