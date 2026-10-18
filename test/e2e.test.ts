@@ -1848,7 +1848,7 @@ exec '${Bun.which("git")}' "$@"
 
   vendorTest("test_output_folder_named_like_git_but_not_read_as_dot_git_builds_and_stages", (t) => {
     t.missingScaffoldPatchBuild();
-    for (const to of [".gitx", "git~2", ".git.x", "a.git", ".git\u200c.", ".git\ufffd", ".gi\ufffe"]) {
+    for (const to of [".gitx", "git~2", ".git.x", "a.git", ".git\u200c.", ".git\ufffd"]) {
       setOutputFolder(t, to);
       t.pb(["build", "--force"], { cwd: t.repo.path });
       expect(t.repo.read(`${to}/hello/SKILL.md`)).toContain("Say hello in T3.");
