@@ -21,12 +21,6 @@ export const CHANGE_NAME = /^[a-z0-9][a-z0-9-]*$/;
 export const notAChangeName = (name: string) =>
   `${JSON.stringify(name)} isn't a valid change name; use lowercase letters, digits and hyphens, starting with a letter or digit`;
 
-/** A name already in a book is read as one folder under `changes/`, so it only has to be a single safe path segment. */
-export const isReadableName = (name: string) => name !== "" && name !== "." && name !== ".." && !/[\\/]/.test(name);
-
-export const notASafeName = (name: string) =>
-  `${JSON.stringify(name)} isn't a safe change name; it must be one folder name, not empty, not . or .., and with no / or \\`;
-
 export function editText(e: Edit): string {
   return `${e.kind} ${e.path}` + ("dest" in e && e.dest ? ` -> ${e.dest}` : "");
 }
@@ -136,8 +130,8 @@ export function readChanges(book: Book, problems: Problem[]): Change[] {
   const changes: Change[] = [];
   const series = readSeries(book);
   for (const name of series) {
-    if (!isReadableName(name)) {
-      problems.push({ problem: "invalid", file: "series", detail: notASafeName(name) });
+    if (!CHANGE_NAME.test(name)) {
+      problems.push({ problem: "invalid", file: "series", detail: notAChangeName(name), refuse: true });
       continue;
     }
     const path = join(book.dir, "changes", name, "CHANGE.md");
@@ -145,13 +139,16 @@ export function readChanges(book: Book, problems: Problem[]): Change[] {
       problems.push({ problem: "invalid", file: "series", detail: `no change called ${name}` });
       continue;
     }
-    changes.push(parseChange(path, (edit, detail) => problems.push({ problem: "invalid", file: `changes/${name}`, edit, detail })));
+    changes.push(parseChange(path, (edit, detail) => problems.push({ problem: "invalid", file: `changes/${name}`, edit, detail, refuse: true })));
   }
   const listed = new Set(changes.map((c) => c.name));
   for (const name of foldersWith(join(book.dir, "changes"), "CHANGE.md")) {
     if (listed.has(name) || series.includes(name)) continue;
-    const detail = isReadableName(name) ? `change ${name} is not in the series` : notASafeName(name);
-    problems.push({ problem: "invalid", file: "series", detail });
+    problems.push(
+      CHANGE_NAME.test(name)
+        ? { problem: "invalid", file: "series", detail: `change ${name} is not in the series` }
+        : { problem: "invalid", file: "series", detail: notAChangeName(name), refuse: true },
+    );
   }
   for (const c of changes) {
     if (!c.intent) problems.push({ problem: "invalid", file: `changes/${c.name}`, detail: "it has no intent" });
@@ -162,7 +159,7 @@ export function readChanges(book: Book, problems: Problem[]): Change[] {
 export async function cmdShow(args: { change: string }) {
   const book = await Book.find();
   const path = join(book.dir, "changes", args.change, "CHANGE.md");
-  if (!isReadableName(args.change) || !exists(path)) throw new Fail(`no change called ${args.change}`);
+  if (!CHANGE_NAME.test(args.change) || !exists(path)) throw new Fail(`no change called ${args.change}`);
   const rejected: string[] = [];
   const c = parseChange(path, (edit, detail) => rejected.push(`invalid ${edit}: ${detail}\n`));
   process.stdout.write(`${c.name}: ${c.intent}\n\n`);

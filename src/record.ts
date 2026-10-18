@@ -1,7 +1,8 @@
 // Recording hand edits to the output: as block entries, as edits to a change that owns the file, or as a new change.
 import { unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { assemble, handEdits, readBuildLock, writeBuildLines } from "./assemble.ts";
+import type { Problem } from "./api.ts";
+import { assemble, describe, handEdits, readBuildLock, writeBuildLines } from "./assemble.ts";
 import { blockHash, blockSpans, type Entry, entriesPath, formatEntry, patchBlocks, PLACEHOLDER_HINT, readEntries, Rules } from "./blocks.ts";
 import { Book } from "./book.ts";
 import { appendSeries, CHANGE_NAME, Change, notAChangeName, readChanges, readSeries, saveChange } from "./changes.ts";
@@ -19,9 +20,12 @@ type Plan = { path: string; entries: Map<string, Draft>; notes: [string, string]
 
 export async function cmdRecord(args: { change: string | null; intent: string | null }) {
   const book = await Book.find();
-  const changes = new Map(readChanges(book, []).map((c) => [c.name, c]));
+  const problems: Problem[] = [];
+  const changes = new Map(readChanges(book, problems).map((c) => [c.name, c]));
   const asked = args.change || null;
-  if (asked !== null && !changes.has(asked) && !CHANGE_NAME.test(asked)) throw new Fail(notAChangeName(asked));
+  if (asked !== null && !CHANGE_NAME.test(asked)) throw new Fail(notAChangeName(asked));
+  const badName = problems.find((p) => p.file === "series" && "refuse" in p);
+  if (badName) throw new Fail(`refusing to record: ${describe(badName)}\nRename it to lowercase letters, digits and dashes in series and changes/ first.`);
   const a = assemble(book);
   const current = book.currentOutput();
   const fileOwner = new Map<string, Change>();
