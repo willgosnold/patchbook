@@ -1160,6 +1160,136 @@ test("test_init_finishes_without_installing_when_the_skill_file_is_a_symlink", (
   }
 }, TIMEOUT);
 
+const KEPT = SKILL_COPY + "Kept outside the repo.\n";
+
+/** A folder outside the repo with a regular file where the skill link would go. */
+function outsideClaude(t: Case): string {
+  const outside = join(t.tmp, "outside-claude");
+  mkdirSync(join(outside, "skills"), { recursive: true });
+  writeFileSync(join(outside, "skills/patchbook-update"), "Kept outside the repo.\n");
+  return outside;
+}
+
+/** Commit a link at `at`, run `skill install`, and expect a refusal that leaves `kept` and the repo as they were. */
+function expectNoWriteThrough(at: string, target: (t: Case) => string, kept: string, text: string): void {
+  const t = new Case();
+  try {
+    const fork = skillFork(t);
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const outside = target(t);
+    commitLink(fork, at, outside);
+    const before = tree(fork.path);
+    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain(`${at} is a symlink`);
+    expect(out.stderr).toContain("install won't write through a link");
+    expect(out.stdout).toBe("");
+    expect(read(join(t.tmp, kept))).toBe(text);
+    expect(tree(fork.path)).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}
+
+test("test_skill_install_does_not_write_through_a_symlink_at_the_agents_skills_folder", () => {
+  expectNoWriteThrough(".agents/skills", (t) => join(outsideSkill(t), "skills"),
+    "shared/skills/patchbook-update/SKILL.md", KEPT);
+}, TIMEOUT);
+
+test("test_skill_install_does_not_write_through_a_symlink_at_the_skill_folder", () => {
+  expectNoWriteThrough(".agents/skills/patchbook-update", (t) => join(outsideSkill(t), "skills/patchbook-update"),
+    "shared/skills/patchbook-update/SKILL.md", KEPT);
+}, TIMEOUT);
+
+test("test_skill_install_does_not_write_through_a_symlink_at_the_claude_folder", () => {
+  expectNoWriteThrough(".claude", outsideClaude, "outside-claude/skills/patchbook-update", "Kept outside the repo.\n");
+}, TIMEOUT);
+
+test("test_skill_install_does_not_write_through_a_symlink_at_the_claude_skills_folder", () => {
+  expectNoWriteThrough(".claude/skills", (t) => join(outsideClaude(t), "skills"),
+    "outside-claude/skills/patchbook-update", "Kept outside the repo.\n");
+}, TIMEOUT);
+
+test("test_clone_finishes_without_installing_when_the_claude_folder_is_a_symlink", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("a.txt", "a\n");
+    commitLink(up, ".claude", outsideClaude(t));
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const out = t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+    expect(out.stderr).toContain(".claude is a symlink");
+    expect(read(join(t.tmp, "outside-claude/skills/patchbook-update"))).toBe("Kept outside the repo.\n");
+    expect(isSymlink(join(t.tmp, "fork/.claude"))).toBe(true);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_init_finishes_without_installing_when_the_claude_skills_folder_is_a_symlink", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\ntwo\n");
+    up.commit("start");
+    sh(["git", "clone", "-q", up.path, join(t.tmp, "mine")], { cwd: t.tmp });
+    const mine = new Repo(join(t.tmp, "mine"));
+    commitLink(mine, ".claude/skills", join(outsideClaude(t), "skills"));
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const out = t.pb(["init", "--upstream", up.path], { cwd: mine.path });
+    expect(out.stderr).toContain(".claude/skills is a symlink");
+    expect(read(join(t.tmp, "outside-claude/skills/patchbook-update"))).toBe("Kept outside the repo.\n");
+    expect(existsSync(join(mine.path, ".patchbook/config.toml"))).toBe(true);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+/** The common layout: Claude Code's skills folder is a link to the folder Codex reads. */
+function sharedLayout(repo: Repo): void {
+  repo.write(".agents/skills/other/SKILL.md", "Another skill.\n");
+  commitLink(repo, ".claude/skills", "../.agents/skills");
+}
+
+test("test_skill_install_counts_a_claude_skills_link_to_the_agents_skills_folder_as_installed", () => {
+  const t = new Case();
+  try {
+    const fork = skillFork(t);
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    sharedLayout(fork);
+    const first = t.pb(["skill", "install"], { cwd: fork.path });
+    expect(first.stderr).toBe("");
+    expect(first.stdout).toContain(`wrote ${SKILL_FILE}\n`);
+    expect(first.stdout).not.toContain(SKILL_LINK);
+    expect(fork.read(SKILL_FILE)).toBe(SKILL_COPY);
+    expect(isSymlink(join(fork.path, ".claude/skills"))).toBe(true);
+    const second = t.pb(["skill", "install"], { cwd: fork.path });
+    expect(second.stderr).toBe("");
+    expect(second.stdout).toBe("the update skill is already current\n");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_clone_and_init_print_no_folder_note_for_a_claude_skills_link_to_the_agents_skills_folder", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("a.txt", "a\n");
+    sharedLayout(up);
+    const cloned = t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+    expect(cloned.stderr).toBe("");
+    expect(read(join(t.tmp, "fork", SKILL_FILE))).toBe(SKILL_COPY);
+
+    sh(["git", "clone", "-q", up.path, join(t.tmp, "mine")], { cwd: t.tmp });
+    const inited = t.pb(["init", "--upstream", up.path], { cwd: join(t.tmp, "mine") });
+    expect(inited.stderr).toBe("");
+    expect(read(join(t.tmp, "mine", SKILL_FILE))).toBe(SKILL_COPY);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 const NOT_UTF8 = Buffer.from([0x62, 0x61, 0x64, 0x20, 0xff, 0xfe, 0x20, 0x62, 0x79, 0x74, 0x65, 0x73, 0x0a]);
 
 function writeBytes(repo: Repo, rel: string, data: Uint8Array): void {
@@ -1201,7 +1331,7 @@ test("test_init_replaces_a_skill_file_that_is_not_utf8", () => {
   }
 }, TIMEOUT);
 
-test("test_skill_install_treats_a_skill_file_that_is_not_utf8_as_any_other_that_differs", () => {
+test("test_skill_install_treats_a_skill_file_that_is_not_utf8_like_any_other_that_differs", () => {
   const t = new Case();
   try {
     const fork = skillFork(t);
