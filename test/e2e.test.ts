@@ -1232,6 +1232,76 @@ test("test_skill_install_refuses_to_replace_a_line_that_a_clean_filter_drops_fro
   }
 }, TIMEOUT);
 
+test("test_skill_install_refuses_a_lone_carriage_return_edit", () => {
+  const t = new Case();
+  try {
+    const fork = skillFork(t);
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    fork.write(SKILL_FILE, STALE_SKILL);
+    fork.commit("an older skill");
+    fork.write(SKILL_FILE, STALE_SKILL.replace("\n", "\r"));
+    const before = fork.read(SKILL_FILE);
+    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain(SKILL_FILE);
+    expect(out.stdout).not.toContain("your copy is in HEAD");
+    expect(fork.read(SKILL_FILE)).toBe(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_refuses_a_file_whose_non_utf8_bytes_differ_from_head", () => {
+  const t = new Case();
+  try {
+    const fork = skillFork(t);
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    writeBytes(fork, SKILL_FILE, NOT_UTF8);
+    fork.commit("a skill that is not text");
+    writeBytes(fork, SKILL_FILE, SWAPPED);
+    const before = readFileSync(join(fork.path, SKILL_FILE));
+    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain(SKILL_FILE);
+    expect(out.stdout).not.toContain("your copy is in HEAD");
+    expect(readFileSync(join(fork.path, SKILL_FILE))).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_keeps_a_committed_crlf_file_whose_disk_copy_has_lf", () => {
+  const t = new Case();
+  try {
+    const fork = skillFork(t);
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    fork.write(SKILL_FILE, STALE_SKILL.replaceAll("\n", "\r\n"));
+    fork.commit("an older skill with CRLF");
+    fork.write(SKILL_FILE, STALE_SKILL);
+    const out = t.pb(["skill", "install"], { cwd: fork.path }).stdout;
+    expect(out).toContain(`replaced ${SKILL_FILE}; your copy is in HEAD\n`);
+    expect(fork.read(SKILL_FILE)).toBe(SKILL_COPY);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_refuses_a_utf16_file_whose_disk_copy_adds_carriage_returns", () => {
+  const t = new Case();
+  try {
+    const fork = skillFork(t);
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    writeBytes(fork, SKILL_FILE, Buffer.from([0x58, 0x00, 0x0a, 0x0a]));
+    fork.commit("a skill that is UTF-16");
+    writeBytes(fork, SKILL_FILE, Buffer.from([0x58, 0x00, 0x0d, 0x0a, 0x0d, 0x0a]));
+    const before = readFileSync(join(fork.path, SKILL_FILE));
+    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain(SKILL_FILE);
+    expect(out.stdout).not.toContain("your copy is in HEAD");
+    expect(readFileSync(join(fork.path, SKILL_FILE))).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("test_init_keeps_a_line_that_a_clean_filter_drops_from_what_git_stores_and_records_nothing", () => {
   const t = new Case();
   try {
@@ -1684,6 +1754,7 @@ test("test_skill_install_and_clone_refuse_a_claude_symlink_to_an_outside_folder_
 }, TIMEOUT);
 
 const NOT_UTF8 = Buffer.from([0x62, 0x61, 0x64, 0x20, 0xff, 0xfe, 0x20, 0x62, 0x79, 0x74, 0x65, 0x73, 0x0a]);
+const SWAPPED = Buffer.from([0x62, 0x61, 0x64, 0x20, 0xfe, 0xff, 0x20, 0x62, 0x79, 0x74, 0x65, 0x73, 0x0a]);
 
 function writeBytes(repo: Repo, rel: string, data: Uint8Array): void {
   mkdirSync(dirname(join(repo.path, rel)), { recursive: true });
