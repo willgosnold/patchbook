@@ -1,7 +1,7 @@
 // End-to-end tests: each one builds a throwaway upstream repo and drives the CLI against it.
 
 import { describe, expect, test } from "bun:test";
-import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { Case, Repo, dedent, lstrip, mkdirNew, partitionHead, replace, sh, words } from "./helpers";
 
@@ -1728,17 +1728,83 @@ exec '${Bun.which("git")}' "$@"
     }
   }, TIMEOUT);
 
-  vendorTest("test_output_folder_cannot_be_under_a_link_to_the_repo_root", (t) => {
-    t.missingScaffoldPatchBuild();
-    symlinkSync(".", join(t.repo.path, "lnkroot"));
-    setOutputFolder(t, "lnkroot/out");
-    t.repo.commit("a link to the repo root");
-    const before = tree(t.repo.path);
-    for (const args of [["build", "--force"], ["build"], ["status"]]) {
-      const out = t.pb(args, { cwd: t.repo.path, code: 1 });
-      expect(out.stderr).toContain("lnkroot, which is a link");
-      expect(tree(t.repo.path)).toEqual(before);
+  const spellings: [string, (t: VendorCase, to: string) => string][] = [
+    ["", (_, to) => to],
+    ["_spelled_from_the_physical_repo_path", (t, to) => join(realpathSync(t.repo.path), to)],
+    ["_spelled_through_a_link_above_the_repo", (t, to) => join(t.tmp, "via/adapted", to)],
+    ["_spelled_through_a_link_to_the_repo", (t, to) => join(t.tmp, "alias", to)],
+  ];
+
+  for (const [spelled, spell] of spellings) {
+    vendorTest(`test_output_folder_cannot_be_under_a_link_to_the_repo_root${spelled}`, (t) => {
+      t.missingScaffoldPatchBuild();
+      symlinkSync(t.tmp, join(t.tmp, "via"));
+      symlinkSync(t.repo.path, join(t.tmp, "alias"));
+      symlinkSync(".", join(t.repo.path, "lnkroot"));
+      setOutputFolder(t, spell(t, "lnkroot/out"));
+      t.repo.commit("a link to the repo root");
+      const before = tree(t.repo.path);
+      for (const args of [["build", "--force"], ["build"], ["status"]]) {
+        const out = t.pb(args, { cwd: t.repo.path, code: 1 });
+        expect(out.stderr).toContain("is under lnkroot, which is a link");
+        expect(tree(t.repo.path)).toEqual(before);
+      }
+    });
+  }
+
+  test("test_init_rejects_an_output_folder_under_a_link_to_the_repo_root_spelled_through_a_link_above_the_repo", () => {
+    const t = new VendorCase();
+    try {
+      symlinkSync(t.tmp, join(t.tmp, "via"));
+      const repo = new Repo(join(t.tmp, "fresh"));
+      repo.write("README.md", "mine\n");
+      symlinkSync(".", join(repo.path, "lnkroot"));
+      repo.commit("a link to the repo root");
+      const out = t.pb(["init", "--upstream", t.up.path, "--output-to", join(t.tmp, "via/fresh/lnkroot/out")], { cwd: repo.path, code: 1 });
+      expect(out.stderr).toContain("is under lnkroot, which is a link");
+      expect(existsSync(join(repo.path, ".patchbook"))).toBe(false);
+    } finally {
+      t.cleanup();
     }
+  }, TIMEOUT);
+
+  vendorTest("test_output_folder_under_a_link_spelled_through_a_link_above_the_repo_names_the_link_in_the_repo", (t) => {
+    t.missingScaffoldPatchBuild();
+    symlinkSync(t.tmp, join(t.tmp, "via"));
+    t.repo.write("real/keep.md", "keep\n");
+    symlinkSync("real", join(t.repo.path, "lnk"));
+    setOutputFolder(t, join(t.tmp, "via/adapted/lnk/out"));
+    t.repo.commit("a link to a folder in the repo");
+    const before = tree(t.repo.path);
+    const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("is under lnk, which is a link");
+    expect(tree(t.repo.path)).toEqual(before);
+  });
+
+  vendorTest("test_output_folder_cannot_be_under_a_link_that_leaves_the_repo_and_comes_back_to_its_root", (t) => {
+    t.missingScaffoldPatchBuild();
+    mkdirSync(join(t.tmp, "elsewhere"));
+    symlinkSync(t.repo.path, join(t.tmp, "elsewhere/back"));
+    symlinkSync(join(t.tmp, "elsewhere"), join(t.repo.path, "ext"));
+    setOutputFolder(t, "ext/back/out");
+    t.repo.commit("a link out of the repo");
+    const before = tree(t.repo.path);
+    const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("is under ext/back, which is a link");
+    expect(tree(t.repo.path)).toEqual(before);
+  });
+
+  vendorTest("test_output_folder_cannot_be_under_a_link_to_the_repo_root_reached_through_a_link_into_the_repo", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.repo.write("real/keep.md", "keep\n");
+    symlinkSync("..", join(t.repo.path, "real/lnkroot"));
+    symlinkSync(join(t.repo.path, "real"), join(t.tmp, "side"));
+    setOutputFolder(t, join(t.tmp, "side/lnkroot/out"));
+    t.repo.commit("a link to the repo root in a folder");
+    const before = tree(t.repo.path);
+    const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain(`is under ${join(t.tmp, "side/lnkroot")}, which is a link`);
+    expect(tree(t.repo.path)).toEqual(before);
   });
 
   for (const to of [".GIT", ".Git/x", "out/.gIT/y"]) {
@@ -1753,6 +1819,76 @@ exec '${Bun.which("git")}' "$@"
       }
     });
   }
+
+  const gitReadsAsDotGit = [
+    ["dot_git_dot", ".git."],
+    ["dot_git_space", ".git "],
+    ["GIT_tilde_1", "GIT~1"],
+    ["git_tilde_1_dot_space", "out/git~1. /y"],
+    ["dot_git_colon", "out/.git:x"],
+    ["backslash_dot_git", "out/a\\.git"],
+    ["dot_g_zero_width_non_joiner_it", ".g\u200cit"],
+    ["byte_order_mark_dot_GIT", "out/\ufeff.GIT/y"],
+    ["dot_git_noncharacter_fffe", ".git\ufffe"],
+    ["dot_GIT_zero_width_non_joiner_noncharacter_ffff", "out/.GIT\u200c\uffffx/y"],
+  ] as const;
+
+  for (const [what, to] of gitReadsAsDotGit) {
+    vendorTest(`test_output_folder_${what}_is_a_name_git_reads_as_dot_git_and_is_rejected`, (t) => {
+      t.missingScaffoldPatchBuild();
+      setOutputFolder(t, to);
+      const before = tree(t.repo.path);
+      for (const args of [["build", "--force"], ["status"]]) {
+        const out = t.pb(args, { cwd: t.repo.path, code: 1 });
+        expect(out.stderr).toContain("inside .git");
+        expect(tree(t.repo.path)).toEqual(before);
+      }
+    });
+  }
+
+  vendorTest("test_output_folder_named_like_git_but_not_read_as_dot_git_builds_and_stages", (t) => {
+    t.missingScaffoldPatchBuild();
+    for (const to of [".gitx", "git~2", ".git.x", "a.git", ".git\u200c.", ".git\ufffd", ".gi\ufffe"]) {
+      setOutputFolder(t, to);
+      t.pb(["build", "--force"], { cwd: t.repo.path });
+      expect(t.repo.read(`${to}/hello/SKILL.md`)).toContain("Say hello in T3.");
+    }
+    sh(["git", "-c", "core.protectHFS=true", "add", "-A"], { cwd: t.repo.path });
+  });
+
+  test("test_init_and_track_reject_names_git_reads_as_dot_git_in_both_layouts", () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("a.md", "a\n");
+      up.commit("start");
+      const more = new Repo(join(t.tmp, "more"));
+      more.write("d/m.md", "m\n");
+      more.commit("start");
+      const folder = new Repo(join(t.tmp, "adapted"));
+      folder.write("README.md", "mine\n");
+      folder.commit("start");
+      for (const to of [".git.", ".git ", "GIT~1"]) {
+        const out = t.pb(["init", "--upstream", up.path, "--output-to", to], { cwd: folder.path, code: 1 });
+        expect(out.stderr).toContain("inside .git");
+        expect(existsSync(join(folder.path, ".patchbook"))).toBe(false);
+      }
+      t.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: folder.path });
+      t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+      for (const cwd of [folder.path, join(t.tmp, "fork")]) {
+        const config = join(cwd, ".patchbook/config.toml");
+        const before = { config: read(config), tree: tree(cwd) };
+        for (const mount of [".git.", "a/.git ", "GIT~1/x", "a/.g\u200cit"]) {
+          const tracked = t.pb(["track", "m", more.path, "--mount", mount], { cwd, code: 1 });
+          expect(tracked.stderr).toContain("inside .git");
+          expect(read(config)).toBe(before.config);
+          expect(tree(cwd)).toEqual(before.tree);
+        }
+      }
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
 
   test("test_track_rejects_a_mount_with_a_git_segment_in_another_case_in_both_layouts", () => {
     const t = new Case();
@@ -1787,6 +1923,17 @@ exec '${Bun.which("git")}' "$@"
     symlinkSync(t.tmp, join(t.tmp, "via"));
     const config = join(t.repo.path, ".patchbook/config.toml");
     writeFileSync(config, replace(read(config), 'to = "skills"', `to = "${join(t.tmp, "via/adapted/skills")}"`));
+    t.missingScaffoldPatchBuild();
+    t.pb(["build"], { cwd: t.repo.path });
+    t.pb(["build", "--force"], { cwd: t.repo.path });
+    expect(t.repo.read("skills/hello/SKILL.md")).toContain("Hello");
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  vendorTest("test_an_absolute_output_folder_reached_through_a_link_to_the_repo_itself_builds_twice", (t) => {
+    symlinkSync(t.repo.path, join(t.tmp, "alias"));
+    const config = join(t.repo.path, ".patchbook/config.toml");
+    writeFileSync(config, replace(read(config), 'to = "skills"', `to = "${join(t.tmp, "alias/skills")}"`));
     t.missingScaffoldPatchBuild();
     t.pb(["build"], { cwd: t.repo.path });
     t.pb(["build", "--force"], { cwd: t.repo.path });
