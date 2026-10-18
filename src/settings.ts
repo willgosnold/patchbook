@@ -1,6 +1,7 @@
 // Settings: each one's env var, kind and default, read from the env, the project and the user config.
 import { homedir } from "node:os";
 import { dirname } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { TomlDocument } from "@decimalturn/toml-patch";
 import { Book, NoBook } from "./book.ts";
 import { installHookOrWarn } from "./githook.ts";
@@ -151,17 +152,24 @@ export function storeDir(): string {
 }
 
 /** Set or remove (value null) one setting in a TOML file, keeping its other keys, comments and layout. */
-export function setToml(path: string, name: Name, value: NonNullable<Value<Name>> | null): void {
+export function setToml<N extends Name>(path: string, name: N, value: NonNullable<Value<N>> | null): void {
   const text = exists(path) ? readText(path) : "";
-  if (lookup(parseToml(text, path), name) === undefined && value === null) return;
+  const config = parseToml(text, path);
+  const current = lookup(config, name);
+  if (current === undefined && value === null) return;
   const doc = new TomlDocument(text);
-  const config: Record<string, Record<string, unknown> | undefined> = doc.toJsObject;
-  const [section = "", key = ""] = name.split(".");
-  if (value !== null) (config[section] ??= {})[key] = value;
-  else delete config[section]?.[key];
-  doc.patch(config, { trailingNewline: 1, bracketSpacing: false });
+  doc.patch(withSetting(doc.toJsObject, name, value), { trailingNewline: 1, bracketSpacing: false });
+  if (!isDeepStrictEqual(parseToml(doc.toTomlString, path), withSetting(config, name, value))) {
+    throw new Fail(`can't change ${name} in ${path} without changing something else in it. Edit the file by hand.`);
+  }
   mkdirs(dirname(path));
   writeText(path, doc.toTomlString);
+}
+
+function withSetting(config: Table, name: Name, value: unknown): Table {
+  const [section = "", key = ""] = name.split(".");
+  const { [key]: _, ...rest } = isTable(config[section]) ? config[section] : {};
+  return { ...config, [section]: value === null ? rest : { ...rest, [key]: value } };
 }
 
 /** A setting as `config` lists it: its value, filled in for the intent settings, and where it came from. */

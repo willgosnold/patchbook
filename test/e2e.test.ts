@@ -2514,6 +2514,20 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(Bun.TOML.parse(read(user))).toEqual({ start: { agents: ["codex"] } });
   });
 
+  forkTest("test_config_refuses_an_edit_that_would_change_something_else", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    for (const [before, model] of [
+      ["[intent]\nmodel = 'old'\n", "first\r\nsecond"],
+      ['[__proto__]\nkeep = "this"\n\n[intent]\nmodel = "old"\n', "new"],
+    ]) {
+      writeFileSync(user, before!);
+      expect(t.pb(["config", "intent.model", model!], { cwd: t.fork.path, code: 1 }).stderr)
+        .toContain(`can't change intent.model in ${user} without changing something else in it`);
+      expect(read(user)).toBe(before!);
+    }
+  });
+
   forkTest("test_config_starts_a_user_config_that_does_not_exist", (t) => {
     const user = join(t.tmp, "config/patchbook/config.toml");
     t.config(["--unset", "start.agents"]);
