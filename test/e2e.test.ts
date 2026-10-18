@@ -7354,6 +7354,37 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(read(join(t.fork.path, ".patchbook/upstream.lock"))).toBe(lock);
     expect(sh(["git", "status", "--porcelain", "--untracked-files=all"], { cwd: t.fork.path }).stdout).toBe(before);
   });
+
+  const trackVendored = (t: ForkCase): Repo => {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "one\n");
+    extra.write("lib/b.md", "bee\n");
+    extra.commit("start");
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.fork.path });
+    t.fork.commit("track extra");
+    return extra;
+  };
+
+  for (const state of ["empty", "missing"]) {
+    forkTest(`test_status_build_and_the_hook_name_a_vendored_copy_that_is_${state}_without_a_git_error`, (t) => {
+      trackVendored(t);
+      rmSync(join(t.fork.path, "vendor/extra"), { recursive: true });
+      if (state === "empty") mkdirSync(join(t.fork.path, "vendor/extra"));
+      t.fork.write("note.txt", "a note\n");
+      sh(["git", "add", "note.txt"], { cwd: t.fork.path });
+      const hook = { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Add a note." };
+      for (const run of [
+        t.pb(["status"], { cwd: t.fork.path, code: null }),
+        t.pb(["build"], { cwd: t.fork.path, code: null }),
+        sh(["git", "commit", "-qm", "note"], { cwd: t.fork.path, env: hook, check: false }),
+      ]) {
+        expect(run.stderr).not.toContain("fatal:");
+        expect(run.code).toBe(1);
+        expect(run.stderr).toContain("vendor/extra");
+        expect(run.stderr).toContain("sync");
+      }
+    });
+  }
 });
 
 describe("VendorTest", () => {
