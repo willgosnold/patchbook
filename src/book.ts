@@ -183,7 +183,10 @@ export class Book {
       const out = Object.hasOwn(this.config, "output") ? this.config["output"] : {};
       if (!isTable(out) || !Object.hasOwn(out, "to")) throw new Fail("a folder layout needs [output] with to = <folder>");
       const from = stagedFolder(text(out, "from", "", "[output] from"), "[output] from");
-      this.layout = { kind, from, dir: pjoin(root, text(out, "to", "", "[output] to")) };
+      const to = text(out, "to", "", "[output] to");
+      const dir = pjoin(root, to);
+      this.checkOutputIsSafeToWipe(to, dir);
+      this.layout = { kind, from, dir };
     } else this.layout = { kind };
     this.checkMounts();
     this.readChecks();
@@ -297,6 +300,19 @@ export class Book {
 
   private vendors(): string[] {
     return this.upstreams.flatMap((u) => (u.vendor ? [this.folderOf(u.vendor)] : []));
+  }
+
+  private checkOutputIsSafeToWipe(to: string, dir: string): void {
+    const rel = relative(resolve(this.root), resolve(dir));
+    const shown = strRepr(to);
+    if (rel === ".") throw new Fail(`[output] to ${shown} is the repo root. Name a folder inside the repo.`);
+    if (under(rel, "..")) throw new Fail(`[output] to ${shown} is outside the repo. Name a folder inside it.`);
+    if (under(rel, PB)) throw new Fail(`[output] to ${shown} is inside ${PB}. Name a folder outside it.`);
+    for (const u of this.upstreams) {
+      if (!u.vendor) continue;
+      const vendor = relative(resolve(this.root), resolve(u.vendor));
+      if (under(rel, vendor) || under(vendor, rel)) throw new Fail(`[output] to ${shown} overlaps the vendored copy ${vendor}. Name another folder.`);
+    }
   }
 
   private readChecks(): void {
