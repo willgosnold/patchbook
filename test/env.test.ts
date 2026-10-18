@@ -4,13 +4,11 @@ import { Case, Repo, sh } from "./helpers";
 
 const SEEDED = "PATCHBOOK_ENV_TEST_SEEDED";
 const ABSENT = "PATCHBOOK_HOME";
-const touched = ["GIT_AUTHOR_NAME", "GIT_COMMITTER_EMAIL", "GIT_CONFIG_GLOBAL", "PATCHBOOK_HOOK", "PATCHBOOK_SKILL", SEEDED, ABSENT];
 
 let before: Record<string, string | undefined>;
-
-const current = (): Record<string, string | undefined> => Object.fromEntries(touched.map((k) => [k, process.env[k]]));
-
 let ambient: Record<string, string | undefined>;
+
+const current = (): Record<string, string | undefined> => ({ ...process.env });
 
 beforeEach(() => {
   ambient = current();
@@ -20,10 +18,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  for (const [k, v] of Object.entries(ambient)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
-  }
+  for (const k of Object.keys(process.env)) if (!(k in ambient)) delete process.env[k];
+  for (const [k, v] of Object.entries(ambient)) process.env[k] = v;
 });
 
 test("a live case leaves process.env alone", () => {

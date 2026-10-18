@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -55,7 +55,7 @@ describe("blockSpans", () => {
   });
 
   test("lines of only whitespace separate blocks", () => {
-    expect(spans("a\n \t \nb")).toEqual([[0, 1], [3 - 1, 3]]);
+    expect(spans("a\n \t \nb")).toEqual([[0, 1], [2, 3]]);
   });
 
   test("frontmatter is its own block, closed by the next ---", () => {
@@ -454,20 +454,23 @@ describe("applyStructure", () => {
   });
 });
 
-describe("intentSettings", () => {
+const SANDBOX_CONFIG = join(sandbox, "config", "patchbook", "config.toml");
+const inSandbox = USER_CONFIG === SANDBOX_CONFIG;
+
+test("settings.ts reads the user config from the sandbox", () => {
+  expect({ actual: USER_CONFIG, expectedSandbox: SANDBOX_CONFIG }).toEqual({ actual: SANDBOX_CONFIG, expectedSandbox: SANDBOX_CONFIG });
+});
+
+describe.skipIf(!inSandbox)("intentSettings", () => {
   const VARS = ["PATCHBOOK_PROVIDER", "PATCHBOOK_MODEL", "PATCHBOOK_EFFORT"];
   const claude = PROVIDERS.get("claude")!;
   const codex = PROVIDERS.get("codex")!;
   let saved: Record<string, string | undefined>;
 
-  beforeAll(() => {
-    expect(USER_CONFIG).toBe(join(sandbox, "config", "patchbook", "config.toml"));
-  });
-
   beforeEach(() => {
     saved = Object.fromEntries([...VARS, "PATH"].map((k) => [k, process.env[k]]));
     for (const k of VARS) delete process.env[k];
-    rmSync(USER_CONFIG, { force: true });
+    if (inSandbox) rmSync(USER_CONFIG, { force: true });
   });
 
   afterEach(() => {
