@@ -752,7 +752,7 @@ describe("ForkTest", () => {
       expect(status.stdout).toContain(detail);
       const problems = JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path, code: 1 }).stdout).problems;
       expect(problems).toHaveLength(1);
-      expect(problems[0]).toMatchObject({ problem: "invalid", file: "changes/into-kept", edit });
+      expect(problems[0]).toMatchObject({ problem: "invalid", file: "changes/into-kept", edit, refuse: true });
       expect(problems[0].detail).toBe(detail);
       const refused = t.pb(["build"], { cwd: t.fork.path, code: 1 });
       expect(refused.stderr).toContain(detail);
@@ -761,6 +761,82 @@ describe("ForkTest", () => {
       expect(existsSync(target) ? read(target) : null).toBe(was);
     });
   }
+
+  const hookCommit = (t: ForkCase, ...args: string[]) =>
+    sh(["git", "commit", "-qm", "into kept", ...args], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Shout two." }, check: false });
+  const gitState = (t: ForkCase): string =>
+    ["rev-parse HEAD", "ls-files -s", "diff --cached", "diff"].map((a) => sh(["git", ...a.split(" ")], { cwd: t.fork.path }).stdout).join("\n--\n");
+  const fixHint = "Edit or remove that line in the change's CHANGE.md, or skip the hook once with PATCHBOOK_HOOK=0.";
+
+  const hookRefuses = [
+    ["copy_into_the_patchbook", "copy app.txt -> .patchbook/config.toml", ".patchbook/config.toml", ".patchbook"],
+    ["add_into_the_patchbook", "add .patchbook/new.md", ".patchbook/new.md", ".patchbook"],
+    ["move_into_dot_PATCHBOOK", "move docs/guide.md -> .PATCHBOOK/guide.md", ".PATCHBOOK/guide.md", ".patchbook"],
+    ["copy_into_git", "copy app.txt -> .git/x", ".git/x", ".git"],
+    ["copy_into_dot_GIT", "copy app.txt -> .GIT/x", ".GIT/x", ".git"],
+  ] as const;
+  for (const [name, edit, dest, place] of hookRefuses) {
+    for (const pending of [false, true]) {
+      forkTest(`test_hook_refuses_a_${name}${pending ? "_with_a_hand_edit_pending" : ""}_and_leaves_everything_as_it_was`, (t) => {
+        const change = join(t.fork.path, ".patchbook/changes/into-kept");
+        mkdirNew(change);
+        if (edit.startsWith("add ")) {
+          mkdirSync(join(change, "ours", dirname(dest)), { recursive: true });
+          writeFileSync(join(change, "ours", `${dest}.pb`), "ours\n");
+        }
+        writeFileSync(join(change, "CHANGE.md"), `# into-kept\n\nintent: Write into a place a build keeps.\n\nedits:\n- ${edit}\n`);
+        writeFileSync(join(t.fork.path, ".patchbook/series"), "into-kept\n");
+        if (pending) t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+        sh(["git", "add", "-A"], { cwd: t.fork.path });
+        const files = tree(t.fork.path);
+        const state = gitState(t);
+        const refused = hookCommit(t);
+        expect(refused.code).toBe(1);
+        expect(refused.stderr).toContain("patchbook: refusing this commit");
+        expect(refused.stderr).toContain(`  invalid   changes/into-kept ${edit}: ${dest} would be written into ${place}\n`);
+        expect(refused.stderr).toContain(fixHint);
+        expect(refused.stderr).not.toContain("wasn't rebuilt");
+        expect(tree(t.fork.path)).toEqual(files);
+        expect(gitState(t)).toBe(state);
+        expect(readdirSync(join(t.fork.path, ".patchbook/changes"))).toEqual(["into-kept"]);
+        if (pending) expect(t.fork.read("app.txt")).toContain("TWO");
+      });
+    }
+  }
+
+  const handAdded = [
+    ["a_staged_file_under_dot_PATCHBOOK", ".PATCHBOOK/x.md", true, ".patchbook"],
+    ["an_untracked_file_under_dot_GIT", "a/.GIT/y", false, ".git"],
+  ] as const;
+  for (const [name, path, staged, place] of handAdded) {
+    forkTest(`test_hook_refuses_${name}_before_recording_it`, (t) => {
+      t.fork.write(path, "ours\n");
+      if (staged) sh(["git", "add", "--", path], { cwd: t.fork.path });
+      const files = tree(t.fork.path);
+      const state = gitState(t);
+      const refused = hookCommit(t, "--allow-empty");
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain(`patchbook: refusing this commit: ${path} is new, but a change can't write into ${place}.`);
+      expect(refused.stderr).toContain(`Move ${path} out of there, or skip the hook once with PATCHBOOK_HOOK=0.`);
+      expect(tree(t.fork.path)).toEqual(files);
+      expect(gitState(t)).toBe(state);
+      expect(existsSync(join(t.fork.path, ".patchbook/changes"))).toBe(false);
+    });
+  }
+
+  forkTest("test_hook_still_warns_and_commits_for_another_problem", (t) => {
+    const change = join(t.fork.path, ".patchbook/changes/gone");
+    mkdirNew(change);
+    writeFileSync(join(change, "CHANGE.md"), "# gone\n\nintent: Delete a file upstream lacks.\n\nedits:\n- delete missing.txt\n");
+    writeFileSync(join(t.fork.path, ".patchbook/series"), "gone\n");
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    const before = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+    const committed = hookCommit(t);
+    expect(committed.code).toBe(0);
+    expect(committed.stderr).toContain("1 problems, so the output wasn't rebuilt.");
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).not.toBe(before);
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("gone      changes/gone delete missing.txt");
+  });
 
   forkTest("test_check_and_sync_leave_out_what_the_build_ignores", (t) => {
     const extra = new Repo(join(t.tmp, "extra"));
@@ -2001,6 +2077,28 @@ exec '${Bun.which("git")}' "$@"
     writeChange(t, "into-vendor", ["copy skills/hello/SKILL.md -> skills/extra/x.md"]);
     const status = t.pb(["status"], { cwd: t.repo.path, code: 1 });
     expect(status.stdout).toContain("skills/extra/x.md would be written into the vendored copy vendor/extra");
+    expect(existsSync(join(t.repo.path, "vendor/extra/x.md"))).toBe(false);
+  });
+
+  vendorTest("test_hook_still_warns_and_commits_for_a_copy_into_a_vendored_copy", (t) => {
+    t.missingScaffoldPatchBuild();
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "a\n");
+    extra.commit("a");
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    setOutputFolder(t, "vendor");
+    t.pb(["build", "--force"], { cwd: t.repo.path });
+    t.repo.commit("built");
+    writeChange(t, "into-vendor", ["copy skills/hello/SKILL.md -> skills/extra/x.md"]);
+    const problems = JSON.parse(t.pb(["status", "--json"], { cwd: t.repo.path, code: 1 }).stdout).problems;
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).not.toHaveProperty("refuse");
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+    const before = sh(["git", "rev-parse", "HEAD"], { cwd: t.repo.path }).stdout;
+    const committed = sh(["git", "commit", "-qm", "into vendor"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1" }, check: false });
+    expect(committed.code).toBe(0);
+    expect(committed.stderr).toContain("1 problems, so the output wasn't rebuilt.");
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.repo.path }).stdout).not.toBe(before);
     expect(existsSync(join(t.repo.path, "vendor/extra/x.md"))).toBe(false);
   });
 
