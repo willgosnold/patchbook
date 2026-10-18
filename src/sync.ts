@@ -111,49 +111,52 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
 
   const held = u.kept(commit);
   u.keep(commit);
-
-  if (u.vendor) {
-    if (exists(u.vendor)) rmSync(u.vendor, { recursive: true });
-    for (const [p, f] of raw) writeDisk(join(u.vendor, p), f);
-    const actual = u.vendorTree(u.vendor).tree;
-    if (actual !== tree) {
-      if (!held) u.unkeep(commit);
-      throw new Fail(`the vendored copy of ${u.name} hashes to ${actual}, not upstream's ${tree}. Does a .gitignore hide upstream files?`);
+  try {
+    if (u.vendor) {
+      if (exists(u.vendor)) rmSync(u.vendor, { recursive: true });
+      for (const [p, f] of raw) writeDisk(join(u.vendor, p), f);
+      const actual = u.vendorTree(u.vendor).tree;
+      if (actual !== tree) {
+        throw new Fail(`the vendored copy of ${u.name} hashes to ${actual}, not upstream's ${tree}. Does a .gitignore hide upstream files?`);
+      }
     }
-  }
 
-  const added = Array.from(fresh.keys()).filter((p) => !old.has(p));
-  for (const c of changes) {
-    for (const e of c.edits) {
-      if (book.upstreamFor(e.path) !== u) continue;
-      if (e.kind === "replace" && old.has(e.path) && !sameFile(old.get(e.path), fresh.get(e.path))) {
-        report.replaced_upstream_changed.push(`${c.name}: ${e.path}`);
+    const added = Array.from(fresh.keys()).filter((p) => !old.has(p));
+    for (const c of changes) {
+      for (const e of c.edits) {
+        if (book.upstreamFor(e.path) !== u) continue;
+        if (e.kind === "replace" && old.has(e.path) && !sameFile(old.get(e.path), fresh.get(e.path))) {
+          report.replaced_upstream_changed.push(`${c.name}: ${e.path}`);
+        }
+        if (e.kind !== "file") continue;
+        const base = c.read("base", e.path);
+        const ours = c.read("ours", e.path);
+        const theirs = fresh.get(e.path)?.data;
+        if (theirs === undefined) {
+          const ratio = (p: string) => new SequenceMatcher<string>(p, e.path).ratio();
+          const maybe = added.map((p) => [-ratio(p), p] as const).sort((x, y) => x[0] - y[0]).slice(0, 3).map(([, p]) => p);
+          report.gone.push({ change: c.name, path: e.path, maybe });
+          continue;
+        }
+        if (base !== null && bytesEqual(theirs, base)) continue;
+        if (base === null || ours === null) throw new Error(`${c.name} has no ${base === null ? "base" : "ours"} copy of ${e.path}`);
+        if (!(isText(base) && isText(ours) && isText(theirs))) {
+          report.conflicts.push({ change: c.name, path: e.path, detail: "binary file changed upstream" });
+          continue;
+        }
+        const { merged, conflicts } = mergeFile(ours, base, theirs);
+        c.write("ours", e.path, merged);
+        c.write("base", e.path, theirs);
+        if (conflicts) report.conflicts.push({ change: c.name, path: e.path, count: conflicts });
+        else report.merged.push({ change: c.name, path: e.path });
       }
-      if (e.kind !== "file") continue;
-      const base = c.read("base", e.path);
-      const ours = c.read("ours", e.path);
-      const theirs = fresh.get(e.path)?.data;
-      if (theirs === undefined) {
-        const ratio = (p: string) => new SequenceMatcher<string>(p, e.path).ratio();
-        const maybe = added.map((p) => [-ratio(p), p] as const).sort((x, y) => x[0] - y[0]).slice(0, 3).map(([, p]) => p);
-        report.gone.push({ change: c.name, path: e.path, maybe });
-        continue;
-      }
-      if (base !== null && bytesEqual(theirs, base)) continue;
-      if (base === null || ours === null) throw new Error(`${c.name} has no ${base === null ? "base" : "ours"} copy of ${e.path}`);
-      if (!(isText(base) && isText(ours) && isText(theirs))) {
-        report.conflicts.push({ change: c.name, path: e.path, detail: "binary file changed upstream" });
-        continue;
-      }
-      const { merged, conflicts } = mergeFile(ours, base, theirs);
-      c.write("ours", e.path, merged);
-      c.write("base", e.path, theirs);
-      if (conflicts) report.conflicts.push({ change: c.name, path: e.path, count: conflicts });
-      else report.merged.push({ change: c.name, path: e.path });
     }
-  }
 
-  book.writeLock(u.name, commit, tree);
+    book.writeLock(u.name, commit, tree);
+  } catch (e) {
+    if (!held) u.unkeep(commit); // the commit did not become the pin
+    throw e;
+  }
   process.stdout.write(`${u.name}: pinned ${commit.slice(0, 7)}. ${report.upstream.length} upstream files changed, `
     + `${report.merged.length} of ours merged cleanly, ${report.conflicts.length} conflicts, ${report.gone.length} gone.\n`);
   return report;
