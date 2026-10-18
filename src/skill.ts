@@ -6,8 +6,9 @@ import { assemble, describe, handEdits } from "./assemble.ts";
 import { Book } from "./book.ts";
 import { readChanges } from "./changes.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, isDir, isSymlink, lexists, mkdirs, readBytes, readText, writeText } from "./lib/fs.ts";
+import { exists, isDir, isSymlink, lexists, mkdirs, readBytes, writeText } from "./lib/fs.ts";
 import { git } from "./lib/proc.ts";
+import { bytesEqual, encode } from "./lib/text.ts";
 import { cmdRecord } from "./record.ts";
 import { setting } from "./settings.ts";
 
@@ -23,11 +24,17 @@ const AGENTS: ReadonlyMap<string, { link: string | null }> = new Map([
 
 const FILE = `.agents/skills/${NAME}/SKILL.md`;
 const LINK = `.claude/skills/${NAME}`;
+const SKILL = encode(skill);
+
+/** SKILL.md and the folders above it. A link at any of them would send a write out of the repo. */
+const THROUGH = [".agents", ".agents/skills", `.agents/skills/${NAME}`, FILE];
 
 const pointsAt = (at: string, target: string) => isSymlink(at) && readlinkSync(at) === relative(dirname(at), target);
 
 const folderNote = (root: string, at: string) =>
   `patchbook: ${relative(root, at)} is a folder, so the skill there was left as it is\n`;
+
+const linkNote = (p: string) => `patchbook: ${p} is a symlink, and install won't write through a link\n`;
 
 /**
  * Point `at` to `target`, unless a real folder is already there.
@@ -68,6 +75,11 @@ export function installSkill(book: Book): { changed: string[] } | null {
   }
   const known = agents.flatMap((a) => AGENTS.get(a) ?? []);
   if (!known.length) return null;
+  const linked = symlinked(book);
+  if (linked.length) {
+    for (const p of linked) process.stderr.write(linkNote(p));
+    return null;
+  }
   const dir = join(book.root, ".agents", "skills", NAME);
   const file = join(book.root, FILE);
   const changed: string[] = [];
@@ -79,7 +91,7 @@ export function installSkill(book: Book): { changed: string[] } | null {
       const at = join(book.root, folder, NAME);
       if (link(book.root, at, dir, undo)) changed.push(at);
     }
-    if (!exists(file) || readText(file) !== skill) {
+    if (!exists(file) || !bytesEqual(readBytes(file), SKILL)) {
       writeText(file, skill);
       changed.unshift(file);
     }
@@ -97,7 +109,7 @@ const ownsSkill = (p: string) => p === FILE || p === LINK;
 
 function installed(book: Book, p: string): boolean {
   const at = join(book.root, p);
-  if (p === FILE) return exists(at) && readText(at) === skill;
+  if (p === FILE) return exists(at) && bytesEqual(readBytes(at), SKILL);
   return pointsAt(at, join(book.root, ".agents", "skills", NAME));
 }
 
@@ -121,21 +133,25 @@ function wanted(book: Book): string[] {
   return known.length ? [FILE, ...known.flatMap(({ link: folder }) => (folder ? [`${folder}/${NAME}`] : []))] : [];
 }
 
-/** The link paths that are real folders, which install leaves as they are. */
+/** The paths on the way to SKILL.md that are links. Nothing is written through them. */
+const symlinked = (book: Book) => (wanted(book).length ? THROUGH.filter((p) => isSymlink(join(book.root, p))) : []);
+
+/** The paths an install would write that are real folders. `skill install` refuses them; clone and init leave them. */
 const folders = (book: Book) =>
-  wanted(book).filter((p) => p !== FILE && !isSymlink(join(book.root, p)) && isDir(join(book.root, p)));
+  wanted(book).filter((p) => !isSymlink(join(book.root, p)) && isDir(join(book.root, p)));
 
 /** The paths an install would replace that no commit keeps: those with uncommitted changes, and those git ignores. */
 function unkept(book: Book): { uncommitted: string[]; ignored: string[] } {
-  const found: { uncommitted: string[]; ignored: string[] } = { uncommitted: [], ignored: [] };
+  const uncommitted: string[] = [];
+  const ignored: string[] = [];
   for (const p of wanted(book)) {
     if (!lexists(join(book.root, p)) || installed(book, p)) continue;
     const status = git(["status", "--porcelain", "--ignored", "--untracked-files=all", "--", p],
       { cwd: book.root, check: false });
-    if (status.startsWith("!!")) found.ignored.push(p);
-    else if (status) found.uncommitted.push(p);
+    if (status.startsWith("!!")) ignored.push(p);
+    else if (status) uncommitted.push(p);
   }
-  return found;
+  return { uncommitted, ignored };
 }
 
 export async function cmdSkill(): Promise<number> {
@@ -150,6 +166,11 @@ export async function cmdSkill(): Promise<number> {
   if (problems.length) {
     for (const p of problems) process.stderr.write(describe(p) + "\n");
     throw new Fail(`${problems.length} problems; nothing installed. \`patchbook status\` lists them.`);
+  }
+  const linked = symlinked(book);
+  if (linked.length) {
+    for (const p of linked) process.stderr.write(linkNote(p));
+    throw new Fail(`the update skill was not installed at ${linked.join(", ")}`);
   }
   const blocked = folders(book);
   if (blocked.length) {
