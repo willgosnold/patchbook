@@ -1,5 +1,5 @@
 // Has an upstream moved, and moving the pins: carrying every change forward with git merge-file.
-import { lstatSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { Book } from "./book.ts";
@@ -82,7 +82,8 @@ export async function cmdSync(args: { name: string | null; ref: string | null })
   if (args.ref && !args.name && book.upstreams.length > 1) throw new Fail("name the upstream to sync to a ref: patchbook sync <name> <ref>");
   const targets = args.name ? [book.upstream(args.name)] : book.upstreams;
   const changes = readChanges(book, []);
-  for (const u of targets) recover(book, u);
+  const tore = (u: Upstream) => lexists(join(journal(book, u), "lock"));
+  for (const u of [...targets.filter(tore), ...targets.filter((u) => !tore(u))]) recover(book, u);
   const path = join(book.dir, "last-sync.json");
   const reports = savedReports(path);
   const save = () => {
@@ -241,18 +242,20 @@ function recover(book: Book, u: Upstream): void {
   const j = journal(book, u);
   const pin = join(j, "pin");
   if (exists(pin)) {
-    const { from, to, added, vendor: path, copy }: Journal = JSON.parse(readText(pin));
+    let record: Journal;
+    try {
+      record = JSON.parse(readText(pin));
+    } catch {
+      throw stuck(book, u, "its record can't be read");
+    }
+    const { from, to, added, vendor: path, copy } = record;
     const now = locked(u);
-    const torn = now === null && lexists(join(j, "lock"));
+    const wrote = lexists(join(j, "lock"));
+    const torn = now === null && wrote;
     if (now === to) return drop(j);
     if (now !== from && !torn) {
-      if (now !== null) release(book, u, added);
-      const held = [
-        lexists(join(j, "old")) && "old/ holds the vendored copy as it was",
-        lexists(join(j, "before")) && "before/ holds the change files as they were",
-      ].filter(Boolean);
-      throw new Fail(`${relative(book.root, j)} holds a sync of ${u.name} that stopped partway, but upstream.lock has changed since. `
-        + (held.length ? `In it, ${held.join(", and ")}. Put back what you need, then delete the folder.` : "Delete the folder."));
+      if (now !== null && !wrote) release(book, u, added);
+      throw stuck(book, u, "upstream.lock has changed since");
     }
     const before = join(j, "before");
     const saved = lexists(before) ? readdirSync(before, { recursive: true, encoding: "utf8" }) : [];
@@ -277,8 +280,18 @@ function recover(book: Book, u: Upstream): void {
   drop(j);
 }
 
+function stuck(book: Book, u: Upstream, why: string): Fail {
+  const j = journal(book, u);
+  const held = [
+    lexists(join(j, "old")) && "old/ holds the vendored copy as it was",
+    lexists(join(j, "before")) && "before/ holds the change files as they were",
+  ].filter(Boolean);
+  return new Fail(`${relative(book.root, j)} holds a sync of ${u.name} that stopped partway, but ${why}. `
+    + (held.length ? `In it, ${held.join(", and ")}. Put back what you need, then delete the folder.` : "Delete the folder."));
+}
+
 function release(book: Book, u: Upstream, added: string): void {
-  if (added && !book.upstreams.some((o) => o.pin().commit === added)) u.unkeep(added);
+  if (added && !book.upstreams.some((o) => o.remote === u.remote && o.pin().commit === added)) u.unkeep(added);
 }
 
 function putBack(p: string, was: File): void {
@@ -287,6 +300,7 @@ function putBack(p: string, was: File): void {
   mkdirs(dirname(p));
   if (isSymlink(p)) unlinkSync(p);
   writeFileSync(p, was.data);
+  if (readDisk(p).mode !== was.mode) chmodSync(p, was.mode);
 }
 
 function drop(j: string): void {
