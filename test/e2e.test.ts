@@ -369,6 +369,48 @@ test("test_clone_drops_an_inherited_patchbook_that_is_a_dangling_link", () => {
   }
 }, TIMEOUT);
 
+const AWKWARD = (word: string): string => `${word}"q\\b😀`;
+
+const upstreamsOf = (config: string): Record<string, unknown>[] => (Bun.TOML.parse(config) as { upstream: Record<string, unknown>[] }).upstream;
+
+test("test_a_folder_init_writes_awkward_values_so_they_read_back_as_given", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, AWKWARD("up")));
+    up.write(`${AWKWARD("plug")}/a.txt`, "a\n");
+    up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    repo.write("README.md", "mine\n");
+    repo.commit("start");
+    const name = AWKWARD("name");
+    const output = ["--output-from", AWKWARD("from"), "--output-to", AWKWARD("out") + "\tz"];
+    t.pb(["init", "--upstream", up.path, "--name", name, "--path", AWKWARD("plug"), "--vendor", AWKWARD("vend"), ...output], { cwd: repo.path });
+    const config = Bun.TOML.parse(repo.read(".patchbook/config.toml")) as { upstream: Record<string, unknown>[]; output: Record<string, unknown> };
+    expect(config.upstream[0]).toMatchObject({ name, remote: up.path, path: AWKWARD("plug"), vendor: AWKWARD("vend") });
+    expect(config.output).toEqual({ from: AWKWARD("from"), to: AWKWARD("out") + "\tz" });
+    expect(t.pb(["status"], { cwd: repo.path }).stdout).toContain(name);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_a_fork_init_writes_awkward_values_so_they_read_back_as_given", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, AWKWARD("up")));
+    up.write("app.txt", "one\n");
+    const base = up.commit("start");
+    sh(["git", "clone", "-q", up.path, "fork"], { cwd: t.tmp });
+    const name = AWKWARD("name");
+    const init = t.pb(["init", "--upstream", up.path, "--name", name], { cwd: join(t.tmp, "fork") });
+    expect(init.stdout).toContain(`pinned upstream at ${base.slice(0, 7)}`);
+    expect(upstreamsOf(read(join(t.tmp, "fork/.patchbook/config.toml")))[0]).toMatchObject({ name, remote: up.path });
+    expect(t.pb(["status"], { cwd: join(t.tmp, "fork") }).stdout).toContain("no problems");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("test_init_into_patchbook_names_output_to_not_mount", () => {
   const t = new Case();
   try {
@@ -2403,6 +2445,53 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(t.config(["intent.model"])).toContain('"gpt-6-sol"');
     expect(t.pb(["config", "--project", "store.path", "/x"], { cwd: t.fork.path, code: 1 }).stderr)
       .toContain("can only be set in the user config");
+  });
+
+  forkTest("test_settings_with_awkward_text_read_back_as_given", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    const model = `sm😀ke "q" \\b \x01 \x7f é`;
+    t.config(["intent.model", model]);
+    expect((Bun.TOML.parse(read(user)) as { intent: { model: string } }).intent.model).toBe(model);
+    expect(t.config(["intent.model"])).toContain("user");
+    const agents = ['a😀', 'b"c', "d\\e"];
+    t.config(["start.agents", agents.join(",")]);
+    expect((Bun.TOML.parse(read(user)) as { start: { agents: string[] } }).start.agents).toEqual(agents);
+    expect(t.config(["start.agents"])).toContain("user");
+  });
+
+  forkTest("test_track_writes_awkward_values_so_they_read_back_as_given", (t) => {
+    const lib = new Repo(join(t.tmp, AWKWARD("lib")));
+    lib.write(`${AWKWARD("plug")}/a.txt`, "a\n");
+    lib.commit("lib");
+    const name = AWKWARD("name");
+    const mount = AWKWARD("mount");
+    t.pb(["track", name, lib.path, "--path", AWKWARD("plug"), "--mount", mount, "--vendor", AWKWARD("vend")], { cwd: t.fork.path });
+    const tracked = upstreamsOf(read(join(t.fork.path, ".patchbook/config.toml"))).at(-1);
+    expect(tracked).toMatchObject({ name, remote: lib.path, path: AWKWARD("plug"), mount, vendor: AWKWARD("vend") });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain(name);
+  });
+
+  forkTest("test_a_project_config_that_is_not_toml_is_named_in_the_error", (t) => {
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    writeFileSync(config, 'layout = "fork"\n[[upstream]\nname = "x"\n');
+    for (const args of [["status"], ["build"], ["config"]]) {
+      const out = t.pb(args, { cwd: t.fork.path, code: 1 });
+      expect(out.stderr).toContain(`${config} isn't valid TOML`);
+      expect(out.stderr).not.toContain("SyntaxError");
+      expect(out.stderr).not.toContain("    at ");
+    }
+  });
+
+  forkTest("test_a_user_config_that_is_not_toml_is_named_in_the_error", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    writeFileSync(user, "start.agents = [\n");
+    for (const args of [["config"], ["config", "intent.model"], ["status"]]) {
+      const out = t.pb(args, { cwd: t.fork.path, code: 1 });
+      expect(out.stderr).toContain(`${user} isn't valid TOML`);
+      expect(out.stderr).not.toContain("SyntaxError");
+      expect(out.stderr).not.toContain("    at ");
+    }
   });
 
   forkTest("test_hook_off_in_the_project", (t) => {
