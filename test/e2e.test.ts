@@ -1448,6 +1448,7 @@ test("test_init_replaces_a_skill_file_that_is_not_utf8", () => {
     sh(["git", "clone", "-q", up.path, join(t.tmp, "mine")], { cwd: t.tmp });
     const mine = new Repo(join(t.tmp, "mine"));
     writeBytes(mine, SKILL_FILE, NOT_UTF8);
+    mine.commit("a skill that is not text");
     Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
     const out = t.pb(["init", "--upstream", up.path], { cwd: mine.path });
     expect(out.stderr).not.toContain("TypeError");

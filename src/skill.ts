@@ -193,7 +193,7 @@ function unkept(book: Book): { uncommitted: string[]; ignored: string[] } {
   const ignored: string[] = [];
   const blocked = folders(book);
   for (const p of wanted(book)) {
-    if (!lexists(join(book.root, p)) || installed(book, p) || blocked.includes(p)) continue;
+    if (!lexists(join(book.root, p)) || blocked.includes(p) || installed(book, p)) continue;
     const status = git(["status", "--porcelain", "--ignored", "--untracked-files=all", "--", p],
       { cwd: book.root, check: false });
     if (status.startsWith("!!")) ignored.push(p);
