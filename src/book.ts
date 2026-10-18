@@ -5,7 +5,7 @@ import type { Hooks, Problem } from "./api.ts";
 import { installHook } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isDir, isMode, lexists, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
+import { exists, type File, isDir, isMode, isSymlink, lexists, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
 import { dumps, loads } from "./lib/json.ts";
 import { git } from "./lib/proc.ts";
 import { length, type PyValue, sortedBy, strRepr } from "./lib/py.ts";
@@ -133,18 +133,19 @@ function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly str
   if (rel === ".") throw new Fail(`[output] to ${shown} is the repo root. Name a folder inside the repo.`);
   if (under(rel, "..")) throw new Fail(`[output] to ${shown} is outside the repo. Name a folder inside it.`);
   if (under(rel, PB)) throw new Fail(`[output] to ${shown} is inside ${PB}. patchbook never builds into ${PB}, so those files would never land. Change [output] to.`);
-  if (under(rel, GIT)) throw new Fail(`[output] to ${shown} is inside ${GIT}. patchbook never builds into ${GIT}, so those files would never land. Change [output] to.`);
   if (lexists(dir) && !exists(dir)) throw new Fail(`[output] to ${shown} is a link to nothing. Name a folder inside the repo.`);
+  if (isSymlink(dir)) throw new Fail(`[output] to ${shown} is a link, and a build would replace it with a folder. Name the folder it points to.`);
   if (exists(dir) && !isDir(dir)) throw new Fail(`[output] to ${shown} is not a folder. Name a folder inside the repo.`);
   for (let up = dirname(dir); up !== root && up !== dirname(up); up = dirname(up)) {
     const name = relative(root, up);
     if (lexists(up) && !exists(up)) throw new Fail(`[output] to ${shown} is under ${name}, which is a link to nothing. Name a folder inside the repo.`);
+    if (isSymlink(up)) throw new Fail(`[output] to ${shown} is under ${name}, which is a link. Name a folder that is not behind a link.`);
     if (exists(up) && !isDir(up)) throw new Fail(`[output] to ${shown} is under ${name}, which is not a folder. Name a folder inside the repo.`);
   }
   for (const v of vendors) {
     const vendor = relative(resolve(root), resolve(pjoin(root, v)));
     if (vendor === ".") throw new Fail(`[output] to ${shown} overlaps the vendored copy, which is the repo root. Name another folder.`);
-    if (under(rel, vendor) || under(vendor, rel)) throw new Fail(`[output] to ${shown} overlaps the vendored copy ${vendor}. Name another folder.`);
+    if (under(rel, vendor)) throw new Fail(`[output] to ${shown} overlaps the vendored copy ${vendor}. Name another folder.`);
   }
 }
 
@@ -250,7 +251,7 @@ export class Book {
     }
     for (const u of this.upstreams) {
       const out = this.outputFolder(u);
-      const own = out === null ? undefined : [PB, ".git"].find((reserved) => under(out, reserved));
+      const own = out === null ? undefined : under(out, PB) ? PB : out.split("/").includes(GIT) ? GIT : undefined;
       if (own) {
         const where = this.layout.kind === "fork" ? `mounts at ${shown(u.mount)}` : `builds into ${shown(out ?? "")}`;
         throw new Fail(`${u.name} ${where}, inside ${own}. patchbook never builds into ${own}, so those files would never land. Change ${this.outputKnob(u)}.`);

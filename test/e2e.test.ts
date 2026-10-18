@@ -1332,12 +1332,16 @@ describe("VendorTest", () => {
     extra.write("a.md", "a\n");
     extra.commit("a");
     t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
-    for (const to of ["vendor", "vendor/extra", "vendor/extra/skills"]) {
+    for (const to of ["vendor/extra", "vendor/extra/skills"]) {
       setOutputFolder(t, to);
       const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
       expect(out.stderr).toContain("overlaps the vendored copy vendor/extra");
       expect(t.repo.read("vendor/extra/a.md")).toBe("a\n");
     }
+    setOutputFolder(t, "vendor");
+    t.pb(["build", "--force"], { cwd: t.repo.path });
+    expect(t.repo.read("vendor/extra/a.md")).toBe("a\n");
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
   });
 
   test("test_init_rejects_an_empty_output_folder", () => {
@@ -1368,7 +1372,7 @@ describe("VendorTest", () => {
     for (const to of [".git", ".git/hooks"]) {
       setOutputFolder(t, to);
       const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
-      expect(out.stderr).toContain("is inside .git");
+      expect(out.stderr).toContain("inside .git");
       expect(existsSync(join(t.repo.path, ".git/hello"))).toBe(false);
       expect(existsSync(join(t.repo.path, ".git/hooks/hello"))).toBe(false);
     }
@@ -1524,8 +1528,8 @@ describe("VendorTest", () => {
     extra.commit("a");
     const config = join(t.repo.path, ".patchbook/config.toml");
     const before = read(config);
-    const out = t.pb(["track", "extra", extra.path, "--vendor", "skills/extra"], { cwd: t.repo.path, code: 1 });
-    expect(out.stderr).toContain("overlaps the vendored copy skills/extra");
+    const out = t.pb(["track", "extra", extra.path, "--vendor", "skills"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("overlaps the vendored copy skills");
     expect(read(config)).toBe(before);
     t.pb(["track", "extra", extra.path], { cwd: t.repo.path });
   });
