@@ -4,6 +4,8 @@ import {
   realpathSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative as rel, resolve as absolute } from "node:path";
+import { getSystemErrorMessage } from "node:util";
+import { Fail } from "./fail.ts";
 import { compareParts } from "./py.ts";
 import { bytesEqual, decode, decodeReplace, encode } from "./text.ts";
 
@@ -88,7 +90,30 @@ const universal = (text: string) => text.replace(/\r\n?/g, "\n");
 export const readText = (p: string) => universal(decode(readFileSync(p)));
 /** `path.read_text(errors="replace")`. */
 export const readTextReplace = (p: string) => universal(decodeReplace(readFileSync(p)));
-export const writeText = (p: string, text: string) => writeFileSync(p, encode(text));
+
+/** A write the filesystem refused. It is a `Fail`, so the CLI prints it, and it keeps the errno, so a caller that can go on without the file still catches it as an errno error. */
+export class WriteFail extends Fail {
+  constructor(path: string, readonly errno: number) {
+    super(`couldn't write ${path}: ${getSystemErrorMessage(errno)}`);
+  }
+}
+
+type FsError = Error & { errno: number; syscall: string; path: string; dest?: string };
+
+/** Only an error from a filesystem call carries both a syscall and a path. A failed spawn or a bug in patchbook does not, so it still surfaces as itself. */
+const isFsError = (e: unknown): e is FsError =>
+  e instanceof Error && "errno" in e && typeof e.errno === "number" && "syscall" in e && typeof e.syscall === "string" && "path" in e && typeof e.path === "string";
+
+function writing<T>(write: () => T): T {
+  try {
+    return write();
+  } catch (e) {
+    if (!isFsError(e)) throw e;
+    throw new WriteFail(e.dest ?? e.path, e.errno);
+  }
+}
+
+export const writeText = (p: string, text: string) => writing(() => writeFileSync(p, encode(text)));
 export const readBytes = (p: string): Uint8Array => readFileSync(p);
 export const mkdirs = (p: string) => mkdirSync(p, { recursive: true });
 
@@ -98,13 +123,15 @@ export function readDisk(p: string): File {
 }
 
 export function writeDisk(p: string, { data, mode }: File): void {
-  mkdirs(dirname(p));
-  if (isSymlink(p) || existsSync(p)) unlinkSync(p);
-  if (mode === LINK) symlinkSync(decode(data), p);
-  else {
-    writeFileSync(p, data);
-    chmodSync(p, mode);
-  }
+  writing(() => {
+    mkdirs(dirname(p));
+    if (isSymlink(p) || existsSync(p)) unlinkSync(p);
+    if (mode === LINK) symlinkSync(decode(data), p);
+    else {
+      writeFileSync(p, data);
+      chmodSync(p, mode);
+    }
+  });
 }
 
 /** `sorted(Path(dir).rglob("*" + suffix))`, relative to dir, in pathlib's order: by path component. A folder it can't read is skipped, and listed in `unreadable` when given. */
