@@ -156,12 +156,13 @@ const prefixes = (p: string) => p.split("/").map((_, i, parts) => parts.slice(0,
 
 /**
  * The paths an install writes through that are links: every folder above a path it writes, and SKILL.md.
- * The link paths are left out, since install owns those, and so is a link path that is the skill folder already.
+ * The link paths are left out, since install owns those. A link path that is the skill folder already
+ * leaves out its parent too, which is the shared link, but its own folders above still count.
  */
 function symlinked(book: Book): string[] {
   const through = wanted(book).flatMap((p) => {
     if (p === FILE) return prefixes(p);
-    return sharesSkills(book.root, p) ? [] : prefixes(p).slice(0, -1);
+    return prefixes(p).slice(0, sharesSkills(book.root, p) ? -2 : -1);
   });
   return Array.from(new Set(through)).filter((p) => isSymlink(join(book.root, p)));
 }
