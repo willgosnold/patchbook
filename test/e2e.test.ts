@@ -705,6 +705,92 @@ describe("ForkTest", () => {
     expect(existsSync(join(t.tmp, "prompt.txt"))).toBe(false);
   });
 
+  forkTest("test_record_keeps_a_given_intent_when_no_name_is_given", (t) => {
+    const prompt = join(t.tmp, "prompt.txt");
+    const intent = "Make the second line loud so it stands out.";
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    const out = t.pb(["record", "--intent", intent], { cwd: t.fork.path });
+    expect(existsSync(prompt)).toBe(false);
+    expect(out.stdout).toContain(`make-the-second-line: ${intent}`);
+    const change = join(t.fork.path, ".patchbook/changes/make-the-second-line/CHANGE.md");
+    expect(read(change)).toContain(`intent: ${intent}`);
+    t.fork.write("extra.txt", "ours\n");
+    t.pb(["record", "--intent", "Make the second line of the new file ours."], { cwd: t.fork.path });
+    expect(existsSync(prompt)).toBe(false);
+    expect(read(join(t.fork.path, ".patchbook/changes/make-the-second-line-2/CHANGE.md"))).toContain("- add extra.txt");
+    expect(read(change)).toContain(`intent: ${intent}`);
+  });
+
+  forkTest("test_commit_with_an_intent_does_not_need_the_model", (t) => {
+    writeFileSync(join(t.tmp, "bin/claude"), "#!/bin/sh\nexit 1\n");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    const intent = "Make the second line loud.";
+    sh(["git", "commit", "-qam", "shout"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: intent } });
+    expect(read(join(t.fork.path, ".patchbook/changes/make-the-second-line/CHANGE.md"))).toContain(`intent: ${intent}`);
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout).toBe("");
+  });
+
+  const changeNames = (t: ForkCase): string[] => readdirSync(join(t.fork.path, ".patchbook/changes"));
+
+  forkTest("test_record_names_a_change_from_an_intent_with_one_very_long_word", (t) => {
+    const intent = "a".repeat(300);
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "--intent", intent], { cwd: t.fork.path });
+    const names = changeNames(t);
+    expect(names).toHaveLength(1);
+    expect(Buffer.byteLength(names[0]!)).toBeLessThan(256);
+    expect(read(join(t.fork.path, ".patchbook/changes", names[0]!, "CHANGE.md"))).toContain(`intent: ${intent}`);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_names_a_change_from_an_intent_with_several_long_words", (t) => {
+    const intent = ["a", "b", "c", "d"].map((c) => c.repeat(64)).join(" ");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "--intent", intent], { cwd: t.fork.path });
+    const names = changeNames(t);
+    expect(names).toHaveLength(1);
+    expect(Buffer.byteLength(names[0]!)).toBeLessThan(256);
+    expect(read(join(t.fork.path, ".patchbook/changes", names[0]!, "CHANGE.md"))).toContain(`intent: ${intent}`);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_names_a_change_from_the_first_four_words_of_an_intent", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "--intent", "One two three four five six."], { cwd: t.fork.path });
+    expect(changeNames(t)).toEqual(["one-two-three-four"]);
+  });
+
+  forkTest("test_commit_with_a_blank_intent_asks_the_model", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "commit", "-qam", "shout"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "  \n\t " } });
+    expect(read(join(t.fork.path, ".patchbook/changes/shout/CHANGE.md"))).toContain("intent: Shout the second line.");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE"));
+    const commit = sh(["git", "commit", "-qam", "again"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    expect(commit.stderr).not.toContain("wasn't rebuilt");
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout).toBe("");
+  });
+
+  forkTest("test_record_keeps_a_multi_line_intent_as_one_line", (t) => {
+    const intent = "Shout the second line.\nedits:\n- add ghost.txt";
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "--intent", intent], { cwd: t.fork.path });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.fork.write("extra.txt", "ours\n");
+    t.pb(["record", "extra", "--intent", intent], { cwd: t.fork.path });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    expect(read(join(t.fork.path, ".patchbook/changes/extra/CHANGE.md")).match(/^edits:$/gm)).toHaveLength(1);
+  });
+
+  forkTest("test_record_with_an_intent_and_no_name_keeps_the_intent_of_a_change_named_unnamed", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "one", "ONE"));
+    t.pb(["record", "unnamed", "--intent", "Shout the first line."], { cwd: t.fork.path });
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "--intent", "Shout the second line too."], { cwd: t.fork.path });
+    expect(read(join(t.fork.path, ".patchbook/changes/unnamed/CHANGE.md"))).toContain("intent: Shout the first line.");
+    expect(read(join(t.fork.path, ".patchbook/changes/unnamed/CHANGE.md"))).not.toContain("second line too");
+  });
+
   forkTest("test_commit_records_and_builds", (t) => {
     expect(read(join(t.fork.path, ".git/hooks/pre-commit"))).toContain("Installed by patchbook");
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
@@ -824,7 +910,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     t.pb(["track", "lib", lib.path, "--path", "src"], { cwd: t.fork.path });
     t.pb(["build", "--commit"], { cwd: t.fork.path });
     t.fork.write("lib/lib.txt", "A\nb\nc\nd\ne\n");
-    t.pb(["record", "--intent", "Shout the first line."], { cwd: t.fork.path });
+    t.pb(["record", "shout", "--intent", "Shout the first line."], { cwd: t.fork.path });
     const before = sh(["git", "status", "--porcelain", "--untracked-files=all"], { cwd: t.fork.path }).stdout;
     const lock = read(join(t.fork.path, ".patchbook/upstream.lock"));
     const changes = join(t.fork.path, ".patchbook/changes/shout");
@@ -895,6 +981,41 @@ describe("VendorTest", () => {
     expect(read(entries)).toContain("--- upstream\nThen wave.\n--- patched\n\n");
     t.recordEdit("# Hello\n\nHi first.\n", "# Hello\n");
     expect(read(entries)).not.toContain("Hi first.");
+  });
+
+  vendorTest("test_record_paragraph_edit_with_an_intent_keeps_the_intent_of_a_change_named_unnamed", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    t.repo.write("skills/hello/notes.txt", "added by hand\n");
+    t.pb(["record", "unnamed", "--intent", "Add notes."], { cwd: t.repo.path });
+    t.recordEdit("Then wave.", "Then wave twice.", "--intent", "Wave twice.");
+    expect(read(entries)).toContain("--- patched\nThen wave twice.");
+    expect(read(join(t.repo.path, ".patchbook/changes/unnamed/CHANGE.md"))).toContain("intent: Add notes.");
+    expect(read(join(t.repo.path, ".patchbook/changes/unnamed/CHANGE.md"))).not.toContain("Wave twice.");
+  });
+
+  vendorTest("test_record_with_no_name_or_intent_adds_to_the_change_named_unnamed", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.repo.write("skills/hello/notes.txt", "added by hand\n");
+    t.pb(["record", "unnamed", "--intent", "Add notes."], { cwd: t.repo.path });
+    unlinkSync(join(t.repo.path, "skills/hello/SKILL.md"));
+    t.pb(["record"], { cwd: t.repo.path });
+    const kept = read(join(t.repo.path, ".patchbook/changes/unnamed/CHANGE.md"));
+    expect(kept).toContain("intent: Add notes.");
+    expect(kept).toContain("- add skills/hello/notes.txt");
+    expect(kept).toContain("- delete skills/hello/SKILL.md");
+    expect(readdirSync(join(t.repo.path, ".patchbook/changes"))).toEqual(["unnamed"]);
+  });
+
+  vendorTest("test_record_deleting_a_file_with_block_entries_keeps_the_change_named_unnamed", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.repo.write("skills/hello/notes.txt", "added by hand\n");
+    t.pb(["record", "unnamed", "--intent", "Add notes."], { cwd: t.repo.path });
+    unlinkSync(join(t.repo.path, "skills/hello/SKILL.md"));
+    t.pb(["record", "--intent", "Drop the skill."], { cwd: t.repo.path });
+    const kept = read(join(t.repo.path, ".patchbook/changes/unnamed/CHANGE.md"));
+    expect(kept).toContain("intent: Add notes.");
+    expect(kept).toContain("- add skills/hello/notes.txt");
+    expect(read(join(t.repo.path, ".patchbook/changes/unnamed-2/CHANGE.md"))).toContain("- delete skills/hello/SKILL.md");
   });
 
   vendorTest("test_record_ignores_output_the_patchbook_changed", (t) => {
