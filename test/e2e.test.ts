@@ -863,18 +863,29 @@ describe("ForkTest", () => {
     ["copy_source_climbing_out", "copy ../app.txt -> copied.txt"],
     ["move_dest_climbing_out", "move docs/guide.md -> ../guide.md"],
     ["move_source_absolute", "move /docs/guide.md -> guide.md"],
+    ["copy_dest_dot_slash_patchbook_config", "copy app.txt -> ./.patchbook/config.toml"],
+    ["copy_dest_double_slash_patchbook_config", "copy app.txt -> .//.patchbook/config.toml"],
+    ["add_dot_slash_patchbook", "add ./.patchbook/new.md"],
+    ["add_dot_slash", "add ./new.md"],
+    ["add_inner_dot", "add docs/./new.md"],
+    ["delete_double_slash", "delete docs//guide.md"],
+    ["delete_dot", "delete ."],
+    ["move_source_dot_slash", "move ./docs/guide.md -> guide.md"],
   ] as const;
   for (const [name, edit] of escaping) {
     forkTest(`test_${name}_is_invalid_and_nothing_is_read_or_written_outside`, (t) => {
       const change = join(t.fork.path, ".patchbook/changes/esc");
       mkdirNew(join(change, "ours"));
       const path = /^add (\S+)$/.exec(edit)?.[1];
-      if (path) writeFileSync(join(change, "ours", `${path.replace(/^\//, "")}.pb`), "ours\n");
+      if (path) {
+        mkdirSync(dirname(join(change, "ours", path)), { recursive: true });
+        writeFileSync(join(change, "ours", `${path.replace(/^\//, "")}.pb`), "ours\n");
+      }
       writeFileSync(join(change, "CHANGE.md"), `# esc\n\nintent: Reach outside.\n\nedits:\n- ${edit}\n`);
       writeFileSync(join(t.fork.path, ".patchbook/series"), "esc\n");
       const before = tree(t.fork.path);
       const beside = readdirSync(t.tmp).sort();
-      const detail = "must be a path inside the tree, not an absolute path or one that climbs out with ..";
+      const detail = "must be a path inside the tree: not absolute, with no empty, . or .. segment";
       const status = t.pb(["status"], { cwd: t.fork.path, code: 1 });
       expect(status.stdout).toContain(`changes/esc ${edit}`);
       expect(status.stdout).toContain(detail);
