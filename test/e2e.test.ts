@@ -1,7 +1,7 @@
 // End-to-end tests: each one builds a throwaway upstream repo and drives the CLI against it.
 
 import { describe, expect, test } from "bun:test";
-import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { Case, Repo, dedent, lstrip, mkdirNew, partitionHead, replace, sh, words } from "./helpers";
 
@@ -718,18 +718,48 @@ describe("ForkTest", () => {
     }
   });
 
-  forkTest("test_a_fork_cloned_from_a_relative_path_pins_upstream_not_itself", (t) => {
+  forkTest("test_clone_init_and_track_write_a_relative_upstream_path_as_an_absolute_one", (t) => {
+    const up = realpathSync(t.up.path);
+    const remotes = (repo: string): string[] => Array.from(read(join(repo, ".patchbook/config.toml")).matchAll(/^remote = "(.*)"$/gm), (m) => m[1]!);
     const sub = join(t.tmp, "sub");
-    const bare = join(t.tmp, "up.git");
     mkdirSync(sub);
-    sh(["git", "clone", "-q", "--bare", t.up.path, bare], { cwd: t.tmp });
-    t.pb(["clone", "../upstream", "rel"], { cwd: sub });
-    t.pb(["clone", "../up", "up"], { cwd: sub });
+    t.pb(["clone", "../upstream", "cloned"], { cwd: sub });
+    expect(remotes(join(sub, "cloned"))).toEqual([up]);
+    const mine = join(sub, "mine");
+    sh(["git", "clone", "-q", t.up.path, mine], { cwd: t.tmp });
+    mkdirSync(join(mine, "deep"));
+    t.pb(["init", "--upstream", "../../../upstream"], { cwd: join(mine, "deep") });
+    expect(remotes(mine)).toEqual([up]);
+    t.pb(["track", "again", "../../upstream", "--mount", "again"], { cwd: join(t.fork.path, "docs") });
+    expect(remotes(t.fork.path)).toEqual([up, up]);
+  });
+
+  forkTest("test_a_relative_remote_in_config_fails_sync_and_status_and_pins_nothing", (t) => {
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    writeFileSync(config, read(config).replace(`remote = "${t.up.path}"`, 'remote = "../fork"'));
     t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
-    const head = t.up.commit("upstream edit");
-    sh(["git", "push", "-q", bare, "main"], { cwd: t.up.path });
-    for (const fork of ["rel", "up"]) {
-      expect(t.pb(["sync"], { cwd: join(sub, fork) }).stdout).toContain(`pinned ${head.slice(0, 7)}.`);
+    t.up.commit("upstream edit");
+    const lock = t.fork.read(".patchbook/upstream.lock");
+    for (const command of ["sync", "status", "check"]) {
+      const out = t.pb([command], { cwd: t.fork.path, code: 1 });
+      expect(out.stderr).toContain('upstream upstream\'s remote "../fork" is a relative path');
+      expect(out.stderr).toContain("Set remote in .patchbook/config.toml to an absolute path or a URL.");
+    }
+    expect(t.fork.read(".patchbook/upstream.lock")).toBe(lock);
+  });
+
+  forkTest("test_a_url_remote_is_read_and_a_relative_path_is_refused", (t) => {
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    const original = read(config);
+    const status = (remote: string, code: number) => {
+      writeFileSync(config, original.replace(`remote = "${t.up.path}"`, `remote = "${remote}"`));
+      return t.pb(["status"], { cwd: t.fork.path, code });
+    };
+    for (const remote of ["https://example.invalid/up.git", "ssh://example.invalid/up.git", "git@example.invalid:up.git", `file://${t.up.path}`]) {
+      expect(status(remote, 0).stdout).toContain("no problems");
+    }
+    for (const remote of ["up", "./up", "../up", "sub/dir:up"]) {
+      expect(status(remote, 1).stderr).toContain(`remote "${remote}" is a relative path`);
     }
   });
 
