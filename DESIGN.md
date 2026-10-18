@@ -205,13 +205,15 @@ A problem always has `problem`, its kind, first. The other fields depend on the 
 
 ### `.patchbook/last-sync.json`
 
-Written by `patchbook sync` each time at least one upstream moved. Each entry is the report of the latest sync that moved that upstream. An upstream can have no entry, for example one whose files match its pin.
+Written by `patchbook sync`. It has an entry for each upstream in the config that a sync has moved, in config order. Each entry is the report of the latest sync that moved that upstream, so entries can come from different runs. An upstream no sync has moved has no entry.
+
+`sync` writes the file after each upstream it moves, before it moves that upstream's pin, and keeps the entries of the upstreams it did not move. It drops the entry of an upstream no longer in the config, even on a sync that moves nothing. A file that does not parse counts as empty, and the next sync that writes replaces it. To keep only one run's moves, a reader keeps the entries whose `from` is the upstream's pin before that run and whose `to` is its pin in `upstream.lock` after it.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `version` | `1` | |
-| `upstreams.<name>.from` | string or null | The commit pinned before the sync, null before the first. |
-| `upstreams.<name>.to` | string | The commit pinned now. |
+| `upstreams.<name>.from` | string or null | The commit pinned before that sync, null before the first. |
+| `upstreams.<name>.to` | string | The commit that sync pinned. |
 | `upstreams.<name>.upstream` | string list | The files upstream changed, as `files` in `check`. |
 | `upstreams.<name>.merged` | list | `{change, path}` for each file edit that merged without conflict. |
 | `upstreams.<name>.conflicts` | list | `{change, path, count}` for a text file with `count` conflicts in our copy, or `{change, path, detail}` for a binary file. |

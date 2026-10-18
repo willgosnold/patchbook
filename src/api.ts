@@ -57,7 +57,7 @@ export type UpstreamCheck = {
   files: string[];
 };
 
-/** What `patchbook sync` writes to `.patchbook/last-sync.json`: each entry is the report of the latest sync that moved that upstream. */
+/** What `patchbook sync` writes to `.patchbook/last-sync.json`: for each upstream in the config that a sync has moved, the report of the latest sync that moved it. Entries can come from different runs. */
 export type LastSync = {
   version: 1;
   /** By upstream name. */
@@ -67,9 +67,11 @@ export type LastSync = {
 /** A `last-sync.json` from before it had a `version`. It has the shape of version 1. */
 export type UnversionedLastSync = Omit<LastSync, "version">;
 
+/** What one sync did to one upstream. */
 export type SyncReport = {
-  /** The commit pinned before the sync, or null before the first one. */
+  /** The commit pinned before that sync, or null before the first one. */
   from: string | null;
+  /** The commit that sync pinned. */
   to: string;
   /** The files upstream changed, as in `UpstreamCheck.files`. */
   upstream: string[];
