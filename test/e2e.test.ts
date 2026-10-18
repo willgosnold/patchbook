@@ -2641,6 +2641,35 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(read(user)).toBe('[intent]\nmodel = "new"\n   ');
   });
 
+  forkTest("test_config_unset_on_a_byte_order_mark_line_keeps_the_endings_of_the_lines_after_it", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    writeFileSync(user, "﻿hook.enabled = true\nstart.agents = []\r\nintent.model = \"x\"\r\n");
+    t.config(["--unset", "hook.enabled"]);
+    expect(read(user)).toBe("﻿start.agents = []\r\nintent.model = \"x\"\r\n");
+    writeFileSync(user, "﻿");
+    t.config(["intent.model", "new"]);
+    expect(read(user)).toBe('﻿[intent]\nmodel = "new"\n');
+  });
+
+  forkTest("test_config_set_after_a_last_line_comment_puts_the_file_tail_once_after_the_new_line", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    writeFileSync(user, "[intent]\n# none yet  \n\n  ");
+    t.config(["intent.model", "new"]);
+    expect(read(user)).toBe('[intent]\n# none yet\n\nmodel = "new"  \n\n  ');
+  });
+
+  forkTest("test_config_set_on_a_file_with_a_long_run_of_spaces_before_the_end_is_fast", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    writeFileSync(user, `[intent]\nmodel = "old"${" ".repeat(50000)}\n# end\n`);
+    const start = Date.now();
+    t.config(["intent.model", "new"]);
+    expect(Date.now() - start).toBeLessThan(4000);
+    expect(read(user)).toBe('[intent]\nmodel = "new"\n# end\n');
+  });
+
   forkTest("test_config_keeps_each_lines_own_ending_in_a_file_with_mixed_endings", (t) => {
     const user = join(t.tmp, "config/patchbook/config.toml");
     mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
