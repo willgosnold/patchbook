@@ -125,7 +125,10 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   const commit = u.fetch(ref || u.branch);
   const tree = u.treeOf(commit);
   if (tree === pin.tree) {
-    process.stdout.write(`${u.name}: upstream at ${commit.slice(0, 7)} matches the pin (tree ${tree.slice(0, 7)}). Nothing to do.\n`);
+    const rewrite = u.vendor !== null && u.vendorTree(u.vendor).tree !== tree;
+    if (rewrite) rewriteVendor(book, u, u.vendor, pin, u.files(commit), tree);
+    const rest = rewrite ? "Rewrote the vendored copy, which did not." : "Nothing to do.";
+    process.stdout.write(`${u.name}: upstream at ${commit.slice(0, 7)} matches the pin (tree ${tree.slice(0, 7)}). ${rest}\n`);
     return null;
   }
   const raw = u.files(commit);
@@ -172,13 +175,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     begin(book, u, pin, { commit, tree });
     u.keep(commit);
     takeVendor(u.vendor, join(j, "old"));
-    if (u.vendor) {
-      for (const [p, f] of raw) writeDisk(join(u.vendor, p), f);
-      const actual = u.vendorTree(u.vendor).tree;
-      if (actual !== tree) {
-        throw new Fail(`the vendored copy of ${u.name} hashes to ${actual}, not upstream's ${tree}. Does a .gitignore hide upstream files?`);
-      }
-    }
+    if (u.vendor) writeVendor(u, u.vendor, raw, tree);
     saveBefore(book, j, writes.map((w) => w.c.content(w.side, w.path)));
     for (const w of writes) w.c.write(w.side, w.path, w.data);
     beforePin?.(report);
@@ -195,22 +192,46 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   return report;
 }
 
+/** Write the vendored copy again under the pin it no longer matches. Its journal never reaches its `to`, so a kill is undone and the next sync writes it again. */
+function rewriteVendor(book: Book, u: Upstream, vendor: string, pin: Pin, raw: ReadonlyMap<string, File>, tree: string): void {
+  const j = journal(book, u);
+  try {
+    begin(book, u, pin, null);
+    takeVendor(vendor, join(j, "old"));
+    writeVendor(u, vendor, raw, tree);
+  } catch (e) {
+    recover(book, u);
+    throw e;
+  }
+  drop(j);
+}
+
+/** Write upstream's files at the vendor path and check them there, because the repo's ignore rules match by path. */
+function writeVendor(u: Upstream, vendor: string, raw: ReadonlyMap<string, File>, tree: string): void {
+  for (const [p, f] of raw) writeDisk(join(vendor, p), f);
+  const actual = u.vendorTree(vendor).tree;
+  if (actual !== tree) {
+    throw new Fail(`the vendored copy of ${u.name} hashes to ${actual}, not upstream's ${tree}. Does a .gitignore hide upstream files?`);
+  }
+}
+
 const REPORT = "last-sync.json";
 
 const journal = (book: Book, u: Upstream) => join(book.dir, `sync-${encodeURIComponent(u.name)}`);
 
 const spell = (pin: Pin) => `${pin.commit ?? ""} ${pin.tree ?? ""}`;
 
+/** `to` is the lock that marks the sync finished. A rewrite under an unmoved pin writes no lock, so its `to` is "", which no lock spells. */
 type Journal = { from: string; to: string; added: string; vendor: string; copy: boolean };
 
-function begin(book: Book, u: Upstream, from: Pin, to: Required<Pin>): void {
+function begin(book: Book, u: Upstream, from: Pin, to: Required<Pin> | null): void {
   const j = journal(book, u);
   mkdirs(j);
   writeText(join(j, ".gitignore"), "*\n");
   const record: Journal = {
     from: spell(from),
-    to: spell(to),
-    added: u.kept(to.commit) ? "" : to.commit,
+    to: to ? spell(to) : "",
+    added: to && !u.kept(to.commit) ? to.commit : "",
     vendor: u.vendor ? relative(book.root, u.vendor) : "",
     copy: u.vendor !== null && lexists(u.vendor),
   };
