@@ -78,7 +78,7 @@ Ask it, per change: does the result meet the intent on upstream's new text, does
 Merge only when, on the commit you push, `patchbook status` exits 0, `patchbook build` exits 0 and `git status --porcelain --untracked-files=no` then prints nothing, and one of these signals holds:
 
 - **Clean.** Every upstream's report in `.patchbook/last-sync.json` has an empty `replaced_upstream_changed` list. Step 3 found nothing to handle, from a check or from reading upstream's changes. The only commit after the sync commit, if any, is step 4's build commit, and the rebase below brings in nothing. A repair, a retirement, a test fix or a review fix voids it.
-- **Tested.** The config's `[test]` has a `command`, and it exited 0 on the commit you push and left tracked files unchanged (`git status --porcelain --untracked-files=no` prints nothing). After any later commit, a review fix included, do step 4 again.
+- **Tested.** The config's `[test]` has a `command`, and it exited 0 on the commit you push. After any later commit, a review fix included, do step 4 again.
 
 An `instructions` test and the review are not signals, since an agent grades both.
 
@@ -87,7 +87,8 @@ Ask the user instead of merging when that doesn't hold, or when:
 - upstream removed or reworked something an intent depends on, and retiring the change would lose something the user wanted;
 - meeting an intent needs a choice that the intents and the guide don't settle;
 - the review fails twice;
-- a test fails and you can't fix it. A failing `instructions` test counts, even though a passing one is not a signal.
+- a test fails and you can't fix it. A failing `instructions` test counts, even though a passing one is not a signal;
+- a test leaves tracked files changed (`git status --porcelain --untracked-files=no` prints something), even if it passed.
 
 To ask, push the branch (`git push -u origin HEAD`), open a pull request against `$MAIN_BRANCH` and link it with `link_pull_request`, then end with one short message that names the decision. Keep the worktree, since the pull request needs it, and leave the thread active.
 
