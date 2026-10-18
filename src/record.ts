@@ -48,7 +48,7 @@ const NOTHING: Need = { named: false, drafts: [] };
 const NAMED: Need = { named: true, drafts: [] };
 
 type Recording = { target: Change | null; intent: string | null };
-type Done = { touched: Change | null; notes: readonly string[]; waitsForSave?: true; afterSave?: () => void };
+type Done = { touched: readonly Change[]; notes: readonly string[]; waitsForSave?: true; afterSave?: () => void };
 
 type Row<K extends Kind> = { needs(e: Edited<K>): Need; apply(e: Edited<K>, r: Recording): Done };
 
@@ -59,7 +59,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
       const c = r.target!;
       c.edits.push({ kind: "add", path: e.staged });
       c.write("ours", e.staged, e.now.data, e.now.mode);
-      return { touched: c, notes: [`add      ${e.path}`], waitsForSave: true };
+      return { touched: [c], notes: [`add      ${e.path}`], waitsForSave: true };
     },
   },
   "delete-upstream": {
@@ -69,16 +69,32 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
       c.edits.push({ kind: "delete", path: e.staged });
       const entries = e.entries;
       const afterSave = () => { if (entries !== null && exists(entries)) unlinkSync(entries); };
-      return { touched: c, notes: [`delete   ${e.path}`], waitsForSave: true, afterSave };
+      return { touched: [c], notes: [`delete   ${e.path}`], waitsForSave: true, afterSave };
     },
   },
-  "unadd": { needs: () => NOTHING, apply: unadd },
-  "unreplace": { needs: () => NOTHING, apply: unadd },
+  "unadd": {
+    needs: () => NOTHING,
+    apply: (e) => {
+      e.change.edits = e.change.edits.filter((x) => !(x.kind === "add" && x.path === e.staged));
+      e.change.drop("ours", e.staged);
+      return { touched: [e.change], notes: [`unadd    ${e.path} (from ${e.change.name})`], waitsForSave: true };
+    },
+  },
+  "unreplace": {
+    needs: () => NAMED,
+    apply: (e, r) => {
+      const c = r.target!;
+      e.change.edits = e.change.edits.filter((x) => !(x.kind === "replace" && x.path === e.staged));
+      e.change.drop("ours", e.staged);
+      c.edits.push({ kind: "delete", path: e.staged });
+      return { touched: [e.change, c], notes: [`delete   ${e.path} (replace removed from ${e.change.name})`], waitsForSave: true };
+    },
+  },
   "update-ours": {
     needs: () => NOTHING,
     apply: (e) => {
       e.change.write("ours", e.staged, e.now.data, recordedMode(e.now.mode, e.built.mode));
-      return { touched: e.change, notes: [`update   ${e.path} (in ${e.change.name})`] };
+      return { touched: [e.change], notes: [`update   ${e.path} (in ${e.change.name})`] };
     },
   },
   "file-edit": {
@@ -87,34 +103,28 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
       if (e.to.kind === "owned") {
         const c = e.to.change;
         c.write("ours", e.rel, e.now.data);
-        return { touched: c, notes: [`file     ${e.path}` + (c !== r.target ? ` (in ${c.name})` : "")] };
+        return { touched: [c], notes: [`file     ${e.path}` + (c !== r.target ? ` (in ${c.name})` : "")] };
       }
       const c = r.target!;
       c.edits.push({ kind: "file", path: e.rel });
       c.write("base", e.rel, e.to.base.data);
       c.write("ours", e.rel, e.now.data);
-      return { touched: c, notes: [`file     ${e.path}`], waitsForSave: true };
+      return { touched: [c], notes: [`file     ${e.path}`], waitsForSave: true };
     },
   },
   "paragraph-edit": {
     needs: (e) => ({ named: false, drafts: Array.from(e.plan.entries.values()).filter((d) => d.intent === null) }),
     apply: (e, r) => {
       saveParagraphs(e.plan.path, withIntent(e.plan, r.intent));
-      return { touched: null, notes: e.plan.notes.map(([h, what]) => `entry    ${e.path} [${h}] ${what}`) };
+      return { touched: [], notes: e.plan.notes.map(([h, what]) => `entry    ${e.path} [${h}] ${what}`) };
     },
   },
-  "skip": { needs: () => NOTHING, apply: (e) => ({ touched: null, notes: [`skipped  ${e.path}: ${e.reason}`] }) },
+  "skip": { needs: () => NOTHING, apply: (e) => ({ touched: [], notes: [`skipped  ${e.path}: ${e.reason}`] }) },
 };
 
 const row = <K extends Kind>(e: Edited<K>): Row<K> => KINDS[e.kind];
 
 export const needOf = (e: Edited): Need => row(e).needs(e);
-
-function unadd(e: Edited<"unadd" | "unreplace">): Done {
-  e.change.edits = e.change.edits.filter((x) => !(x.kind === "add" && x.path === e.staged));
-  e.change.drop("ours", e.staged);
-  return { touched: e.change, notes: [`unadd    ${e.path} (from ${e.change.name})`], waitsForSave: true };
-}
 
 export type Snapshot = {
   out: ReadonlyMap<string, File>;
@@ -151,6 +161,10 @@ function sharedSource(s: Snapshot, path: string): Source | null {
 const stillBuilt = (s: Snapshot, rel: string): boolean =>
   Array.from(s.sources).some(([p, src]) => src.kind === "up" && src.path === rel && s.current.has(p));
 
+/** Whether another output on disk is still built from the same ours copy, as a `copy` destination is. */
+const copyOutlives = (s: Snapshot, path: string, src: Extract<Source, { kind: "ours" }>): boolean =>
+  Array.from(s.sources).some(([p, o]) => p !== path && o.kind === "ours" && o.change === src.change && o.path === src.path && s.current.has(p));
+
 const unitKey = (src: Source) => JSON.stringify(src.kind === "ours" ? ["ours", src.change, src.path] : ["up", src.path]);
 
 function classifyOne(s: Snapshot, path: string): Edited {
@@ -166,7 +180,12 @@ function classifyOne(s: Snapshot, path: string): Edited {
   if (src.kind === "ours") {
     const change = s.changes.get(src.change)!;
     const copy = { path, change, staged: src.path };
-    if (now === undefined) return { kind: change.edits.some((e) => e.kind === "add" && e.path === src.path) ? "unadd" : "unreplace", ...copy };
+    if (now === undefined) {
+      const staged = s.prefix + path;
+      // A moved or copied output, or a copy another output still needs, is deleted. Dropping its add or replace would break the move or copy.
+      if (src.path !== staged || copyOutlives(s, path, src)) return { kind: "delete-upstream", path, staged, entries: null };
+      return { kind: change.edits.some((e) => e.kind === "add" && e.path === src.path) ? "unadd" : "unreplace", ...copy };
+    }
     if (decodeReplace(change.read("ours", src.path) ?? new Uint8Array()).search(PLACEHOLDER_HINT) !== -1) {
       return { kind: "skip", path, reason: `its copy in ${change.name} uses placeholders; edit that copy directly` };
     }
@@ -273,20 +292,21 @@ export function record(book: Book, change: string | null, intent: string | null,
   const target = naming.name ? changes.get(naming.name) ?? new Change(naming.name, join(book.dir, "changes", naming.name), naming.intent) : null;
   if (target && given) target.intent = given;
 
-  const touched = new Map<string, Change>(target ? [[target.name, target]] : []);
-  const notes: { text: string; waits: Change | null; after: (() => void) | null }[] = [];
+  const touched = new Map<string, Change>();
+  const notes: { text: string; waits: readonly Change[]; after: (() => void) | null }[] = [];
   const saved = new Set<Change>();
   const finished = new Set<() => void>();
   const printed = () => (naming.said !== null ? naming.said + "\n" : "")
-    + notes.filter((n) => (n.waits === null || saved.has(n.waits)) && (n.after === null || finished.has(n.after))).map((n) => n.text + "\n").join("");
+    + notes.filter((n) => n.waits.every((c) => saved.has(c)) && (n.after === null || finished.has(n.after))).map((n) => n.text + "\n").join("");
   try {
     for (const e of edits) {
       const done = row(e).apply(e, { target, intent: naming.intent });
-      if (done.touched) touched.set(done.touched.name, done.touched);
-      for (const text of done.notes) notes.push({ text, waits: done.waitsForSave ? done.touched : null, after: done.afterSave ?? null });
+      for (const c of done.touched) touched.set(c.name, c);
+      for (const text of done.notes) notes.push({ text, waits: done.waitsForSave ? done.touched : [], after: done.afterSave ?? null });
     }
+    if (target?.edits.length) touched.set(target.name, target);
     for (const c of touched.values()) {
-      if (c.edits.length || c !== target) saveChange(c);
+      saveChange(c);
       saved.add(c);
     }
     if (target?.edits.length && !readSeries(book).includes(target.name)) appendSeries(book, target.name);
