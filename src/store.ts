@@ -66,6 +66,13 @@ export class Upstream {
     if (this.remote.startsWith("-")) {
       throw new Fail(`upstream ${this.name}'s remote ${JSON.stringify(this.remote)} starts with "-", so git would read it as an option.`);
     }
+    const transport = /^(ssh|git)::/.exec(this.remote)?.[1];
+    if (transport) {
+      throw new Fail(
+        `upstream ${this.name}'s remote ${JSON.stringify(this.remote)} names git's own ${transport} transport as a remote helper. `
+          + `git ships no git-remote-${transport} and allows ${transport} always, so it would run whatever git-remote-${transport} is on PATH. Write ${transport}:// instead.`,
+      );
+    }
     if (isLocalPath(this.remote) && !posix.isAbsolute(this.remote)) {
       throw new Fail(
         `upstream ${this.name}'s remote ${JSON.stringify(this.remote)} is a relative path, so it names a different repo from each folder. `
