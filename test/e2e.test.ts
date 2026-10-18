@@ -1,7 +1,7 @@
 // End-to-end tests: each one builds a throwaway upstream repo and drives the CLI against it.
 
 import { describe, expect, test } from "bun:test";
-import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Case, Repo, dedent, lstrip, mkdirNew, partitionHead, replace, sh, words } from "./helpers";
 
@@ -21,6 +21,16 @@ const isExecutable = (p: string): boolean => {
     return true;
   } catch {
     return false;
+  }
+};
+
+const storeOf = (t: Case): string => join(t.tmp, "store/upstreams", readdirSync(join(t.tmp, "store/upstreams"))[0]!);
+const pinOf = (t: { repo: Repo }): string => JSON.parse(read(join(t.repo.path, ".patchbook/upstream.lock"))).plugin.commit;
+const gc = (store: string): void => void sh(["git", "gc", "-q", "--prune=now"], { cwd: store });
+const inStore = (store: string, commit: string): boolean => sh(["git", "cat-file", "-e", `${commit}^{commit}`], { cwd: store, check: false }).code === 0;
+const dropRefs = (store: string): void => {
+  for (const ref of sh(["git", "for-each-ref", "--format=%(refname)"], { cwd: store }).stdout.split("\n").filter(Boolean)) {
+    sh(["git", "update-ref", "-d", ref], { cwd: store });
   }
 };
 
@@ -385,6 +395,29 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(t.fork.read("lib/lib.txt")).toBe("v2\n");
     expect(words(t.fork.read("app.txt"))[1]).toBe("two");
   });
+
+  forkTest("test_sync_changes_nothing_when_the_pin_ref_cannot_be_written", (t) => {
+    const lib = new Repo(join(t.tmp, "lib"));
+    lib.write("src/lib.txt", "a\nb\nc\nd\ne\n");
+    lib.commit("lib");
+    t.pb(["track", "lib", lib.path, "--path", "src"], { cwd: t.fork.path });
+    t.pb(["build", "--commit"], { cwd: t.fork.path });
+    t.fork.write("lib/lib.txt", "A\nb\nc\nd\ne\n");
+    t.pb(["record", "--intent", "Shout the first line."], { cwd: t.fork.path });
+    const before = sh(["git", "status", "--porcelain", "--untracked-files=all"], { cwd: t.fork.path }).stdout;
+    const lock = read(join(t.fork.path, ".patchbook/upstream.lock"));
+    const changes = join(t.fork.path, ".patchbook/changes/shout");
+    const files = (): string[] => sh(["find", ".", "-type", "f", "-exec", "cat", "{}", "+"], { cwd: changes }).stdout.split("\n");
+    const ours = files();
+    lib.write("src/lib.txt", "a\nb\nc\nd\nE\n");
+    const head = lib.commit("lib v2");
+    mkdirSync(join(storeOf(t), "refs/pins"), { recursive: true });
+    writeFileSync(join(storeOf(t), "refs/pins", `${head}.lock`), "");
+    t.pb(["sync", "lib"], { cwd: t.fork.path, code: 1 });
+    expect(files()).toEqual(ours);
+    expect(read(join(t.fork.path, ".patchbook/upstream.lock"))).toBe(lock);
+    expect(sh(["git", "status", "--porcelain", "--untracked-files=all"], { cwd: t.fork.path }).stdout).toBe(before);
+  });
 });
 
 describe("VendorTest", () => {
@@ -519,6 +552,97 @@ describe("VendorTest", () => {
     expect(sh(["git", "cat-file", "-e", `${head}^{commit}`], { cwd: store, check: false }).code).not.toBe(0);
     rmSync(t.up.path, { recursive: true });
     expect(words(t.pb(["upstream", "plugin"], { cwd: t.repo.path }).stdout)).toEqual(["README.md", "agents/helper.md", "skills/hello/SKILL.md"]);
+  });
+
+  vendorTest("test_check_keeps_the_pin_when_the_head_moved_but_not_the_tree", (t) => {
+    const store = storeOf(t);
+    const pin = pinOf(t);
+    dropRefs(store);
+    t.up.write("other/ignored.md", "Still not followed.\n");
+    t.up.commit("outside the path");
+    t.pb(["check"], { cwd: t.repo.path });
+    gc(store);
+    expect(inStore(store, pin)).toBe(true);
+  });
+
+  vendorTest("test_check_keeps_the_pin_it_compares_with", (t) => {
+    const store = storeOf(t);
+    const pin = pinOf(t);
+    dropRefs(store);
+    t.up.write("plugin/README.md", "For everyone.\n");
+    t.up.commit("readme");
+    t.pb(["check"], { cwd: t.repo.path, code: 10 });
+    gc(store);
+    expect(inStore(store, pin)).toBe(true);
+  });
+
+  for (const command of ["status", "build"]) {
+    vendorTest(`test_${command}_keeps_a_pin_it_held_without_a_ref`, (t) => {
+      const store = storeOf(t);
+      const pin = pinOf(t);
+      dropRefs(store);
+      t.pb([command], { cwd: t.repo.path, code: null });
+      gc(store);
+      expect(inStore(store, pin)).toBe(true);
+    });
+  }
+
+  vendorTest("test_sync_keeps_the_pin_it_moves_from", (t) => {
+    const store = storeOf(t);
+    const pin = pinOf(t);
+    dropRefs(store);
+    t.up.write("plugin/README.md", "For everyone.\n");
+    t.up.commit("readme");
+    t.pb(["sync"], { cwd: t.repo.path });
+    gc(store);
+    expect(inStore(store, pin)).toBe(true);
+  });
+
+  vendorTest("test_upstream_diff_keeps_the_previous_pin", (t) => {
+    const store = storeOf(t);
+    t.up.write("plugin/README.md", "For everyone.\n");
+    t.up.commit("readme");
+    t.pb(["sync"], { cwd: t.repo.path });
+    dropRefs(store);
+    t.pb(["upstream", "plugin", "--diff"], { cwd: t.repo.path });
+    gc(store);
+    rmSync(t.up.path, { recursive: true });
+    expect(t.pb(["upstream", "plugin", "--diff"], { cwd: t.repo.path }).stdout).toContain("-For Cursor users.");
+  });
+
+  vendorTest("test_upstream_since_does_not_keep_the_commit_it_is_given", (t) => {
+    const store = storeOf(t);
+    const first = pinOf(t);
+    t.up.write("plugin/README.md", "For everyone.\n");
+    t.up.commit("readme");
+    t.pb(["sync"], { cwd: t.repo.path });
+    dropRefs(store);
+    gc(store);
+    expect(inStore(store, first)).toBe(false);
+    t.pb(["upstream", "plugin", "--since", first], { cwd: t.repo.path });
+    gc(store);
+    expect(inStore(store, first)).toBe(false);
+  });
+
+  vendorTest("test_reads_need_no_write_to_the_pin_ref", (t) => {
+    t.missingScaffoldPatchBuild();
+    const store = storeOf(t);
+    writeFileSync(join(store, "refs/pins", `${pinOf(t)}.lock`), "");
+    const files = t.pb(["upstream", "plugin"], { cwd: t.repo.path });
+    expect(words(files.stdout)).toEqual(["README.md", "agents/helper.md", "skills/hello/SKILL.md"]);
+    expect(files.stderr).toBe("");
+    expect(t.pb(["status"], { cwd: t.repo.path }).stderr).toBe("");
+  });
+
+  vendorTest("test_reads_go_on_when_the_pin_ref_cannot_be_written", (t) => {
+    const store = storeOf(t);
+    const pin = pinOf(t);
+    dropRefs(store);
+    mkdirSync(join(store, "refs/pins"), { recursive: true });
+    writeFileSync(join(store, "refs/pins", `${pin}.lock`), "");
+    const files = t.pb(["upstream", "plugin"], { cwd: t.repo.path });
+    expect(words(files.stdout)).toEqual(["README.md", "agents/helper.md", "skills/hello/SKILL.md"]);
+    expect(files.stderr).toContain(`couldn't keep ${pin.slice(0, 7)} in the store`);
   });
 
   vendorTest("test_vendor_copy_is_guarded", (t) => {
