@@ -313,6 +313,25 @@ test("test_clone_drops_an_inherited_patchbook_that_is_a_dangling_link", () => {
   }
 }, TIMEOUT);
 
+test("test_init_into_patchbook_names_output_to_not_mount", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("a.txt", "a\n");
+    up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    repo.write("README.md", "mine\n");
+    repo.commit("start");
+    const init = t.pb(["init", "--upstream", up.path, "--output-to", ".patchbook/out"], { cwd: repo.path, code: 1 });
+    expect(init.stderr).toContain("inside .patchbook");
+    expect(init.stderr).toContain("Change [output] to.");
+    expect(init.stderr).not.toContain("Change mount");
+    expect(existsSync(join(repo.path, ".patchbook"))).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("test_init_rejects_a_vendor_folder_inside_the_output_before_it_writes_anything", () => {
   const t = new Case();
   try {
@@ -324,6 +343,8 @@ test("test_init_rejects_a_vendor_folder_inside_the_output_before_it_writes_anyth
     repo.commit("start");
     const init = t.pb(["init", "--upstream", up.path, "--output-to", "out", "--vendor", "out/vendored"], { cwd: repo.path, code: 1 });
     expect(init.stderr).toContain("the vendored copy of upstream (out/vendored) overlaps the folder upstream builds into (out)");
+    expect(init.stderr).toContain("Change vendor or [output] to for upstream");
+    expect(init.stderr).not.toContain("mount");
     expect(existsSync(join(repo.path, ".patchbook"))).toBe(false);
     expect(existsSync(join(repo.path, "out"))).toBe(false);
   } finally {
@@ -430,6 +451,78 @@ describe("ForkTest", () => {
       expect(read(config)).toBe(before);
     });
   }
+
+  for (const mount of ["./.patchbook/pbx", "./.git/pbx", "x/../.patchbook", "./.patchbook", "a/../.git/x"]) {
+    forkTest(`test_a_mount_spelled_${mount.replace(/\W/g, "_")}_is_rejected`, (t) => {
+      const lib = new Repo(join(t.tmp, "lib"));
+      lib.write("d/p.md", "p\n");
+      lib.commit("lib");
+      const config = join(t.fork.path, ".patchbook/config.toml");
+      const before = read(config);
+      const tracked = t.pb(["track", "lib", lib.path, "--mount", mount], { cwd: t.fork.path, code: 1 });
+      expect(tracked.stderr).toContain("patchbook never builds into");
+      expect(read(config)).toBe(before);
+    });
+  }
+
+  for (const mount of ["../outside", "x/../../outside", "/abs/outside", ".."]) {
+    forkTest(`test_a_mount_${mount.replace(/\W/g, "_")}_outside_the_repo_is_rejected`, (t) => {
+      const lib = new Repo(join(t.tmp, "lib"));
+      lib.write("d/p.md", "p\n");
+      lib.commit("lib");
+      const config = join(t.fork.path, ".patchbook/config.toml");
+      const before = read(config);
+      const tracked = t.pb(["track", "lib", lib.path, "--mount", mount], { cwd: t.fork.path, code: 1 });
+      expect(tracked.stderr).toContain("must be a folder inside the staged tree");
+      expect(read(config)).toBe(before);
+    });
+  }
+
+  forkTest("test_a_vendor_folder_inside_a_dot_slash_mount_is_rejected", (t) => {
+    const lib = new Repo(join(t.tmp, "lib"));
+    lib.write("a.txt", "a\n");
+    lib.write("vendored/z.txt", "z\n");
+    lib.commit("lib");
+    const bup = new Repo(join(t.tmp, "bup"));
+    bup.write("b.txt", "b\n");
+    bup.commit("bup");
+    t.pb(["track", "bup", bup.path, "--vendor", "lib/vendored"], { cwd: t.fork.path });
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    const before = read(config);
+    const tracked = t.pb(["track", "lib", lib.path, "--mount", "./lib", "--vendor", "./lib/own"], { cwd: t.fork.path, code: 1 });
+    expect(tracked.stderr).toContain("the vendored copy of lib (lib/own) overlaps the folder lib builds into (lib)");
+    expect(read(config)).toBe(before);
+  });
+
+  forkTest("test_a_dot_slash_mount_without_overlap_builds_where_the_plain_one_does", (t) => {
+    const lib = new Repo(join(t.tmp, "lib"));
+    lib.write("a.txt", "a\n");
+    lib.write("vendored/z.txt", "z\n");
+    lib.commit("lib");
+    const bup = new Repo(join(t.tmp, "bup"));
+    bup.write("b.txt", "b\n");
+    bup.commit("bup");
+    t.pb(["track", "bup", bup.path, "--vendor", "lib/vendored"], { cwd: t.fork.path });
+    t.pb(["track", "lib", lib.path, "--mount", "./lib"], { cwd: t.fork.path });
+    const built = t.pb(["build"], { cwd: t.fork.path });
+    expect(built.stderr).toContain("left 1 upstream files out of the build because they would land in a vendored copy: lib/vendored (1).");
+    expect(t.fork.read("lib/a.txt")).toBe("a\n");
+    expect(t.fork.read("lib/vendored/b.txt")).toBe("b\n");
+    expect(existsSync(join(t.fork.path, "lib/vendored/z.txt"))).toBe(false);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_two_upstreams_mounted_at_lib_and_dot_slash_lib_x_are_rejected", (t) => {
+    const a = new Repo(join(t.tmp, "a"));
+    a.write("a.txt", "a\n");
+    a.commit("a");
+    const b = new Repo(join(t.tmp, "b"));
+    b.write("b.txt", "b\n");
+    b.commit("b");
+    t.pb(["track", "a", a.path, "--mount", "lib"], { cwd: t.fork.path });
+    const tracked = t.pb(["track", "b", b.path, "--mount", "./lib/x"], { cwd: t.fork.path, code: 1 });
+    expect(tracked.stderr).toContain("mount at overlapping folders");
+  });
 
   forkTest("test_a_vendor_folder_inside_another_upstreams_mount_leaves_that_upstreams_files_out", (t) => {
     const lib = new Repo(join(t.tmp, "lib"));
