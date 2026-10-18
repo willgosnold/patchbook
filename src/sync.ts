@@ -189,7 +189,6 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   return report;
 }
 
-/** Run a sync's writes under its journal: a throw undoes them, and success deletes the journal. */
 function journaled(book: Book, u: Upstream, from: Pin, to: Required<Pin> | null, write: () => void): void {
   try {
     begin(book, u, from, to);
@@ -201,7 +200,6 @@ function journaled(book: Book, u: Upstream, from: Pin, to: Required<Pin> | null,
   drop(journal(book, u));
 }
 
-/** Write the vendored copy again under the pin it no longer matches. Its journal never reaches its `to`, so a kill is undone and the next sync writes it again. */
 function rewriteVendor(book: Book, u: Upstream, vendor: string, pin: Pin, raw: ReadonlyMap<string, File>, tree: string): void {
   journaled(book, u, pin, null, () => {
     takeVendor(vendor, join(journal(book, u), "old"));
@@ -209,7 +207,7 @@ function rewriteVendor(book: Book, u: Upstream, vendor: string, pin: Pin, raw: R
   });
 }
 
-/** Write upstream's files at the vendor path and check them there, because the repo's ignore rules match by path. */
+/** Checked only in place: git's ignore rules match by path, so the same files hash differently elsewhere. */
 function writeVendor(u: Upstream, vendor: string, raw: ReadonlyMap<string, File>, tree: string): void {
   for (const [p, f] of raw) writeDisk(join(vendor, p), f);
   const actual = u.vendorTree(vendor).tree;
@@ -224,10 +222,8 @@ const journal = (book: Book, u: Upstream) => join(book.dir, `sync-${encodeURICom
 
 const spell = (pin: Pin) => `${pin.commit ?? ""} ${pin.tree ?? ""}`;
 
-/** `to` is the lock that marks the sync finished, or "" for a rewrite under an unmoved pin, which no lock does. A rewrite changes only the vendored copy, so it is undone whatever the lock says. `made` is the highest folder the sync makes for a vendored copy that was not there, or "". */
-type Journal = { from: string; to: string; added: string; vendor: string; copy: boolean; made: string };
+type Journal = { from: string; to: string; rewrite: boolean; added: string; vendor: string; copy: boolean; made: string };
 
-/** What a journal holds besides its record and `.gitignore`. A sync can't start while one is left from an earlier sync, because recovering it would put back the earlier sync's files. */
 const PAYLOADS = ["lock", "pin.tmp", "next", "old", "before"];
 
 function begin(book: Book, u: Upstream, from: Pin, to: Required<Pin> | null): void {
@@ -244,6 +240,7 @@ function begin(book: Book, u: Upstream, from: Pin, to: Required<Pin> | null): vo
   const record: Journal = {
     from: spell(from),
     to: to ? spell(to) : "",
+    rewrite: !to,
     added: to && !u.kept(to.commit) ? to.commit : "",
     vendor: u.vendor ? relative(book.root, u.vendor) : "",
     copy: u.vendor !== null && lexists(u.vendor),
@@ -291,12 +288,12 @@ function recover(book: Book, u: Upstream): void {
     } catch {
       throw stuck(book, u, "its record can't be read");
     }
-    const { from, to, added, vendor: path, copy, made } = record;
+    const { from, to, rewrite, added, vendor: path, copy, made } = record;
     const now = locked(u);
     const wrote = lexists(join(j, "lock"));
     const torn = now === null && wrote;
-    if (now === to) return drop(j);
-    if (to && now !== from && !torn) {
+    if (!rewrite && now === to) return drop(j);
+    if (!rewrite && now !== from && !torn) {
       if (now !== null && !wrote) release(book, u, added);
       throw stuck(book, u, "upstream.lock has changed since");
     }
@@ -316,7 +313,7 @@ function recover(book: Book, u: Upstream): void {
     const old = join(j, "old");
     const newCopy = lexists(old) || !copy;
     if (newCopy) takeVendor(vendor, null);
-    if (vendor && made) unmake(vendor, join(book.root, made));
+    if (vendor && made) removeMadeFolders(vendor, join(book.root, made));
     if (vendor && lexists(old)) {
       mkdirs(dirname(vendor));
       renameSync(old, vendor);
@@ -325,8 +322,7 @@ function recover(book: Book, u: Upstream): void {
   drop(j);
 }
 
-/** Remove the empty folders above a vendored copy, up to the highest one its sync made. */
-function unmake(vendor: string, made: string): void {
+function removeMadeFolders(vendor: string, made: string): void {
   for (let dir = dirname(vendor); dir === made || dir.startsWith(made + sep); dir = dirname(dir)) {
     if (!lexists(dir)) continue;
     if (readdirSync(dir).length) return;
@@ -364,10 +360,13 @@ function putReport(p: string, was: string): void {
   if (!exists(p) || !bytesEqual(readFileSync(p), data)) writeFileSync(p, data);
 }
 
-/** Delete a journal: its record first, so a kill leaves nothing to undo, and its `.gitignore` last, so git ignores what stays. Nothing else in it is needed once the record is gone, so the rest is best effort. A part it can't delete, such as a read-only folder in the old copy, moves into `left/`, out of the next journal's way, and whatever stays waits, ignored, for a later sync to try again. */
 function drop(j: string): void {
   if (lexists(j) && !lstatSync(j).isDirectory()) return rmSync(j);
   rmSync(join(j, "pin"), { force: true });
+  sweep(j);
+}
+
+function sweep(j: string): void {
   try {
     for (const payload of PAYLOADS) {
       try {
@@ -384,7 +383,6 @@ function drop(j: string): void {
   }
 }
 
-/** Make git ignore all of a journal. Writing the file empties it for a moment, and `left/` may hold files then, so it is written only when it says something else. */
 function ignoreAll(j: string): void {
   const p = join(j, ".gitignore");
   if (!exists(p) || readText(p) !== "*\n") writeText(p, "*\n");
