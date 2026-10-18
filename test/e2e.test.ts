@@ -697,6 +697,27 @@ describe("ForkTest", () => {
     expect(words(sh(["git", "rev-list", "--parents", "-n1", "HEAD"], { cwd: fresh.path }).stdout)[2]).toBe(head);
   });
 
+  forkTest("test_a_fork_and_its_clone_keep_the_pin_through_gc_when_upstream_is_gone", (t) => {
+    const origin = join(t.tmp, "origin.git");
+    sh(["git", "init", "-q", "--bare", origin], { cwd: t.tmp });
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    const head = t.up.commit("upstream edit");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.fork.commit("Sync upstream");
+    sh(["git", "push", "-q", origin, "HEAD:main"], { cwd: t.fork.path });
+    sh(["git", "clone", "-q", "-b", "main", origin, "fresh"], { cwd: t.tmp });
+    const fresh = new Repo(join(t.tmp, "fresh"));
+    t.pb(["hook", "install"], { cwd: fresh.path });
+    fresh.write("app.txt", replace(fresh.read("app.txt"), "two", "TWO"));
+    sh(["git", "commit", "-qam", "shout"], { cwd: fresh.path, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    expect(words(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: fresh.path }).stdout)).toContain(".patchbook/changes/shout/CHANGE.md");
+    rmSync(t.up.path, { recursive: true });
+    for (const repo of [t.fork.path, fresh.path]) {
+      gc(repo);
+      expect(t.pb(["status"], { cwd: repo }).stdout).toContain(`apply at upstream ${head.slice(0, 7)}; no problems`);
+    }
+  });
+
   forkTest("test_a_fork_cloned_from_a_relative_path_syncs", (t) => {
     const sub = join(t.tmp, "sub");
     const bare = join(t.tmp, "up.git");
