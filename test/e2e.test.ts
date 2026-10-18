@@ -2619,6 +2619,28 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(read(user)).toBe('[intent]\r# c\rmodel = "new"\r');
   });
 
+  forkTest("test_config_unset_keeps_a_byte_order_mark_and_ignores_a_hash_line_in_the_deleted_string", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    writeFileSync(user, '\uFEFFstart.agents = ["a"]\n[intent]\nmodel = "x"\n');
+    t.config(["--unset", "start.agents"]);
+    expect(read(user)).toBe('\uFEFF[intent]\nmodel = "x"\n');
+    writeFileSync(user, '[hook]\nenabled.t = """\n# inside\n"""\n');
+    t.config(["--unset", "hook.enabled"]);
+    expect(read(user)).toBe("[hook]\n");
+  });
+
+  forkTest("test_config_set_keeps_whitespace_only_lines_at_the_end_of_a_file", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    writeFileSync(user, '[intent]\nmodel = "old"\n  \n\n');
+    t.config(["intent.model", "new"]);
+    expect(read(user)).toBe('[intent]\nmodel = "new"\n  \n\n');
+    writeFileSync(user, '[intent]\nmodel = "old"\n   ');
+    t.config(["intent.model", "new"]);
+    expect(read(user)).toBe('[intent]\nmodel = "new"\n   ');
+  });
+
   forkTest("test_config_keeps_each_lines_own_ending_in_a_file_with_mixed_endings", (t) => {
     const user = join(t.tmp, "config/patchbook/config.toml");
     mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
