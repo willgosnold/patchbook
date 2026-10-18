@@ -5427,6 +5427,18 @@ describe("ForkTest", () => {
     });
   }
 
+  forkTest("test_record_refuses_a_model_reply_whose_intent_is_not_a_string", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    for (const intent of ["null", "7", "true", '{"a": 1}', "[]"]) {
+      writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "model-name", "intent": ${intent}}'\n`);
+      const run = t.pb(["record"], { cwd: t.fork.path, code: 1 });
+      expect(run.stdout).toBe("");
+      expect(run.stderr).toContain("didn't return a usable name and intent");
+      expect(existsSync(join(t.fork.path, ".patchbook/changes/model-name"))).toBe(false);
+      expect(existsSync(join(t.fork.path, ".patchbook/series")) ? read(join(t.fork.path, ".patchbook/series")) : "").not.toContain("model-name");
+    }
+  });
+
   forkTest("test_record_lets_the_model_pick_a_name_the_series_lists_without_a_folder", (t) => {
     writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "ghost", "intent": "Ghost intent."}'\n`);
     writeFileSync(join(t.fork.path, ".patchbook/series"), "ghost\n");
@@ -8773,6 +8785,17 @@ describe("VendorTest", () => {
       chmodSync(changes, 0o755);
     }
     expect(existsSync(entries)).toBe(true);
+  });
+
+  vendorTest("test_record_of_a_paragraph_refuses_a_model_reply_whose_intent_is_not_a_string", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    const before = read(entries);
+    t.repo.write("skills/hello/SKILL.md", replace(t.repo.read("skills/hello/SKILL.md"), "Then wave.", "Then wave twice."));
+    writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "paragraphs", "intent": null}'\n`);
+    const run = t.pb(["record"], { cwd: t.repo.path, code: 1 });
+    expect(run.stdout).toBe("");
+    expect(run.stderr).toContain("didn't return a usable name and intent");
+    expect(read(entries)).toBe(before);
   });
 
   vendorTest("test_record_notes_come_in_path_order", (t) => {
