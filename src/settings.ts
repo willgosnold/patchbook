@@ -151,19 +151,25 @@ export function storeDir(): string {
   return pjoin(base, "upstreams");
 }
 
-/** Set or remove (value null) one setting in a TOML file, keeping its other keys, comments and layout. */
 export function setToml<N extends Name>(path: string, name: N, value: NonNullable<Value<N>> | null): void {
   const text = exists(path) ? readText(path) : "";
   const config = parseToml(text, path);
   const current = lookup(config, name);
   if (current === undefined && value === null) return;
-  const doc = new TomlDocument(text);
-  doc.patch(withSetting(doc.toJsObject, name, value), { trailingNewline: 1, bracketSpacing: false });
-  if (!isDeepStrictEqual(parseToml(doc.toTomlString, path), withSetting(config, name, value))) {
-    throw new Fail(`can't change ${name} in ${path} without changing something else in it. Edit the file by hand.`);
-  }
+  const out = edited(text, config, name, value);
+  if (out === null) throw new Fail(`can't change ${name} in ${path} safely, so the file is left as it was. Edit it by hand.`);
   mkdirs(dirname(path));
-  writeText(path, doc.toTomlString);
+  writeText(path, out);
+}
+
+function edited(text: string, config: Table, name: Name, value: unknown): string | null {
+  try {
+    const doc = new TomlDocument(text);
+    doc.patch(withSetting(doc.toJsObject, name, value), { trailingNewline: 1, bracketSpacing: false });
+    return isDeepStrictEqual(Bun.TOML.parse(doc.toTomlString), withSetting(config, name, value)) ? doc.toTomlString : null;
+  } catch {
+    return null;
+  }
 }
 
 function withSetting(config: Table, name: Name, value: unknown): Table {

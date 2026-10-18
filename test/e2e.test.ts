@@ -2514,16 +2514,18 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(Bun.TOML.parse(read(user))).toEqual({ start: { agents: ["codex"] } });
   });
 
-  forkTest("test_config_refuses_an_edit_that_would_change_something_else", (t) => {
+  forkTest("test_config_refuses_an_edit_it_cannot_make_safely", (t) => {
     const user = join(t.tmp, "config/patchbook/config.toml");
     mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
     for (const [before, model] of [
       ["[intent]\nmodel = 'old'\n", "first\r\nsecond"],
       ['[__proto__]\nkeep = "this"\n\n[intent]\nmodel = "old"\n', "new"],
+      ['[other]\nwhen = 2016-12-31T23:59:60Z\n\n[intent]\nmodel = "old"\n', "new"],
     ]) {
       writeFileSync(user, before!);
-      expect(t.pb(["config", "intent.model", model!], { cwd: t.fork.path, code: 1 }).stderr)
-        .toContain(`can't change intent.model in ${user} without changing something else in it`);
+      const out = t.pb(["config", "intent.model", model!], { cwd: t.fork.path, code: 1 });
+      expect(out.stderr).toContain(`can't change intent.model in ${user} safely, so the file is left as it was`);
+      expect(out.stderr).not.toContain("    at ");
       expect(read(user)).toBe(before!);
     }
   });
