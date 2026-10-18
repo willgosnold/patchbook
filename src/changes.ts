@@ -5,7 +5,7 @@ import type { Problem } from "./api.ts";
 import { Book } from "./book.ts";
 import { unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, foldersWith, isSymlink, LINK, lexists, mkdirs, type Mode, readDisk, readText, writeDisk, writeText } from "./lib/fs.ts";
+import { exists, foldersWith, isDir, isSymlink, LINK, lexists, mkdirs, type Mode, readDisk, readText, writeDisk, writeText } from "./lib/fs.ts";
 import { splitlines, strip, W } from "./lib/py.ts";
 import { decodeReplace } from "./lib/text.ts";
 
@@ -126,10 +126,9 @@ export function appendSeries(book: Book, name: string): void {
   appendFileSync(join(book.dir, "series"), name + "\n");
 }
 
-export function readChanges(book: Book, problems: Problem[]): Change[] {
+export function readChanges(book: Book, problems: Problem[], names: readonly string[] = readSeries(book)): Change[] {
   const changes: Change[] = [];
-  const series = readSeries(book);
-  for (const name of series) {
+  for (const name of names) {
     if (!CHANGE_NAME.test(name)) {
       problems.push({ problem: "invalid", file: "series", detail: notAChangeName(name), refuse: true });
       continue;
@@ -143,7 +142,7 @@ export function readChanges(book: Book, problems: Problem[]): Change[] {
   }
   const listed = new Set(changes.map((c) => c.name));
   for (const name of foldersWith(join(book.dir, "changes"), "CHANGE.md")) {
-    if (listed.has(name) || series.includes(name)) continue;
+    if (listed.has(name) || names.includes(name)) continue;
     problems.push(
       CHANGE_NAME.test(name)
         ? { problem: "invalid", file: "series", detail: `change ${name} is not in the series` }
@@ -156,31 +155,35 @@ export function readChanges(book: Book, problems: Problem[]): Change[] {
   return changes;
 }
 
+/** The names the series lists, and the changes among them that parse. A listed name is a change whatever is on disk; a stray is anything else under `changes/`. */
 export class Roster {
-  constructor(
+  private constructor(
     readonly listed: ReadonlyMap<string, Change>,
-    private readonly series: ReadonlySet<string>,
+    private readonly names: ReadonlySet<string>,
     private readonly dir: string,
   ) {}
 
-  private taken(name: string): boolean {
-    return this.series.has(name) || lexists(join(this.dir, name));
+  static read(book: Book, problems: Problem[] = []): Roster {
+    const names = readSeries(book);
+    const listed = new Map(readChanges(book, problems, names).map((c) => [c.name, c]));
+    return new Roster(listed, new Set(names), join(book.dir, "changes"));
   }
 
-  strayFolder(name: string): boolean {
-    return !this.series.has(name) && lexists(join(this.dir, name));
+  known(name: string): boolean {
+    return this.names.has(name);
+  }
+
+  stray(name: string): "folder" | "other" | null {
+    const path = join(this.dir, name);
+    if (this.known(name) || !lexists(path)) return null;
+    return isDir(path) ? "folder" : "other";
   }
 
   free(base: string): string {
     let name = base;
-    for (let n = 2; this.taken(name); n++) name = `${base}-${n}`;
+    for (let n = 2; this.listed.has(name) || this.stray(name); n++) name = `${base}-${n}`;
     return name;
   }
-}
-
-export function readRoster(book: Book, problems: Problem[] = []): Roster {
-  const listed = new Map(readChanges(book, problems).map((c) => [c.name, c]));
-  return new Roster(listed, new Set(readSeries(book)), join(book.dir, "changes"));
 }
 
 export async function cmdShow(args: { change: string }) {

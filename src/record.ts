@@ -5,7 +5,7 @@ import type { Problem } from "./api.ts";
 import { assemble, type Assembly, blockFiles, describe, handEdits, readBuildLock, type Source, writeBuildLines } from "./assemble.ts";
 import { blockHash, blockSpans, type Entry, entriesPath, formatEntry, patchBlocks, PLACEHOLDER_HINT, readEntries, Rules } from "./blocks.ts";
 import { Book, PB } from "./book.ts";
-import { appendSeries, CHANGE_NAME, Change, notAChangeName, readRoster, readSeries, type Roster, saveChange } from "./changes.ts";
+import { appendSeries, CHANGE_NAME, Change, notAChangeName, readSeries, Roster, saveChange } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
@@ -209,9 +209,12 @@ function nameAndIntent(
 ): Naming {
   if (name && !CHANGE_NAME.test(name)) throw new Fail(notAChangeName(name));
   const changes = roster.listed;
-  if (name && roster.strayFolder(name)) {
-    throw new Fail(`change ${name} is not in the series: add it to ${PB}/series, or remove ${PB}/changes/${name}`);
+
+  const stray = name ? roster.stray(name) : null;
+  if (stray === "folder") {
+    throw new Fail(`change ${name} is not in the series: add it to ${PB}/series to record into it, or move ${PB}/changes/${name} out of the way`);
   }
+  if (stray) throw new Fail(`${PB}/changes/${name} is not a change folder: move it out of ${PB}/changes`);
   const named = ask.named.length > 0;
   if (given) {
     if (!named || name) return { name, intent: given, said: null };
@@ -223,7 +226,7 @@ function nameAndIntent(
   if (!named && !ask.drafts.length) return { name, intent: null, said: null };
   const [picked, intent] = model(name, named);
   if (!named) return { name: null, intent, said: `intent: ${intent}` };
-  const chosen = picked === null || changes.has(picked) ? picked : roster.free(picked);
+  const chosen = picked === null || roster.known(picked) ? picked : roster.free(picked);
   return { name: chosen, intent, said: chosen !== null && changes.has(chosen) ? `adding to ${chosen}` : `${chosen}: ${intent}` };
 }
 
@@ -244,7 +247,7 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
 
 export function record(book: Book, change: string | null, intent: string | null, opts: { current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean } = {}): RecordResult {
   const problems: Problem[] = [];
-  const roster = readRoster(book, problems);
+  const roster = Roster.read(book, problems);
   const changes = roster.listed;
   const badName = problems.find((p) => p.file === "series" && "refuse" in p);
   if (badName) throw new Fail(`refusing to record: ${describe(badName)}\nRename it to lowercase letters, digits and dashes in series and changes/ first.`);
