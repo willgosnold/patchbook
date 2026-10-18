@@ -2666,7 +2666,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     for (const mark of [" ", " ", "　", "﻿"]) {
       writeFileSync(user, `[intent]\n# c${mark}`);
       t.config(["intent.model", "new"]);
-      expect(read(user)).toBe(`[intent]\n# c${mark}\nmodel = "new"\n`);
+      expect(read(user)).toBe(`[intent]\n# c${mark}\n\nmodel = "new"`);
     }
   });
 

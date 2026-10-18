@@ -183,13 +183,21 @@ function edited(text: string, config: Table, name: Name, value: unknown, refuse:
   return out;
 }
 
+// where the file ends once TOML's own blanks (space, tab, newline) are cut, which JS trimEnd() overshoots
+function tomlEnd(text: string): number {
+  let end = text.length;
+  while (end > 0 && " \t\r\n".includes(text[end - 1] as string)) end--;
+  return end;
+}
+
 function patched(text: string, name: Name, value: unknown, refuse: (cause: string) => Fail): string {
   try {
-    const body = text.trimEnd();
+    const cut = text.slice(0, tomlEnd(text));
+    const body = cut === "\uFEFF" ? "" : cut; // a file of only a byte order mark has no content
     const doc = new TomlDocument(body);
     doc.patch(withSetting(doc.toJsObject, name, value), { trailingNewline: 1, bracketSpacing: false });
     const out = doc.toTomlString;
-    return body === "" ? (text.startsWith("\uFEFF") ? "\uFEFF" : "") + out : out.trimEnd() + text.slice(body.length);
+    return body === "" ? (text.startsWith("\uFEFF") ? "\uFEFF" : "") + out : out.slice(0, tomlEnd(out)) + text.slice(body.length);
   } catch (e) {
     throw refuse(`the TOML library failed on it (${e instanceof Error ? `${e.name}: ${e.message}` : String(e)})`);
   }
