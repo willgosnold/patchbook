@@ -7521,6 +7521,41 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
         unlock(t);
       }
     });
+
+    forkTest("test_a_leftover_stays_ignored_when_its_gitignore_is_deleted", (t) => {
+      try {
+        moveWithAReadOnlyOldCopy(t);
+        rmSync(join(t.fork.path, ".patchbook/sync-extra/.gitignore"));
+        expect(t.pb(["sync", "extra"], { cwd: t.fork.path }).stderr).toContain(leftover);
+        expect(inJournal(t)).toEqual([]);
+      } finally {
+        unlock(t);
+      }
+    });
+
+    forkTest("test_sync_warns_about_an_old_copy_it_can_neither_delete_nor_move_and_moves_no_pin_past_it", (t) => {
+      const extra = trackVendored(t);
+      t.fork.write(".patchbook/sync-extra/.gitignore", "*\n");
+      t.fork.write(".patchbook/sync-extra/old/a.md", "one\n");
+      try {
+        chmodSync(join(t.fork.path, ".patchbook/sync-extra/old"), 0o555);
+        const unmoved = t.pb(["sync", "extra"], { cwd: t.fork.path });
+        expect(unmoved.stdout).toContain("Nothing to do.");
+        expect(unmoved.stderr).toContain(leftover);
+        expect(inJournal(t)).toEqual([]);
+
+        extra.write("a.md", "two\n");
+        extra.commit("move");
+        const before = outsideJournal(t);
+        const moved = t.pb(["sync", "extra"], { cwd: t.fork.path, code: 1 });
+        expect(moved.stderr).toContain("couldn't delete .patchbook/sync-extra/old");
+        expect(outsideJournal(t)).toEqual(before);
+      } finally {
+        unlock(t);
+      }
+      expect(t.pb(["sync", "extra"], { cwd: t.fork.path }).stdout).toContain("extra: pinned");
+      expect(existsSync(join(t.fork.path, ".patchbook/sync-extra"))).toBe(false);
+    });
   });
 
   for (const moved of [false, true]) {
