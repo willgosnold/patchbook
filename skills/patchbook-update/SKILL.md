@@ -51,7 +51,11 @@ Commit each change you repair or retire on its own, as "Carry <change> to upstre
 
 ## 4. Test
 
-Run `patchbook build`. The pre-commit hook builds on each commit when the patchbook has no problems, so this usually changes nothing. The hook doesn't build when there are problems, when `hook.enabled` is false, or when the repo's pre-commit hook belongs to another tool and doesn't run `patchbook hook run`. If `patchbook build` fails, quote its message and ask (step 6). If `git status --porcelain` then lists more than `.patchbook/last-sync.json`, commit the rest as one build commit. It holds only what `patchbook build` wrote: output files and `.patchbook/build.lock`. Never commit `.patchbook/last-sync.json`.
+Stage each commit in this step as step 2.3 does, with `git add -A -- . ':!.patchbook/last-sync.json'`.
+
+Before you build, run `git status --porcelain`. If it lists anything but `.patchbook/last-sync.json`, commit it first as its own commit, with a message that says what it is. If you can't say what it is, ask (step 6).
+
+Run `patchbook build`. The pre-commit hook builds on each commit when the patchbook has no problems, so this usually changes nothing. The hook doesn't build when there are problems, when `hook.enabled` is false, or when the repo's pre-commit hook belongs to another tool and doesn't run `patchbook hook run`. If `patchbook build` fails, quote its message and ask (step 6). If `git status --porcelain` then lists more than `.patchbook/last-sync.json`, commit it as one build commit. It holds only what `patchbook build` wrote: output files and `.patchbook/build.lock`.
 
 Then run the config's `[test]` from the worktree's root: a `command` must exit 0, and an `instructions` file is a procedure to follow. Fix a failure if you can, with at most two attempts. Commit each fix on its own, as "Fix test: <what>", then do step 4 again.
 
