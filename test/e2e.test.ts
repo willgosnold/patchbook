@@ -776,6 +776,15 @@ describe("ForkTest", () => {
     expect(read(join(t.fork.path, ".patchbook/changes/extra/CHANGE.md")).match(/^edits:$/gm)).toHaveLength(1);
   });
 
+  forkTest("test_record_with_an_intent_and_no_name_keeps_the_intent_of_a_change_named_unnamed", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "one", "ONE"));
+    t.pb(["record", "unnamed", "--intent", "Shout the first line."], { cwd: t.fork.path });
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "--intent", "Shout the second line too."], { cwd: t.fork.path });
+    expect(read(join(t.fork.path, ".patchbook/changes/unnamed/CHANGE.md"))).toContain("intent: Shout the first line.");
+    expect(read(join(t.fork.path, ".patchbook/changes/unnamed/CHANGE.md"))).not.toContain("second line too");
+  });
+
   forkTest("test_commit_records_and_builds", (t) => {
     expect(read(join(t.fork.path, ".git/hooks/pre-commit"))).toContain("Installed by patchbook");
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
@@ -966,6 +975,16 @@ describe("VendorTest", () => {
     expect(read(entries)).toContain("--- upstream\nThen wave.\n--- patched\n\n");
     t.recordEdit("# Hello\n\nHi first.\n", "# Hello\n");
     expect(read(entries)).not.toContain("Hi first.");
+  });
+
+  vendorTest("test_record_paragraph_edit_with_an_intent_keeps_the_intent_of_a_change_named_unnamed", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    t.repo.write("skills/hello/notes.txt", "added by hand\n");
+    t.pb(["record", "unnamed", "--intent", "Add notes."], { cwd: t.repo.path });
+    t.recordEdit("Then wave.", "Then wave twice.", "--intent", "Wave twice.");
+    expect(read(entries)).toContain("--- patched\nThen wave twice.");
+    expect(read(join(t.repo.path, ".patchbook/changes/unnamed/CHANGE.md"))).toContain("intent: Add notes.");
+    expect(read(join(t.repo.path, ".patchbook/changes/unnamed/CHANGE.md"))).not.toContain("Wave twice.");
   });
 
   vendorTest("test_record_ignores_output_the_patchbook_changed", (t) => {
