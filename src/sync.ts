@@ -223,7 +223,7 @@ const journal = (book: Book, u: Upstream) => join(book.dir, `sync-${encodeURICom
 
 const spell = (pin: Pin) => `${pin.commit ?? ""} ${pin.tree ?? ""}`;
 
-/** `to` is the lock that marks the sync finished, or "" for a rewrite under an unmoved pin, which no lock does. `made` is the highest folder the sync makes for a vendored copy that was not there, or "". */
+/** `to` is the lock that marks the sync finished, or "" for a rewrite under an unmoved pin, which no lock does. A rewrite changes only the vendored copy, so it is undone whatever the lock says. `made` is the highest folder the sync makes for a vendored copy that was not there, or "". */
 type Journal = { from: string; to: string; added: string; vendor: string; copy: boolean; made: string };
 
 function begin(book: Book, u: Upstream, from: Pin, to: Required<Pin> | null): void {
@@ -287,7 +287,7 @@ function recover(book: Book, u: Upstream): void {
     const wrote = lexists(join(j, "lock"));
     const torn = now === null && wrote;
     if (now === to) return drop(j);
-    if (now !== from && !torn) {
+    if (to && now !== from && !torn) {
       if (now !== null && !wrote) release(book, u, added);
       throw stuck(book, u, "upstream.lock has changed since");
     }
