@@ -125,7 +125,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   const commit = u.fetch(ref || u.branch);
   const tree = u.treeOf(commit);
   if (tree === pin.tree) {
-    const rewrite = u.vendor !== null && u.vendorTree(u.vendor).tree !== tree;
+    const rewrite = u.vendor !== null && (!isFolder(u.vendor) || u.vendorTree(u.vendor).tree !== tree);
     if (rewrite) rewriteVendor(book, u, u.vendor, pin, u.files(commit), tree);
     const rest = rewrite ? "Rewrote the vendored copy, which did not." : "Nothing to do.";
     process.stdout.write(`${u.name}: upstream at ${commit.slice(0, 7)} matches the pin (tree ${tree.slice(0, 7)}). ${rest}\n`);
@@ -198,6 +198,11 @@ function journaled(book: Book, u: Upstream, from: Pin, to: Required<Pin> | null,
     throw e;
   }
   drop(j);
+}
+
+/** A missing copy counts as a folder, since it hashes as the empty tree. A link never does, so it is moved aside, not followed. */
+function isFolder(vendor: string): boolean {
+  return !lexists(vendor) || lstatSync(vendor).isDirectory();
 }
 
 function rewriteVendor(book: Book, u: Upstream, vendor: string, pin: Pin, raw: ReadonlyMap<string, File>, tree: string): void {
