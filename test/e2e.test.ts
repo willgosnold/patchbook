@@ -228,9 +228,9 @@ test("test_clone_of_a_patchbook_repo_starts_a_patchbook_of_its_own", () => {
     theirs.commit("theirs");
 
     const cloned = t.pb(["clone", theirs.path, "mine"], { cwd: t.tmp }).stdout;
-    expect(cloned).toContain("Upstream has a .patchbook/ of its own");
     const mine = new Repo(join(t.tmp, "mine"));
     expect(t.pb(["status"], { cwd: mine.path }).stdout).toContain("no problems");
+    expect(cloned).toContain("Upstream has a .patchbook/ of its own");
     expect(existsSync(join(mine.path, ".patchbook/changes/theirs-change"))).toBe(false);
 
     mine.write("app.txt", "one\nMINE\n");
@@ -240,7 +240,7 @@ test("test_clone_of_a_patchbook_repo_starts_a_patchbook_of_its_own", () => {
     expect(mine.read(".patchbook/series")).toBe("mine\n");
     expect(mine.read(".patchbook/config.toml")).toContain(`remote = "${theirs.path}"`);
     expect(mine.read(".patchbook/config.toml")).not.toContain(base.path);
-    expect(mine.read(".patchbook/upstream.lock")).not.toContain("base");
+    expect(Object.keys(JSON.parse(mine.read(".patchbook/upstream.lock")))).toEqual(["theirs"]);
     expect(mine.read("app.txt")).toBe("one\nMINE\n");
     expect(t.pb(["status"], { cwd: mine.path }).stdout).toContain("1 edits apply");
   } finally {
@@ -271,7 +271,89 @@ test("test_build_leaves_a_vendored_copy_alone_when_upstream_ships_the_folder", (
   }
 }, TIMEOUT);
 
+test("test_clone_does_not_run_the_hooks_of_a_repo_it_forks", () => {
+  const t = new Case();
+  try {
+    const marker = join(t.tmp, "hook-ran");
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    up.write(".patchbook/hooks.ts", `
+      import { appendFileSync } from "node:fs";
+      appendFileSync(${JSON.stringify(marker)}, "loaded\\n");
+      export const finish = () => {};
+    `);
+    up.commit("start");
+    t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+    const fork = new Repo(join(t.tmp, "fork"));
+    expect(existsSync(marker)).toBe(false);
+    t.pb(["status"], { cwd: fork.path });
+    t.pb(["build"], { cwd: fork.path });
+    expect(existsSync(marker)).toBe(false);
+    expect(existsSync(join(fork.path, ".patchbook/hooks.ts"))).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_clone_drops_an_inherited_patchbook_that_is_a_dangling_link", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    symlinkSync("nowhere", join(up.path, ".patchbook"));
+    up.commit("start");
+    const cloned = t.pb(["clone", up.path, "fork"], { cwd: t.tmp }).stdout;
+    const fork = new Repo(join(t.tmp, "fork"));
+    expect(cloned).toContain("Upstream has a .patchbook/ of its own");
+    expect(isSymlink(join(fork.path, ".patchbook"))).toBe(false);
+    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+    expect(sh(["git", "status", "--porcelain"], { cwd: fork.path }).stdout).toBe("");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 describe("ForkTest", () => {
+  forkTest("test_a_vendor_folder_on_a_mount_keeps_that_upstream_in_the_build", (t) => {
+    const lib = new Repo(join(t.tmp, "lib"));
+    lib.write("a.txt", "a\n");
+    lib.commit("lib");
+    t.pb(["track", "lib", lib.path, "--vendor", "lib"], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read(".patchbook/build.lock")).toContain("lib/a.txt");
+    expect(t.fork.read("lib/a.txt")).toBe("a\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_a_vendor_folder_over_another_upstreams_mount_is_rejected", (t) => {
+    const lib = new Repo(join(t.tmp, "lib"));
+    lib.write("a.txt", "a\n");
+    lib.commit("lib");
+    const other = new Repo(join(t.tmp, "other"));
+    other.write("b.txt", "b\n");
+    other.commit("other");
+    t.pb(["track", "lib", lib.path, "--vendor", "vendor"], { cwd: t.fork.path });
+    const tracked = t.pb(["track", "other", other.path, "--mount", "vendor/other"], { cwd: t.fork.path, code: 1 });
+    expect(tracked.stderr).toContain("vendored copy of lib overlaps");
+  });
+
+  forkTest("test_check_and_sync_leave_out_what_the_build_ignores", (t) => {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "extra\n");
+    extra.commit("extra");
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.fork.path });
+    t.fork.commit("track");
+    t.up.write(".patchbook/notes.md", "upstream's notes\n");
+    t.up.write("vendor/extra/new.md", "new\n");
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.commit("upstream edit");
+    const check = JSON.parse(t.pb(["check"], { cwd: t.fork.path, code: 10 }).stdout);
+    expect(check.upstreams.upstream.files).toEqual(["changed app.txt"]);
+    t.pb(["sync", "upstream"], { cwd: t.fork.path });
+    const report = JSON.parse(read(join(t.fork.path, ".patchbook/last-sync.json"))).upstreams.upstream;
+    expect(report.upstream).toEqual(["changed app.txt"]);
+  });
+
   forkTest("test_clone_keeps_history_and_pins", (t) => {
     const log = sh(["git", "log", "--oneline"], { cwd: t.fork.path }).stdout;
     expect(log).toContain("start");
