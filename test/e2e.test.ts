@@ -843,6 +843,7 @@ describe("ForkTest", () => {
     ["delete_double_slash", "delete docs//guide.md"],
     ["copy_dest_climbing_out", "copy app.txt -> ../copied.txt"],
     ["copy_dest_dot_slash_patchbook_config", "copy app.txt -> ./.patchbook/config.toml"],
+    ["copy_dest_double_slash_patchbook_config", "copy app.txt -> .//.patchbook/config.toml"],
     ["file_climbing_out", "file ../app.txt"],
   ] as const;
   for (const [name, edit] of hookRefusesUnsafe) {
