@@ -8,14 +8,28 @@ import { Fail } from "./lib/fail.ts";
 import { exists, type File, isMode, lexists, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
 import { dumps, loads } from "./lib/json.ts";
 import { git } from "./lib/proc.ts";
-import { length, type PyValue, sortedBy, strip, strRepr } from "./lib/py.ts";
+import { length, type PyValue, sortedBy, strRepr } from "./lib/py.ts";
 import { isTable, parseToml, type Table } from "./settings.ts";
-import { Upstream } from "./store.ts";
+import { stagedFolder, Upstream } from "./store.ts";
 
 export const PB = ".patchbook";
 
 export function under(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(prefix + "/");
+}
+
+const underOrRoot = (path: string, folder: string) => folder === "" || under(path, folder);
+const joinPath = (...parts: string[]) => parts.filter(Boolean).join("/");
+const shown = (folder: string) => folder || "the repo root";
+
+const leftOut = new Map<string, Set<string>>();
+
+export function noticeLeftOut(): void {
+  if (leftOut.size === 0) return;
+  const total = Array.from(leftOut.values()).reduce((n, paths) => n + paths.size, 0);
+  const folders = sortedBy(leftOut, ([folder]) => folder).map(([folder, paths]) => `${folder} (${paths.size})`).join(", ");
+  leftOut.clear();
+  process.stderr.write(`patchbook: left ${total} upstream files out of the build because they would land in a vendored copy: ${folders}.\n`);
 }
 
 const HOOKS = ["placeholder", "blockTerms", "finish", "check"] as const;
@@ -151,9 +165,9 @@ export class Book {
   readonly placeholders = new Map<string, Placeholder>();
   hooks: Hooks = {};
 
-  private constructor(readonly root: string) {
+  private constructor(readonly root: string, candidate?: string) {
     this.dir = join(root, PB);
-    this.config = parseToml(readText(join(this.dir, "config.toml")), join(this.dir, "config.toml"));
+    this.config = parseToml(candidate ?? readText(join(this.dir, "config.toml")), join(this.dir, "config.toml"));
     const kind = Object.hasOwn(this.config, "layout") ? this.config["layout"] : "fork";
     if (kind !== "folder" && kind !== "fork") {
       throw new Fail(`layout must be folder or fork, not ${typeof kind === "string" ? strRepr(kind) : JSON.stringify(kind)}`);
@@ -165,15 +179,19 @@ export class Book {
       if (!isTable(spec)) throw new Fail("config.toml: each [[upstream]] is a table");
       return new Upstream(this, spec);
     });
-    this.checkMounts(kind);
     if (kind === "folder") {
       const out = Object.hasOwn(this.config, "output") ? this.config["output"] : {};
       if (!isTable(out) || !Object.hasOwn(out, "to")) throw new Fail("a folder layout needs [output] with to = <folder>");
-      const from = strip(text(out, "from", "", "[output] from"), "/");
+      const from = stagedFolder(text(out, "from", "", "[output] from"), "[output] from");
       this.layout = { kind, from, dir: pjoin(root, text(out, "to", "", "[output] to")) };
     } else this.layout = { kind };
+    this.checkMounts();
     this.readChecks();
     this.readPlaceholders();
+  }
+
+  static validate(root: string, config: string): void {
+    new Book(root, config);
   }
 
   static async open(root: string): Promise<Book> {
@@ -194,17 +212,91 @@ export class Book {
     throw new Fail(`no ${PB}/config.toml here or above. Start one with \`patchbook clone\` or \`patchbook init\`.`);
   }
 
-  private checkMounts(kind: Layout["kind"]): void {
+  private checkMounts(): void {
     const names = this.upstreams.map((u) => u.name);
     if (new Set(names).size !== names.length) throw new Fail("two upstreams share a name");
     const roots = this.upstreams.filter((u) => !u.mount);
     if (roots.length > 1) throw new Fail("only one upstream can mount at the root");
-    if (kind === "fork" && roots.length === 0) throw new Fail('a fork needs its own upstream mounted at the root (mount = "")');
+    if (this.layout.kind === "fork" && roots.length === 0) throw new Fail('a fork needs its own upstream mounted at the root (mount = "")');
     for (const a of this.upstreams) {
       for (const b of this.upstreams) {
         if (a !== b && a.mount && under(b.mount, a.mount)) throw new Fail(`upstreams ${a.name} and ${b.name} mount at overlapping folders`);
       }
     }
+    for (const u of this.upstreams) {
+      const out = this.outputFolder(u);
+      const own = out === null ? undefined : [PB, ".git"].find((reserved) => under(out, reserved));
+      if (own) {
+        const where = this.layout.kind === "fork" ? `mounts at ${shown(u.mount)}` : `builds into ${shown(out ?? "")}`;
+        throw new Fail(`${u.name} ${where}, inside ${own}. patchbook never builds into ${own}, so those files would never land. Change ${this.outputKnob(u)}.`);
+      }
+    }
+    this.checkVendors();
+  }
+
+  private checkVendors(): void {
+    for (const a of this.upstreams) {
+      if (!a.vendor) continue;
+      const vendored = this.folderOf(a.vendor);
+      const written = "A build writes there, but a vendored copy must match upstream exactly.";
+      const own = this.outputFolder(a);
+      if (own !== null && (underOrRoot(own, vendored) || underOrRoot(vendored, own))) {
+        const change = this.layout.kind === "fork" ? `${a.mount ? "vendor or mount" : "vendor"} for ${a.name}` : `vendor for ${a.name} or [output] to`;
+        throw new Fail(
+          `the vendored copy of ${a.name} (${shown(vendored)}) overlaps the folder ${a.name} builds into (${shown(own)}). ${written} Change ${change}.`,
+        );
+      }
+      for (const b of this.upstreams.slice(0, this.upstreams.indexOf(a))) {
+        const other = b.vendor ? this.folderOf(b.vendor) : null;
+        if (other !== null && (underOrRoot(other, vendored) || underOrRoot(vendored, other))) {
+          throw new Fail(
+            `the vendored copy of ${a.name} (${shown(vendored)}) overlaps the vendored copy of ${b.name} (${shown(other)}). The outer copy would hold the inner one's files, and a vendored copy must match upstream exactly. Change vendor for ${b.name} or ${a.name}.`,
+          );
+        }
+      }
+      for (const b of this.upstreams) {
+        const out = a === b ? null : this.outputFolder(b);
+        if (out !== null && underOrRoot(out, vendored)) {
+          throw new Fail(
+            `the vendored copy of ${a.name} (${shown(vendored)}) contains the folder ${b.name} builds into (${shown(out)}). ${written} Change vendor for ${a.name} or ${this.outputKnob(b)}.`,
+          );
+        }
+      }
+    }
+  }
+
+  private folderOf(path: string): string {
+    const rel = relative(this.root, path);
+    return rel === "." ? "" : rel;
+  }
+
+  /** What the user can change to move the output folder: in the folder layout `init` has no mount, so it is `[output] to`. */
+  private outputKnob(u: Upstream): string {
+    return this.layout.kind === "fork" ? `mount for ${u.name}` : "[output] to";
+  }
+
+  private outputFolder(u: Upstream): string | null {
+    if (this.layout.kind === "fork") return u.mount;
+    const { from, dir } = this.layout;
+    const to = this.folderOf(dir);
+    if (!from || under(u.mount, from)) return joinPath(to, from ? u.mount.slice(from.length + 1) : u.mount);
+    return underOrRoot(from, u.mount) ? to : null;
+  }
+
+  private heldBy(outputPath: string): string | null {
+    const inRepo = this.layout.kind === "folder" ? joinPath(this.folderOf(this.layout.dir), outputPath) : outputPath;
+    return this.vendors().find((v) => underOrRoot(inRepo, v)) ?? null;
+  }
+
+  vendorHolding(staged: string): string | null {
+    if (this.layout.kind === "fork") return this.heldBy(staged);
+    const { from } = this.layout;
+    if (from && !staged.startsWith(from + "/")) return null;
+    return this.heldBy(from ? staged.slice(from.length + 1) : staged);
+  }
+
+  private vendors(): string[] {
+    return this.upstreams.flatMap((u) => (u.vendor ? [this.folderOf(u.vendor)] : []));
   }
 
   private readChecks(): void {
@@ -277,12 +369,33 @@ export class Book {
   stagedUpstream(): Map<string, File> {
     const staged = new Map<string, File>();
     for (const u of this.upstreams) {
-      const files = u.staged();
+      const files = this.buildable(u.staged());
       const clash = Array.from(files.keys()).find((p) => staged.has(p));
       if (clash) throw new Fail(`${clash} comes from two upstreams; give ${u.name} its own mount`);
       for (const [p, f] of files) staged.set(p, f);
     }
     return staged;
+  }
+
+  /** Pass `noted = false` for a tree the build will not use, so the notice counts only what it leaves out. */
+  buildable(files: ReadonlyMap<string, File>, noted = true): Map<string, File> {
+    const kept = new Map<string, File>();
+    for (const [p, f] of files) {
+      const vendored = this.vendorHolding(p);
+      if (vendored !== null) {
+        if (noted) leftOut.set(vendored, (leftOut.get(vendored) ?? new Set()).add(p));
+      }
+      else if (!this.isPatchbook(p)) kept.set(p, f);
+    }
+    return kept;
+  }
+
+  isReserved(path: string): boolean {
+    return this.isPatchbook(path) || this.heldBy(path) !== null;
+  }
+
+  private isPatchbook(path: string): boolean {
+    return this.layout.kind === "fork" && under(path, PB);
   }
 
   outputRoot(): string {
@@ -295,15 +408,13 @@ export class Book {
     const out = new Map<string, File>();
     if (!exists(root)) return out;
     const rel = root !== this.root ? relative(this.root, root) : "";
-    // In a fork the output is the repo root, minus the patchbook and any vendored copies.
-    const kept = [PB, ...this.upstreams.flatMap((u) => (u.vendor ? [relative(this.root, u.vendor)] : []))];
     const listed = git(["ls-files", "-z", "-co", "--exclude-standard", ...(rel ? ["--", rel] : [])], { cwd: this.root });
     for (const path of listed.split("\0")) {
       if (!path) continue;
       const p = join(this.root, path);
       if (!lexists(p)) continue;
       const key = rel ? path.slice(rel.length + 1) : path;
-      if (this.layout.kind === "fork" && kept.some((k) => under(key, k))) continue;
+      if (this.isReserved(key)) continue;
       out.set(key, readDisk(p));
     }
     return out;

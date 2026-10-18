@@ -64,7 +64,12 @@ const CONFLICT = /^(?:<{7}|>{7})(?: |$)/;
 export const hasConflictMarker = (text: string) => text.split("\n").some((line) => CONFLICT.test(line));
 
 /** Apply add, replace, delete, move and copy to a map of staged path to source. */
-export function applyStructure(changes: readonly Change[], upstream: ReadonlyMap<string, File>, problems: Problem[]): Map<string, Source> {
+export function applyStructure(
+  changes: readonly Change[],
+  upstream: ReadonlyMap<string, File>,
+  problems: Problem[],
+  vendorHolding: (staged: string) => string | null,
+): Map<string, Source> {
   const tree = new Map<string, Source>(Array.from(upstream.keys(), (p) => [p, { kind: "up", path: p }]));
   for (const c of changes) {
     for (const e of c.edits) {
@@ -72,7 +77,10 @@ export function applyStructure(changes: readonly Change[], upstream: ReadonlyMap
       const where: InEdit = { file: `changes/${c.name}`, edit: editText(e) };
       const matched = Array.from(tree.keys()).filter((p) => under(p, e.path));
       if (e.kind === "add") {
-        if (matched.length) problems.push({ problem: "invalid", ...where, detail: `${e.path} already exists; use replace` });
+        const vendored = vendorHolding(e.path);
+        if (vendored !== null) {
+          problems.push({ problem: "invalid", ...where, detail: `${e.path} would be written into the vendored copy ${vendored}` });
+        } else if (matched.length) problems.push({ problem: "invalid", ...where, detail: `${e.path} already exists; use replace` });
         else if (c.read("ours", e.path) === null) problems.push({ problem: "invalid", ...where, detail: "its ours copy is missing" });
         else tree.set(e.path, { kind: "ours", change: c.name, path: e.path });
       } else if (e.kind === "replace") {
@@ -83,6 +91,11 @@ export function applyStructure(changes: readonly Change[], upstream: ReadonlyMap
       else {
         const dest = "dest" in e ? e.dest : "";
         const moved = new Map(dest ? matched.map((p) => [dest + p.slice(e.path.length), tree.get(p)!]) : []);
+        const held = Array.from(moved.keys()).find((p) => vendorHolding(p) !== null);
+        if (held !== undefined) {
+          problems.push({ problem: "invalid", ...where, detail: `${held} would be written into the vendored copy ${vendorHolding(held)}` });
+          continue;
+        }
         const clash = Array.from(moved.keys()).filter((p) => tree.has(p) && !under(p, e.path));
         if (clash.length) {
           problems.push({ problem: "invalid", ...where, detail: `${clash[0]} already exists` });
@@ -149,7 +162,7 @@ export function assemble(book: Book): Assembly {
     blocks.set(rel, readEntries(entriesPath(book, rel)));
   }
 
-  const staged = applyStructure(changes, upstream, problems);
+  const staged = applyStructure(changes, upstream, problems, (p) => book.vendorHolding(p));
   let selected: Map<string, Source>;
   if (book.layout.kind === "folder") {
     const prefix = book.layout.from;

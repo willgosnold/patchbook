@@ -1,16 +1,16 @@
 #!/usr/bin/env bun
 // The command line: a table of subcommands, parsed and reported the way Python's argparse does.
 // Also the commands that start a patchbook or follow another upstream, which use every other part.
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import pkg from "../package.json" with { type: "json" };
 import { cmdBuild, cmdScaffold, cmdStatus, writeBuildLock } from "./assemble.ts";
 import { cmdBlocks } from "./blocks.ts";
-import { Book, PB } from "./book.ts";
+import { Book, noticeLeftOut, PB } from "./book.ts";
 import { cmdShow } from "./changes.ts";
 import { cmdHook, installHook } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, readText, resolve, writeText } from "./lib/fs.ts";
+import { exists, lexists, readText, resolve, writeText } from "./lib/fs.ts";
 import { git } from "./lib/proc.ts";
 import { rstrip, split, strRepr } from "./lib/py.ts";
 import { cmdRecord } from "./record.ts";
@@ -33,10 +33,11 @@ function upstreamToml(name: string, remote: string, path: string, branch: string
 }
 
 function writeConfig(root: string, layout: "fork" | "folder", upstream: string, output?: [string, string]): void {
-  const d = join(root, PB);
-  mkdirSync(d, { recursive: true });
   let text = `layout = "${layout}"\n\n` + upstream;
   if (output) text += `\n[output]\nfrom = "${output[0]}"\nto = "${output[1]}"\n`;
+  Book.validate(root, text);
+  const d = join(root, PB);
+  mkdirSync(d, { recursive: true });
   writeText(join(d, "config.toml"), text);
   writeText(join(d, "series"), "");
   writeText(join(d, "retired.md"), "# Retired changes\n\nChanges dropped because upstream made them unnecessary or impossible, and why.\n");
@@ -51,6 +52,8 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   git([...clone, args.url, dest], { cwd: dirname(dest) });
   const branch = git(["branch", "--show-current"], { cwd: dest });
   const commit = git(["rev-parse", "HEAD"], { cwd: dest });
+  const inherited = lexists(join(dest, PB));
+  if (inherited) rmSync(join(dest, PB), { recursive: true, force: true });
   const name = defaultName(args.url, "");
   writeConfig(dest, "fork", upstreamToml(name, args.url, "", branch, ""));
   const book = await Book.open(dest);
@@ -67,6 +70,7 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   git(["add", "-A"], { cwd: dest });
   git(["commit", "--quiet", "-m", `Start a patchbook at upstream ${commit.slice(0, 7)}`], { cwd: dest, env: noHook() });
   process.stdout.write(`cloned ${args.url} into ${dest}, pinned at ${commit.slice(0, 7)}.\n`
+    + (inherited ? `Upstream has a ${PB}/ of its own. It is not part of this fork, so patchbook removed it and builds leave it out.\n` : "")
     + "Make your changes and commit: the hook records them in the patchbook and rebuilds.\n"
     + `${SCHEDULE}\n`
     + `To publish it: gh repo create <name> --private --source ${dest} --push\n`);
@@ -107,7 +111,9 @@ async function cmdTrack(args: { name: string; url: string; branch: string; path:
   if (book.upstreams.some((u) => u.name === args.name)) throw new Fail(`already following an upstream called ${args.name}`);
   const config = join(book.dir, "config.toml");
   const mount = args.mount ?? args.name;
-  writeText(config, rstrip(readText(config), "\n") + "\n\n" + upstreamToml(args.name, args.url, args.path, args.branch, mount, args.vendor));
+  const text = rstrip(readText(config), "\n") + "\n\n" + upstreamToml(args.name, args.url, args.path, args.branch, mount, args.vendor);
+  Book.validate(book.root, text);
+  writeText(config, text);
   book = await Book.open(book.root);
   syncUpstream(book, book.upstream(args.name), args.branch, []);
   const where = mount ? `${mount}/` : "the root";
@@ -546,4 +552,6 @@ try {
     process.stderr.write(`patchbook: ${e.message}\n`);
     process.exitCode = 1;
   } else throw e;
+} finally {
+  noticeLeftOut();
 }
