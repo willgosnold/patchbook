@@ -10,7 +10,7 @@ import { Fail } from "./lib/fail.ts";
 import type { File } from "./lib/fs.ts";
 import { JsonError, loads } from "./lib/json.ts";
 import { spawn, which } from "./lib/proc.ts";
-import { length, type PyValue, slice, split, splitlines, str, strip, strRepr } from "./lib/py.ts";
+import { length, type PyValue, slice, split, splitlines, strip, strRepr } from "./lib/py.ts";
 import { decode, decodeReplace, encode, isText } from "./lib/text.ts";
 import { configured, readToml, type Source, setting, SETTINGS, type Table, USER_CONFIG } from "./settings.ts";
 
@@ -155,7 +155,8 @@ export function writeIntent(
   const fields = answer instanceof Map ? answer : new Map<string, PyValue>();
   const given = fields.get("change") ?? "";
   let chosen = typeof given === "string" ? given : "";
-  let intent = oneLine(str(fields.has("intent") ? fields.get("intent")! : ""));
+  const said = fields.get("intent");
+  let intent = typeof said === "string" ? oneLine(said) : "";
   if (!CHANGE_NAME.test(chosen) || !intent) {
     throw new Fail(`${provider} didn't return a usable name and intent:\n${slice(strip(reply), 0, 500)}\nPass a name and --intent instead.`);
   }
