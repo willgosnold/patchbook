@@ -1951,6 +1951,59 @@ exec '${Bun.which("git")}' "$@"
     expect(existsSync(join(t.repo.path, "skills/agents/.git"))).toBe(false);
   });
 
+  function writeChange(t: VendorCase, name: string, edits: string[]): void {
+    const change = join(t.repo.path, ".patchbook/changes", name);
+    mkdirNew(change);
+    writeFileSync(join(change, "CHANGE.md"), `# ${name}\n\nintent: Write somewhere new.\n\nedits:\n${edits.map((e) => `- ${e}\n`).join("")}`);
+    writeFileSync(join(t.repo.path, ".patchbook/series"), `${name}\n`);
+  }
+
+  vendorTest("test_a_copy_into_a_git_name_under_the_from_folder_is_invalid_when_to_differs", (t) => {
+    t.missingScaffoldPatchBuild();
+    setOutputFolder(t, "out");
+    t.pb(["build", "--force"], { cwd: t.repo.path });
+    writeChange(t, "into-git", ["copy skills/hello/SKILL.md -> skills/.git/x"]);
+    const detail = "skills/.git/x would be written into .git";
+    const status = t.pb(["status"], { cwd: t.repo.path, code: 1 });
+    expect(status.stdout).toContain("changes/into-git copy skills/hello/SKILL.md -> skills/.git/x");
+    expect(status.stdout).toContain(detail);
+    const before = tree(t.repo.path);
+    expect(t.pb(["build"], { cwd: t.repo.path, code: 1 }).stderr).toContain(detail);
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(existsSync(join(t.repo.path, "out/.git"))).toBe(false);
+  });
+
+  vendorTest("test_a_copy_into_a_patchbook_name_under_the_from_folder_builds_into_the_output_folder", (t) => {
+    t.missingScaffoldPatchBuild();
+    setOutputFolder(t, "out");
+    writeChange(t, "into-dot-patchbook", ["copy skills/hello/SKILL.md -> skills/.patchbook/x.md"]);
+    t.pb(["build", "--force"], { cwd: t.repo.path });
+    expect(t.repo.read("out/.patchbook/x.md")).toContain("Say hello in T3.");
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  vendorTest("test_destinations_that_only_look_like_kept_names_build", (t) => {
+    t.missingScaffoldPatchBuild();
+    const dests = [".patchbookx/a", "docs/.patchbook-notes", ".github/x", ".gitignore"];
+    writeChange(t, "look-alikes", dests.map((d) => `copy skills/hello/SKILL.md -> skills/${d}`));
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.repo.path });
+    for (const d of dests) expect(t.repo.read(`skills/${d}`)).toContain("Say hello in T3.");
+  });
+
+  vendorTest("test_a_copy_into_a_vendored_copy_names_the_copy", (t) => {
+    t.missingScaffoldPatchBuild();
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "a\n");
+    extra.commit("a");
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    setOutputFolder(t, "vendor");
+    writeChange(t, "into-vendor", ["copy skills/hello/SKILL.md -> skills/extra/x.md"]);
+    const status = t.pb(["status"], { cwd: t.repo.path, code: 1 });
+    expect(status.stdout).toContain("skills/extra/x.md would be written into the vendored copy vendor/extra");
+    expect(existsSync(join(t.repo.path, "vendor/extra/x.md"))).toBe(false);
+  });
+
   vendorTest("test_output_folder_cannot_be_inside_the_git_dir", (t) => {
     t.missingScaffoldPatchBuild();
     const gitConfig = t.repo.read(".git/config");
