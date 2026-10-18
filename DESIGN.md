@@ -173,15 +173,17 @@ This repo ships a `patchbook-update` skill, built into the `patchbook` binary. `
 3. Resolves each problem from the change's intent and the repo's guide (`guide` in the config). One commit per change.
 4. Builds, then runs the config's `test`, which is a command or an instruction file for the agent.
 5. Starts a review in a fresh subagent, on another provider's model when T3 can run one, otherwise on the same model. The reviewer gets each intent, the upstream change, and our result, and says per change whether the result meets the intent. At most two rounds.
-6. If `patchbook status` exits 0, and the sync was clean or the test command exited 0 on the commit it pushes and left tracked files unchanged, pushes its branch to `main`, runs the config's `deploy`, removes its worktree, and settles the thread with a short summary. The sync was clean when every upstream's report has an empty `replaced_upstream_changed`, step 3 found nothing to handle, and nothing came after the sync commit but files the build wrote, or in from a rebase.
+6. If, on the commit it pushes, `patchbook status` and `patchbook build` exit 0 and the build leaves tracked files unchanged, and the sync was clean or the test command exited 0, pushes its branch to `main`, runs the config's `deploy`, removes its worktree, and settles the thread with a short summary. The sync was clean when every upstream's report has an empty `replaced_upstream_changed`, step 3 found nothing to handle, nothing came after the sync commit but files the build wrote, and the rebase brought in no commits.
 
 It stops and asks instead of merging when:
 
 - the condition in step 6 doesn't hold;
 - upstream removed or reworked something an intent depends on, and retiring the change would lose something the user wanted;
 - meeting an intent needs a choice the intents and the guide don't settle;
-- the review fails twice;
-- a test fails and it can't fix it, an instruction-file test included.
+- the second review round returns a fail for any change;
+- a test fails and it can't fix it, an instruction-file test included;
+- a test leaves tracked files changed, even if it passed;
+- a `replaced_upstream_changed` entry has no repair commit that names its file.
 
 Then it opens a pull request without merging, keeps its worktree for the pull request, and leaves the thread in your inbox with the question.
 
