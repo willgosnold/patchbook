@@ -1,0 +1,283 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>patchbook clip</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Caveat:wght@600&family=JetBrains+Mono:wght@500;700&display=block" rel="stylesheet">
+<style>
+/* The stage is 720x900 CSS px (4:5). record.mjs captures it at 1.5x for 1080x1350. */
+:root {
+  --bg: #0b0d12; --win: #12151c; --line: #252b37; --text: #eef0f4; --muted: #8b94a5;
+  --you: #ff7ab6; --up: #ffa94d; --pb: #3ddc97; --violet: #8b7cf6; --teal: #2dd4bf;
+  --sans: Inter, ui-sans-serif, system-ui, sans-serif; --mono: "JetBrains Mono", ui-monospace, monospace;
+}
+* { box-sizing: border-box; margin: 0; }
+html, body { background: #000; }
+body { display: grid; place-items: center; min-height: 100vh; }
+body.record { display: block; min-height: 0; }
+#stage {
+  position: relative; width: 720px; height: 900px; overflow: hidden; color: var(--text); font-family: var(--sans);
+  background: radial-gradient(110% 55% at 50% 0%, #182030 0%, var(--bg) 62%);
+}
+.abs { position: absolute; }
+.hidden { opacity: 0; }
+/* Starts low, so the app sits in the middle until the note arrives below it. */
+#scene { inset: 0; transform: translateY(100px); }
+
+/* Captions */
+.cap { left: 40px; top: 50px; width: 640px; }
+.cap .main { font-size: 38px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.15; }
+.cap .sub { margin-top: 8px; font-size: 24px; font-weight: 500; color: var(--muted); }
+.cap .sub.hidden { opacity: 0; }
+
+/* The app */
+#tag { left: 60px; top: 164px; display: flex; gap: 8px; align-items: center; font: 500 15px var(--mono); color: var(--muted); }
+#tag .ver { position: relative; width: 52px; height: 24px; }
+#tag .ver span { position: absolute; inset: 0; display: grid; place-items: center; border-radius: 6px; background: #1d2330; color: var(--up); }
+#tag .ours { color: var(--you); }
+#app { left: 60px; top: 200px; width: 600px; height: 450px; background: var(--win); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; box-shadow: 0 30px 80px rgba(0,0,0,.45); }
+#titlebar { left: 0; top: 0; width: 100%; height: 28px; border-bottom: 1px solid var(--line); }
+#titlebar i { position: absolute; top: 9px; width: 10px; height: 10px; border-radius: 50%; background: #2c3340; }
+#sidebar { left: 0; top: 28px; width: 150px; height: 422px; background: #161a23; border-right: 1px solid var(--line); overflow: hidden; }
+#sidebar .item { position: absolute; left: 14px; width: 120px; height: 14px; border-radius: 7px; background: #242b38; }
+#sidebar .rail { position: absolute; left: 16px; width: 24px; height: 24px; border-radius: 8px; background: #242b38; }
+#header { left: 150px; top: 28px; width: 450px; height: 56px; border-bottom: 1px solid var(--line); }
+#msgs { left: 150px; top: 84px; width: 450px; }
+#msgs .u { position: absolute; right: 18px; top: 22px; width: 190px; height: 38px; border-radius: 14px; background: #26304a; }
+#msgs .a { position: absolute; left: 18px; height: 13px; border-radius: 7px; background: #1f2531; }
+#composer { left: 166px; top: 378px; width: 418px; height: 56px; border: 1px solid var(--line); border-radius: 14px; background: #171b24; }
+#composer .ph { position: absolute; left: 16px; top: 17px; font-size: 16px; color: #5c6577; }
+#send { position: absolute; right: 9px; top: 9px; width: 38px; height: 38px; border-radius: 10px; background: var(--violet); }
+
+/* Things that move between places live on the stage, so the app doesn't clip them. */
+.pill { height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; }
+#picker { left: 524px; top: 238px; width: 120px; background: #222938; border: 1px solid #333b4b; font: 600 16px var(--sans); }
+#gauge { left: 362px; top: 238px; width: 150px; background: #2a1622; border: 1.5px solid var(--you); color: var(--you); font: 700 16px var(--sans); }
+#gauge svg { width: 22px; height: 22px; transform: rotate(-90deg); }
+#arc { stroke-dasharray: 50.3; stroke-dashoffset: 50.3; }
+
+/* The note */
+#note { left: 130px; top: 706px; width: 460px; height: 150px; background: #ffe68a; color: #3a2f12; border-radius: 6px; padding: 16px 20px; transform: rotate(-1.5deg); box-shadow: 0 16px 40px rgba(0,0,0,.4); }
+#note .head { display: flex; align-items: center; gap: 8px; font: 700 14px var(--mono); color: #8a7330; letter-spacing: .02em; }
+#note .text { margin-top: 6px; font: 600 33px/1.12 Caveat, cursive; clip-path: inset(0 100% 0 0); }
+#note mark { color: inherit; background: transparent; border-radius: 4px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+
+/* Cursors: the tip of the arrow is the element's top-left corner. */
+.cursor { left: 0; top: 0; }
+.cursor svg { display: block; filter: drop-shadow(0 2px 4px rgba(0,0,0,.5)); }
+.cursor .who { position: absolute; left: 16px; top: 22px; padding: 4px 10px; border-radius: 8px; font: 700 15px var(--sans); color: #0b0d12; white-space: nowrap; }
+#c-you .who { background: var(--you); }
+#c-up .who { background: var(--up); }
+#c-pb .who { background: var(--pb); }
+
+/* End card */
+#end { inset: 0; background: var(--bg); display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+#end .big { font-size: 50px; font-weight: 800; line-height: 1.12; letter-spacing: -0.025em; }
+#end .em { color: var(--pb); }
+#end .gap { margin-top: 14px; }
+#end .free { margin-top: 22px; font: 500 17px var(--sans); color: var(--muted); }
+#end .name { margin-top: 60px; display: flex; align-items: center; gap: 16px; font: 700 40px var(--mono); }
+#end .name svg { width: 68px; height: 68px; }
+#end .install { margin-top: 26px; padding: 16px 26px; border-radius: 12px; background: #151a23; border: 1px solid var(--line); font: 500 22px var(--mono); }
+#end .install .prompt { color: var(--pb); margin-right: 14px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="cap1" class="abs cap hidden"><div class="main">This is someone else's app.</div></div>
+  <div id="cap2" class="abs cap hidden"><div class="main">You change it for yourself.</div><div id="sub2" class="sub hidden">patchbook keeps a note of why.</div></div>
+  <div id="cap3" class="abs cap hidden"><div class="main">Then they ship a redesign.</div><div id="sub3" class="sub hidden">Your change has nowhere to go.</div></div>
+  <div id="cap4" class="abs cap hidden"><div class="main">patchbook reads your note…</div><div id="sub4" class="sub hidden">…and puts your change back where you meant it.</div></div>
+  <div id="cap5" class="abs cap hidden"><div class="main">Their new version. Your change.</div><div id="sub5" class="sub hidden">Automatic semantic patching.</div></div>
+
+  <div id="scene" class="abs">
+  <div id="tag" class="abs hidden">their app
+    <span class="ver"><span id="v1">v1.0</span><span id="v2" class="hidden">v2.0</span></span>
+    <span id="ours" class="ours hidden">+ your change ✓</span>
+  </div>
+
+  <div id="app" class="abs hidden">
+    <div id="titlebar" class="abs"><i style="left:12px"></i><i style="left:28px"></i><i style="left:44px"></i></div>
+    <div id="sidebar" class="abs">
+      <div class="item s-item" style="top:20px;width:96px"></div>
+      <div class="item s-item" style="top:48px"></div>
+      <div class="item s-item" style="top:72px;width:104px"></div>
+      <div class="item s-item" style="top:96px;width:88px"></div>
+      <div class="item s-item" style="top:120px;width:110px"></div>
+      <div class="rail hidden" style="top:18px"></div>
+      <div class="rail hidden" style="top:52px"></div>
+      <div class="rail hidden" style="top:86px"></div>
+    </div>
+    <div id="header" class="abs"></div>
+    <div id="msgs" class="abs">
+      <div class="u"></div>
+      <div class="a" style="top:80px;width:330px"></div>
+      <div class="a" style="top:104px;width:300px"></div>
+      <div class="a" style="top:128px;width:220px"></div>
+      <div class="a" style="top:162px;width:280px"></div>
+      <div class="a" style="top:186px;width:180px"></div>
+    </div>
+    <div id="composer" class="abs"><span class="ph">Ask anything…</span><span id="send"></span></div>
+  </div>
+
+  <div id="picker" class="abs pill hidden">Model ▾</div>
+  <div id="gauge" class="abs pill hidden">
+    <svg viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" fill="none" stroke="rgba(255,122,182,.25)" stroke-width="3.5"/><circle id="arc" cx="11" cy="11" r="8" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"/></svg>
+    $4.12 today
+  </div>
+
+  <div id="note" class="abs hidden">
+    <div class="head">✎ WHY · usage-gauge</div>
+    <div id="note-text" class="text">Show me what I'm spending, <mark id="hl">right next to where I pick a model.</mark></div>
+  </div>
+
+  <div id="c-you" class="abs cursor hidden"><svg width="22" height="26" viewBox="0 0 22 26"><path d="M1 1v21l6-5.5 4 8.5 3.5-1.6-4-8.4h8z" fill="var(--you)" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg><span class="who">you</span></div>
+  <div id="c-up" class="abs cursor hidden"><svg width="22" height="26" viewBox="0 0 22 26"><path d="M1 1v21l6-5.5 4 8.5 3.5-1.6-4-8.4h8z" fill="var(--up)" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg><span class="who">upstream</span></div>
+  <div id="c-pb" class="abs cursor hidden"><svg width="22" height="26" viewBox="0 0 22 26"><path d="M1 1v21l6-5.5 4 8.5 3.5-1.6-4-8.4h8z" fill="var(--pb)" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg><span class="who">patchbook</span></div>
+  </div>
+
+  <div id="end" class="abs hidden">
+    <div id="end1" class="big hidden">Diffs break when<br>upstream moves.</div>
+    <div id="end2" class="big em gap hidden">Intent doesn't.</div>
+    <div id="end3" class="name hidden"><svg viewBox="0 0 100 100">
+  <g transform="rotate(-6 50 50)">
+    <rect x="8" y="8" width="84" height="84" rx="20" fill="#3ddc97"/>
+    <rect x="16" y="16" width="68" height="68" rx="14" fill="none" stroke="#0b0d12" stroke-opacity=".5" stroke-width="3.5" stroke-dasharray="7 6" stroke-linecap="round"/>
+    <path fill="#0b0d12" fill-rule="evenodd" d="M32 27H51A17 17 0 0 1 51 61H46V74H32Z M46 39V49H50A5 5 0 0 0 50 39Z"/>
+  </g>
+</svg><span>patchbook</span></div>
+    <div id="end4" class="install hidden"><span class="prompt">$</span>npm install -g patchbook</div>
+    <div id="end5" class="free hidden">Completely free and open source</div>
+  </div>
+</div>
+
+<script>
+const DURATION = 29700;
+const EASE = "cubic-bezier(.2,.7,.2,1)";
+const GLIDE = "cubic-bezier(.65,0,.35,1)";
+
+// Every animation fills forwards only, so before it starts the element keeps its CSS
+// style, and a later animation on the same property takes over from an earlier one.
+function at(sel, start, dur, frames, easing = EASE) {
+  for (const el of document.querySelectorAll(sel)) el.animate(frames, { delay: start, duration: dur, fill: "forwards", easing });
+}
+const show = (sel, start, dur = 450) => at(sel, start, dur, [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "none" }]);
+const fadeIn = (sel, start, dur = 400) => at(sel, start, dur, [{ opacity: 0 }, { opacity: 1 }]);
+const fadeOut = (sel, start, dur = 350) => at(sel, start, dur, [{ opacity: 1 }, { opacity: 0 }]);
+const xy = (x, y, extra = "") => ({ transform: `translate(${x}px,${y}px) ${extra}` });
+// Moves a cursor's tip from one stage point to another.
+const move = (sel, start, dur, from, to, easing = GLIDE) => at(sel, start, dur, [xy(...from), xy(...to)], easing);
+
+// Where things sit, as stage coordinates of a cursor tip.
+const GAUGE_V1 = [450, 262];     // on the gauge in the old header
+const GAUGE_FALLEN = [520, 688];
+const GAUGE_V2 = [368, 610];     // beside the picker in the new composer
+const PICKER_V1 = [584, 262];
+const PICKER_V2 = [208, 610];
+
+// 1. Someone else's app.
+show("#cap1", 200);
+show("#app", 200, 600);
+show("#tag", 500);
+show("#picker", 600);
+fadeOut("#cap1", 1900);
+
+// 2. You change it for yourself, and patchbook keeps a note of why.
+show("#cap2", 2100);
+fadeIn("#c-you", 2300, 200);
+fadeIn("#gauge", 2300, 200);
+move("#c-you", 2300, 1300, [760, 960], GAUGE_V1);
+at("#gauge", 2300, 1300, [xy(310, 698, "scale(1.05)"), xy(0, 0, "scale(1.05)")], GLIDE);
+at("#gauge", 3600, 300, [xy(0, 0, "scale(1.05)"), xy(0, 0, "scale(1)")]);
+at("#arc", 3800, 900, [{ strokeDashoffset: 50.3 }, { strokeDashoffset: 16 }]);
+move("#c-you", 4000, 800, GAUGE_V1, [610, 420]);
+fadeIn("#sub2", 4500);
+at("#scene", 4500, 900, [{ transform: "translateY(100px)" }, { transform: "translateY(0)" }], GLIDE);
+show("#note", 4700, 500);
+at("#note-text", 5100, 1800, [{ clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)" }], "linear");
+move("#c-you", 6400, 900, [610, 420], [800, 760]);
+fadeOut("#cap2", 7600);
+
+// 3. Upstream redesigns, and the gauge loses its place.
+show("#cap3", 7900);
+fadeIn("#c-up", 8300, 200);
+move("#c-up", 8300, 900, [780, 120], PICKER_V1);
+fadeOut("#v1", 8700, 250);
+fadeIn("#v2", 8800, 250);
+at("#picker", 9200, 200, [{ transform: "scale(1)" }, { transform: "scale(1.08)", boxShadow: "0 12px 30px rgba(0,0,0,.5)" }]);
+move("#c-up", 9400, 1300, PICKER_V1, PICKER_V2);
+at("#picker", 9400, 1300, [xy(0, 0, "scale(1.08)"), xy(-376, 348, "scale(1.08)")], GLIDE);
+at("#picker", 10700, 250, [xy(-376, 348, "scale(1.08)"), xy(-376, 348, "scale(1)")]);
+// The app rearranges itself around the picker.
+at("#sidebar", 9500, 1000, [{ width: "150px" }, { width: "56px" }], GLIDE);
+fadeOut(".s-item", 9500, 300);
+fadeIn(".rail", 10100);
+at("#header", 9500, 600, [{ opacity: 1 }, { opacity: 0 }]);
+at("#msgs", 9500, 1000, [{ left: "150px", top: "84px", width: "450px" }, { left: "56px", top: "36px", width: "544px" }], GLIDE);
+at("#composer", 9500, 1000, [
+  { left: "166px", top: "378px", width: "418px", height: "56px", borderRadius: "14px" },
+  { left: "72px", top: "326px", width: "512px", height: "108px", borderRadius: "22px" },
+], GLIDE);
+at("#send", 9500, 1000, [{ top: "9px", borderRadius: "10px", background: "var(--violet)" }, { top: "61px", borderRadius: "19px", background: "var(--teal)" }], GLIDE);
+// The gauge was hanging off the old header. It goes grey and drops.
+at("#gauge", 10000, 300, [{ filter: "grayscale(1)", opacity: 0.55, borderStyle: "dashed" }]);
+at("#gauge", 10400, 800, [xy(0, 0), xy(70, 426, "rotate(9deg)")], "cubic-bezier(.55,0,.85,.4)");
+at("#gauge", 11200, 300, [xy(70, 426, "rotate(9deg)"), xy(70, 418, "rotate(7deg)"), xy(70, 426, "rotate(9deg)")]);
+move("#c-up", 11000, 900, PICKER_V2, [780, 520]);
+fadeIn("#sub3", 11500);
+fadeOut("#cap3", 13700);
+
+// 4. patchbook reads the note and puts the gauge back where it was meant to go.
+show("#cap4", 14000);
+fadeIn("#c-pb", 14400, 200);
+move("#c-pb", 14400, 900, [760, 900], [192, 806]);
+at("#hl", 15400, 1600, [{ background: "rgba(61,220,151,0)" }, { background: "rgba(61,220,151,.4)" }], "linear");
+move("#c-pb", 15400, 1600, [192, 806], [450, 806], "linear");
+move("#c-pb", 17200, 800, [450, 806], GAUGE_FALLEN);
+at("#gauge", 18000, 400, [{ filter: "grayscale(1)", opacity: 0.55, borderStyle: "dashed" }, { filter: "none", opacity: 1, borderStyle: "solid" }]);
+at("#gauge", 18000, 300, [xy(70, 426, "rotate(9deg)"), xy(70, 426, "scale(1.05)")]);
+fadeIn("#sub4", 18300);
+move("#c-pb", 18300, 1300, GAUGE_FALLEN, GAUGE_V2);
+at("#gauge", 18300, 1300, [xy(70, 426, "scale(1.05)"), xy(-82, 348, "scale(1.05)")], GLIDE);
+at("#gauge", 19600, 500, [
+  { ...xy(-82, 348, "scale(1.05)"), boxShadow: "0 0 0 0 rgba(255,122,182,.6)" },
+  { ...xy(-82, 348, "scale(1)"), boxShadow: "0 0 0 14px rgba(255,122,182,0)" },
+]);
+move("#c-pb", 20000, 900, GAUGE_V2, [780, 700]);
+fadeOut("#cap4", 20700);
+
+// 5. Their new version, with your change.
+show("#cap5", 21000);
+at("#hl", 21000, 500, [{ background: "rgba(61,220,151,.4)" }, { background: "rgba(61,220,151,0)" }]);
+show("#ours", 21200);
+fadeIn("#sub5", 22000);
+
+// End card.
+fadeIn("#end", 23300, 600);
+show("#end1", 23600, 600);
+show("#end2", 24400, 600);
+show("#end3", 25200, 500);
+show("#end4", 25500, 500);
+at("#end5", 26200, 500, [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 0.75, transform: "none" }]);
+
+// Seek every animation by hand, so the preview and the recording show the same frames.
+const anims = document.getAnimations();
+for (const a of anims) a.pause();
+window.DURATION = DURATION;
+window.seek = (ms) => { for (const a of anims) a.currentTime = ms; };
+
+const params = new URLSearchParams(location.search);
+if (params.has("record")) {
+  document.body.classList.add("record");
+  seek(0);
+} else if (params.has("t")) {
+  seek(Number(params.get("t")));
+} else {
+  const start = performance.now();
+  const tick = (now) => { seek((now - start) % DURATION); requestAnimationFrame(tick); };
+  requestAnimationFrame(tick);
+}
+</script>
+</body>
+</html>
