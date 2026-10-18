@@ -322,8 +322,10 @@ function refuseIfFolderHoldsFiles(root: string, { stale, changed }: Changes): vo
   for (const p of changed) {
     const at = join(root, p);
     if (!isRealDir(at)) continue;
-    const kept = nonFolders(at).find((f) => !going.has(`${p}/${f}`));
+    const unreadable: string[] = [];
+    const kept = nonFolders(at, unreadable).find((f) => !going.has(`${p}/${f}`));
     if (kept) throw new Fail(`${p} is a folder that holds ${kept}, which isn't build output, so a build won't replace it. Nothing was changed.`);
+    if (unreadable.length) throw new Fail(`${unreadable[0] === "." ? p : `${p}/${unreadable[0]}`} is a folder that can't be read, so a build won't replace ${p}. Nothing was changed.`);
   }
 }
 

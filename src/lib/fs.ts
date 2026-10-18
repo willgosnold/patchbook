@@ -149,11 +149,9 @@ export function isRealDir(p: string): boolean {
   }
 }
 
-/** Everything under dir that isn't a folder, relative to dir, and any folder in it that can't be read, since it may hold more. */
-export function nonFolders(dir: string): string[] {
-  const unreadable: string[] = [];
-  const files = rglob(dir, "", unreadable).filter((p) => !isRealDir(join(dir, p)));
-  return [...files, ...unreadable];
+/** Everything under dir that isn't a folder, relative to dir. A folder it can't read, which may hold more, goes in `unreadable` when given. */
+export function nonFolders(dir: string, unreadable?: string[]): string[] {
+  return rglob(dir, "", unreadable).filter((p) => !isRealDir(join(dir, p)));
 }
 
 /** Removes dir and the folders in it, deepest first. A rmdir fails on a file, so none is lost. */

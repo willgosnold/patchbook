@@ -2041,7 +2041,7 @@ exec '${Bun.which("git")}' "$@"
     });
   }
 
-  for (const [what, below, named] of [["a_subfolder", "locked", "locked"], ["a_folder", "", "."]] as const) {
+  for (const [what, below, named] of [["a_subfolder", "locked", "x/locked"], ["a_folder", "", "x"]] as const) {
     test.skipIf(process.getuid?.() === 0)(`test_build_force_refuses_a_folder_with_${what}_it_cannot_read`, () => {
       const t = new VendorCase();
       let locked = "";
@@ -2055,7 +2055,7 @@ exec '${Bun.which("git")}' "$@"
         const edited = "hand edit\n";
         t.repo.write("skills/hello/SKILL.md", edited);
         const out = t.pb(["build", "--force"], { cwd: t.repo.path, code: 1 });
-        expect(out.stderr).toContain(`x is a folder that holds ${named},`);
+        expect(out.stderr).toContain(`${named} is a folder that can't be read, so a build won't replace x.`);
         expect(out.stderr).toContain("Nothing was changed");
         expect(out.stderr).not.toContain("ENOTEMPTY");
         expect(lstatSync(at).isDirectory()).toBe(true);
