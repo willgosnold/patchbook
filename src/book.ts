@@ -233,8 +233,9 @@ export class Book {
       const written = "A build writes there, but a vendored copy must match upstream exactly.";
       const own = this.outputFolder(a);
       if (own !== null && (underOrRoot(own, vendored) || underOrRoot(vendored, own))) {
+        const change = a.mount ? "vendor or mount" : "vendor";
         throw new Fail(
-          `the vendored copy of ${a.name} (${shown(vendored)}) overlaps the folder ${a.name} builds into (${shown(own)}). ${written} Change vendor or mount for ${a.name}.`,
+          `the vendored copy of ${a.name} (${shown(vendored)}) overlaps the folder ${a.name} builds into (${shown(own)}). ${written} Change ${change} for ${a.name}.`,
         );
       }
       for (const b of this.upstreams) {

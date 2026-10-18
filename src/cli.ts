@@ -539,9 +539,7 @@ async function main(argv: readonly string[]): Promise<number> {
   const [name, c] = command;
   const values = parse(parserFor(name, c), argv.slice(i + 1), extras);
   if (extras.length) throw error(TOP, `unrecognized arguments: ${extras.join(" ")}`);
-  const code = await c.run(new Args(values));
-  noticeLeftOut();
-  return code;
+  return c.run(new Args(values));
 }
 
 try {
@@ -554,4 +552,6 @@ try {
     process.stderr.write(`patchbook: ${e.message}\n`);
     process.exitCode = 1;
   } else throw e;
+} finally {
+  noticeLeftOut();
 }
