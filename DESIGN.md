@@ -9,7 +9,7 @@ First user: [wstack](https://github.com/willgosnold/wstack), which rewrites Laur
 A repo uses one of two layouts.
 
 - **folder.** The build writes its output to a folder of the repo. Use it when you ship something derived from upstream. wstack builds `skills/` from pstack.
-- **fork.** The repo is upstream plus a `.patchbook/` folder. The build writes the patched tree over the repo root, leaving `.patchbook/` and any vendored copies alone. If upstream has a `.patchbook/` or those folders of its own, `clone` removes its `.patchbook/` and the build ignores both. Upstream's files in the tree are build output. To change them, edit them in place, then run `patchbook record` to move the edit into the patchbook.
+- **fork.** The repo is upstream plus a `.patchbook/` folder. The build writes the patched tree over the repo root, leaving `.patchbook/` and any vendored copies alone. If upstream has a `.patchbook/` of its own, `clone` removes it, and the build, `check` and `sync` ignore it. They also ignore upstream's files under a folder this fork's own config names with `vendor =`. Patchbook never reads upstream's config, so a folder upstream vendors for itself is built like any other. Upstream's files in the tree are build output. To change them, edit them in place, then run `patchbook record` to move the edit into the patchbook.
 
 ## Several upstreams
 

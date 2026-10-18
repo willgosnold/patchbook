@@ -203,6 +203,12 @@ export class Book {
     for (const a of this.upstreams) {
       for (const b of this.upstreams) {
         if (a !== b && a.mount && under(b.mount, a.mount)) throw new Fail(`upstreams ${a.name} and ${b.name} mount at overlapping folders`);
+        if (kind === "fork" && a !== b && a.vendor && b.mount) {
+          const vendored = relative(this.root, a.vendor);
+          if (under(b.mount, vendored) || under(vendored, b.mount)) {
+            throw new Fail(`the vendored copy of ${a.name} overlaps the folder ${b.name} mounts at`);
+          }
+        }
       }
     }
   }
@@ -277,7 +283,7 @@ export class Book {
   stagedUpstream(): Map<string, File> {
     const staged = new Map<string, File>();
     for (const u of this.upstreams) {
-      const files = new Map(Array.from(u.staged()).filter(([p]) => !this.isReserved(p)));
+      const files = this.buildable(u, u.staged());
       const clash = Array.from(files.keys()).find((p) => staged.has(p));
       if (clash) throw new Fail(`${clash} comes from two upstreams; give ${u.name} its own mount`);
       for (const [p, f] of files) staged.set(p, f);
@@ -285,9 +291,20 @@ export class Book {
     return staged;
   }
 
+  /** An upstream's mounted files minus the paths a fork's build never writes. */
+  buildable(u: Upstream, files: ReadonlyMap<string, File>): Map<string, File> {
+    const reserved = this.reservedPaths(u);
+    return new Map(Array.from(files).filter(([p]) => !reserved.some((k) => under(p, k))));
+  }
+
   isReserved(path: string): boolean {
-    if (this.layout.kind !== "fork") return false;
-    return [PB, ...this.upstreams.flatMap((u) => (u.vendor ? [relative(this.root, u.vendor)] : []))].some((k) => under(path, k));
+    return this.reservedPaths(null).some((k) => under(path, k));
+  }
+
+  private reservedPaths(owner: Upstream | null): string[] {
+    if (this.layout.kind !== "fork") return [];
+    const vendored = this.upstreams.filter((u) => u.vendor && !(u === owner && u.mount)).map((u) => relative(this.root, u.vendor!));
+    return [PB, ...vendored];
   }
 
   outputRoot(): string {

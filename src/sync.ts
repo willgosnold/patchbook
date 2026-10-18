@@ -26,9 +26,9 @@ export async function cmdCheck() {
     if (head !== pin.commit) {
       u.fetch(head);
       if (u.treeOf(head) !== pin.tree) {
-        const old = pin.tree ? u.mounted(u.files(held ? pinned(u, pin) : u.heal(pinned(u, pin)))) : new Map<string, File>();
+        const old = pin.tree ? book.buildable(u, u.mounted(u.files(held ? pinned(u, pin) : u.heal(pinned(u, pin))))) : new Map<string, File>();
         r.moved = true;
-        r.files = upstreamDelta(old, u.mounted(u.files(head)));
+        r.files = upstreamDelta(old, book.buildable(u, u.mounted(u.files(head))));
       }
     }
     result.upstreams.set(u.name, r);
@@ -102,8 +102,8 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     return null;
   }
   const raw = u.files(commit);
-  const old = pin.tree ? u.mounted(u.files(u.heal(pinned(u, pin)))) : new Map<string, File>();
-  const fresh = u.mounted(raw);
+  const old = pin.tree ? book.buildable(u, u.mounted(u.files(u.heal(pinned(u, pin))))) : new Map<string, File>();
+  const fresh = book.buildable(u, u.mounted(raw));
   const report: Report = {
     from: pin.commit ?? null, to: commit, upstream: upstreamDelta(old, fresh), merged: [], conflicts: [], gone: [],
     replaced_upstream_changed: [],

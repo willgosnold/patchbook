@@ -10,7 +10,7 @@ import { Book, PB } from "./book.ts";
 import { cmdShow } from "./changes.ts";
 import { cmdHook, installHook } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, readText, resolve, writeText } from "./lib/fs.ts";
+import { exists, lexists, readText, resolve, writeText } from "./lib/fs.ts";
 import { git } from "./lib/proc.ts";
 import { rstrip, split, strRepr } from "./lib/py.ts";
 import { cmdRecord } from "./record.ts";
@@ -51,7 +51,7 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   git([...clone, args.url, dest], { cwd: dirname(dest) });
   const branch = git(["branch", "--show-current"], { cwd: dest });
   const commit = git(["rev-parse", "HEAD"], { cwd: dest });
-  const inherited = exists(join(dest, PB));
+  const inherited = lexists(join(dest, PB));
   if (inherited) rmSync(join(dest, PB), { recursive: true, force: true });
   const name = defaultName(args.url, "");
   writeConfig(dest, "fork", upstreamToml(name, args.url, "", branch, ""));
