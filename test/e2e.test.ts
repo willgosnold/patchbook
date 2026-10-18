@@ -437,7 +437,7 @@ test("test_skill_install_in_the_folder_layout_overwrites_the_file_and_records_no
     Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
 
     const out = t.pb(["skill", "install"], { cwd: repo.path }).stdout;
-    expect(out).toContain(`wrote ${SKILL_FILE}`);
+    expect(out).toBe(`wrote ${SKILL_FILE}\nwrote ${SKILL_LINK}\nreplaced ${SKILL_FILE}; your copy is in HEAD\n`);
     expect(repo.read(SKILL_FILE)).toBe(SKILL_COPY);
     expect(isSymlink(join(repo.path, SKILL_LINK))).toBe(true);
     expect(existsSync(join(repo.path, ".patchbook/changes"))).toBe(false);
@@ -1040,6 +1040,197 @@ test("test_skill_install_says_which_committed_skill_paths_it_replaced", () => {
     expect(out).toContain(`replaced ${SKILL_LINK}; your copy is in HEAD\n`);
     expect(fork.read(SKILL_FILE)).toBe(SKILL_COPY);
     expect(t.pb(["skill", "install"], { cwd: fork.path }).stdout).toBe("the update skill is already current\n");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+/** A committed link at `at` in `repo`, pointing at `target`. */
+function commitLink(repo: Repo, at: string, target: string): void {
+  mkdirSync(dirname(join(repo.path, at)), { recursive: true });
+  symlinkSync(target, join(repo.path, at));
+  repo.commit(`${at} is a link`);
+}
+
+/** A folder outside the repo, holding a customized skill. */
+function outsideSkill(t: Case): string {
+  const shared = join(t.tmp, "shared");
+  mkdirSync(join(shared, "skills/patchbook-update"), { recursive: true });
+  writeFileSync(join(shared, "skills/patchbook-update/SKILL.md"), SKILL_COPY + "Kept outside the repo.\n");
+  return shared;
+}
+
+test("test_skill_install_does_not_write_through_a_symlink_at_the_skill_file", () => {
+  const t = new Case();
+  try {
+    const fork = skillFork(t);
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const notes = join(t.tmp, "notes.md");
+    writeFileSync(notes, "Notes kept outside the repo.\n");
+    commitLink(fork, SKILL_FILE, notes);
+    const before = tree(fork.path);
+    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain(`${SKILL_FILE} is a symlink`);
+    expect(out.stderr).toContain("install won't write through a link");
+    expect(out.stdout).toBe("");
+    expect(read(notes)).toBe("Notes kept outside the repo.\n");
+    expect(tree(fork.path)).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_does_not_write_through_a_symlink_at_a_folder_above_the_skill", () => {
+  const t = new Case();
+  try {
+    const fork = skillFork(t);
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const shared = outsideSkill(t);
+    commitLink(fork, ".agents", shared);
+    const before = tree(fork.path);
+    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain(".agents is a symlink");
+    expect(out.stderr).toContain("install won't write through a link");
+    expect(out.stdout).toBe("");
+    expect(read(join(shared, "skills/patchbook-update/SKILL.md"))).toBe(SKILL_COPY + "Kept outside the repo.\n");
+    expect(tree(fork.path)).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_clone_finishes_without_installing_when_a_folder_above_the_skill_is_a_symlink", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("a.txt", "a\n");
+    commitLink(up, ".agents", outsideSkill(t));
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const out = t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+    expect(out.stderr).toContain(".agents is a symlink");
+    expect(read(join(t.tmp, "shared/skills/patchbook-update/SKILL.md"))).toBe(SKILL_COPY + "Kept outside the repo.\n");
+    const fork = join(t.tmp, "fork");
+    expect(sh(["git", "log", "--format=%s"], { cwd: fork }).stdout).toContain("Start a patchbook at upstream");
+    expect(isSymlink(join(fork, SKILL_LINK))).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_init_finishes_without_installing_when_the_skill_file_is_a_symlink", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\ntwo\n");
+    up.commit("start");
+    sh(["git", "clone", "-q", up.path, join(t.tmp, "mine")], { cwd: t.tmp });
+    const mine = new Repo(join(t.tmp, "mine"));
+    const notes = join(t.tmp, "notes.md");
+    writeFileSync(notes, "Notes kept outside the repo.\n");
+    commitLink(mine, SKILL_FILE, notes);
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const out = t.pb(["init", "--upstream", up.path], { cwd: mine.path });
+    expect(out.stderr).toContain(`${SKILL_FILE} is a symlink`);
+    expect(read(notes)).toBe("Notes kept outside the repo.\n");
+    expect(isSymlink(join(mine.path, SKILL_FILE))).toBe(true);
+    expect(isSymlink(join(mine.path, SKILL_LINK))).toBe(false);
+    expect(existsSync(join(mine.path, ".patchbook/config.toml"))).toBe(true);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+const NOT_UTF8 = Buffer.from([0x62, 0x61, 0x64, 0x20, 0xff, 0xfe, 0x20, 0x62, 0x79, 0x74, 0x65, 0x73, 0x0a]);
+
+function writeBytes(repo: Repo, rel: string, data: Uint8Array): void {
+  mkdirSync(dirname(join(repo.path, rel)), { recursive: true });
+  writeFileSync(join(repo.path, rel), data);
+}
+
+test("test_clone_replaces_a_skill_file_that_is_not_utf8", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("a.txt", "a\n");
+    writeBytes(up, SKILL_FILE, NOT_UTF8);
+    up.commit("start");
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const out = t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+    expect(out.stderr).not.toContain("TypeError");
+    expect(read(join(t.tmp, "fork", SKILL_FILE))).toBe(SKILL_COPY);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_init_replaces_a_skill_file_that_is_not_utf8", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\ntwo\n");
+    up.commit("start");
+    sh(["git", "clone", "-q", up.path, join(t.tmp, "mine")], { cwd: t.tmp });
+    const mine = new Repo(join(t.tmp, "mine"));
+    writeBytes(mine, SKILL_FILE, NOT_UTF8);
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const out = t.pb(["init", "--upstream", up.path], { cwd: mine.path });
+    expect(out.stderr).not.toContain("TypeError");
+    expect(mine.read(SKILL_FILE)).toBe(SKILL_COPY);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_treats_a_skill_file_that_is_not_utf8_as_any_other_that_differs", () => {
+  const t = new Case();
+  try {
+    const fork = skillFork(t);
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    writeBytes(fork, SKILL_FILE, NOT_UTF8);
+    const before = tree(fork.path);
+    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain(SKILL_FILE);
+    expect(out.stderr).toContain("Commit them first");
+    expect(out.stderr).not.toContain("TypeError");
+    expect(tree(fork.path)).toEqual(before);
+
+    fork.commit("a skill that is not utf-8");
+    const done = t.pb(["skill", "install"], { cwd: fork.path }).stdout;
+    expect(done).toContain(`replaced ${SKILL_FILE}; your copy is in HEAD\n`);
+    expect(fork.read(SKILL_FILE)).toBe(SKILL_COPY);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_skill_install_leaves_a_folder_at_the_skill_file_and_exits_1", () => {
+  const t = new Case();
+  try {
+    const fork = skillFork(t);
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    fork.write(`${SKILL_FILE}/notes.txt`, "Mine.\n");
+    const before = tree(fork.path);
+    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain(`${SKILL_FILE} is a folder, so the skill there was left as it is`);
+    expect(out.stderr).toContain(`the update skill was not installed at ${SKILL_FILE}`);
+    expect(out.stderr).not.toContain("EISDIR");
+    expect(out.stdout).toBe("");
+    expect(tree(fork.path)).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_clone_finishes_when_a_folder_is_at_the_skill_file", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write(`${SKILL_FILE}/notes.txt`, "Mine.\n");
+    up.commit("start");
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const out = t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+    expect(out.stderr).toContain("patchbook: couldn't install the update skill");
+    expect(read(join(t.tmp, "fork", SKILL_FILE, "notes.txt"))).toBe("Mine.\n");
   } finally {
     t.cleanup();
   }
