@@ -731,7 +731,7 @@ describe("ForkTest", () => {
     t.pb(["init", "--upstream", "../../../upstream"], { cwd: join(mine, "deep") });
     expect(remotes(mine)).toEqual([up]);
     t.pb(["track", "again", "../../upstream", "--mount", "again"], { cwd: join(t.fork.path, "docs") });
-    expect(remotes(t.fork.path)).toEqual([up, up]);
+    expect(remotes(t.fork.path)).toEqual([t.up.path, up]);
   });
 
   forkTest("test_a_relative_remote_in_config_fails_sync_and_status_and_pins_nothing", (t) => {
