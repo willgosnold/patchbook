@@ -1,7 +1,7 @@
 // End-to-end tests: each one builds a throwaway upstream repo and drives the CLI against it.
 
 import { describe, expect, test } from "bun:test";
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Case, Repo, dedent, lstrip, mkdirNew, partitionHead, replace, sh, words } from "./helpers";
 
@@ -33,6 +33,11 @@ const dropRefs = (store: string): void => {
     sh(["git", "update-ref", "-d", ref], { cwd: store });
   }
 };
+
+const snapshot = (dir: string): Record<string, string> =>
+  Object.fromEntries(
+    (readdirSync(dir, { recursive: true }) as string[]).filter((p) => statSync(join(dir, p)).isFile()).sort().map((p) => [p, read(join(dir, p))]),
+  );
 
 class ForkCase extends Case {
   readonly up: Repo;
@@ -576,6 +581,18 @@ describe("VendorTest", () => {
     expect(inStore(store, pin)).toBe(true);
   });
 
+  vendorTest("test_check_warns_once_when_the_pin_ref_cannot_be_written", (t) => {
+    const store = storeOf(t);
+    const pin = pinOf(t);
+    dropRefs(store);
+    mkdirSync(join(store, "refs/pins"), { recursive: true });
+    writeFileSync(join(store, "refs/pins", `${pin}.lock`), "");
+    t.up.write("plugin/README.md", "For everyone.\n");
+    t.up.commit("readme");
+    const out = t.pb(["check"], { cwd: t.repo.path, code: 10 });
+    expect(out.stderr.split(`couldn't keep ${pin.slice(0, 7)}`).length - 1).toBe(1);
+  });
+
   vendorTest("test_check_keeps_the_pin_when_the_head_has_not_moved", (t) => {
     const store = storeOf(t);
     const pin = pinOf(t);
@@ -617,12 +634,70 @@ describe("VendorTest", () => {
     }
   });
 
+  vendorTest("test_sync_leaves_a_vendored_upstream_as_it_was_when_the_ref_cannot_be_written", (t) => {
+    t.missingScaffoldPatchBuild();
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "one\ntwo\nthree\nfour\nfive\n");
+    extra.commit("a");
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    const change = join(t.repo.path, ".patchbook/changes/tweak");
+    mkdirNew(change);
+    writeFileSync(join(change, "CHANGE.md"), "# tweak\n\nintent: Shout the first line.\n\nedits:\n- file extra/a.md\n");
+    mkdirSync(join(change, "base/extra"), { recursive: true });
+    mkdirSync(join(change, "ours/extra"), { recursive: true });
+    writeFileSync(join(change, "base/extra/a.md.pb"), "one\ntwo\nthree\nfour\nfive\n");
+    writeFileSync(join(change, "ours/extra/a.md.pb"), "ONE\ntwo\nthree\nfour\nfive\n");
+    writeFileSync(join(t.repo.path, ".patchbook/series"), "tweak\n");
+    t.pb(["build"], { cwd: t.repo.path });
+    extra.write("a.md", "one\ntwo\nthree\nfour\nFIVE\n");
+    extra.write("c.md", "c\n");
+    const head = extra.commit("more");
+    for (const d of readdirSync(join(t.tmp, "store/upstreams"))) {
+      const pins = join(t.tmp, "store/upstreams", d, "refs/pins");
+      mkdirSync(pins, { recursive: true });
+      writeFileSync(join(pins, `${head}.lock`), "");
+    }
+    const before = [snapshot(join(t.repo.path, ".patchbook")), snapshot(join(t.repo.path, "vendor/extra"))];
+    expect(t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 }).stderr).toContain(`refs/pins/${head}`);
+    expect([snapshot(join(t.repo.path, ".patchbook")), snapshot(join(t.repo.path, "vendor/extra"))]).toEqual(before);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.repo.path });
+  });
+
+  vendorTest("test_sync_keeps_a_ref_that_was_there_when_the_vendored_copy_does_not_match", (t) => {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "a\n");
+    extra.commit("a");
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    t.repo.write(".gitignore", "*.log\n");
+    extra.write("c.log", "hidden\n");
+    const head = extra.commit("log");
+    const store = readdirSync(join(t.tmp, "store/upstreams")).map((d) => join(t.tmp, "store/upstreams", d)).find((s) => !inStore(s, pinOf(t)))!;
+    sh(["git", "fetch", "-q", "--depth=1", extra.path, head], { cwd: store });
+    sh(["git", "update-ref", `refs/pins/${head}`, head], { cwd: store });
+    t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(sh(["git", "rev-parse", "--verify", "--quiet", `refs/pins/${head}`], { cwd: store }).stdout.trim()).toBe(head);
+  });
+
   for (const command of ["status", "build"]) {
     vendorTest(`test_${command}_keeps_a_pin_it_held_without_a_ref`, (t) => {
       const store = storeOf(t);
       const pin = pinOf(t);
       dropRefs(store);
       t.pb([command], { cwd: t.repo.path, code: null });
+      gc(store);
+      expect(inStore(store, pin)).toBe(true);
+    });
+
+    vendorTest(`test_${command}_keeps_the_pin_of_a_vendored_upstream_held_without_a_ref`, (t) => {
+      t.missingScaffoldPatchBuild();
+      const extra = new Repo(join(t.tmp, "extra"));
+      extra.write("a.md", "a\n");
+      const pin = extra.commit("a");
+      t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+      const store = readdirSync(join(t.tmp, "store/upstreams")).map((d) => join(t.tmp, "store/upstreams", d)).find((s) => inStore(s, pin))!;
+      dropRefs(store);
+      t.pb([command], { cwd: t.repo.path });
       gc(store);
       expect(inStore(store, pin)).toBe(true);
     });
