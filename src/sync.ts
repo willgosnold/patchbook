@@ -172,8 +172,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   }
 
   const j = journal(book, u);
-  try {
-    begin(book, u, pin, { commit, tree });
+  journaled(book, u, pin, { commit, tree }, () => {
     u.keep(commit);
     takeVendor(u.vendor, join(j, "old"));
     if (u.vendor) writeVendor(u, u.vendor, raw, tree);
@@ -183,29 +182,31 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     const lock = join(book.dir, "upstream.lock");
     writeFileSync(join(j, "lock"), lexists(lock) ? readFileSync(lock) : "");
     book.writeLock(u.name, commit, tree);
-  } catch (e) {
-    recover(book, u);
-    throw e;
-  }
-  drop(j);
+  });
   process.stdout.write(`${u.name}: pinned ${commit.slice(0, 7)}. ${report.upstream.length} upstream files changed, `
     + `${report.merged.length} of ours merged cleanly, ${report.conflicts.length} conflicts, ${report.gone.length} gone.\n`);
   warnLeft(book, u);
   return report;
 }
 
-/** Write the vendored copy again under the pin it no longer matches. Its journal never reaches its `to`, so a kill is undone and the next sync writes it again. */
-function rewriteVendor(book: Book, u: Upstream, vendor: string, pin: Pin, raw: ReadonlyMap<string, File>, tree: string): void {
-  const j = journal(book, u);
+/** Run a sync's writes under its journal: a throw undoes them, and success deletes the journal. */
+function journaled(book: Book, u: Upstream, from: Pin, to: Required<Pin> | null, write: () => void): void {
   try {
-    begin(book, u, pin, null);
-    takeVendor(vendor, join(j, "old"));
-    writeVendor(u, vendor, raw, tree);
+    begin(book, u, from, to);
+    write();
   } catch (e) {
     recover(book, u);
     throw e;
   }
-  drop(j);
+  drop(journal(book, u));
+}
+
+/** Write the vendored copy again under the pin it no longer matches. Its journal never reaches its `to`, so a kill is undone and the next sync writes it again. */
+function rewriteVendor(book: Book, u: Upstream, vendor: string, pin: Pin, raw: ReadonlyMap<string, File>, tree: string): void {
+  journaled(book, u, pin, null, () => {
+    takeVendor(vendor, join(journal(book, u), "old"));
+    writeVendor(u, vendor, raw, tree);
+  });
 }
 
 /** Write upstream's files at the vendor path and check them there, because the repo's ignore rules match by path. */
