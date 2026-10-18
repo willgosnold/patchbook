@@ -2499,6 +2499,15 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(read(config)).not.toContain("p-x");
   });
 
+  forkTest("test_config_writes_the_user_config_inside_a_book_whose_hooks_throw", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    writeFileSync(join(t.fork.path, ".patchbook/hooks.ts"), 'throw new Error("hooks blew up");\n');
+    t.pb(["config", "intent.model", "fake-x"], { cwd: t.fork.path });
+    expect((Bun.TOML.parse(read(user)) as { intent: { model: string } }).intent.model).toBe("fake-x");
+    t.pb(["config", "--unset", "intent.model"], { cwd: t.fork.path });
+    expect(read(user)).not.toContain("fake-x");
+  });
+
   forkTest("test_a_user_config_that_is_not_toml_is_named_in_the_error", (t) => {
     const user = join(t.tmp, "config/patchbook/config.toml");
     mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
