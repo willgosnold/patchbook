@@ -22,6 +22,14 @@ export function under(path: string, prefix: string): boolean {
 const underOrRoot = (path: string, folder: string) => folder === "" || under(path, folder);
 const joinPath = (...parts: string[]) => parts.filter(Boolean).join("/");
 const shown = (folder: string) => folder || "the repo root";
+/** Code points HFS+ ignores in a name, so `.g\u200cit` is `.git` on a Mac (`next_hfs_char` in git's utf8.c). */
+const HFS_IGNORED = /[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g;
+/** git's `is_hfs_dotgit`, which stops reading at U+FFFE or U+FFFF. */
+const hfsDotGit = (segment: string) => /^\.git(?:$|[\ufffe\uffff])/i.test(segment.replace(HFS_IGNORED, ""));
+/** git's `is_ntfs_dotgit`, applied after each backslash as fsck does. */
+const ntfsDotGit = (segment: string) => segment.split("\\").some((part) => /^(?:\.git|git~1)[. ]*(?::|$)/i.test(part));
+/** Whether a part of path is a name git reads as `.git`. git's fsck warns `hasDotgit` on each one on every platform, and git refuses to stage most of them. */
+const namesGit = (path: string) => path.split("/").some((segment) => hfsDotGit(segment) || ntfsDotGit(segment));
 
 const leftOut = new Map<string, Set<string>>();
 
@@ -126,6 +134,16 @@ export type Check = { files: RegExp[]; exclude: RegExp[]; pattern: RegExp };
 export type Placeholder = { file: string | null; format: string };
 export type Layout = { kind: "fork" } | { kind: "folder"; from: string; dir: string };
 
+/** How `path` spells the repo root: its outermost ancestor that resolves into the repo, or null when that one is a link into a folder of the repo. */
+function repoAsSpelled(realRoot: string, path: string): string | null {
+  let outermost = path;
+  for (let up = path; ; up = dirname(up)) {
+    if (!under(relative(realRoot, resolve(up)), "..")) outermost = up;
+    if (up === dirname(up)) break;
+  }
+  return resolve(outermost) === realRoot ? outermost : null;
+}
+
 /** The repo-relative folder `to` names once links above the repo are resolved, after the checks that keep a build inside it. */
 function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly string[]): string {
   const dir = pjoin(root, to);
@@ -137,11 +155,9 @@ function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly str
   if (lexists(dir) && !exists(dir)) throw new Fail(`[output] to ${shown} is a link to nothing. Name a folder inside the repo.`);
   if (isSymlink(dir)) throw new Fail(`[output] to ${shown} is a link, and a build would replace it with a folder. Name the folder it points to.`);
   if (exists(dir) && !isDir(dir)) throw new Fail(`[output] to ${shown} is not a folder. Name a folder inside the repo.`);
-  const realRoot = resolve(root);
-  // A link above the repo (macOS /var) can spell the repo's own path, so that spelling ends the walk. A link inside it never does.
-  const atRepo = (p: string) => p === root || (!under(p, root) && resolve(p) === realRoot);
-  for (let up = dirname(dir); !atRepo(up) && up !== dirname(up); up = dirname(up)) {
-    const name = under(up, root) ? relative(root, up) : up;
+  const repo = repoAsSpelled(resolve(root), dirname(dir));
+  for (let up = dirname(dir); up !== repo && up !== dirname(up); up = dirname(up)) {
+    const name = repo === null ? up : relative(repo, up);
     if (lexists(up) && !exists(up)) throw new Fail(`[output] to ${shown} is under ${name}, which is a link to nothing. Name a folder inside the repo.`);
     if (isSymlink(up)) throw new Fail(`[output] to ${shown} is under ${name}, which is a link. Name a folder that is not behind a link.`);
     if (exists(up) && !isDir(up)) throw new Fail(`[output] to ${shown} is under ${name}, which is not a folder. Name a folder inside the repo.`);
@@ -255,7 +271,7 @@ export class Book {
     }
     for (const u of this.upstreams) {
       const out = this.outputFolder(u);
-      const own = out === null ? undefined : under(out, PB) ? PB : out.split("/").some((segment) => segment.toLowerCase() === GIT) ? GIT : undefined;
+      const own = out === null ? undefined : under(out, PB) ? PB : namesGit(out) ? GIT : undefined;
       if (own) {
         const where = this.layout.kind === "fork" ? `mounts at ${shown(u.mount)}` : `builds into ${shown(out ?? "")}`;
         throw new Fail(`${u.name} ${where}, inside ${own}. patchbook never builds into ${own}, so those files would never land. Change ${this.outputKnob(u)}.`);
