@@ -489,6 +489,53 @@ test("test_a_missing_vendor_folder_is_named_by_its_plain_path_in_the_error", () 
   }
 }, TIMEOUT);
 
+test("test_an_init_whose_sync_fails_leaves_no_patchbook_and_can_be_retried", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("skills/a.md", "a\n");
+    const commit = up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    repo.write("README.md", "mine\n");
+    repo.commit("start");
+    const output = ["--output-from", "skills", "--output-to", "skills"];
+    const init = t.pb(["init", "--upstream", join(t.tmp, "no-such-repo"), ...output], { cwd: repo.path, code: 1 });
+    expect(init.stderr).toContain("git fetch");
+    expect(existsSync(join(repo.path, ".patchbook"))).toBe(false);
+    t.pb(["init", "--upstream", up.path, ...output], { cwd: repo.path });
+    expect(JSON.parse(repo.read(".patchbook/upstream.lock")).upstream.commit).toBe(commit);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+for (const bad of ["no-such-repo", "unrelated"]) {
+  test(`test_a_fork_init_against_${bad.replaceAll("-", "_")}_leaves_no_patchbook_and_can_be_retried`, () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\n");
+      const base = up.commit("start");
+      sh(["git", "clone", "-q", up.path, "fork"], { cwd: t.tmp });
+      const fork = new Repo(join(t.tmp, "fork"));
+      fork.write("mine.txt", "mine\n");
+      fork.commit("mine");
+      up.write("app.txt", "two\n");
+      up.commit("later");
+      const unrelated = new Repo(join(t.tmp, "unrelated"));
+      unrelated.write("other.txt", "other\n");
+      unrelated.commit("other");
+      t.pb(["init", "--upstream", join(t.tmp, bad)], { cwd: fork.path, code: 1 });
+      expect(existsSync(join(fork.path, ".patchbook"))).toBe(false);
+      const init = t.pb(["init", "--upstream", up.path], { cwd: fork.path });
+      expect(init.stdout).toContain(`pinned upstream at ${base.slice(0, 7)}`);
+      expect(sh(["git", "remote", "get-url", "upstream"], { cwd: fork.path }).stdout.trim()).toBe(up.path);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
 describe("ForkTest", () => {
   // Each layout puts a vendored copy where its own upstream's build writes, so a build would land in it.
   for (const [where, mount, vendor] of [
@@ -534,6 +581,20 @@ describe("ForkTest", () => {
     expect(tracked.stderr).toContain("the vendored copy of lib (vendor) contains the folder other builds into (vendor/other)");
     expect(tracked.stderr).toContain("Change vendor for lib or mount for other");
     expect(read(config)).toBe(before);
+  });
+
+  forkTest("test_a_track_whose_fetch_fails_leaves_the_book_as_it_was", (t) => {
+    const lib = new Repo(join(t.tmp, "lib"));
+    lib.write("a.txt", "a\n");
+    const commit = lib.commit("lib");
+    const book = join(t.fork.path, ".patchbook");
+    const before = snapshot(book);
+    const tracked = t.pb(["track", "lib", join(t.tmp, "no-such-repo")], { cwd: t.fork.path, code: 1 });
+    expect(tracked.stderr).toContain("git fetch");
+    expect(snapshot(book)).toEqual(before);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["track", "lib", lib.path], { cwd: t.fork.path });
+    expect(JSON.parse(read(join(book, "upstream.lock"))).lib.commit).toBe(commit);
   });
 
   for (const [order, first, second] of [
