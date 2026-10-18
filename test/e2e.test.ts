@@ -51,7 +51,6 @@ const dropRefs = (store: string): void => {
   }
 };
 
-/** A script on the test's PATH that leaves a marker file when it runs, so a test can see whether git ran it. */
 const markerScript = (t: Case, name: string): string => {
   const marker = join(t.tmp, `${name}-ran`);
   writeFileSync(join(t.tmp, "bin", name), `#!/bin/sh\ntouch ${marker}\nexit 1\n`, { mode: 0o755 });

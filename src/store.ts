@@ -35,7 +35,7 @@ export function absoluteRemote(remote: string): string {
 
 /**
  * A remote read from config.toml comes from a repo, as a submodule URL does, so git gets the rule it uses for those.
- * A remote helper runs only if the user's git config allows it "always". Local paths stay allowed, though that rule holds them back too, and ext:: never runs.
+ * A remote helper runs only if the user's git config allows it "always", and ext:: never runs. Local paths and file:// get "always", because git gives file the policy "user" and that rule alone would refuse them.
  */
 const FROM_REPO = ["-c", "protocol.file.allow=always", "-c", "protocol.ext.allow=never"];
 const fromRepo = () => ({ ...process.env, GIT_PROTOCOL_FROM_USER: "0" });
