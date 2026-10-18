@@ -2,7 +2,7 @@
 import { chmodSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join } from "node:path";
 import type { Problem } from "./api.ts";
-import { assemble, buildLockPath, type BuildLock, type Changes, changesOf, describe, handEdits, parseBuildLock, readBuildLock, writeOutput } from "./assemble.ts";
+import { assemble, buildLockPath, type BuildLock, builtAs, type Changes, changesOf, describe, handEdits, parseBuildLock, readBuildLock, writeOutput } from "./assemble.ts";
 import { Book, buildInputs, PB, placeholderOutputs, under } from "./book.ts";
 import { cmdRecord } from "./record.ts";
 import { Fail } from "./lib/fail.ts";
@@ -504,7 +504,7 @@ function onDisk(book: Book, p: string): File | undefined {
 function leftByLastBuild(book: Book, lock: BuildLock | null, p: string): boolean {
   if (lock === null || isFolder(book, p)) return false;
   const disk = onDisk(book, p);
-  return disk === undefined ? !lock.has(p) : lock.get(p) === blobOid(disk.data);
+  return disk === undefined ? !lock.has(p) : builtAs(disk, lock.get(p), book.tracksExecBit());
 }
 
 function refuseOverwrites(book: Book, clobbered: string[]): void {

@@ -5,7 +5,7 @@ import type { Problem } from "./api.ts";
 import { Book } from "./book.ts";
 import { unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, foldersWith, isDir, isSymlink, LINK, lexists, mkdirs, type Mode, readDisk, readText, writeDisk, writeText } from "./lib/fs.ts";
+import { exists, type File, foldersWith, isDir, isSymlink, LINK, lexists, mkdirs, type Mode, readDisk, readText, writeDisk, writeText } from "./lib/fs.ts";
 import { splitlines, strip, W } from "./lib/py.ts";
 import { decodeReplace } from "./lib/text.ts";
 
@@ -40,9 +40,13 @@ export class Change {
     return join(this.dir, side, `${path}.pb`);
   }
 
-  read(side: Side, path: string): Uint8Array | null {
+  file(side: Side, path: string): File | null {
     const p = this.content(side, path);
-    return lexists(p) ? readDisk(p).data : null;
+    return lexists(p) ? readDisk(p) : null;
+  }
+
+  read(side: Side, path: string): Uint8Array | null {
+    return this.file(side, path)?.data ?? null;
   }
 
   write(side: Side, path: string, data: Uint8Array, mode?: Mode): void {

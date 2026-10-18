@@ -20,6 +20,12 @@ export function normMode(mode: number): Mode {
   return mode & 0o111 ? 0o755 : 0o644;
 }
 
+const GIT_MODES = new Map<string, Mode>([["100644", 0o644], ["100755", 0o755], ["120000", LINK]]);
+
+/** A mode as git names it in an index entry. */
+export const gitMode = (mode: Mode): string => Array.from(GIT_MODES).find(([, m]) => m === mode)![0];
+export const parseGitMode = (name: string): Mode | undefined => GIT_MODES.get(name);
+
 export function isMode(mode: unknown): mode is Mode {
   return mode === 0o644 || mode === 0o755 || mode === LINK;
 }

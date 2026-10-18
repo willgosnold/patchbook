@@ -12370,7 +12370,6 @@ describe("ModeTest", () => {
   const hookCommit = (t: Case, repo: Repo, message: string, intent: string): void => {
     sh(["git", "commit", "-qam", message], { cwd: repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: intent } });
   };
-  const gitModeOf = (repo: Repo, path: string): string => sh(["git", "ls-files", "-s", path], { cwd: repo.path }).stdout.split(" ")[0]!;
   const lockLines = (t: ForkCase): string[] => read(join(t.fork.path, ".patchbook/build.lock")).split("\n").filter(Boolean);
   const changeText = (t: ForkCase, name: string): string => read(join(t.fork.path, ".patchbook/changes", name, "CHANGE.md"));
   const oursOf = (t: ForkCase, change: string, path: string): string => join(t.fork.path, ".patchbook/changes", change, "ours", `${path}.pb`);
@@ -12507,7 +12506,7 @@ describe("ModeTest", () => {
     const out = t.pb(["record", "--intent", "Run the skill."], { cwd: t.repo.path }).stdout;
     expect(out).toBe(
       "skipped  hello/SKILL.md: block entries hold no mode, so the mode change was not recorded; "
-      + "to set it, add this to .patchbook/hooks.ts: export const finish = (out) => { out.get(\"hello/SKILL.md\")!.mode = 0o755; };\n",
+      + "to set it, make your finish hook in .patchbook/hooks.ts run out.get(\"hello/SKILL.md\")!.mode = 0o755;\n",
     );
     expect(read(entries)).toBe(before);
     writeFileSync(join(t.repo.path, ".patchbook/hooks.ts"), dedent(`
@@ -12540,7 +12539,9 @@ describe("ModeTest", () => {
     const oid = (path: string): string => sh(["git", "hash-object", path], { cwd: t.fork.path }).stdout.trim();
     expect(lines).toContain(`100644 ${oid("app.txt")} app.txt`);
     expect(lines).toContain(`100755 ${oid("bin/run.sh")} bin/run.sh`);
-    expect(lines.filter((l) => l.endsWith(" link"))).toEqual([`120000 ${oid("link")} link`]);
+    sh(["git", "add", "link"], { cwd: t.fork.path });
+    const linkOid = sh(["git", "ls-files", "-s", "link"], { cwd: t.fork.path }).stdout.split(/\s+/)[1];
+    expect(lines.filter((l) => l.endsWith(" link"))).toEqual([`120000 ${linkOid} link`]);
   });
 
   const oldLock = (t: ForkCase): void => {

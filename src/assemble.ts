@@ -11,7 +11,8 @@ import { type Change, editText, readChanges } from "./changes.ts";
 import { installHookOrWarn, warnUnhooked } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import {
-  exists, type File, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, nonFolders, readDisk, readText, relative, resolve, rglob, rmFolders, sameFile, writeDisk, writeText,
+  exists, type File, gitMode, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, type Mode, nonFolders, parseGitMode, readText, relative, resolve, rglob, rmFolders, sameFile,
+  sameMode, writeDisk, writeText,
 } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { dumps, type Json, loads } from "./lib/json.ts";
@@ -152,7 +153,7 @@ export function assemble(book: Book): Assembly {
         continue;
       }
       const base = c.read("base", e.path);
-      const ours = c.read("ours", e.path);
+      const ours = c.file("ours", e.path);
       if (base === null || ours === null) {
         problems.push({ problem: "invalid", ...where, detail: "its base or ours copy is missing" });
         continue;
@@ -160,8 +161,8 @@ export function assemble(book: Book): Assembly {
       if (!bytesEqual(base, up.data)) {
         problems.push({ problem: "stale", ...where, detail: "its base differs from upstream at the pin; run sync" });
       }
-      if (isText(ours) && hasConflictMarker(decode(ours))) problems.push({ problem: "conflict", ...where, detail: "ours has conflict markers" });
-      content.set(e.path, { data: ours, mode: up.mode });
+      if (isText(ours.data) && hasConflictMarker(decode(ours.data))) problems.push({ problem: "conflict", ...where, detail: "ours has conflict markers" });
+      content.set(e.path, ours);
       applied++;
     }
   }
@@ -217,8 +218,9 @@ export function assemble(book: Book): Assembly {
       out.set(outPath, { data: encode(text), mode });
     } else {
       const c = byName.get(src.change)!;
-      let data = c.read("ours", src.path)!;
-      const mode = upstream.get(src.path)?.mode ?? readDisk(c.content("ours", src.path)).mode;
+      const copy = c.file("ours", src.path)!;
+      let data = copy.data;
+      const mode = copy.mode;
       const where: InOutput = { file: `changes/${c.name}`, output: outPath };
       if (isText(data)) {
         const text = rules.expand(decode(data), (detail) => problems.push({ problem: "placeholder", ...where, detail }));
@@ -248,29 +250,43 @@ export function assemble(book: Book): Assembly {
 
 export const buildLockPath = (book: Book) => join(book.dir, "build.lock");
 
-export function readBuildLock(book: Book): Map<string, string> | null {
+/** What `build.lock` holds for a built file. A line written before modes were kept has none, so it compares content only. */
+export type Stamp = { oid: string; mode: Mode | null };
+
+export const stampOf = (f: File): Stamp => ({ oid: blobOid(f.data), mode: f.mode });
+
+const LOCK_LINE = /^(\d{6}) (\S+) (.*)$/;
+
+export function readBuildLock(book: Book): Map<string, Stamp> | null {
   const path = buildLockPath(book);
   return exists(path) ? parseBuildLock(readText(path)) : null;
 }
 
-export function parseBuildLock(text: string): Map<string, string> {
-  const entries = new Map<string, string>();
+export function parseBuildLock(text: string): Map<string, Stamp> {
+  const entries = new Map<string, Stamp>();
   for (const line of text.split("\n")) {
     if (!strip(line)) continue;
+    const [, name, oid, at] = LOCK_LINE.exec(line) ?? [];
+    const mode = name === undefined ? undefined : parseGitMode(name);
+    if (mode !== undefined) {
+      entries.set(at!, { oid: oid!, mode });
+      continue;
+    }
     const sep = line.indexOf(" ");
-    if (sep === -1) entries.set("", line);
-    else entries.set(line.slice(sep + 1), line.slice(0, sep));
+    if (sep === -1) entries.set("", { oid: line, mode: null });
+    else entries.set(line.slice(sep + 1), { oid: line.slice(0, sep), mode: null });
   }
   return entries;
 }
 
-export const oids = (files: ReadonlyMap<string, File>) => new Map(Array.from(files, ([p, f]) => [p, blobOid(f.data)]));
-
-export function writeBuildLines(book: Book, lock: ReadonlyMap<string, string>): void {
-  writeText(buildLockPath(book), sortedBy(lock, ([p]) => p).map(([p, oid]) => `${oid} ${p}\n`).join(""));
+/** One line per built file, as `<mode> <blob id> <path>` with git's own mode names, such as `100755`. */
+export function writeBuildLines(book: Book, lock: ReadonlyMap<string, Stamp>): void {
+  const line = (p: string, { oid, mode }: Stamp) => (mode === null ? `${oid} ${p}\n` : `${gitMode(mode)} ${oid} ${p}\n`);
+  writeText(buildLockPath(book), sortedBy(lock, ([p]) => p).map(([p, stamp]) => line(p, stamp)).join(""));
 }
 
-export const writeBuildLock = (book: Book, out: ReadonlyMap<string, File>) => writeBuildLines(book, oids(out));
+export const writeBuildLock = (book: Book, out: ReadonlyMap<string, File>) =>
+  writeBuildLines(book, new Map(Array.from(out, ([p, f]) => [p, stampOf(f)])));
 
 export type Changes = { stale: string[]; changed: string[] };
 
@@ -320,18 +336,23 @@ function refuseIfUncontained(book: Book, { stale, changed }: Changes): void {
   }
 }
 
-export type BuildLock = ReadonlyMap<string, string>;
+export type BuildLock = ReadonlyMap<string, Stamp>;
 
+export const builtAs = (file: File | undefined, stamp: Stamp | undefined, tracksExecBit: boolean): boolean =>
+  file === undefined || stamp === undefined
+    ? file === undefined && stamp === undefined
+    : blobOid(file.data) === stamp.oid && (stamp.mode === null || sameMode(stamp.mode, file.mode, tracksExecBit));
+
+/** A mode change counts, unless git ignores the executable bit here. */
 export function handEdits(
   book: Book, fresh: ReadonlyMap<string, File>, files: ReadonlyMap<string, File>, builds: (BuildLock | null)[] = [readBuildLock(book)],
 ): string[] {
   refuseIfUncontained(book, changesOf(files, fresh));
-  const current = oids(files);
-  const next = oids(fresh);
+  const execBit = book.tracksExecBit();
   const last = builds.filter((b) => b !== null);
-  if (!last.length) return sorted(Array.from(current.keys()).filter((p) => current.get(p) !== next.get(p))); // never built here
-  const paths = new Set([...current.keys(), ...last.flatMap((b) => [...b.keys()])]);
-  return sorted(Array.from(paths).filter((p) => current.get(p) !== next.get(p) && last.every((b) => current.get(p) !== b.get(p))));
+  if (!last.length) return sorted(Array.from(files.keys()).filter((p) => !sameFile(files.get(p), fresh.get(p), execBit))); // never built here
+  const paths = new Set([...files.keys(), ...last.flatMap((b) => [...b.keys()])]);
+  return sorted(Array.from(paths).filter((p) => !sameFile(files.get(p), fresh.get(p), execBit) && last.every((b) => !builtAs(files.get(p), b.get(p), execBit))));
 }
 
 /** A folder where the build writes a file goes only if it holds nothing but folders and files this build removes. */
