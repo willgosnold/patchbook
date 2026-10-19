@@ -1912,6 +1912,24 @@ test("test_skill_install_says_why_when_start_agents_is_empty", () => {
   }
 }, TIMEOUT);
 
+test("test_commit_records_a_hand_edit_in_a_fork_cloned_with_the_skill", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const fork = skillFork(t);
+    fork.write("app.txt", "one\nTWO\n");
+    sh(["git", "add", "app.txt"], { cwd: fork.path });
+    const commit = sh(["git", "commit", "-q", "-m", "shout"], { cwd: fork.path, check: false, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Shout two." } });
+    expect(commit.stderr).not.toContain("is a link");
+    expect(commit.code).toBe(0);
+    expect(committedFiles(fork)).toContain("app.txt");
+    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+    expect(sh(["git", "status", "--porcelain"], { cwd: fork.path }).stdout).toBe("");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("test_clone_of_a_patchbook_repo_starts_a_patchbook_of_its_own", () => {
   const t = new Case();
   try {
