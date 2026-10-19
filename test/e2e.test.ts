@@ -5833,13 +5833,15 @@ describe("ForkTest", () => {
     t.pb(["sync"], { cwd: t.fork.path });
     hookCommit(t, ["-am", "Sync upstream"]);
     expect(committed(t)).toContain(".patchbook/upstream.lock");
+    expect(committed(t)).not.toContain(".patchbook/last-sync.json");
     expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("ONE");
-    expect(porcelain(t)).toBe("?? .patchbook/last-sync.json\n");
+    expect(porcelain(t)).toBe("");
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "shout"]);
     expect(committed(t)).toContain(".patchbook/changes/shout/CHANGE.md");
-    expect(porcelain(t)).toBe("?? .patchbook/last-sync.json\n");
+    expect(committed(t)).not.toContain(".patchbook/last-sync.json");
+    expect(porcelain(t)).toBe("");
   });
 
   forkTest("test_commit_leaves_out_an_untracked_file_in_the_patchbook_folder", (t) => {
@@ -5864,7 +5866,8 @@ describe("ForkTest", () => {
     for (const p of [".patchbook/build.lock", ".patchbook/notes.md", ".patchbook/upstream.lock"]) expect(committed(t)).toContain(p);
     expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("deux");
     expect(committed(t)).not.toContain(".patchbook/scratch.txt");
-    expect(porcelain(t)).toBe("?? .patchbook/last-sync.json\n?? .patchbook/scratch.txt\n");
+    expect(committed(t)).not.toContain(".patchbook/last-sync.json");
+    expect(porcelain(t)).toBe("?? .patchbook/scratch.txt\n");
   });
 
   forkTest("test_partial_commit_says_the_patchbook_changes_are_not_in_it", (t) => {
@@ -6288,7 +6291,7 @@ describe("ForkTest", () => {
       expect(t.fork.read("keep.log")).toBe("kept\n");
     }
     expect(sh(["git", "ls-files", "keep.log"], { cwd: t.fork.path }).stdout).toBe("");
-    expect(porcelain(t)).toBe("?? .patchbook/last-sync.json\n");
+    expect(porcelain(t)).toBe("");
   });
 
   forkTest("test_commit_takes_a_mode_change_from_upstream", (t) => {
