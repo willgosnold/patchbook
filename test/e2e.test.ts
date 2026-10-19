@@ -5108,11 +5108,14 @@ describe("ForkTest", () => {
   forkTest("sync leaves a conflict that status reports and build refuses", (t) => {
     t.recordFeature();
     t.up.write("app.txt", t.up.read("app.txt").replaceAll("two", "deux"));
-    t.up.commit("conflicting edit");
+    const head = t.up.commit("conflicting edit");
     t.pb(["sync"], { cwd: t.fork.path });
-    const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
-    expect(status).toContain("conflict");
-    t.pb(["build"], { cwd: t.fork.path, code: 1 });
+    const problems = "conflict  app.txt: ours has conflict markers\nconflict  app.txt: conflict marker in the output\n";
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toBe(`${problems}1 edits apply at upstream ${head.slice(0, 7)}; 2 conflict\n`);
+    const before = tree(t.fork.path);
+    const build = t.pb(["build"], { cwd: t.fork.path, code: 1 });
+    expect(build.stderr).toBe(`${problems}patchbook: 2 problems; nothing built. \`patchbook status\` lists them.\n`);
+    expect(tree(t.fork.path)).toEqual(before);
   });
 
   forkTest("sync reports an edited file upstream deleted as gone, with the file it moved to", (t) => {
