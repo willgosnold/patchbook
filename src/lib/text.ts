@@ -1,5 +1,4 @@
-// UTF-8 bytes as text and back, and patchbook's rules for text: its lines and its order. TextDecoder
-// drops a leading BOM unless told not to, which would strip it from built files.
+// TextDecoder drops a leading BOM unless told not to, which would strip it from built files.
 const strict = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const lenient = new TextDecoder("utf-8", { ignoreBOM: true });
 const encoder = new TextEncoder();
@@ -45,14 +44,10 @@ export function lines(text: string): string[] {
 export function byCodePoint(a: string, b: string): number {
   const n = Math.min(a.length, b.length);
   for (let i = 0; i < n; i++) {
-    const x = a.charCodeAt(i);
-    const y = b.charCodeAt(i);
-    if (x !== y) return rank(x) - rank(y);
+    const x = a.codePointAt(i)!;
+    const y = b.codePointAt(i)!;
+    if (x !== y) return x - y;
+    if (x > 0xffff) i++;
   }
   return a.length - b.length;
-}
-
-function rank(unit: number): number {
-  // Lift surrogates above U+E000-U+FFFF so the first differing code unit orders by code point.
-  return unit < 0xd800 ? unit : unit < 0xe000 ? unit + 0x2000 : unit - 0x800;
 }

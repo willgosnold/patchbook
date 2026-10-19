@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import type { Problem } from "../src/api.ts";
 import type { Assembly } from "../src/assemble.ts";
 import type { Reserved } from "../src/book.ts";
+import { SequenceMatcher } from "../src/lib/difflib.ts";
 
 const sandbox = mkdtempSync(join(tmpdir(), "units"));
 const ambientConfigHome = process.env["XDG_CONFIG_HOME"];
@@ -318,7 +319,7 @@ describe("entries", () => {
 
 describe("nearest", () => {
   test("rounds the similarity to two places, and a half up", () => {
-    // The two share 5 of their 16 characters, so the ratio is 2 * 5 / 16 = 0.625.
+    expect(new SequenceMatcher<string>("abcdefgh", "abcdeXYZ").ratio()).toBe(0.625);
     expect(nearest("abcdefgh", [{ line: 3, hash: "h", upstream: "abcdeXYZ" }])).toEqual([{ line: 3, hash: "h", similarity: 0.63 }]);
   });
 });

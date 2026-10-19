@@ -1,4 +1,3 @@
-// Python's repr() of a string and str() of a JSON value, which messages and placeholder values still use.
 import type { JsonValue } from "./json.ts";
 
 const NOT_PRINTABLE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}]/u;
@@ -7,6 +6,7 @@ function hex(c: number, width: number): string {
   return c.toString(16).padStart(width, "0");
 }
 
+/** Python's `repr()` of a string. */
 export function strRepr(s: string): string {
   const quote = s.includes("'") && !s.includes('"') ? '"' : "'";
   let out = quote;

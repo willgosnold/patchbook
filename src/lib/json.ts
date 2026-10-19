@@ -1,5 +1,4 @@
-// Python's json.loads and json.dumps, with every number a plain number. JSON.parse puts integer-like
-// keys first, and JSON.stringify doesn't escape non-ASCII.
+// JSON.parse puts integer-like keys first, and JSON.stringify doesn't escape non-ASCII.
 
 /** A value `loads` reads: objects as maps, in the order of their keys. */
 export type JsonValue = null | boolean | number | string | JsonValue[] | Map<string, JsonValue>;

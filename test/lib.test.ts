@@ -1,5 +1,3 @@
-// src/lib: patchbook's text rules, and the parts still checked against what CPython gives on the same
-// cases (test/fixtures/cpython.json). Regenerate those with: python3 test/fixtures/generate.py
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -143,8 +141,9 @@ test.each(cases.unified)("unified_diff %#", (c) => {
   expect(unifiedDiff(pythonLines(c.a), pythonLines(c.b), c.fromfile, c.tofile)).toBe(c.diff);
 });
 
-// Python keeps a float's form, as in 1.0, and patchbook reads every JSON number as a plain number.
-test.each(cases.json.filter((c) => !/\d[.eE]|NaN|Infinity/.test(c.text)))("json loads, dumps and str %#", (c) => {
+const withoutFloats = (c: Fixture["json"][number]) => !/\d[.eE]|NaN|Infinity/.test(c.text);
+
+test.each(cases.json.filter(withoutFloats))("json loads, dumps and str %#", (c) => {
   const value = loads(c.text);
   expect(dumps(value)).toBe(c.dumps);
   expect(dumps(value, 2)).toBe(c.indent);
