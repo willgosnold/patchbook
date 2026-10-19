@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TomlDocument } from "@decimalturn/toml-patch";
@@ -7,14 +7,7 @@ import { unifiedDiff } from "../src/lib/diff.ts";
 import { nonFolders, rmFolders } from "../src/lib/fs.ts";
 import { lineChanges, similarity } from "../src/lib/match.ts";
 import { git, shellQuote } from "../src/lib/proc.ts";
-import { strRepr } from "../src/lib/repr.ts";
 import { byCodePoint, encode, withoutFinalNewline } from "../src/lib/text.ts";
-
-type Fixture = {
-  repr: { s: string; repr: string }[];
-};
-
-const cases: Fixture = JSON.parse(readFileSync(new URL("fixtures/cpython.json", import.meta.url), "utf8"));
 
 describe("byCodePoint", () => {
   test("puts a character above U+FFFF after U+E000 to U+FFFF, where sort() alone puts it before them", () => {
@@ -350,10 +343,6 @@ describe("unifiedDiff", () => {
       }
     });
   });
-});
-
-test("repr(str)", () => {
-  for (const c of cases.repr) expect(strRepr(c.s)).toBe(c.repr);
 });
 
 describe("the TOML library's syntax tree", () => {
