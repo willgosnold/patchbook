@@ -8,7 +8,7 @@
     "patchbook": "src/cli.ts"
   },
   "scripts": {
-    "test": "bun test",
+    "test": "bun test --isolate",
     "typecheck": "tsc --noEmit",
     "build": "bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig src/cli.ts --outfile dist/patchbook"
   },
