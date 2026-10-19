@@ -43,8 +43,12 @@ function* authorities(text: string): Generator<Authority> {
   }
 }
 
+// Git percent-decodes the user info before it reaches ssh, so `%3A` is a colon. A `%` that does not start
+// two hex digits stays a literal `%`.
+const SEPARATOR = /:|%3a/i;
+
 const dropsCredentials = (scheme: string, userinfo: string): boolean =>
-  WEB_SCHEMES.test(scheme) ? userinfo !== "" : userinfo.includes(":");
+  WEB_SCHEMES.test(scheme) ? userinfo !== "" : SEPARATOR.test(userinfo);
 
 /** User info runs to the last `@` before the first `/`, so a password may hold spaces, `#` or `?`. */
 export function redact(text: string): string {
@@ -52,7 +56,7 @@ export function redact(text: string): string {
   for (const { scheme, start, userinfo } of authorities(text)) {
     if (userinfo === null) continue;
     if (WEB_SCHEMES.test(scheme)) cuts.push([start, start + userinfo.length + 1]);
-    else if (userinfo.includes(":")) cuts.push([start + userinfo.indexOf(":"), start + userinfo.length]);
+    else if (SEPARATOR.test(userinfo)) cuts.push([start + userinfo.search(SEPARATOR), start + userinfo.length]);
   }
   let out = "";
   let at = 0;
