@@ -3042,11 +3042,6 @@ const INIT_STEPS: [string, string[], string, (repo: Repo) => string[]][] = [
   }],
   ["its_series", ["fork", "folder"], ".patchbook/series: permission denied", (repo) => (repo.write(".patchbook/series", "", 0o444), [])],
   ["retired_md", ["fork", "folder"], ".patchbook/retired.md: permission denied", (repo) => (repo.write(".patchbook/retired.md", "", 0o444), [])],
-  ["its_config", ["fork"], ".patchbook/config.toml: permission denied", (repo) => {
-    for (const [file, text] of [["upstream.lock", "{}\n"], ["series", ""], ["retired.md", ""]] as const) repo.write(`.patchbook/${file}`, text);
-    chmodSync(join(repo.path, ".patchbook"), 0o555);
-    return [];
-  }],
 ];
 
 for (const [step, layouts, failure, block] of INIT_STEPS) {
@@ -3116,19 +3111,21 @@ describe.skipIf(!!process.env["PATCHBOOK_CMD"])("init stopped by a preload, so o
   const preloaded = (t: Case, cwd: string, env: Record<string, string>, args: string[]): Run =>
     sh([process.execPath, "--preload", join(import.meta.dir, "crash.ts"), TOOL, ...args], { cwd, env: { ...t.env, PATCHBOOK_HOOK: "", ...env }, check: false });
 
-  test("test_a_folder_init_that_cannot_write_its_config_leaves_the_repo_as_it_was", () => {
-    const t = new Case();
-    try {
-      const { up, repo, output } = startingRepo(t, "folder");
-      const before = repoState(repo.path);
-      const init = preloaded(t, repo.path, { FAIL_WRITE: "/.patchbook/config.toml" }, ["init", "--upstream", up.path, ...output]);
-      expect(init.code).toBe(1);
-      expect(init.stderr).toContain(".patchbook/config.toml: i/o error");
-      expect(repoState(repo.path)).toEqual(before);
-    } finally {
-      t.cleanup();
-    }
-  }, TIMEOUT);
+  for (const layout of ["fork", "folder"]) {
+    test(`test_a_${layout}_init_that_cannot_write_its_config_leaves_the_repo_as_it_was`, () => {
+      const t = new Case();
+      try {
+        const { up, repo, output } = startingRepo(t, layout);
+        const before = repoState(repo.path);
+        const init = preloaded(t, repo.path, { FAIL_WRITE: "/.patchbook/config.toml" }, ["init", "--upstream", up.path, ...output]);
+        expect(init.code).toBe(1);
+        expect(init.stderr).toContain(".patchbook/config.toml: i/o error");
+        expect(repoState(repo.path)).toEqual(before);
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+  }
 
   test("test_a_retried_fork_init_records_the_skill_a_killed_first_run_left_on_disk", () => {
     const t = new Case();
