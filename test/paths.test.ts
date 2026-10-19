@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { CheckJson, UpstreamCheck } from "../src/api.ts";
+import type { CheckJson, UpstreamCheck, UpstreamLock } from "../src/api.ts";
 import { Case, Repo, partitionHead, replace, sh, shlexQuote as q, words } from "./helpers";
 
 const TIMEOUT = 120_000;
@@ -120,7 +120,8 @@ class Duo extends Sandbox {
   }
 
   lock(): Record<string, { commit: string; tree: string }> {
-    return JSON.parse(read(this.lockPath));
+    const lock: UpstreamLock = JSON.parse(read(this.lockPath));
+    return Object.fromEntries(lock.upstreams.map(({ name, ...pin }) => [name, pin]));
   }
 
   trackBeta(): void {

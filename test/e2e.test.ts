@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { accessSync, appendFileSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import type { CheckJson, LastSync, Nearest, SyncReport, UpstreamCheck } from "../src/api.ts";
+import type { CheckJson, LastSync, Nearest, SyncReport, UpstreamCheck, UpstreamLock, UpstreamPin } from "../src/api.ts";
 import { CMD, Case, Repo, TOOL, type Run, dedent, lstrip, mkdirNew, partitionHead, replace, sh, shlexSplit, words } from "./helpers";
 
 const TIMEOUT = 120_000;
@@ -47,7 +47,9 @@ const storeOf = (t: Case): string => join(t.tmp, "store/upstreams", readdirSync(
 const checkedUpstream = (stdout: string, name: string): UpstreamCheck => (JSON.parse(stdout) as CheckJson).upstreams.find((u) => u.name === name)!;
 const syncedAt = (root: string): LastSync => JSON.parse(read(join(root, ".patchbook/last-sync.json")));
 const reportOf = (root: string, name = "upstream"): SyncReport => syncedAt(root).upstreams.find((r) => r.name === name)!;
-const pinOf = (t: { repo: Repo }): string => JSON.parse(read(join(t.repo.path, ".patchbook/upstream.lock"))).plugin.commit;
+const lockPin = (lock: string, name: string): UpstreamPin => (JSON.parse(lock) as UpstreamLock).upstreams.find((p) => p.name === name)!;
+const lockNames = (lock: string): string[] => (JSON.parse(lock) as UpstreamLock).upstreams.map((p) => p.name);
+const pinOf = (t: { repo: Repo }): string => lockPin(read(join(t.repo.path, ".patchbook/upstream.lock")), "plugin").commit;
 const gc = (store: string): void => void sh(["git", "gc", "-q", "--prune=now"], { cwd: store });
 const inStore = (store: string, commit: string): boolean => sh(["git", "cat-file", "-e", `${commit}^{commit}`], { cwd: store, check: false }).code === 0;
 const dropRefs = (store: string): void => {
@@ -1940,7 +1942,7 @@ test("test_clone_of_a_patchbook_repo_starts_a_patchbook_of_its_own", () => {
     expect(mine.read(".patchbook/series")).toBe("mine\n");
     expect(mine.read(".patchbook/config.toml")).toContain(`remote = "${theirs.path}"`);
     expect(mine.read(".patchbook/config.toml")).not.toContain(base.path);
-    expect(Object.keys(JSON.parse(mine.read(".patchbook/upstream.lock")))).toEqual(["theirs"]);
+    expect(lockNames(mine.read(".patchbook/upstream.lock"))).toEqual(["theirs"]);
     expect(mine.read("app.txt")).toBe("one\nMINE\n");
     expect(t.pb(["status"], { cwd: mine.path }).stdout).toContain("1 edits apply");
   } finally {
@@ -2220,7 +2222,7 @@ test("test_an_init_whose_sync_fails_leaves_no_patchbook_and_can_be_retried", () 
     expect(init.stderr).toContain("git fetch");
     expect(existsSync(join(repo.path, ".patchbook"))).toBe(false);
     t.pb(["init", "--upstream", up.path, ...output], { cwd: repo.path });
-    expect(JSON.parse(repo.read(".patchbook/upstream.lock")).upstream.commit).toBe(commit);
+    expect(lockPin(repo.read(".patchbook/upstream.lock"), "upstream").commit).toBe(commit);
   } finally {
     t.cleanup();
   }
@@ -2923,10 +2925,10 @@ test("test_a_folder_init_that_stops_before_its_config_can_be_retried_from_anothe
     mkdirSync(join(repo.path, ".patchbook"));
     symlinkSync(join(t.tmp, "missing/config.toml"), join(repo.path, ".patchbook/config.toml"));
     t.pb(["init", "--upstream", first.path, ...output], { cwd: repo.path, code: 1 });
-    expect(Object.keys(JSON.parse(repo.read(".patchbook/upstream.lock")))).toEqual(["lib"]);
+    expect(lockNames(repo.read(".patchbook/upstream.lock"))).toEqual(["lib"]);
     rmSync(join(repo.path, ".patchbook/config.toml"));
     t.pb(["init", "--upstream", second.path, ...output], { cwd: repo.path });
-    expect(JSON.parse(repo.read(".patchbook/upstream.lock")).lib.commit).toBe(commit);
+    expect(lockPin(repo.read(".patchbook/upstream.lock"), "lib").commit).toBe(commit);
   } finally {
     t.cleanup();
   }
@@ -4155,7 +4157,7 @@ describe("ForkTest", () => {
     expect(snapshot(book)).toEqual(before);
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
     t.pb(["track", "lib", lib.path], { cwd: t.fork.path });
-    expect(JSON.parse(read(join(book, "upstream.lock"))).lib.commit).toBe(commit);
+    expect(lockPin(read(join(book, "upstream.lock")), "lib").commit).toBe(commit);
   });
 
   forkTest("test_a_track_that_fails_writing_config_leaves_a_pin_nothing_reads", (t) => {
@@ -4172,10 +4174,10 @@ describe("ForkTest", () => {
     } finally {
       sh(["chmod", "u+w", config], { cwd: t.fork.path });
     }
-    expect(Object.keys(JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path }).stdout).upstreams)).toEqual(["upstream"]);
+    expect(JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path }).stdout).upstreams.map((p: UpstreamPin) => p.name)).toEqual(["upstream"]);
     expect(t.pb(["build"], { cwd: t.fork.path }).stdout).not.toContain("lib");
     t.pb(["track", "lib", other.path], { cwd: t.fork.path });
-    expect(JSON.parse(read(join(t.fork.path, ".patchbook/upstream.lock"))).lib.commit).toBe(commit);
+    expect(lockPin(read(join(t.fork.path, ".patchbook/upstream.lock")), "lib").commit).toBe(commit);
   });
 
   for (const [order, first, second] of [
@@ -5061,7 +5063,7 @@ describe("ForkTest", () => {
     t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
     const head = t.up.commit("upstream edit");
     t.pb(["sync"], { cwd: t.fork.path });
-    expect(JSON.parse(t.fork.read(".patchbook/upstream.lock")).upstream.commit).toBe(head);
+    expect(lockPin(t.fork.read(".patchbook/upstream.lock"), "upstream").commit).toBe(head);
     expect(sh(["git", "cat-file", "-e", `${head}^{commit}`], { cwd: t.fork.path, check: false }).code).toBe(0);
     expect(shallow()).toBe("false");
   });
@@ -5087,8 +5089,19 @@ describe("ForkTest", () => {
     expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("gone");
   });
 
+  forkTest("test_a_lock_from_before_it_had_a_version_is_refused_by_every_command_that_reads_it", (t) => {
+    const path = join(t.fork.path, ".patchbook/upstream.lock");
+    const old = `{\n  "upstream": {\n    "commit": "${"a".repeat(40)}",\n    "tree": "${"b".repeat(40)}"\n  }\n}\n`;
+    writeFileSync(path, old);
+    for (const args of [["status"], ["status", "--json"], ["check"], ["sync"], ["build"]]) {
+      const { stderr } = t.pb(args, { cwd: t.fork.path, code: 1 });
+      expect(stderr).toContain("patchbook: .patchbook/upstream.lock has no version, so an older patchbook wrote it. ");
+    }
+    expect(read(path)).toBe(old);
+  });
+
   forkTest("test_check_prints_a_versioned_document", (t) => {
-    const pinned = JSON.parse(t.fork.read(".patchbook/upstream.lock")).upstream.commit;
+    const pinned = lockPin(t.fork.read(".patchbook/upstream.lock"), "upstream").commit;
     const document = (moved: boolean, head: string, files: string): string => [
       "{",
       '  "version": 2,',
@@ -5113,7 +5126,7 @@ describe("ForkTest", () => {
 
   forkTest("test_sync_writes_a_versioned_report", (t) => {
     t.recordFeature();
-    const from = JSON.parse(t.fork.read(".patchbook/upstream.lock")).upstream.commit;
+    const from = lockPin(t.fork.read(".patchbook/upstream.lock"), "upstream").commit;
     t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
     const to = t.up.commit("upstream edit");
     t.pb(["sync"], { cwd: t.fork.path });
@@ -5145,25 +5158,38 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_status_json_prints_a_versioned_document", (t) => {
-    const empty = JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path }).stdout);
-    expect(Object.keys(empty)).toEqual(["version", "upstreams", "applied", "problems", "last_sync"]);
-    expect(empty.version).toBe(1);
-    expect(empty.last_sync).toBeNull();
+    const pin = lockPin(t.fork.read(".patchbook/upstream.lock"), "upstream");
+    expect(t.pb(["status", "--json"], { cwd: t.fork.path }).stdout).toBe([
+      "{",
+      '  "version": 2,',
+      '  "upstreams": [',
+      "    {",
+      '      "name": "upstream",',
+      `      "commit": "${pin.commit}",`,
+      `      "tree": "${pin.tree}"`,
+      "    }",
+      "  ],",
+      '  "applied": 0,',
+      '  "problems": [],',
+      '  "lastSync": null',
+      "}",
+      "",
+    ].join("\n"));
     t.recordFeature();
     t.up.write("app.txt", replace(t.up.read("app.txt"), "two", "deux"));
     t.up.commit("conflicting edit");
     t.pb(["sync"], { cwd: t.fork.path });
     const status = JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path, code: 1 }).stdout);
-    expect(status.version).toBe(1);
-    expect(Object.keys(status.upstreams.upstream)).toEqual(["commit", "tree"]);
+    expect(Object.keys(status)).toEqual(["version", "upstreams", "applied", "problems", "lastSync"]);
+    expect(Object.keys(status.upstreams[0])).toEqual(["name", "commit", "tree"]);
     expect(status.problems.map((p: { problem: string }) => p.problem)).toEqual(["conflict", "conflict"]);
-    expect(status.last_sync.version).toBe(2);
-    expect(status.last_sync.upstreams[0].conflicts).toEqual([{ change: "feature", path: "app.txt", count: 1 }]);
+    expect(status.lastSync).toEqual(syncedAt(t.fork.path));
+    expect(status.lastSync.upstreams[0].conflicts).toEqual([{ change: "feature", path: "app.txt", count: 1 }]);
   });
 
   forkTest("test_check_and_last_sync_list_upstreams_in_config_order", (t) => {
     const names = ["up", "2"];
-    const pinned = JSON.parse(t.fork.read(".patchbook/upstream.lock")).upstream.commit;
+    const pinned = lockPin(t.fork.read(".patchbook/upstream.lock"), "upstream").commit;
     const heads: string[] = [];
     const starts: string[] = [];
     for (const name of names) {
@@ -7203,10 +7229,10 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
 
   forkTest("test_sync_keeps_the_report_of_an_upstream_when_a_later_one_fails", (t) => {
     const { lib, away } = twoMovedUpstreams(t);
-    const before = JSON.parse(t.fork.read(".patchbook/upstream.lock")).upstream.commit;
+    const before = lockPin(t.fork.read(".patchbook/upstream.lock"), "upstream").commit;
     renameSync(lib.path, away);
     t.pb(["sync"], { cwd: t.fork.path, code: 1 });
-    const pin = JSON.parse(t.fork.read(".patchbook/upstream.lock")).upstream.commit;
+    const pin = lockPin(t.fork.read(".patchbook/upstream.lock"), "upstream").commit;
     expect(pin).not.toBe(before);
     expect(Object.keys(lastSync(t))).toEqual(["upstream"]);
     expect(lastSync(t).upstream).toMatchObject({ from: before, to: pin, upstream: ["changed app.txt"] });
@@ -7781,7 +7807,7 @@ exec '${Bun.which("git")}' "$@"
 
   vendorTest("test_check_leaves_the_heads_it_fetches_to_gc", (t) => {
     const store = join(t.tmp, "store/upstreams", readdirSync(join(t.tmp, "store/upstreams"))[0]!);
-    const pin = JSON.parse(read(join(t.repo.path, ".patchbook/upstream.lock"))).plugin.commit;
+    const pin = lockPin(read(join(t.repo.path, ".patchbook/upstream.lock")), "plugin").commit;
     t.up.write("plugin/README.md", "For everyone.\n");
     const head = t.up.commit("readme");
     t.pb(["check"], { cwd: t.repo.path, code: 10 });
@@ -8441,8 +8467,7 @@ exec '${Bun.which("git")}' "$@"
     t.pb(["build"], { cwd: t.repo.path });
     expect(t.repo.read("skills/tool/SKILL.md")).toContain("Use the tool.");
     expect(existsSync(join(t.repo.path, "skills/unwanted"))).toBe(false);
-    const lock = JSON.parse(read(join(t.repo.path, ".patchbook/upstream.lock")));
-    expect(Object.keys(lock).sort()).toEqual(["extra", "plugin"]);
+    expect(lockNames(read(join(t.repo.path, ".patchbook/upstream.lock")))).toEqual(["extra", "plugin"]);
     extra.write("skills/tool/SKILL.md", "---\nname: tool\n---\n\nUse the new tool.\n");
     extra.commit("v2");
     const check = t.pb(["check"], { cwd: t.repo.path, code: 10 }).stdout;
@@ -9366,7 +9391,7 @@ describe("ReadOnlyLockTest", () => {
     }
     expect(read(lock)).toBe(before);
     t.pb(["sync"], { cwd: t.fork.path });
-    expect(JSON.parse(read(lock)).upstream.commit).toBe(head);
+    expect(lockPin(read(lock), "upstream").commit).toBe(head);
   });
 
   lockTest("test_track_names_the_lock_when_it_cannot_write_it_and_can_be_retried", (t, lock) => {
@@ -9383,7 +9408,7 @@ describe("ReadOnlyLockTest", () => {
     }
     expect(read(config)).toBe(before);
     t.pb(["track", "lib", lib.path], { cwd: t.fork.path });
-    expect(JSON.parse(read(lock)).lib.commit).toBe(commit);
+    expect(lockPin(read(lock), "lib").commit).toBe(commit);
   });
 
   lockTest("test_init_names_the_lock_when_it_cannot_write_it_and_can_be_retried", (t) => {
@@ -9392,7 +9417,7 @@ describe("ReadOnlyLockTest", () => {
     repo.commit("start");
     const lock = join(repo.path, ".patchbook/upstream.lock");
     mkdirSync(join(repo.path, ".patchbook"));
-    writeFileSync(lock, "{}\n");
+    writeFileSync(lock, '{\n  "version": 1,\n  "upstreams": []\n}\n');
     sh(["chmod", "a-w", lock], { cwd: repo.path });
     const init = ["init", "--upstream", t.up.path, "--output-from", "", "--output-to", "out"];
     try {
@@ -9402,6 +9427,6 @@ describe("ReadOnlyLockTest", () => {
     }
     expect(existsSync(join(repo.path, ".patchbook/config.toml"))).toBe(false);
     t.pb(init, { cwd: repo.path });
-    expect(JSON.parse(read(lock)).upstream.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(lockPin(read(lock), "upstream").commit).toMatch(/^[0-9a-f]{40}$/);
   });
 });

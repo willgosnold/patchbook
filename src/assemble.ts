@@ -14,7 +14,7 @@ import {
   exists, type File, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, nonFolders, readDisk, readText, relative, resolve, rglob, rmFolders, sameFile, writeDisk, writeText,
 } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
-import { dumps, type Json } from "./lib/json.ts";
+import { jsonText } from "./lib/shape.ts";
 import { type Env, git, run, spawn } from "./lib/proc.ts";
 import { byCodePoint, bytesEqual, decode, encode, isText } from "./lib/text.ts";
 import { pinned, refuseMergedUpstream } from "./store.ts";
@@ -437,10 +437,8 @@ export async function cmdStatus(args: { json: boolean }) {
   warnUnhooked(book);
   const a = assemble(book);
   if (args.json) {
-    const status: Omit<StatusJson, "upstreams" | "last_sync"> & { upstreams: Json; last_sync: Json } = {
-      version: 1, upstreams: book.lock(), applied: a.applied, problems: a.problems, last_sync: readLastSync(book),
-    };
-    process.stdout.write(dumps(status, 2) + "\n");
+    const status: StatusJson = { version: 2, upstreams: book.lock(), applied: a.applied, problems: a.problems, lastSync: readLastSync(book) };
+    process.stdout.write(jsonText(status));
   } else {
     for (const p of a.problems) process.stdout.write(describe(p) + "\n");
     const counts = new Map<string, number>();

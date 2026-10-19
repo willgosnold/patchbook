@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { LastSync, SyncReport } from "../src/api.ts";
+import { lockText, parseLock } from "../src/book.ts";
 import { Fail } from "../src/lib/fail.ts";
 import {
   boolean, count, jsonText, list, named, nullable, object, oid, readJson, type Shape, string, table, versioned, writeJson,
@@ -18,6 +19,7 @@ const refusal = (run: () => unknown): string => {
 
 const ID = "a".repeat(40);
 const OTHER = "b".repeat(40);
+const pin = (name: string, commit = ID, tree = OTHER) => ({ name, commit, tree });
 
 describe("jsonText", () => {
   test("indents by two, keeps non-ASCII as UTF-8 and ends with a newline", () => {
@@ -166,6 +168,67 @@ describe("writeJson", () => {
   test("writes a value through its shape, so keys come in the shape's order", () => {
     const Doc = versioned(1, { a: string, b: string });
     expect(writeJson(Doc, { b: "2", a: "1", version: 1 })).toBe('{\n  "version": 1,\n  "a": "1",\n  "b": "2"\n}\n');
+  });
+});
+
+describe("upstream.lock", () => {
+  const entry = (name: string) => `    {\n      "name": ${JSON.stringify(name)},\n      "commit": "${ID}",\n      "tree": "${OTHER}"\n    }`;
+
+  test("writes the pins sorted by name by code point, name first, as UTF-8", () => {
+    const text = lockText([pin("lib"), pin("é"), pin("2"), pin("Zed")]);
+    expect(text).toBe(`{\n  "version": 1,\n  "upstreams": [\n${["2", "Zed", "lib", "é"].map(entry).join(",\n")}\n  ]\n}\n`);
+  });
+
+  test("reads back what it writes", () => {
+    const pins = [pin("2"), pin("Zed"), pin("lib", OTHER, ID), pin("é")];
+    expect(parseLock(lockText([...pins].reverse()))).toEqual(pins);
+  });
+
+  test("writes no pins as an empty list", () => {
+    expect(lockText([])).toBe('{\n  "version": 1,\n  "upstreams": []\n}\n');
+  });
+
+  const lock = (upstreams: string, version = '"version": 1, ') => `{${version}"upstreams": [${upstreams}]}`;
+  const lib = `{"name": "lib", "commit": "${ID}", "tree": "${OTHER}"}`;
+
+  test("refuses text that isn't JSON, naming the file", () => {
+    expect(refusal(() => parseLock("<<<<<<< HEAD\n"))).toStartWith(".patchbook/upstream.lock isn't JSON: ");
+  });
+
+  test("refuses NaN as a value", () => {
+    expect(refusal(() => parseLock(lock(`{"name": "lib", "commit": NaN, "tree": "${OTHER}"}`)))).toStartWith(".patchbook/upstream.lock isn't JSON: ");
+  });
+
+  test("refuses a value of the wrong type, naming its path", () => {
+    expect(refusal(() => parseLock(lock(`${lib}, {"name": "x", "commit": 7, "tree": "${OTHER}"}`))))
+      .toStartWith(".patchbook/upstream.lock: upstreams[1].commit must be a full object id (40 or 64 lowercase hex digits), not 7. ");
+  });
+
+  test("refuses an id that isn't a full lowercase hex id", () => {
+    expect(refusal(() => parseLock(lock(`{"name": "lib", "commit": "abc", "tree": "${OTHER}"}`)))).toContain("upstreams[0].commit must be a full object id");
+  });
+
+  test("refuses a missing field", () => {
+    expect(refusal(() => parseLock(lock(`${lib}, {"name": "x", "commit": "${ID}"}`)))).toStartWith(".patchbook/upstream.lock: upstreams[1].tree is missing. ");
+  });
+
+  test("refuses a name twice", () => {
+    expect(refusal(() => parseLock(lock(`${lib}, ${lib}`)))).toStartWith(".patchbook/upstream.lock: upstreams[1] names lib, as upstreams[0] does. ");
+  });
+
+  test("refuses the lock from before it had a version, saying how to fix it", () => {
+    const old = JSON.stringify({ lib: { commit: ID, tree: OTHER } });
+    expect(refusal(() => parseLock(old))).toBe(
+      '.patchbook/upstream.lock has no version, so an older patchbook wrote it. It holds {"version": 1, "upstreams": [{"name": ..., "commit": ..., "tree": ...}]}, one entry per upstream, sorted by name.',
+    );
+  });
+
+  test("refuses another version", () => {
+    expect(refusal(() => parseLock(lock(lib, '"version": 2, ')))).toStartWith(".patchbook/upstream.lock is version 2, from a newer patchbook; this one reads version 1. ");
+  });
+
+  test("ignores a key it doesn't know", () => {
+    expect(parseLock(`{"version": 1, "note": "x", "upstreams": [{"name": "lib", "commit": "${ID}", "tree": "${OTHER}", "extra": 1}]}`)).toEqual([pin("lib")]);
   });
 });
 

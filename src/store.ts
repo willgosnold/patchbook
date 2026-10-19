@@ -101,14 +101,8 @@ export class Upstream {
   }
 
   pin(): Pin {
-    const raw = this.book.lock().get(this.name);
-    if (!(raw instanceof Map)) return {};
-    const pin: Pin = {};
-    for (const key of ["commit", "tree"] as const) {
-      const value = raw.get(key);
-      if (typeof value === "string" && value) pin[key] = value;
-    }
-    return pin;
+    const found = this.book.lock().find((p) => p.name === this.name);
+    return found ? { commit: found.commit, tree: found.tree } : {};
   }
 
   gitDir(): string {

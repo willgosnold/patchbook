@@ -83,14 +83,20 @@ export type SyncReport = {
   replacedUpstreamChanged: string[];
 };
 
+/** A pin in `upstream.lock` and in `status --json`. */
+export type UpstreamPin = { name: string; commit: string; tree: string };
+
+/** `.patchbook/upstream.lock`, which is committed. Upstreams are sorted by name, by code point. */
+export type UpstreamLock = { version: 1; upstreams: UpstreamPin[] };
+
 /** `patchbook status --json` prints this. It exits 1 if `problems` isn't empty. */
 export type StatusJson = {
-  version: 1;
-  /** `upstream.lock` as the file has it: the pin of each upstream, by name. */
-  upstreams: Record<string, { commit: string; tree: string }>;
+  version: 2;
+  /** The pin of each upstream in the config, as `upstream.lock` has them. */
+  upstreams: UpstreamPin[];
   /** Edits that apply at the pins. */
   applied: number;
   problems: Problem[];
   /** `last-sync.json` as the file has it, or null if no sync wrote one. */
-  last_sync: LastSync | null;
+  lastSync: LastSync | null;
 };
