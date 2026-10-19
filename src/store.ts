@@ -24,8 +24,6 @@ export function defaultName(remote: string, path: string): string {
 
 const rstrip = (s: string) => s.replace(/\/+$/, "");
 
-const quoted = (s: string): string => JSON.stringify(s).replace(/[\u007f-\u009f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
-
 /** git's url_is_local_not_ssh, the rule fetch and ls-remote use. `git clone` also takes an existing folder named like `a:b` as local; this does not. */
 function isLocalPath(remote: string): boolean {
   const colon = remote.indexOf(":");
@@ -135,7 +133,7 @@ export class Upstream {
     const shallow = !this.inRepo || git(["rev-parse", "--is-shallow-repository"], { cwd }) === "true" ? ["--depth=1"] : [];
     const landing = `refs/patchbook/tmp/${process.pid}-${randomUUID()}`;
     try {
-      this.onRemote(["fetch", "--quiet", "--no-tags", ...shallow, "--end-of-options", this.source(), `+${ref}:${landing}`], `git fetch ${quoted(this.source())} ${ref}`, cwd);
+      this.onRemote(["fetch", "--quiet", "--no-tags", ...shallow, "--end-of-options", this.source(), `+${ref}:${landing}`], `git fetch ${JSON.stringify(this.source())} ${ref}`, cwd);
       return git(["rev-parse", `${landing}^{commit}`], { cwd });
     } finally {
       spawn(["git", "update-ref", "-d", landing], { cwd });
@@ -216,7 +214,7 @@ export class Upstream {
 
   head(): string {
     const ref = `refs/heads/${this.branch}`;
-    const out = this.onRemote(["ls-remote", "--end-of-options", this.source(), ref], `git ls-remote ${quoted(this.source())} ${ref}`, this.gitDir());
+    const out = this.onRemote(["ls-remote", "--end-of-options", this.source(), ref], `git ls-remote ${JSON.stringify(this.source())} ${ref}`, this.gitDir());
     if (!out) throw new Fail(`upstream ${this.name} has no branch ${this.branch}`);
     return split(out)[0]!;
   }
