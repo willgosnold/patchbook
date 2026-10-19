@@ -79,12 +79,7 @@ function suggest(name: string): string {
 /** Load hooks.ts, checking each export is a hook, and what each hook returns. */
 async function loadHooks(dir: string): Promise<Hooks> {
   const path = join(dir, "hooks.ts");
-  if (!exists(path)) {
-    if (exists(join(dir, "hooks.py"))) {
-      throw new Fail(`${PB}/hooks.py is Python, and patchbook now runs ${PB}/hooks.ts instead. Port it: the hooks keep their names, except block_terms, which becomes blockTerms.`);
-    }
-    return {};
-  }
+  if (!exists(path)) return {};
   const module: unknown = await import(pathToFileURL(path).href);
   const hooks: Hooks = {};
   if (typeof module !== "object" || module === null) return hooks;

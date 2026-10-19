@@ -2853,20 +2853,37 @@ test("test_init_reports_a_failed_fetch_for_a_file_url_with_an_encoded_nul", () =
   }
 }, TIMEOUT);
 
-test("test_init_checks_the_hooks_before_it_writes_anything", () => {
+test("test_init_loads_hooks_before_it_writes_anything", () => {
   const t = new Case();
   try {
     const up = new Repo(join(t.tmp, "upstream"));
     up.write("app.txt", "one\n");
     up.commit("start");
     const fork = forkOf(t, up);
-    fork.write(".patchbook/hooks.py", "def placeholder(kind, key):\n    return None\n");
+    fork.write(".patchbook/hooks.ts", "export const stray = 1;\n");
     const init = t.pb(["init", "--upstream", up.path], { cwd: fork.path, code: 1 });
-    expect(init.stderr).toContain(".patchbook/hooks.py is Python");
-    expect(readdirSync(join(fork.path, ".patchbook"))).toEqual(["hooks.py"]);
-    fork.rm(".patchbook/hooks.py");
+    expect(init.stderr).toContain(".patchbook/hooks.ts: \"stray\" isn't a hook");
+    expect(readdirSync(join(fork.path, ".patchbook"))).toEqual(["hooks.ts"]);
+    fork.rm(".patchbook/hooks.ts");
     t.pb(["init", "--upstream", up.path], { cwd: fork.path });
     expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_a_hooks_file_in_another_language_is_a_file_patchbook_does_not_know_about", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    up.commit("start");
+    const fork = forkOf(t, up);
+    const stray = "def placeholder(kind, key):\n    return None\n";
+    fork.write(".patchbook/hooks.py", stray);
+    t.pb(["init", "--upstream", up.path], { cwd: fork.path });
+    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+    expect(fork.read(".patchbook/hooks.py")).toBe(stray);
   } finally {
     t.cleanup();
   }
@@ -6863,24 +6880,23 @@ describe("ForkTest", () => {
     expect(t.fork.read("app.txt")).not.toContain("FIVE");
   });
 
-  // What the Python version wrote, with the paths of the interpreter and script that installed it.
-  const pythonHook = (extra = "") => `#!/bin/sh
+  // A hook with the paths of an older patchbook written into it. Nothing in the file marks it as one patchbook installs now.
+  const bakedPathsHook = (extra = "") => `#!/bin/sh
 # Installed by patchbook. On each commit, it records hand edits to the build output in the
 # patchbook, rebuilds, and stages both. Skip it once with: PATCHBOOK_HOOK=0 git commit
 [ "$PATCHBOOK_HOOK" = 0 ] && exit 0
-${extra}if [ -f '/opt/my tools/patchbook.py' ]; then exec /usr/bin/python3 '/opt/my tools/patchbook.py' hook run; fi
+${extra}if [ -f '/opt/my tools/patchbook-old' ]; then exec /usr/bin/interpreter '/opt/my tools/patchbook-old' hook run; fi
 if command -v patchbook >/dev/null; then exec patchbook hook run; fi
 echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
 `;
 
-  forkTest("test_hook_from_the_python_version_is_rewritten", (t) => {
+  forkTest("test_hook_with_the_paths_of_an_older_patchbook_is_another_tools_hook", (t) => {
     const hook = join(t.fork.path, ".git/hooks/pre-commit");
-    writeFileSync(hook, pythonHook());
-    expect(t.pb(["status", "--json"], { cwd: t.fork.path }).stderr).not.toContain("to run patchbook from PATH");
-    expect(read(hook)).toBe(pythonHook());
-    expect(t.pb(["build"], { cwd: t.fork.path }).stderr).toContain("to run patchbook from PATH");
-    expect(read(hook)).not.toContain("/opt/my tools");
-    expect(read(hook)).toContain("command -v patchbook");
+    writeFileSync(hook, bakedPathsHook(), { mode: 0o755 });
+    expect(t.pb(["build"], { cwd: t.fork.path }).stderr).not.toContain("patchbook:");
+    expect(read(hook)).toBe(bakedPathsHook());
+    expect(t.pb(["hook", "install"], { cwd: t.fork.path }).stderr).toContain("is another tool's hook; add `patchbook hook run`");
+    expect(read(hook)).toBe(bakedPathsHook());
   });
 
   const unguardedHook = `#!/bin/sh
@@ -6904,7 +6920,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
 
   forkTest("test_hook_someone_added_lines_to_is_left_alone", (t) => {
     const hook = join(t.fork.path, ".git/hooks/pre-commit");
-    const edited = pythonHook("other-tool --check || exit $?\n");
+    const edited = bakedPathsHook("other-tool --check || exit $?\n");
     writeFileSync(hook, edited);
     expect(t.pb(["status", "--json"], { cwd: t.fork.path }).stderr).not.toContain("patchbook:");
     expect(read(hook)).toBe(edited);

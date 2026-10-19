@@ -34,18 +34,6 @@ if command -v patchbook >/dev/null; then exec patchbook hook run; fi
 echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
 `;
 
-/** One word of `shlex.quote` output: bare, or in single quotes, with `'"'"'` standing for a quote. */
-const WORD = `(?:[^\\s'"]+|'[^']*'|"'")+`;
-/** The hook the Python version wrote, which embedded the paths of its interpreter and script. Anything else was edited. */
-const PYTHON_HOOK = new RegExp(`^#!/bin/sh
-# Installed by patchbook\\. On each commit, it records hand edits to the build output in the
-# patchbook, rebuilds, and stages both\\. Skip it once with: PATCHBOOK_HOOK=0 git commit
-\\[ "\\$PATCHBOOK_HOOK" = 0 \\] && exit 0
-if \\[ -f ${WORD} \\]; then exec ${WORD} ${WORD} hook run; fi
-if command -v patchbook >/dev/null; then exec patchbook hook run; fi
-echo "patchbook isn't installed, so this commit doesn't record hand edits\\." >&2
-$`);
-
 function writeHook(path: string): void {
   mkdirs(dirname(path));
   writeText(path, SCRIPT);
@@ -192,7 +180,7 @@ function hookPaths(root: string): { hooksPath: string | null; hookFile: string }
 function ours(path: string): boolean {
   if (!exists(path)) return false;
   const text = readTextReplace(path);
-  return text === SCRIPT || text === UNGUARDED_SCRIPT || PYTHON_HOOK.test(text);
+  return text === SCRIPT || text === UNGUARDED_SCRIPT;
 }
 
 const scriptHook = (manager: ScriptManager, dir: string, gitRunsIt: boolean): Hook => ({ kind: "script", manager, path: join(dir, "pre-commit"), gitRunsIt });
@@ -347,10 +335,9 @@ const isExecutable = (path: string) => (statSync(path).mode & 0o111) !== 0;
 
 function updateScript(path: string): boolean {
   const text = readTextReplace(path);
-  const change = PYTHON_HOOK.test(text) ? "to run patchbook from PATH" : text === UNGUARDED_SCRIPT ? "to skip a checkout with no patchbook" : null;
-  if (change === null) return false;
+  if (text !== UNGUARDED_SCRIPT) return false;
   writeHook(path);
-  process.stderr.write(`patchbook: updated ${path} ${change}\n`);
+  process.stderr.write(`patchbook: updated ${path} to skip a checkout with no patchbook\n`);
   return true;
 }
 
