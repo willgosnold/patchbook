@@ -2092,6 +2092,26 @@ test("test_init_rejects_a_vendor_folder_inside_the_output_before_it_writes_anyth
   }
 }, TIMEOUT);
 
+test("test_init_rejects_a_vendor_folder_inside_the_output_when_output_from_is_set", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("skills/a.txt", "a\n");
+    up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    repo.write("README.md", "mine\n");
+    repo.commit("start");
+    const init = t.pb(["init", "--upstream", up.path, "--output-from", "skills", "--output-to", "skills", "--vendor", "skills/vendored"], { cwd: repo.path, code: 1 });
+    expect(init.stderr).toContain(
+      "the vendored copy of upstream (skills/vendored) overlaps the folder upstream builds into (skills). A build writes there, but a vendored copy must match upstream exactly. Change vendor for upstream or [output] to.",
+    );
+    expect(existsSync(join(repo.path, ".patchbook"))).toBe(false);
+    expect(existsSync(join(repo.path, "skills"))).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("test_an_output_folder_with_glob_characters_builds_twice_beside_a_folder_it_would_match", () => {
   const t = new Case();
   try {
@@ -9566,6 +9586,57 @@ exec '${Bun.which("git")}' "$@"
     expect(t.repo.read("skills/other/b.md")).toBe("b\n");
     expect(t.repo.read("skills/vendored-other/b.md")).toBe("b\n");
     expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  vendorTest("test_a_vendored_copy_inside_another_upstreams_output_folder_survives_a_build_and_a_hook_commit", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.up.write("plugin/skills/vendored-other/clash.md", "plugin's own file at a path the copy holds\n");
+    t.up.commit("plugin ships a file where the copy will sit");
+    t.pb(["sync"], { cwd: t.repo.path });
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("b.md", "b\n");
+    extra.write("deep/n.txt", "n\n");
+    extra.commit("b");
+    t.pb(["track", "other", extra.path, "--mount", "other", "--vendor", "skills/vendored-other"], { cwd: t.repo.path });
+    const copy = join(t.repo.path, "skills/vendored-other");
+    const pinned = { "b.md": "b\n", [join("deep", "n.txt")]: "n\n" };
+    expect(tree(copy)).toEqual(pinned);
+
+    const built = t.pb(["build"], { cwd: t.repo.path });
+    expect(built.stderr).toContain("left 1 upstream files out of the build because they would land in a vendored copy: skills/vendored-other (1).");
+    expect(tree(copy)).toEqual(pinned);
+    t.pb(["scaffold"], { cwd: t.repo.path });
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+    sh(["git", "commit", "-qm", "built"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "0" } });
+
+    t.repo.write("skills/hello/SKILL.md", `${t.repo.read("skills/hello/SKILL.md")}\nExtra.\n`);
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+    const committed = sh(["git", "commit", "-qm", "edit hello"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Add a line." } });
+    expect(committed.stderr).toContain("left 1 upstream files out of the build because they would land in a vendored copy: skills/vendored-other (1).");
+    expect(tree(copy)).toEqual(pinned);
+    const committedCopy = sh(["git", "ls-tree", "-r", "--name-only", "HEAD", "skills/vendored-other"], { cwd: t.repo.path }).stdout.trim().split("\n");
+    expect(committedCopy).toEqual(["skills/vendored-other/b.md", "skills/vendored-other/deep/n.txt"]);
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.repo.path }).stdout).toBe("");
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  vendorTest("test_a_vendored_copy_inside_its_own_upstreams_output_folder_is_refused_everywhere", (t) => {
+    const config = join(t.repo.path, ".patchbook/config.toml");
+    const before = read(config);
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("b.md", "b\n");
+    extra.commit("b");
+
+    const tracked = t.pb(["track", "other", extra.path, "--mount", "skills/other", "--vendor", "skills/other/copy"], { cwd: t.repo.path, code: 1 });
+    expect(tracked.stderr).toContain("the vendored copy of other (skills/other/copy) overlaps the folder other builds into (skills/other). A build writes there, but a vendored copy must match upstream exactly.");
+    expect(tracked.stderr).toContain("Change vendor for other or [output] to.");
+    expect(read(config)).toBe(before);
+    expect(existsSync(join(t.repo.path, "skills/other"))).toBe(false);
+
+    writeFileSync(config, replace(before, 'name = "plugin"\n', 'name = "plugin"\nvendor = "skills/vendored"\n'));
+    const status = t.pb(["status"], { cwd: t.repo.path, code: 1 });
+    expect(status.stderr).toContain("the vendored copy of plugin (skills/vendored) overlaps the folder plugin builds into (skills). A build writes there, but a vendored copy must match upstream exactly.");
+    expect(status.stderr).toContain("Change vendor for plugin or [output] to.");
   });
 
   for (const [where, to, link] of [["itself", "out", "out"], ["an ancestor", "lnk/out", "lnk"]] as const) {
