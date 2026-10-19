@@ -1,12 +1,13 @@
 // Settings: each one's env var, kind and default, read from the env, the project and the user config.
 import { homedir } from "node:os";
 import { dirname } from "node:path";
-import { Book } from "./book.ts";
+import { Book, NoBook } from "./book.ts";
+import { installHookOrWarn } from "./githook.ts";
 import { intentSettings, PROVIDERS } from "./intent.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, mkdirs, pjoin, readText, writeText } from "./lib/fs.ts";
-import { quoteString } from "./lib/json.ts";
 import { ljust, lstrip, rstrip, S, strip, strRepr } from "./lib/py.ts";
+import { quoteToml } from "./lib/toml.ts";
 
 /** A parsed TOML table. Values stay unknown until a setting or the book's config reads them. */
 export type Table = { readonly [key: string]: unknown };
@@ -18,7 +19,13 @@ export function isTable(value: unknown): value is Table {
 }
 
 export function parseToml(text: string, path: string): Table {
-  const parsed: unknown = Bun.TOML.parse(text);
+  let parsed: unknown;
+  try {
+    parsed = Bun.TOML.parse(text);
+  } catch (e) {
+    if (!(e instanceof SyntaxError)) throw e;
+    throw new Fail(`${path} isn't valid TOML: ${e.message.replace(/^TOML Parse error: /, "")}`);
+  }
   if (!isTable(parsed)) throw new Fail(`${path} isn't a TOML table`);
   return parsed;
 }
@@ -33,7 +40,7 @@ type Kind<T> = { parse(name: string, raw: string): T; accept(value: unknown): T 
 const text: Kind<string> = {
   parse: (_, raw) => raw,
   accept: (v) => (typeof v === "string" ? v : undefined),
-  show: quoteString,
+  show: quoteToml,
 };
 
 const flag: Kind<boolean> = {
@@ -51,7 +58,7 @@ const flag: Kind<boolean> = {
 const list: Kind<string[]> = {
   parse: (_, raw) => raw.split(new RegExp(`[,${S}]+`, "u")).filter((v) => v),
   accept: (v) => (Array.isArray(v) && v.every((x) => typeof x === "string") ? v : undefined),
-  show: (v) => "[" + v.map(quoteString).join(", ") + "]",
+  show: (v) => "[" + v.map(quoteToml).join(", ") + "]",
 };
 
 type Setting<T> = { env: string | null; kind: Kind<NonNullable<T>>; default: T; help: string; userOnly?: true };
@@ -171,22 +178,35 @@ function listed<N extends Name>(name: N, book: Book | null): [string, Source] {
     const sources = new Map<string, Source>();
     const [provider, model, effort] = intentSettings(book, true, sources);
     const used = name === "intent.provider" ? provider : name === "intent.model" ? model : effort;
-    return [quoteString(used), sources.get(name) ?? "default"];
+    return [quoteToml(used), sources.get(name) ?? "default"];
   }
-  if (name === "store.path" && value === null) return [quoteString(dirname(storeDir())), source];
+  if (name === "store.path" && value === null) return [quoteToml(dirname(storeDir())), source];
   return [value === null ? "(not set)" : show(name, value), source];
 }
 
 export async function cmdConfig(args: { name: string | null; value: string | null; project: boolean; unset: boolean }) {
   let book: Book | null = null;
-  try {
-    book = await Book.find();
-  } catch (e) {
-    if (!(e instanceof Fail)) throw e;
+  let broken: Fail | null = null;
+  if (args.project || !(args.unset || args.value !== null)) {
+    try {
+      book = await Book.find();
+    } catch (e) {
+      if (!(e instanceof Fail)) throw e;
+      if (!(e instanceof NoBook)) broken = e;
+    }
+  } else {
+    const root = Book.root();
+    try {
+      if (root !== null) installHookOrWarn(root);
+    } catch (e) {
+      if (!(e instanceof Fail)) throw e;
+      process.stderr.write(`patchbook: couldn't install the pre-commit hook: ${e.message}\n`);
+    }
   }
   const name = args.name || null;
   if (name !== null && !isName(name)) throw new Fail(`no setting ${name}. Settings: ${NAMES.join(", ")}`);
   if (args.project && name !== null && SETTINGS[name].userOnly) throw new Fail(`${name} can only be set in the user config`);
+  if (broken && (args.project || !(args.unset || args.value !== null))) throw broken;
   if (args.project && book === null) throw new Fail("--project needs a patchbook here or above");
   const path = args.project && book ? pjoin(book.dir, "config.toml") : USER_CONFIG;
   if ((args.unset || args.value !== null) && name === null) throw new Fail("name the setting to change");
