@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { accessSync, appendFileSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import type { LastSync, Nearest, SyncReport } from "../src/api.ts";
+import type { CheckJson, LastSync, Nearest, SyncReport, UpstreamCheck } from "../src/api.ts";
 import { CMD, Case, Repo, TOOL, type Run, dedent, lstrip, mkdirNew, partitionHead, replace, sh, shlexSplit, words } from "./helpers";
 
 const TIMEOUT = 120_000;
@@ -44,6 +44,7 @@ const tree = (root: string): Record<string, string> => {
 };
 
 const storeOf = (t: Case): string => join(t.tmp, "store/upstreams", readdirSync(join(t.tmp, "store/upstreams"))[0]!);
+const checkedUpstream = (stdout: string, name: string): UpstreamCheck => (JSON.parse(stdout) as CheckJson).upstreams.find((u) => u.name === name)!;
 const syncedAt = (root: string): LastSync => JSON.parse(read(join(root, ".patchbook/last-sync.json")));
 const reportOf = (root: string, name = "upstream"): SyncReport => syncedAt(root).upstreams.find((r) => r.name === name)!;
 const pinOf = (t: { repo: Repo }): string => JSON.parse(read(join(t.repo.path, ".patchbook/upstream.lock"))).plugin.commit;
@@ -2284,7 +2285,7 @@ for (const [how, leave] of [
       expect(existsSync(join(fork.path, ".patchbook/config.toml"))).toBe(false);
       sh(["git", "config", "--replace-all", "remote.upstream.url", moved.path], { cwd: fork.path });
       t.pb(["init", "--upstream", moved.path], { cwd: fork.path });
-      expect(JSON.parse(t.pb(["check"], { cwd: fork.path, code: 10 }).stdout).upstreams.moved.head).toBe(head);
+      expect(checkedUpstream(t.pb(["check"], { cwd: fork.path, code: 10 }).stdout, "moved").head).toBe(head);
     } finally {
       t.cleanup();
     }
@@ -2481,7 +2482,7 @@ test("test_a_fork_init_from_a_subfolder_prints_a_fix_that_names_the_folder_meant
     sh(["sh", "-c", fix!], { cwd: sub });
     expect(sh(["git", "remote", "get-url", "upstream"], { cwd: fork.path }).stdout.trim()).toBe(realpathSync(moved.path));
     t.pb(["init", "--upstream", "../../moved"], { cwd: sub });
-    expect(JSON.parse(t.pb(["check"], { cwd: fork.path, code: 10 }).stdout).upstreams.moved.head).toBe(head);
+    expect(checkedUpstream(t.pb(["check"], { cwd: fork.path, code: 10 }).stdout, "moved").head).toBe(head);
   } finally {
     t.cleanup();
   }
@@ -4763,7 +4764,7 @@ describe("ForkTest", () => {
     t.up.commit("upstream edit");
     const notice = "patchbook: left 1 upstream files out of the build because they would land in a vendored copy: vendor/extra (1).\n";
     const checked = t.pb(["check"], { cwd: t.fork.path, code: 10 });
-    expect(JSON.parse(checked.stdout).upstreams.upstream.files).toEqual(["changed app.txt"]);
+    expect(checkedUpstream(checked.stdout, "upstream").files).toEqual(["changed app.txt"]);
     expect(checked.stderr).toBe(notice);
     const synced = t.pb(["sync", "upstream"], { cwd: t.fork.path });
     expect(synced.stderr).toBe(notice);
@@ -5088,20 +5089,26 @@ describe("ForkTest", () => {
 
   forkTest("test_check_prints_a_versioned_document", (t) => {
     const pinned = JSON.parse(t.fork.read(".patchbook/upstream.lock")).upstream.commit;
-    expect(JSON.parse(t.pb(["check"], { cwd: t.fork.path }).stdout)).toEqual({
-      version: 1,
-      moved: false,
-      upstreams: { upstream: { pinned, head: pinned, moved: false, files: [] } },
-    });
+    const document = (moved: boolean, head: string, files: string): string => [
+      "{",
+      '  "version": 2,',
+      `  "moved": ${moved},`,
+      '  "upstreams": [',
+      "    {",
+      '      "name": "upstream",',
+      `      "pinned": "${pinned}",`,
+      `      "head": "${head}",`,
+      `      "moved": ${moved},`,
+      `      "files": ${files}`,
+      "    }",
+      "  ]",
+      "}",
+      "",
+    ].join("\n");
+    expect(t.pb(["check"], { cwd: t.fork.path }).stdout).toBe(document(false, pinned, "[]"));
     t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
     const head = t.up.commit("upstream edit");
-    const out = t.pb(["check"], { cwd: t.fork.path, code: 10 }).stdout;
-    expect(Object.keys(JSON.parse(out))).toEqual(["version", "moved", "upstreams"]);
-    expect(JSON.parse(out)).toEqual({
-      version: 1,
-      moved: true,
-      upstreams: { upstream: { pinned, head, moved: true, files: ["changed app.txt"] } },
-    });
+    expect(t.pb(["check"], { cwd: t.fork.path, code: 10 }).stdout).toBe(document(true, head, '[\n        "changed app.txt"\n      ]'));
   });
 
   forkTest("test_sync_writes_a_versioned_report", (t) => {
@@ -5156,16 +5163,37 @@ describe("ForkTest", () => {
 
   forkTest("test_check_and_last_sync_list_upstreams_in_config_order", (t) => {
     const names = ["up", "2"];
+    const pinned = JSON.parse(t.fork.read(".patchbook/upstream.lock")).upstream.commit;
+    const heads: string[] = [];
+    const starts: string[] = [];
     for (const name of names) {
       const repo = new Repo(join(t.tmp, `up-${name}`));
       repo.write("a.txt", "a\n");
-      repo.commit("start");
+      starts.push(repo.commit("start"));
       t.pb(["track", name, repo.path, "--mount", `m-${name}`], { cwd: t.fork.path });
       repo.write("a.txt", "b\n");
-      repo.commit("move");
+      heads.push(repo.commit("move"));
     }
-    const keys = (text: string): string[] => [...text.matchAll(/^ {4}"([^"]*)": \{$/gm)].map((m) => m[1]!);
-    expect(keys(t.pb(["check"], { cwd: t.fork.path, code: 10 }).stdout)).toEqual(["upstream", ...names]);
+    const entry = (name: string, from: string, head: string, files: string): string => [
+      "    {",
+      `      "name": "${name}",`,
+      `      "pinned": "${from}",`,
+      `      "head": "${head}",`,
+      `      "moved": ${files !== "[]"},`,
+      `      "files": ${files}`,
+      "    }",
+    ].join("\n");
+    const changed = (name: string): string => `[\n        "changed m-${name}/a.txt"\n      ]`;
+    expect(t.pb(["check"], { cwd: t.fork.path, code: 10 }).stdout).toBe([
+      "{",
+      '  "version": 2,',
+      '  "moved": true,',
+      '  "upstreams": [',
+      [entry("upstream", pinned, pinned, "[]"), entry("up", starts[0]!, heads[0]!, changed("up")), entry("2", starts[1]!, heads[1]!, changed("2"))].join(",\n"),
+      "  ]",
+      "}",
+      "",
+    ].join("\n"));
     t.pb(["sync"], { cwd: t.fork.path });
     expect(syncedAt(t.fork.path).upstreams.map((r) => r.name)).toEqual(names);
   });
@@ -7371,9 +7399,9 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(t.fork.read("lib/lib.txt")).toBe("v1\n");
     lib.write("src/lib.txt", "v2\n");
     lib.commit("lib v2");
-    const check = JSON.parse(t.pb(["check"], { cwd: t.fork.path, code: 10 }).stdout);
-    expect(check.upstreams.lib.moved).toBeTruthy();
-    expect(check.upstreams.upstream.moved).toBeFalsy();
+    const check = t.pb(["check"], { cwd: t.fork.path, code: 10 }).stdout;
+    expect(checkedUpstream(check, "lib").moved).toBeTruthy();
+    expect(checkedUpstream(check, "upstream").moved).toBeFalsy();
     t.pb(["sync", "lib"], { cwd: t.fork.path });
     t.pb(["build"], { cwd: t.fork.path });
     expect(t.fork.read("lib/lib.txt")).toBe("v2\n");
@@ -7820,7 +7848,7 @@ exec '${Bun.which("git")}' "$@"
     sh(["git", "gc", "-q", "--prune=now"], { cwd: t.up.path });
     const out = JSON.parse(t.pb(["check"], { cwd: t.repo.path }).stdout);
     expect(out.moved).toBe(false);
-    expect(out.upstreams.plugin.moved).toBe(false);
+    expect(out.upstreams.map((u: UpstreamCheck) => [u.name, u.moved])).toEqual([["plugin", false]]);
     expect(inStore(store, pin)).toBe(false);
   });
 
@@ -8417,8 +8445,8 @@ exec '${Bun.which("git")}' "$@"
     expect(Object.keys(lock).sort()).toEqual(["extra", "plugin"]);
     extra.write("skills/tool/SKILL.md", "---\nname: tool\n---\n\nUse the new tool.\n");
     extra.commit("v2");
-    const check = JSON.parse(t.pb(["check"], { cwd: t.repo.path, code: 10 }).stdout);
-    expect(check.upstreams.extra.files).toEqual(["changed extra/skills/tool/SKILL.md"]);
+    const check = t.pb(["check"], { cwd: t.repo.path, code: 10 }).stdout;
+    expect(checkedUpstream(check, "extra").files).toEqual(["changed extra/skills/tool/SKILL.md"]);
     t.pb(["sync"], { cwd: t.repo.path });
     t.pb(["build"], { cwd: t.repo.path });
     expect(t.repo.read("skills/tool/SKILL.md")).toContain("Use the new tool.");

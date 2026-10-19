@@ -42,13 +42,14 @@ export interface Hooks {
 
 /** `patchbook check` prints this and exits 10 if any upstream moved. */
 export type CheckJson = {
-  version: 1;
+  version: 2;
   moved: boolean;
-  /** By upstream name. */
-  upstreams: Record<string, UpstreamCheck>;
+  /** In the order of the config. */
+  upstreams: UpstreamCheck[];
 };
 
 export type UpstreamCheck = {
+  name: string;
   /** The pinned commit, or null when nothing is pinned. */
   pinned: string | null;
   head: string;

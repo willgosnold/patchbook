@@ -9,17 +9,12 @@ import { installHookOrWarn } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, isSymlink, LINK, lexists, mkdirs, readDisk, readText, readTextReplace, sameFile, writeDisk, writeText } from "./lib/fs.ts";
-import { dumps } from "./lib/json.ts";
 import { spawn } from "./lib/proc.ts";
-import { count, list, named, object, oid, nullable, readJson, type Shape, string, table, versioned, writeJson } from "./lib/shape.ts";
+import { count, jsonText, list, named, nullable, object, oid, readJson, type Shape, string, table, versioned, writeJson } from "./lib/shape.ts";
 import { byCodePoint, bytesEqual, decodeReplace, isText } from "./lib/text.ts";
 import { type Pin, pinned, type Upstream } from "./store.ts";
 
 export const EXIT_MOVED = 10;
-
-/** A document as it's written: `upstreams` a Map, so `dumps` keeps them in config order and not integer-like names first. */
-type Written<T extends { upstreams: Record<string, unknown> }> =
-  Omit<T, "upstreams"> & { upstreams: ReadonlyMap<string, T["upstreams"][string]> };
 
 const COUNTED = object({ change: string, path: string, count });
 const DETAILED = object({ change: string, path: string, detail: string });
@@ -38,12 +33,12 @@ const LAST_SYNC_FIX = "It only reports past syncs: delete it, and the next patch
 
 export async function cmdCheck() {
   const book = await Book.find();
-  const upstreams = new Map<string, UpstreamCheck>();
+  const upstreams: UpstreamCheck[] = [];
   let moved = false;
   for (const u of book.upstreams) {
     const pin = u.pin();
     const head = u.head();
-    const r: UpstreamCheck = { pinned: pin.commit ?? null, head, moved: false, files: [] };
+    const r: UpstreamCheck = { name: u.name, pinned: pin.commit ?? null, head, moved: false, files: [] };
     const held = pin.commit ? u.healIfHeld(pin.commit) : false;
     if (head !== pin.commit) {
       u.fetch(head);
@@ -53,11 +48,11 @@ export async function cmdCheck() {
         r.files = upstreamDelta(old, book.buildable(u.mounted(u.files(head))));
       }
     }
-    upstreams.set(u.name, r);
+    upstreams.push(r);
     moved = moved || r.moved;
   }
-  const result: Written<CheckJson> = { version: 1, moved, upstreams };
-  process.stdout.write(dumps(result, 2) + "\n");
+  const doc: CheckJson = { version: 2, moved, upstreams };
+  process.stdout.write(jsonText(doc));
   return moved ? EXIT_MOVED : 0;
 }
 

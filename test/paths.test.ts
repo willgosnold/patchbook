@@ -4,11 +4,13 @@
 import { describe, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { CheckJson, UpstreamCheck } from "../src/api.ts";
 import { Case, Repo, partitionHead, replace, sh, shlexQuote as q, words } from "./helpers";
 
 const TIMEOUT = 120_000;
 
 const read = (p: string): string => readFileSync(p, "utf8");
+const checked = (stdout: string, name: string): UpstreamCheck => (JSON.parse(stdout) as CheckJson).upstreams.find((u) => u.name === name)!;
 const lines = (text: string): string[] => text.split("\n").filter(Boolean);
 
 /** A stand-in for a model CLI: it keeps its arguments and stdin under `logs`, then answers. */
@@ -309,11 +311,11 @@ describe("check before a pin", () => {
     const lock = read(t.lockPath);
     const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.beta.path }).stdout.trim();
     const r = t.check(10);
-    const report = JSON.parse(r.stdout);
+    const report: CheckJson = JSON.parse(r.stdout);
     expect(report.moved).toBe(true);
-    expect(report.upstreams.alpha).toMatchObject({ pinned: t.lock()["alpha"]!.commit, moved: false, files: [] });
-    expect(report.upstreams.beta).toMatchObject({ pinned: null, head, moved: true, files: ["added beta/c.md"] });
-    expect(Object.keys(report.upstreams)).toEqual(["alpha", "beta"]);
+    expect(checked(r.stdout, "alpha")).toMatchObject({ pinned: t.lock()["alpha"]!.commit, moved: false, files: [] });
+    expect(checked(r.stdout, "beta")).toMatchObject({ pinned: null, head, moved: true, files: ["added beta/c.md"] });
+    expect(report.upstreams.map((u) => u.name)).toEqual(["alpha", "beta"]);
     expect(read(t.lockPath)).toBe(lock);
     expect(existsSync(join(t.repo.path, ".patchbook/last-sync.json"))).toBe(false);
   });
@@ -322,18 +324,18 @@ describe("check before a pin", () => {
     t.followBetaByHand();
     t.check(10);
     t.pb(["sync", "beta"], { cwd: t.repo.path });
-    const report = JSON.parse(t.check(0).stdout);
-    expect(report.moved).toBe(false);
-    expect(report.upstreams.beta).toMatchObject({ pinned: t.lock()["beta"]!.commit, moved: false, files: [] });
+    const out = t.check(0).stdout;
+    expect(JSON.parse(out).moved).toBe(false);
+    expect(checked(out, "beta")).toMatchObject({ pinned: t.lock()["beta"]!.commit, moved: false, files: [] });
   });
 
   duoTest("with no lock at all, every upstream is moved", (t) => {
     t.followBetaByHand();
     rmSync(t.lockPath);
-    const report = JSON.parse(t.check(10).stdout);
-    expect(report.moved).toBe(true);
-    expect(report.upstreams.alpha).toMatchObject({ pinned: null, moved: true, files: ["added a.md", "added docs/b.md"] });
-    expect(report.upstreams.beta).toMatchObject({ pinned: null, moved: true, files: ["added beta/c.md"] });
+    const out = t.check(10).stdout;
+    expect(JSON.parse(out).moved).toBe(true);
+    expect(checked(out, "alpha")).toMatchObject({ pinned: null, moved: true, files: ["added a.md", "added docs/b.md"] });
+    expect(checked(out, "beta")).toMatchObject({ pinned: null, moved: true, files: ["added beta/c.md"] });
     expect(existsSync(t.lockPath)).toBe(false);
   });
 
