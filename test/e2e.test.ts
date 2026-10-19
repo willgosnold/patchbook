@@ -5777,14 +5777,65 @@ describe("ForkTest", () => {
     }
   });
 
+  /** A control character a terminal acts on: C0 other than newline and tab, DEL, and C1. */
+  const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
+  /** JSON as `dumps(value, 2)` writes it, with everything outside printable ASCII escaped. */
+  const asciiJson = (value: unknown): string =>
+    JSON.stringify(value, null, 2).replace(/[\u007f-￿]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`) + "\n";
+  const renameUpstream = (t: ForkCase, name: string): void => {
+    for (const file of ["config.toml", "upstream.lock"]) {
+      const path = join(t.fork.path, ".patchbook", file);
+      writeFileSync(path, read(path).replace(/^name = .*$/m, `name = "${name}"`).replace(/^  "upstream": \{$/m, `  "${name}": {`));
+    }
+  };
+
   forkTest("test_a_committed_remote_with_control_characters_reaches_the_terminal_escaped", (t) => {
     const fresh = cloneFollowing(t, "https://example.invalid/\\u001b[31mRED\\u001b]0;TITLE\\u0007x\\u007f[31mDEL\\u009b31mC1\\u0085NEL");
     for (const command of ["check", "status"]) {
-      const stderr = t.pb([command], { cwd: fresh, code: 1 }).stderr;
-      expect(stderr).toContain(" failed:");
-      const ours = stderr.split(" failed:")[0]!;
-      expect(ours.replace(/\n/g, "")).not.toMatch(/\p{Cc}/u);
-      for (const shown of ["example.invalid/", "RED", "DEL", "NEL"]) expect(ours).toContain(shown);
+      const { stdout, stderr } = t.pb([command], { cwd: fresh, code: 1 });
+      expect(stdout + stderr).not.toMatch(CONTROL);
+      const [ours = "", git = ""] = stderr.split(" failed:\n");
+      for (const shown of ["example.invalid/\\u001b[31mRED\\u001b]0;TITLE\\u0007x", "DEL", "\\u009b31mC1", "NEL"]) expect(ours).toContain(shown);
+      for (const shown of ["\\u009b31mC1", "\\u0085NEL"]) expect(git).toContain(shown);
+    }
+  });
+
+  forkTest("test_an_upstream_name_and_branch_with_control_characters_reach_the_terminal_escaped", (t) => {
+    renameUpstream(t, "up\\u001b]0;NAME\\u0007\\u009b");
+    const pin = sh(["git", "rev-parse", "--short=7", "HEAD"], { cwd: t.up.path }).stdout.trim();
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toBe(`0 edits apply at up\\u001b]0;NAME\\u0007\\u009b ${pin}; no problems\n`);
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    writeFileSync(config, read(config).replace(/^branch = .*$/m, 'branch = "ma\\u001b[31min"'));
+    expect(t.pb(["check"], { cwd: t.fork.path, code: 1 }).stderr).toBe("patchbook: upstream up\\u001b]0;NAME\\u0007\\u009b has no branch ma\\u001b[31min\n");
+  });
+
+  forkTest("test_a_git_error_relayed_to_the_user_shows_its_control_characters_escaped", (t) => {
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    writeFileSync(config, read(config).replace(/^branch = .*$/m, 'branch = "ma\\u009b31min"'));
+    const fetch = t.pb(["sync"], { cwd: t.fork.path, code: 1 }).stderr;
+    expect(fetch).toContain("fatal: couldn't find remote ref ma\\u009b31min\n");
+    const clone = t.pb(["clone", "--branch", "ma\u009b31min", t.up.path, "again"], { cwd: t.tmp, code: 1 }).stderr;
+    expect(clone).toContain("fatal: Remote branch ma\\u009b31min not found");
+    expect(fetch + clone).not.toMatch(CONTROL);
+  });
+
+  forkTest("test_an_upstream_path_with_control_characters_is_listed_escaped", (t) => {
+    t.up.write("evil\u001b]0;TITLE\u0007.txt", "x\n");
+    t.up.commit("a file with control characters in its name");
+    t.pb(["sync"], { cwd: t.fork.path });
+    const listed = t.pb(["upstream", "upstream"], { cwd: t.fork.path }).stdout;
+    expect(listed).toContain("evil\\u001b]0;TITLE\\u0007.txt\n");
+    expect(listed).not.toMatch(CONTROL);
+  });
+
+  forkTest("test_check_and_status_json_keep_control_characters_as_json_escapes", (t) => {
+    renameUpstream(t, "up\\u001b]0;NAME\\u0007\\u007f\\u009b");
+    for (const args of [["check"], ["status", "--json"]]) {
+      const { stdout, stderr } = t.pb(args, { cwd: t.fork.path });
+      const parsed = JSON.parse(stdout);
+      expect(Object.keys(parsed.upstreams)).toEqual(["up\u001b]0;NAME\u0007\u007f\u009b"]);
+      expect(stdout).toBe(asciiJson(parsed));
+      expect(stderr).not.toMatch(CONTROL);
     }
   });
 
