@@ -5776,6 +5776,129 @@ describe("ForkTest", () => {
     expect(porcelain(t)).toBe("");
   });
 
+  const recordedCopy = (t: ForkCase, path: string): string => join(t.fork.path, ".patchbook/changes/shout/ours", `${path}.pb`);
+  const modeInHead = (t: ForkCase, path: string): string => sh(["git", "ls-tree", "HEAD", "--", path], { cwd: t.fork.path }).stdout.split(" ")[0]!;
+
+  forkTest("test_commit_records_a_regular_file_over_a_recorded_symlink", (t) => {
+    symlinkSync("app.txt", join(t.fork.path, "link"));
+    sh(["git", "add", "link"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "link app.txt"]);
+    expect(isSymlink(recordedCopy(t, "link"))).toBe(true);
+    unlinkSync(join(t.fork.path, "link"));
+    t.fork.write("link", "plain\n");
+    sh(["git", "add", "link"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "link is a file"]);
+    expect(modeInHead(t, "link")).toBe("100644");
+    expect(isSymlink(join(t.fork.path, "link"))).toBe(false);
+    expect(t.fork.read("link")).toBe("plain\n");
+    expect(isSymlink(recordedCopy(t, "link"))).toBe(false);
+    expect(read(recordedCopy(t, "link"))).toBe("plain\n");
+    expect(porcelain(t)).toBe("");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isSymlink(join(t.fork.path, "link"))).toBe(false);
+    expect(t.fork.read("link")).toBe("plain\n");
+  });
+
+  forkTest("test_commit_records_a_retargeted_symlink_as_a_symlink", (t) => {
+    symlinkSync("app.txt", join(t.fork.path, "link"));
+    sh(["git", "add", "link"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "link app.txt"]);
+    unlinkSync(join(t.fork.path, "link"));
+    symlinkSync("docs", join(t.fork.path, "link"));
+    sh(["git", "add", "link"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "link docs"]);
+    expect(modeInHead(t, "link")).toBe("120000");
+    expect(readlinkSync(join(t.fork.path, "link"))).toBe("docs");
+    expect(readlinkSync(recordedCopy(t, "link"))).toBe("docs");
+    expect(porcelain(t)).toBe("");
+  });
+
+  const upstreamLink = (t: ForkCase): void => {
+    symlinkSync("app.txt", join(t.up.path, "link"));
+    t.up.commit("add a link");
+    t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "take upstream"]);
+    expect(readlinkSync(join(t.fork.path, "link"))).toBe("app.txt");
+  };
+
+  forkTest("test_commit_refuses_an_upstream_link_replaced_by_a_regular_file", (t) => {
+    upstreamLink(t);
+    unlinkSync(join(t.fork.path, "link"));
+    t.fork.write("link", "plain\n");
+    sh(["git", "add", "link"], { cwd: t.fork.path });
+    const before = { files: tree(t.fork.path), staged: porcelain(t) };
+    const commit = hookCommit(t, ["-m", "link is a file"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("link");
+    expect(commit.stderr).toContain("can't record a link turned into a file yet");
+    expect(commit.stderr).toContain("#133");
+    expect(tree(t.fork.path)).toEqual(before.files);
+    expect(porcelain(t)).toBe(before.staged);
+    expect(lastCommit(t)).toBe("take upstream\n");
+  });
+
+  forkTest("test_record_refuses_an_upstream_link_replaced_by_a_regular_file", (t) => {
+    upstreamLink(t);
+    unlinkSync(join(t.fork.path, "link"));
+    t.fork.write("link", "plain\n");
+    const before = tree(t.fork.path);
+    const out = t.pb(["record", "--intent", "Make the link a file."], { cwd: t.fork.path, code: 1 });
+    expect(out.stderr).toContain("link");
+    expect(out.stderr).toContain("can't record a link turned into a file yet");
+    expect(out.stderr).toContain("#133");
+    expect(tree(t.fork.path)).toEqual(before);
+  });
+
+  forkTest("test_commit_records_a_retargeted_upstream_link_as_a_link", (t) => {
+    upstreamLink(t);
+    unlinkSync(join(t.fork.path, "link"));
+    symlinkSync("docs", join(t.fork.path, "link"));
+    sh(["git", "add", "link"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "link docs"]);
+    expect(modeInHead(t, "link")).toBe("120000");
+    expect(readlinkSync(join(t.fork.path, "link"))).toBe("docs");
+    expect(porcelain(t)).toBe("");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(readlinkSync(join(t.fork.path, "link"))).toBe("docs");
+  });
+
+  for (const fileMode of ["false", "true"]) {
+    forkTest(`test_record_with_file_modes_${fileMode}_records_an_executable_file_over_a_recorded_symlink_as_a_regular_file`, (t) => {
+      sh(["git", "config", "core.fileMode", fileMode], { cwd: t.fork.path });
+      symlinkSync("app.txt", join(t.fork.path, "link"));
+      sh(["git", "add", "link"], { cwd: t.fork.path });
+      hookCommit(t, ["-m", "link app.txt"]);
+      expect(isSymlink(recordedCopy(t, "link"))).toBe(true);
+      unlinkSync(join(t.fork.path, "link"));
+      t.fork.write("link", "plain\n", 0o755);
+      t.pb(["record", "--intent", "Make the link a file."], { cwd: t.fork.path });
+      expect(isSymlink(recordedCopy(t, "link"))).toBe(false);
+      expect(read(recordedCopy(t, "link"))).toBe("plain\n");
+      t.pb(["build"], { cwd: t.fork.path });
+      expect(isSymlink(join(t.fork.path, "link"))).toBe(false);
+      expect(t.fork.read("link")).toBe("plain\n");
+    });
+  }
+
+  forkTest("test_hook_install_without_file_modes_keeps_the_exec_bit_of_a_script_we_added", (t) => {
+    sh(["git", "config", "core.fileMode", "false"], { cwd: t.fork.path });
+    t.fork.write(".husky/pre-commit", "npm test\n", 0o755);
+    sh(["git", "add", ".husky/pre-commit"], { cwd: t.fork.path });
+    sh(["git", "update-index", "--chmod=+x", ".husky/pre-commit"], { cwd: t.fork.path });
+    sh(["git", "commit", "-q", "-m", "add husky script"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Add the pre-commit script." } });
+    expect(modeInHead(t, ".husky/pre-commit")).toBe("100755");
+    const pb = join(t.fork.path, ".patchbook/changes/add-the-pre-commit/ours/.husky/pre-commit.pb");
+    expect(isExecutable(pb)).toBe(true);
+    chmodSync(join(t.fork.path, ".husky/pre-commit"), 0o644);
+    writeFileSync(join(t.fork.path, ".husky/pre-commit"), "npm test --run\n");
+    installManager(t.fork, ".husky");
+    t.pb(["hook", "install"], { cwd: t.fork.path });
+    expect(read(pb)).toContain("npm test --run");
+    expect(isExecutable(pb)).toBe(true);
+    expect(sh(["git", "ls-files", "-s", ".husky/pre-commit"], { cwd: t.fork.path }).stdout.split(" ")[0]).toBe("100755");
+  });
+
   forkTest("test_commit_deletes_an_upstream_file_and_folder_after_git_rm", (t) => {
     expect(existsSync(join(t.fork.path, ".patchbook/build.lock"))).toBe(true);
     sh(["git", "rm", "-q", "-r", "app.txt", "docs"], { cwd: t.fork.path });
