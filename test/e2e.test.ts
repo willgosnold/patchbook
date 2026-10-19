@@ -2272,14 +2272,59 @@ for (const bad of ["no-such-repo", "unrelated"]) {
   }, TIMEOUT);
 }
 
+/** Every folder, file and link under root except `.git`, with each file's mode, so a test can see that a run left nothing behind. */
+const onDisk = (root: string): Record<string, string> =>
+  Object.fromEntries((readdirSync(root, { recursive: true }) as string[]).filter((p) => p !== ".git" && !p.startsWith(".git/")).sort().map((p) => {
+    const at = join(root, p);
+    const stat = lstatSync(at);
+    return [p, stat.isSymbolicLink() ? `-> ${readlinkSync(at)}` : stat.isDirectory() ? "folder" : `${(stat.mode & 0o777).toString(8)} ${read(at)}`];
+  }));
+
+/** What a failed init must leave as it found it: the remotes and the rest of the git config, the index, the hooks, and the working tree. */
+const repoState = (repo: string) => ({
+  remotes: sh(["git", "remote", "-v"], { cwd: repo }).stdout,
+  config: read(join(repo, ".git/config")),
+  index: sh(["git", "ls-files", "--stage"], { cwd: repo }).stdout,
+  hooks: tree(join(repo, ".git/hooks")),
+  files: onDisk(repo),
+});
+
+for (const again of ["the_same_url", "another_url"]) {
+  test(`test_a_fork_init_that_fails_changes_nothing_so_a_retry_with_${again}_runs_like_a_first_init`, () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\n");
+      up.commit("start");
+      const fork = forkOf(t, up);
+      sh(["git", "clone", "-q", up.path, "moved"], { cwd: t.tmp });
+      const moved = new Repo(join(t.tmp, "moved"));
+      moved.write("app.txt", "two\n");
+      moved.commit("two");
+      mkdirSync(join(fork.path, ".patchbook"));
+      symlinkSync(join(t.tmp, "missing/config.toml"), join(fork.path, ".patchbook/config.toml"));
+      const before = repoState(fork.path);
+      t.pb(["init", "--upstream", up.path], { cwd: fork.path, code: 1 });
+      expect(repoState(fork.path)).toEqual(before);
+      rmSync(join(fork.path, ".patchbook"), { recursive: true });
+      sh(["git", "clone", "-q", up.path, "twin"], { cwd: t.tmp });
+      const twin = new Repo(join(t.tmp, "twin"));
+      twin.write("mine.txt", "mine\n");
+      twin.commit("mine");
+      const url = again === "the_same_url" ? up.path : moved.path;
+      const first = t.pb(["init", "--upstream", url], { cwd: twin.path });
+      const retry = t.pb(["init", "--upstream", url], { cwd: fork.path });
+      expect([retry.stdout, retry.stderr]).toEqual([first.stdout, first.stderr]);
+      expect(tree(join(fork.path, ".patchbook"))).toEqual(tree(join(twin.path, ".patchbook")));
+      expect(sh(["git", "remote", "get-url", "upstream"], { cwd: fork.path }).stdout.trim()).toBe(url);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
 for (const [how, leave] of [
-  ["left_by_a_failed_init", (t: Case, fork: Repo, up: Repo) => {
-    mkdirSync(join(fork.path, ".patchbook"));
-    symlinkSync(join(t.tmp, "missing/config.toml"), join(fork.path, ".patchbook/config.toml"));
-    t.pb(["init", "--upstream", up.path], { cwd: fork.path, code: 1 });
-    rmSync(join(fork.path, ".patchbook/config.toml"));
-  }],
-  ["added_by_the_user", (_: Case, fork: Repo, up: Repo) => void sh(["git", "remote", "add", "upstream", up.path], { cwd: fork.path })],
+  ["added_by_the_user",(_: Case, fork: Repo, up: Repo) => void sh(["git", "remote", "add", "upstream", up.path], { cwd: fork.path })],
   ["listing_the_given_url_second", (t: Case, fork: Repo, up: Repo) => {
     sh(["git", "remote", "add", "upstream", up.path], { cwd: fork.path });
     sh(["git", "config", "--add", "remote.upstream.url", join(t.tmp, "moved")], { cwd: fork.path });
@@ -2884,7 +2929,7 @@ for (const layout of ["fork", "folder"]) {
   }, TIMEOUT);
 }
 
-test("test_a_retried_fork_init_records_the_skill_a_failed_first_run_left_on_disk", () => {
+test("test_a_fork_init_that_fails_leaves_no_skill_and_a_retry_records_it", () => {
   const t = new Case();
   try {
     Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
@@ -2897,7 +2942,8 @@ test("test_a_retried_fork_init_records_the_skill_a_failed_first_run_left_on_disk
     symlinkSync(join(t.tmp, "missing/series"), join(fork.path, ".patchbook/series"));
     t.pb(["init", "--upstream", up.path], { cwd: fork.path, code: 1 });
     expect(existsSync(join(fork.path, ".patchbook/config.toml"))).toBe(false);
-    expect(existsSync(join(fork.path, SKILL_FILE))).toBe(true);
+    expect(existsSync(join(fork.path, ".agents"))).toBe(false);
+    expect(existsSync(join(fork.path, ".claude"))).toBe(false);
     rmSync(join(fork.path, ".patchbook/series"));
     t.pb(["init", "--upstream", up.path], { cwd: fork.path });
     expect(fork.read(".patchbook/series")).toBe("patchbook-update-skill\n");
@@ -2926,7 +2972,7 @@ test("test_a_fork_init_that_cannot_write_its_pin_leaves_no_config_and_can_be_ret
   }
 }, TIMEOUT);
 
-test("test_a_folder_init_that_stops_before_its_config_can_be_retried_from_another_url", () => {
+test("test_a_folder_init_that_fails_leaves_no_pin_and_can_be_retried_from_another_url", () => {
   const t = new Case();
   try {
     const first = new Repo(join(t.tmp, "first"));
@@ -2942,7 +2988,7 @@ test("test_a_folder_init_that_stops_before_its_config_can_be_retried_from_anothe
     mkdirSync(join(repo.path, ".patchbook"));
     symlinkSync(join(t.tmp, "missing/config.toml"), join(repo.path, ".patchbook/config.toml"));
     t.pb(["init", "--upstream", first.path, ...output], { cwd: repo.path, code: 1 });
-    expect(Object.keys(JSON.parse(repo.read(".patchbook/upstream.lock")))).toEqual(["lib"]);
+    expect(readdirSync(join(repo.path, ".patchbook"))).toEqual(["config.toml"]);
     rmSync(join(repo.path, ".patchbook/config.toml"));
     t.pb(["init", "--upstream", second.path, ...output], { cwd: repo.path });
     expect(JSON.parse(repo.read(".patchbook/upstream.lock")).lib.commit).toBe(commit);
@@ -2950,6 +2996,184 @@ test("test_a_folder_init_that_stops_before_its_config_can_be_retried_from_anothe
     t.cleanup();
   }
 }, TIMEOUT);
+
+/** A repo to start a patchbook in, in either layout, following an upstream with one file, with the update skill on. */
+function startingRepo(t: Case, layout: string): { up: Repo; repo: Repo; output: string[] } {
+  Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+  const up = new Repo(join(t.tmp, "upstream"));
+  up.write("app.txt", "one\n");
+  up.commit("start");
+  if (layout === "fork") return { up, repo: forkOf(t, up), output: [] };
+  const repo = new Repo(join(t.tmp, "repo"));
+  repo.write("README.md", "mine\n");
+  repo.commit("start");
+  return { up, repo, output: ["--output-from", "", "--output-to", "out"] };
+}
+
+for (const path of [".patchbook", ".patchbook/config.toml", ".patchbook/series", ".patchbook/retired.md", ".patchbook/upstream.lock"]) {
+  test(`test_init_refuses_a_dangling_link_at_${path.slice(1).replace(/\W+/g, "_")}_and_writes_nothing`, () => {
+    for (const layout of ["fork", "folder"]) {
+      const t = new Case();
+      try {
+        const { up, repo, output } = startingRepo(t, layout);
+        const elsewhere = join(t.tmp, "elsewhere");
+        mkdirSync(elsewhere);
+        mkdirSync(dirname(join(repo.path, path)), { recursive: true });
+        symlinkSync(join(elsewhere, "missing"), join(repo.path, path));
+        const before = repoState(repo.path);
+        const init = t.pb(["init", "--upstream", up.path, ...output], { cwd: repo.path, code: 1 });
+        expect(init.stderr).toContain(`patchbook: ${path} is a symlink to a missing`);
+        expect(repoState(repo.path)).toEqual(before);
+        expect(readdirSync(elsewhere)).toEqual([]);
+      } finally {
+        t.cleanup();
+      }
+    }
+  }, TIMEOUT);
+}
+
+const INIT_STEPS: [string, string[], string, (repo: Repo) => string[]][] = [
+  ["its_pin", ["fork", "folder"], ".patchbook/upstream.lock: permission denied", (repo) => (repo.write(".patchbook/upstream.lock", "{}\n", 0o444), [])],
+  ["the_upstream_remote", ["fork"], "could not lock config file", (repo) => (writeFileSync(join(repo.path, ".git/config.lock"), ""), [])],
+  ["the_vendored_copy", ["folder"], "ro/copy: permission denied", (repo) => {
+    mkdirSync(join(repo.path, "ro"));
+    chmodSync(join(repo.path, "ro"), 0o555);
+    return ["--vendor", "ro/copy"];
+  }],
+  ["its_series", ["fork", "folder"], ".patchbook/series: permission denied", (repo) => (repo.write(".patchbook/series", "", 0o444), [])],
+  ["retired_md", ["fork", "folder"], ".patchbook/retired.md: permission denied", (repo) => (repo.write(".patchbook/retired.md", "", 0o444), [])],
+  ["its_config", ["fork"], ".patchbook/config.toml: permission denied", (repo) => {
+    for (const [file, text] of [["upstream.lock", "{}\n"], ["series", ""], ["retired.md", ""]] as const) repo.write(`.patchbook/${file}`, text);
+    chmodSync(join(repo.path, ".patchbook"), 0o555);
+    return [];
+  }],
+];
+
+for (const [step, layouts, failure, block] of INIT_STEPS) {
+  for (const layout of layouts) {
+    test.skipIf(process.getuid?.() === 0)(`test_a_${layout}_init_that_cannot_write_${step}_leaves_the_repo_as_it_was`, () => {
+      const t = new Case();
+      try {
+        const { up, repo, output } = startingRepo(t, layout);
+        const args = block(repo);
+        const before = repoState(repo.path);
+        const init = t.pb(["init", "--upstream", up.path, ...output, ...args], { cwd: repo.path, code: 1 });
+        expect(init.stderr).toContain(failure);
+        expect(repoState(repo.path)).toEqual(before);
+      } finally {
+        sh(["chmod", "-R", "u+w", t.tmp], { cwd: t.tmp, check: false });
+        t.cleanup();
+      }
+    }, TIMEOUT);
+  }
+}
+
+for (const layout of ["fork", "folder"]) {
+  test.skipIf(process.getuid?.() === 0)(`test_a_${layout}_init_that_cannot_write_the_skill_finishes_and_leaves_no_part_of_it`, () => {
+    const t = new Case();
+    try {
+      const { up, repo, output } = startingRepo(t, layout);
+      const folder = join(repo.path, ".agents/skills/patchbook-update");
+      mkdirSync(folder, { recursive: true });
+      chmodSync(folder, 0o555);
+      const init = t.pb(["init", "--upstream", up.path, ...output], { cwd: repo.path });
+      expect(init.stderr).toContain("couldn't install the update skill");
+      expect(readdirSync(folder)).toEqual([]);
+      expect(existsSync(join(repo.path, ".claude"))).toBe(false);
+      expect(t.pb(["status"], { cwd: repo.path }).stdout).toContain("no problems");
+    } finally {
+      sh(["chmod", "-R", "u+w", t.tmp], { cwd: t.tmp, check: false });
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
+for (const manager of ["git", "husky"]) {
+  test.skipIf(process.getuid?.() === 0)(`test_a_fork_init_that_cannot_record_the_skill_after_installing_the_${manager}_hook_leaves_the_repo_as_it_was`, () => {
+    const t = new Case();
+    try {
+      const { up, repo } = startingRepo(t, "fork");
+      if (manager === "husky") {
+        repo.write(".husky/pre-commit", NOTE_STAGED);
+        repo.commit("husky");
+        installManager(repo, ".husky");
+      }
+      const leftover = join(repo.path, ".patchbook/changes/patchbook-update-skill");
+      mkdirSync(leftover, { recursive: true });
+      chmodSync(leftover, 0o555);
+      const before = repoState(repo.path);
+      const init = t.pb(["init", "--upstream", up.path], { cwd: repo.path, code: 1 });
+      expect(init.stderr).toContain("permission denied");
+      expect(repoState(repo.path)).toEqual(before);
+    } finally {
+      sh(["chmod", "-R", "u+w", t.tmp], { cwd: t.tmp, check: false });
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
+describe.skipIf(!!process.env["PATCHBOOK_CMD"])("init stopped by a preload, so only from source", () => {
+  const preloaded = (t: Case, cwd: string, env: Record<string, string>, args: string[]): Run =>
+    sh([process.execPath, "--preload", join(import.meta.dir, "crash.ts"), TOOL, ...args], { cwd, env: { ...t.env, PATCHBOOK_HOOK: "", ...env }, check: false });
+
+  test("test_a_folder_init_that_cannot_write_its_config_leaves_the_repo_as_it_was", () => {
+    const t = new Case();
+    try {
+      const { up, repo, output } = startingRepo(t, "folder");
+      const before = repoState(repo.path);
+      const init = preloaded(t, repo.path, { FAIL_WRITE: "/.patchbook/config.toml" }, ["init", "--upstream", up.path, ...output]);
+      expect(init.code).toBe(1);
+      expect(init.stderr).toContain(".patchbook/config.toml: i/o error");
+      expect(repoState(repo.path)).toEqual(before);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+
+  test("test_a_retried_fork_init_records_the_skill_a_killed_first_run_left_on_disk", () => {
+    const t = new Case();
+    try {
+      Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\n");
+      up.commit("start");
+      sh(["git", "clone", "-q", up.path, "fork"], { cwd: t.tmp });
+      const fork = new Repo(join(t.tmp, "fork"));
+      preloaded(t, fork.path, { CRASH_BEFORE_WRITE: "/.patchbook/series" }, ["init", "--upstream", up.path]);
+      expect(existsSync(join(fork.path, ".patchbook/config.toml"))).toBe(false);
+      expect(existsSync(join(fork.path, SKILL_FILE))).toBe(true);
+      t.pb(["init", "--upstream", up.path], { cwd: fork.path });
+      expect(fork.read(".patchbook/series")).toBe("patchbook-update-skill\n");
+      expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+      t.pb(["build"], { cwd: fork.path });
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+
+  test("test_a_folder_init_killed_before_its_config_can_be_retried_from_another_url", () => {
+    const t = new Case();
+    try {
+      const first = new Repo(join(t.tmp, "first"));
+      first.write("a.txt", "first\n");
+      first.commit("first");
+      const second = new Repo(join(t.tmp, "second"));
+      second.write("a.txt", "second\n");
+      const commit = second.commit("second");
+      const repo = new Repo(join(t.tmp, "repo"));
+      repo.write("README.md", "mine\n");
+      repo.commit("start");
+      const output = ["--name", "lib", "--output-from", "", "--output-to", "out"];
+      preloaded(t, repo.path, { CRASH_BEFORE_WRITE: "/.patchbook/series" }, ["init", "--upstream", first.path, ...output]);
+      expect(existsSync(join(repo.path, ".patchbook/config.toml"))).toBe(false);
+      expect(Object.keys(JSON.parse(repo.read(".patchbook/upstream.lock")))).toEqual(["lib"]);
+      t.pb(["init", "--upstream", second.path, ...output], { cwd: repo.path });
+      expect(JSON.parse(repo.read(".patchbook/upstream.lock")).lib.commit).toBe(commit);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+});
 
 for (const layout of ["fork", "folder"]) {
   test(`test_a_${layout}_init_that_cannot_install_the_hook_still_starts_the_patchbook`, () => {
