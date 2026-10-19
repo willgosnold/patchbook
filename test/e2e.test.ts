@@ -5287,6 +5287,21 @@ describe("ForkTest", () => {
     t.pb(["upstream", "upstream", "--since", sh(["git", "rev-parse", "HEAD"], { cwd: t.up.path }).stdout.trim()], { cwd: t.fork.path });
   });
 
+  forkTest("test_upstream_refuses_options_it_cannot_apply_together_and_writes_nothing", (t) => {
+    const out = join(t.tmp, "out");
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.up.path }).stdout.trim();
+    for (const [args, problem] of [
+      [["--diff", "--export", out], "--export can't go with --diff"],
+      [["app.txt", "--export", out], "--export can't go with <path>"],
+      [["--since", head, "--diff"], "--diff can't go with --since"],
+    ] as const) {
+      const r = t.pb(["upstream", "upstream", ...args], { cwd: t.fork.path, code: 2 });
+      expect(r.stdout).toBe("");
+      expect(r.stderr).toBe(`patchbook upstream: ${problem}\nRun \`patchbook upstream --help\` for its arguments and options.\n`);
+    }
+    expect(existsSync(out)).toBe(false);
+  });
+
   describe("a json placeholder file", () => {
     const useJson = (t: VendorCase, json: string): string => {
       const entries = t.missingScaffoldPatchBuild();

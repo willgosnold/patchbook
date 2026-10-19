@@ -25,7 +25,7 @@ A fork's own upstream lives in the fork's repo instead. A sync doesn't put the n
 
 The store is data, not a cache: it is the only local copy of the unchanged upstream files. If it is lost, the tool fetches each pin again by commit. That fails only if upstream deleted the commit, which is the case for keeping a vendored copy: set `vendor = "<folder>"` on an upstream, and sync keeps a byte-for-byte copy in the repo, which the build checks against the pin.
 
-`patchbook upstream <name>` reads an upstream at its pin. It lists the files, prints one (`upstream <name> <path>`), writes them all to a folder (`--export <dir>`), or shows what upstream changed in the last sync (`--diff`).
+`patchbook upstream <name>` reads an upstream at its pin. It lists the files, prints one (`upstream <name> <path>`), writes them all to a folder (`--export <dir>`), or shows what upstream changed in the last sync (`--diff`). It takes at most one of `--diff`, `--since` and `--export`, and `--export` takes no `<path>`.
 
 ## Files
 
@@ -199,7 +199,7 @@ Patchbook reads its command line with its own parser, `parseArgv` in `src/lib/ar
 - After `--`, every argument is an argument, so `patchbook blocks -- -notes.md` names a file that starts with `-`. A lone `-` is always an argument.
 - `-h` or `--help` anywhere before `--` prints help and exits 0, whatever else is on the line. It is the command's help when the first argument is a command, and the list of commands otherwise.
 
-Patchbook refuses an unknown command or option, an option without its value, a value given to an option that takes none (`--force=yes`), an option given twice, an argument the command does not take, a missing argument or required option, and a word outside an argument's choices. It reports the first problem it finds, reading from the left, on stderr, and exits 2:
+Patchbook refuses an unknown command or option, an option without its value, a value given to an option that takes none (`--force=yes`), an option given twice, two options or arguments the command says can't go together (`upstream --diff --export <dir>`), an argument the command does not take, a missing argument or required option, and a word outside an argument's choices. It reports the first problem it finds, reading from the left, on stderr, and exits 2:
 
 ```
 patchbook sync: unknown option "--forse"

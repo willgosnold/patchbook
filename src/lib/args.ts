@@ -60,6 +60,8 @@ export interface Command {
   /** In declaration order: required, then optional, then at most one rest. */
   readonly args: readonly (ArgSpec & { readonly key: string })[];
   readonly options: readonly (OptionSpec & { readonly key: string; readonly flag: `--${string}` })[];
+  /** Groups of argument and option keys. A command line gives at most one key of each group. */
+  readonly exclusive: readonly (readonly string[])[];
   readonly run: Run<Readonly<Record<string, Raw>>>;
 }
 
@@ -68,13 +70,15 @@ const KEY = /^[a-z][a-zA-Z0-9]*$/;
 
 /**
  * Declare a command. `run`'s parameter type comes from `args` and `options`.
- * Throws when argument order is wrong, when an argument key and an option key collide, or when a key isn't camelCase.
+ * Throws when argument order is wrong, when an argument key and an option key collide, when a key isn't camelCase,
+ * or when an `exclusive` group has fewer than two keys.
  */
 export function command<const A extends Record<string, ArgSpec> = {}, const O extends Record<string, OptionSpec> = {}>(c: {
   summary: string;
   about?: readonly string[];
   args?: A;
   options?: O;
+  exclusive?: readonly (readonly NoInfer<(keyof A | keyof O) & string>[])[];
   run: Run<Values<A, O>>;
 }): Command {
   const args = Object.entries(c.args ?? {}).map(([key, spec]) => ({ ...spec, key }));
@@ -94,7 +98,9 @@ export function command<const A extends Record<string, ArgSpec> = {}, const O ex
     if (before && RANK[a.kind] < RANK[before.kind]) throw new Error(`${c.summary}: "${a.key}" must come before "${before.key}"`);
     if (before?.kind === "rest") throw new Error(`${c.summary}: "${before.key}" takes the rest, so "${a.key}" can't follow it`);
   });
-  return { summary: c.summary, about: c.about ?? [], args, options, run: c.run as Run<Readonly<Record<string, Raw>>> };
+  const exclusive = c.exclusive ?? [];
+  for (const group of exclusive) if (group.length < 2) throw new Error(`${c.summary}: an exclusive group needs two keys, not ${JSON.stringify(group)}`);
+  return { summary: c.summary, about: c.about ?? [], args, options, exclusive, run: c.run as Run<Readonly<Record<string, Raw>>> };
 }
 
 export interface Program {
@@ -123,7 +129,8 @@ export type Problem =
   | { readonly kind: "value-for-flag"; readonly flag: string; readonly value: string }
   | { readonly kind: "extra-argument"; readonly value: string }
   | { readonly kind: "not-a-choice"; readonly choices: readonly string[]; readonly value: string }
-  | { readonly kind: "repeated-option"; readonly flag: string };
+  | { readonly kind: "repeated-option"; readonly flag: string }
+  | { readonly kind: "conflict"; readonly given: string; readonly with: string };
 
 /**
  * Read argv (without the runtime and script) into an Outcome. Never throws for user input.
@@ -140,7 +147,8 @@ export type Problem =
  * 5. `--name=value` gives the value, which may be empty or start with `-`. A flag given `=value` is refused.
  *    `--name value` takes the next argument when there is one and it doesn't start with `-` (or is `-`);
  *    otherwise the value is missing, and the message shows the `=` form when the next argument starts with `-`.
- * 6. Giving any option twice is refused, flags included. Nothing silently wins.
+ * 6. Giving any option twice is refused, flags included, and so is giving a second key of an `exclusive` group.
+ *    Nothing silently wins.
  * 7. Positionals fill args in order; a rest arg takes all that remain; one too many is an extra argument;
  *    a choice arg refuses a word outside its set.
  * 8. At the end: the first required arg with no value, then the first required option not given, is `missing`.
@@ -195,12 +203,20 @@ function parseCommand(c: Command, argv: readonly string[]): Record<string, Raw> 
   for (const a of c.args) values[a.key] = a.kind === "rest" ? [] : null;
   for (const o of c.options) values[o.key] = o.kind === "flag" ? false : typeof o.need === "object" ? o.need.default : null;
   const given = new Set<string>();
+  const present = new Set<string>();
+  const shown = (key: string) => c.options.find((o) => o.key === key)?.flag ?? `<${key}>`;
+  const arrive = (key: string) => {
+    const earlier = c.exclusive.filter((group) => group.includes(key)).flat().find((k) => present.has(k));
+    if (earlier !== undefined) refuse({ kind: "conflict", given: shown(key), with: shown(earlier) });
+    present.add(key);
+  };
   let taken = 0;
   let ended = false;
   const positional = (word: string) => {
     const spec = c.args[Math.min(taken, c.args.length - 1)];
     if (spec === undefined || (taken >= c.args.length && spec.kind !== "rest")) refuse({ kind: "extra-argument", value: word });
     if (spec.kind === "choice" && !Object.hasOwn(spec.choices, word)) refuse({ kind: "not-a-choice", choices: Object.keys(spec.choices), value: word });
+    if (!present.has(spec.key)) arrive(spec.key);
     const slot = values[spec.key];
     if (Array.isArray(slot)) slot.push(word);
     else values[spec.key] = word;
@@ -219,6 +235,7 @@ function parseCommand(c: Command, argv: readonly string[]): Record<string, Raw> 
       if (o === undefined) refuse({ kind: "unknown-option", flag: name });
       if (given.has(o.key)) refuse({ kind: "repeated-option", flag: o.flag });
       given.add(o.key);
+      arrive(o.key);
       if (o.kind === "flag") {
         if (value !== null) refuse({ kind: "value-for-flag", flag: o.flag, value });
         values[o.key] = true;
@@ -261,6 +278,8 @@ function describe(p: Problem): string {
       return `expected ${list(p.choices)}, not ${JSON.stringify(p.value)}`;
     case "repeated-option":
       return `${p.flag} given twice`;
+    case "conflict":
+      return `${p.given} can't go with ${p.with}`;
   }
 }
 

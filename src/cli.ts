@@ -177,12 +177,14 @@ export const PROGRAM: Program = {
     }),
     upstream: command({
       summary: "list, print, export or diff an upstream at its pin",
+      about: ["Give at most one of --diff, --since and --export.", "A <path> limits a diff; --export takes none."],
       args: { name: arg("the upstream to read"), path: arg.optional("a path inside the upstream, as upstream has it") },
       options: {
         diff: flag("what upstream changed in the last sync"),
         since: option("commit", "what upstream changed since <commit>"),
         export: option("dir", "write every file at the pin into <dir>"),
       },
+      exclusive: [["diff", "since", "export"], ["path", "export"]],
       run: cmdUpstream,
     }),
     check: command({ summary: "has any upstream moved? exits 10 if so", run: cmdCheck }),

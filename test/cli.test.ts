@@ -109,6 +109,8 @@ options:
 usage: patchbook upstream <name> [<path>] [options]
 
 list, print, export or diff an upstream at its pin
+Give at most one of --diff, --since and --export.
+A <path> limits a diff; --export takes none.
 
 arguments:
   <name>            the upstream to read
@@ -299,6 +301,12 @@ const ERRORS: { [K in Problem["kind"]]: [argv: string[], text: string][] } = {
     [["build", "--force", "--force"], `patchbook build: --force given twice\n${hint("build")}`],
     [["init", "--upstream=a", "--upstream", "b"], `patchbook init: --upstream given twice\n${hint("init")}`],
   ],
+  conflict: [
+    [["upstream", "up", "--diff", "--export", "out"], `patchbook upstream: --export can't go with --diff\n${hint("upstream")}`],
+    [["upstream", "up", "--since=abc", "--diff"], `patchbook upstream: --diff can't go with --since\n${hint("upstream")}`],
+    [["upstream", "up", "app.txt", "--export=out"], `patchbook upstream: --export can't go with <path>\n${hint("upstream")}`],
+    [["upstream", "up", "--export", "out", "app.txt"], `patchbook upstream: <path> can't go with --export\n${hint("upstream")}`],
+  ],
 };
 
 const DEFAULTS: [argv: string[], values: Record<string, unknown>][] = [
@@ -335,6 +343,9 @@ const VALUES: [argv: string[], values: Record<string, unknown>][] = [
   [["build", "--commit", "--force"], { force: true, commit: true }],
   [["config", "--unset", "intent.provider"], { name: "intent.provider", value: null, unset: true, project: false }],
   [["config", "intent.provider", "--project", "codex"], { name: "intent.provider", value: "codex", unset: false, project: true }],
+  [["upstream", "up", "app.txt", "--since", "abc"], { name: "up", path: "app.txt", diff: false, since: "abc", export: null }],
+  [["upstream", "up", "--diff", "app.txt"], { name: "up", path: "app.txt", diff: true, since: null, export: null }],
+  [["upstream", "up", "--export", "out"], { name: "up", path: null, diff: false, since: null, export: "out" }],
 ];
 
 const REFUSED: [argv: string[], line: string][] = [
@@ -464,6 +475,10 @@ describe("declaring a command", () => {
     expect(() => command({ summary: "x", options: { output_to: flag("a") }, run: () => 0 })).toThrow('"output_to" isn\'t a camelCase key');
   });
 
+  test("refuses an exclusive group of fewer than two keys", () => {
+    expect(() => command({ summary: "x", options: { a: flag("a") }, exclusive: [["a"]], run: () => 0 })).toThrow('an exclusive group needs two keys, not ["a"]');
+  });
+
   test("turns a camelCase key into a kebab-case flag", () => {
     const c = command({ summary: "x", options: { outputTo: option("dir", "o"), dryRunNow: flag("d") }, run: () => 0 });
     expect(c.options.map((o) => o.flag)).toEqual(["--output-to", "--dry-run-now"]);
@@ -537,6 +552,8 @@ export const checkedByTypecheck = [
       return bad.length;
     },
   }),
+  // @ts-expect-error an exclusive group names a key nobody declared
+  command({ summary: "x", options: { a: flag("a"), b: flag("b") }, exclusive: [["a", "c"]], run: () => 0 }),
   // @ts-expect-error showChange needs `change`, and this command doesn't declare it
   command({ summary: "x", args: { file: arg("f") }, run: showChange }),
   command({
