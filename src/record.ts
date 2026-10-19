@@ -252,7 +252,7 @@ function asked(edits: readonly Edited[]): Asked {
   return ask;
 }
 
-type Naming = { name: string; intent: string; said: string | null } | { name: null; intent: string | null; said: string | null };
+type Naming = { name: string; intent: string; said: string | null; unused: boolean } | { name: null; intent: string | null; said: string | null; unused: boolean };
 
 function nameAndIntent(
   ask: Asked, name: string | null, given: string | null, roster: Roster,
@@ -267,18 +267,20 @@ function nameAndIntent(
   if (stray) throw new Fail(`${PB}/changes/${name} is not a change folder: move it out of ${PB}/changes`);
   const named = ask.named.length > 0;
   if (given) {
-    if (name) return { name, intent: given, said: null };
-    if (!named) return { name: null, intent: given, said: null };
+    const setsExisting = name !== null && changes.has(name);
+    const unused = !named && !ask.drafts.length && !setsExisting;
+    if (name) return { name, intent: given, said: null, unused };
+    if (!named) return { name: null, intent: given, said: null, unused };
     const derived = nameFromIntent(given, roster);
-    return { name: derived, intent: given, said: `${derived}: ${given}` };
+    return { name: derived, intent: given, said: `${derived}: ${given}`, unused };
   }
   const known = name === null ? undefined : changes.get(name);
-  if (known) return { name, intent: known.intent, said: null };
-  if (!named && !ask.drafts.length) return { name: null, intent: null, said: null };
+  if (known) return { name, intent: known.intent, said: null, unused: false };
+  if (!named && !ask.drafts.length) return { name: null, intent: null, said: null, unused: false };
   const [picked, intent] = model(name, named);
-  if (!named) return { name: null, intent, said: `intent: ${intent}` };
+  if (!named) return { name: null, intent, said: `intent: ${intent}`, unused: false };
   const chosen = roster.known(picked) ? picked : roster.free(picked);
-  return { name: chosen, intent, said: changes.has(chosen) ? `adding to ${chosen}` : `${chosen}: ${intent}` };
+  return { name: chosen, intent, said: changes.has(chosen) ? `adding to ${chosen}` : `${chosen}: ${intent}`, unused: false };
 }
 
 function modelDiff(a: Assembly, current: ReadonlyMap<string, File>, ask: Asked): string {
@@ -330,7 +332,7 @@ export function record(book: Book, change: string | null, intent: string | null,
       for (const c of done.touched) touched.set(c.name, c);
       for (const text of done.notes) notes.push({ text, waits: done.waitsForSave ? done.touched : [], after: done.afterSave ?? null });
     }
-    if (target?.edits.length) touched.set(target.name, target);
+    if (target && (target.edits.length || (given && changes.has(target.name)))) touched.set(target.name, target);
     for (const c of touched.values()) {
       saveChange(c);
       saved.add(c);
@@ -355,7 +357,9 @@ export function record(book: Book, change: string | null, intent: string | null,
   } catch (error) {
     throw new Partway(printed(), error);
   }
-  return { text: printed() };
+  const owners = Array.from(touched.keys()).join(", ");
+  const dropped = naming.unused && edits.some((e) => e.kind !== "skip");
+  return { text: printed() + (dropped ? `intent   not used${owners ? `: the edits went to ${owners}` : ""}\n` : "") };
 }
 
 /** An upstream link keeps its type in the build, so a regular file over it would be written back as a link. */
