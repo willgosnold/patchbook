@@ -262,6 +262,14 @@ function refuseGit(name: string, files: Iterable<string>, then: string): void {
   }
 }
 
+/** Refuses an upstream tree path with a part of `..`, `.` or nothing: `git mktree` can store one, and joined onto a folder it lands outside it. Runs where an upstream's tree is read, before any write. */
+export function refuseClimbingPaths(name: string, files: Iterable<string>): void {
+  for (const p of files) {
+    const part = p.split("/").find((s) => s === ".." || s === "." || s === "");
+    if (part !== undefined) throw new Fail(`upstream ${name} holds ${p}, which has a part named ${JSON.stringify(part)}, so a write could land outside the folder it belongs in. Nothing was changed.`);
+  }
+}
+
 /** Refuses an upstream whose files hold a name git reads as `.git`: the copy would hold a repo of its own, and no sync could finish over it. Runs before the journal and any write. */
 export function refuseUpstreamGit(name: string, vendor: string, files: Iterable<string>): void {
   refuseGit(name, files, `so it can't be vendored into ${vendor}.`);
