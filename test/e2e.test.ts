@@ -10347,7 +10347,7 @@ exec '${Bun.which("git")}' "$@"
     up.write("a.md", "a\n");
     up.commit("a");
     const git = (args: string[], input = ""): string => {
-      const r = Bun.spawnSync(["git", ...args], { cwd: up.path, env: process.env, stdin: Buffer.from(input), stdout: "pipe" });
+      const r = Bun.spawnSync(["git", ...args], { cwd: up.path, env: t.env, stdin: Buffer.from(input), stdout: "pipe" });
       return r.stdout.toString().trim();
     };
     const blob = git(["hash-object", "-w", "a.md"]);
