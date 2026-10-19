@@ -114,9 +114,9 @@ const LEFTHOOK_JSON: Snippet = {
   },
 };
 
-/** lefthook reads each of its config names in every format, and the extension picks the snippet. */
+/** lefthook reads each of its config names in every format. The keys run in the order lefthook looks for them, and it reads the first file it finds. */
 const LEFTHOOK_FORMATS: Readonly<Record<string, Snippet>> = {
-  yml: LEFTHOOK_YAML, yaml: LEFTHOOK_YAML, toml: LEFTHOOK_TOML, json: LEFTHOOK_JSON, jsonc: LEFTHOOK_JSON,
+  yml: LEFTHOOK_YAML, yaml: LEFTHOOK_YAML, json: LEFTHOOK_JSON, jsonc: LEFTHOOK_JSON, toml: LEFTHOOK_TOML,
 };
 const LEFTHOOK_FILES = Object.keys(LEFTHOOK_FORMATS).flatMap((ext) => ["lefthook", ".lefthook", ".config/lefthook"].map((name) => `${name}.${ext}`));
 
@@ -186,7 +186,18 @@ function ours(path: string): boolean {
 
 const scriptHook = (manager: ScriptManager, dir: string, gitRunsIt: boolean): Hook => ({ kind: "script", manager, path: join(dir, "pre-commit"), gitRunsIt });
 
-const configFile = (root: string, manager: ConfigManager): string | undefined => manager.files.map((f) => join(root, f)).find(exists);
+/** The config files the manager finds, in the order it reads them. A name that resolves to a file already found is the same file, not another one. */
+function configFiles(root: string, manager: ConfigManager): string[] {
+  const seen = new Set<string>();
+  return manager.files.map((f) => join(root, f)).filter((f) => {
+    if (!exists(f)) return false;
+    const { dev, ino } = statSync(f);
+    const id = `${dev}:${ino}`;
+    return !seen.has(id) && !!seen.add(id);
+  });
+}
+
+const configFile = (root: string, manager: ConfigManager): string | undefined => configFiles(root, manager)[0];
 
 function findHook(root: string): Hook {
   const { hooksPath, hookFile } = hookPaths(root);
@@ -239,6 +250,10 @@ const ADD_TO_CONFIG = (m: ConfigManager, where: string, config: string) => {
   return `patchbook: ${m.name} runs this repo's pre-commit hooks. `
     + `Add this ${part.into(where)}, so ${m.name} runs patchbook first for everyone who commits here, and your checks see the rebuilt output:\n\n${part.text}${m.note ? `\n${m.note}\n` : ""}`;
 };
+
+const MANY_CONFIGS = (m: ConfigManager, wheres: string[]) =>
+  `patchbook: ${m.name} has more than one config file here: ${wheres.join(", ")}. It reads ${wheres[0]} and ignores the rest, so patchbook can't tell which one to print lines for. `
+  + "Merge them into one file, then run `patchbook hook install`.\n";
 
 const ADD_TO_FOREIGN = (where: string) =>
   `patchbook: ${where} is another tool's hook; add \`patchbook hook run\` to it to record on commit. Put these lines at the top:\n\n${HOOK_LINES}`;
@@ -337,24 +352,31 @@ export function keepGitHook(book: Book): void {
 }
 
 /** Make the hook git runs call patchbook, once `keepGitHook` has installed its own in `.git/hooks`. A config or foreign hook is printed every time, because patchbook can't check where its line sits. */
-export async function installHook(book: Book): Promise<void> {
-  if (!hookEnabled(book) || !inBookRepo(book)) return;
+export async function installHook(book: Book): Promise<boolean> {
+  if (!hookEnabled(book) || !inBookRepo(book)) return true;
   const hook = findHook(book.root);
   switch (hook.kind) {
     case "git":
-      return;
+      return true;
     case "script":
       await putFirst(book, hook);
-      return;
-    case "config":
+      return true;
+    case "config": {
+      const files = configFiles(book.root, hook.manager);
+      if (files.length > 1) {
+        process.stderr.write(MANY_CONFIGS(hook.manager, files.map((f) => shown(book.root, f))));
+        return false;
+      }
       process.stderr.write(ADD_TO_CONFIG(hook.manager, shown(book.root, hook.path), readTextReplace(hook.path)));
       break;
+    }
     case "foreign":
       process.stderr.write(ADD_TO_FOREIGN(shown(book.root, hook.path)));
       break;
   }
   const { hookFile } = hookPaths(book.root);
   if (hook.gitRunsIt && exists(hookFile) && !isExecutable(hookFile)) process.stderr.write(NOT_EXECUTABLE(shown(book.root, hookFile)));
+  return true;
 }
 
 /** Install the hook, or warn why not. Until it is installed, a commit doesn't record hand edits. */
@@ -506,7 +528,7 @@ export async function cmdHook(args: { action: "install" | "run" | "status" }) {
     refuseOtherRepo(book);
     if (hookEnabled(book)) {
       keepGitHook(book);
-      await installHook(book);
+      return await installHook(book) ? 0 : 1;
     } else process.stderr.write(`patchbook: hook.enabled is off, so no hook was installed. ${turnOn(setting("hook.enabled", book)[1])}\n`);
     return 0;
   }

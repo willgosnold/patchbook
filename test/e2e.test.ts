@@ -3129,6 +3129,73 @@ for (const [config, { snippet, dispatcher }] of Object.entries(SNIPPETS)) {
   }, TIMEOUT);
 }
 
+test("test_hook_install_still_prints_the_toml_advice_for_a_lone_lefthook_toml", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, { "lefthook.toml": "# lint on commit\n" });
+    const install = t.pb(["hook", "install"], { cwd: fork.path });
+    expect(install.stderr).toContain("Add this to lefthook.toml,");
+    expect(install.stderr).toContain(LEFTHOOK_TOML_SNIPPET.trim());
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_hook_install_prints_the_advice_when_a_second_lefthook_name_is_a_symlink_to_the_same_file", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\ntwo\n");
+    up.write("lefthook.yml", "# lint on commit\n");
+    symlinkSync("lefthook.yml", join(up.path, ".lefthook.yml"));
+    up.commit("start");
+    t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+    const install = t.pb(["hook", "install"], { cwd: join(t.tmp, "fork") });
+    expect(install.stderr).toContain("Add this to lefthook.yml,");
+    expect(install.stderr).not.toContain("more than one config file");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+// lefthook reads one config file: the first that exists, by extension (yml, yaml, json, jsonc, toml), then by folder (., .lefthook, .config/lefthook).
+const LEFTHOOK_PAIRS: [string, string, string][] = [
+  ["lefthook.toml", "lefthook.json", "lefthook.json"],
+  ["lefthook.toml", "lefthook.jsonc", "lefthook.jsonc"],
+  [".lefthook.toml", "lefthook.yml", "lefthook.yml"],
+  [".config/lefthook.jsonc", "lefthook.yaml", "lefthook.yaml"],
+  [".config/lefthook.yml", ".lefthook.yml", ".lefthook.yml"],
+];
+
+for (const [first, second, read] of LEFTHOOK_PAIRS) {
+  test(`test_hook_install_refuses_when_both_${first}_and_${second}_exist`.replaceAll("/", "_"), () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\ntwo\n");
+      up.write(first, /json/.test(first) ? "{}\n" : "# lint on commit\n");
+      up.write(second, /json/.test(second) ? "{}\n" : "# lint on commit\n");
+      up.commit("start");
+      const clone = t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+      expect(clone.stderr).toContain(`reads ${read} and ignores the rest`);
+      expect(clone.stderr).not.toContain("patchbook hook run");
+      const fork = new Repo(join(t.tmp, "fork"));
+      const before = fork.read(first) + fork.read(second);
+      const install = t.pb(["hook", "install"], { cwd: fork.path, code: 1 });
+      expect(install.stdout).toBe("");
+      expect(install.stderr).toContain(first);
+      expect(install.stderr).toContain(second);
+      expect(install.stderr).toContain(`reads ${read} and ignores the rest`);
+      expect(install.stderr).not.toContain("patchbook hook run");
+      expect(install.stderr).not.toContain("priority");
+      expect(fork.read(first) + fork.read(second)).toBe(before);
+      expect(sh(["git", "status", "--porcelain"], { cwd: fork.path }).stdout).toBe("");
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
 const parsed = {
   yaml: (text: string): any => Bun.YAML.parse(text),
   toml: (text: string): any => Bun.TOML.parse(text),
