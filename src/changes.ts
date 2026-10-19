@@ -154,7 +154,7 @@ export function readChanges(book: Book, problems: Problem[], names: readonly str
     );
   }
   for (const c of changes) {
-    if (!c.intent) problems.push({ problem: "invalid", file: `changes/${c.name}`, detail: "it has no intent" });
+    if (!c.intent) problems.push({ problem: "invalid", file: `changes/${c.name}`, detail: `it has no intent; fill it with \`patchbook intent ${c.name}\`` });
   }
   return changes;
 }

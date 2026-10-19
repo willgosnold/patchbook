@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { TomlDocument } from "@decimalturn/toml-patch";
 import { Book, NoBook } from "./book.ts";
-import { intentSettings, PROVIDERS } from "./intent.ts";
+import { intentSettings, NO_MODEL, PROVIDERS } from "./intent.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, mkdirs, pjoin, readBytes, readText, writeText } from "./lib/fs.ts";
 import { ljust, S, strRepr } from "./lib/py.ts";
@@ -48,6 +48,16 @@ const text: Kind<string> = {
   show: quoteToml,
 };
 
+const seconds: Kind<number> = {
+  parse(name, raw) {
+    const value = Number(raw);
+    if (!raw.trim() || !Number.isFinite(value) || value <= 0) throw new Fail(`${name} is a positive number of seconds, not ${strRepr(raw)}`);
+    return value;
+  },
+  accept: (v) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined),
+  show: String,
+};
+
 const flag: Kind<boolean> = {
   parse(name, raw) {
     const word = raw.toLowerCase();
@@ -72,6 +82,7 @@ type Values = {
   "intent.provider": string | null;
   "intent.model": string | null;
   "intent.effort": string | null;
+  "intent.timeout": number;
   "hook.enabled": boolean;
   "start.install_skill": boolean;
   "start.agents": string[];
@@ -84,9 +95,10 @@ export type Source = "env" | "project" | "user" | "default";
 // The most specific source wins: the env var, then the project's .patchbook/config.toml, then the
 // user's config, then the default.
 export const SETTINGS: { readonly [N in Name]: Setting<Values[N]> } = {
-  "intent.provider": { env: "PATCHBOOK_PROVIDER", kind: text, default: null, help: "claude or codex: the CLI that writes intents (default: claude if installed)" },
+  "intent.provider": { env: "PATCHBOOK_PROVIDER", kind: text, default: null, help: "claude or codex: the CLI that writes intents (default: claude if installed), or none to leave intents empty" },
   "intent.model": { env: "PATCHBOOK_MODEL", kind: text, default: null, help: "the model that writes intents (default: the provider's)" },
   "intent.effort": { env: "PATCHBOOK_EFFORT", kind: text, default: null, help: "its reasoning effort (default: the provider's)" },
+  "intent.timeout": { env: "PATCHBOOK_INTENT_TIMEOUT", kind: seconds, default: 60, help: "seconds to wait for the model before leaving the intent empty" },
   "hook.enabled": { env: "PATCHBOOK_HOOK", kind: flag, default: true, help: "record and build on each commit" },
   "start.install_skill": { env: "PATCHBOOK_SKILL", kind: flag, default: true, help: "clone and init install the patchbook-update skill" },
   "start.agents": { env: null, kind: list, default: ["claude-code", "codex"], help: "the agents clone and init install the skill for" },
@@ -330,7 +342,7 @@ function listed<N extends Name>(name: N, book: Book | null): [string, Source] {
     const sources = new Map<string, Source>();
     const [provider, model, effort] = intentSettings(book, true, sources);
     const used = name === "intent.provider" ? provider : name === "intent.model" ? model : effort;
-    return [quoteToml(used), sources.get(name) ?? "default"];
+    return [provider === NO_MODEL && name !== "intent.provider" ? "(not used)" : quoteToml(used), sources.get(name) ?? "default"];
   }
   if (name === "store.path" && value === null) return [quoteToml(dirname(storeDir())), source];
   return [value === null ? "(not set)" : show(name, value), source];
@@ -360,8 +372,8 @@ export async function cmdConfig(args: { name: string | null; value: string | nul
   }
   if (args.value !== null && name !== null) {
     const value = parseValue(name, args.value);
-    if (name === "intent.provider" && typeof value === "string" && !PROVIDERS.has(value)) {
-      throw new Fail(`intent.provider is one of ${Array.from(PROVIDERS.keys()).join(", ")}`);
+    if (name === "intent.provider" && typeof value === "string" && value !== NO_MODEL && !PROVIDERS.has(value)) {
+      throw new Fail(`intent.provider is one of ${[...PROVIDERS.keys(), NO_MODEL].join(", ")}`);
     }
     const shown = show(name, value);
     setToml(path, name, value);

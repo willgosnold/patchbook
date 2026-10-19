@@ -55,7 +55,7 @@ What patchbook adds to a manager (the lines in a Vite+ or husky script, the comm
 
 **2. Change things.** Edit files the way you normally would, including the built output, then stage them and commit as usual.
 
-With the hook installed and `hook.enabled` on, a pre-commit hook moves the edits you staged into the patchbook, rebuilds, and adds both to the commit. `patchbook hook status` says whether git runs it. A model reads the edits, names the change and writes its intent: what the change does and why. It uses Claude if it's installed, otherwise Codex; `patchbook config intent.provider codex` switches. To write the intent yourself, commit with `PATCHBOOK_INTENT="..." git commit`, or run `patchbook record <name> --intent "..."` and `git add .patchbook` first.
+With the hook installed and `hook.enabled` on, a pre-commit hook moves the edits you staged into the patchbook, rebuilds, and adds both to the commit. `patchbook hook status` says whether git runs it. A model reads the edits, names the change and writes its intent: what the change does and why. It uses Claude if it's installed, otherwise Codex; `patchbook config intent.provider codex` switches. To write the intent yourself, commit with `PATCHBOOK_INTENT="..." git commit`, or run `patchbook record <name> --intent "..."` and `git add .patchbook` first. If the model is missing, offline or slower than `intent.timeout` (60 seconds), the commit still goes through: the edits are recorded with an empty intent, `patchbook status` reports it and `patchbook build` refuses until `patchbook intent` fills it. `patchbook config intent.provider none` turns the model off.
 
 The intent matters most. It's how an agent redoes your change later, if upstream rewrites the code underneath it.
 
@@ -83,6 +83,7 @@ patchbook sync && patchbook status && patchbook build
 patchbook track <name> <url>        # follow another upstream
 patchbook upstream <name> [path]    # read an upstream at its pin; --diff shows its last change
 patchbook show <change>             # a change as a diff
+patchbook intent [change]           # fill the empty intents record left when the model failed
 patchbook config [name] [value]     # settings: yours, or the project's with --project
 patchbook skill install             # write this patchbook's update skill into the repo
 patchbook --help

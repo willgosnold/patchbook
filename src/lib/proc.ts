@@ -5,12 +5,12 @@ import { strip } from "./py.ts";
 import { decode, decodeReplace } from "./text.ts";
 
 export type Env = Record<string, string | undefined>;
-export type SpawnOptions = { cwd?: string; input?: Uint8Array; env?: Env; capture?: boolean };
-/** A finished process. `code` is null when a signal killed it. */
-export type Finished = { code: number | null; stdout: Uint8Array; stderr: Uint8Array };
+export type SpawnOptions = { cwd?: string; input?: Uint8Array; env?: Env; capture?: boolean; timeout?: number };
+/** A finished process. `code` is null when a signal killed it, as it does when `timeout` runs out. */
+export type Finished = { code: number | null; stdout: Uint8Array; stderr: Uint8Array; timedOut: boolean };
 
 /** Run a command to the end. Without capture, it writes to our stdout and stderr. */
-export function spawn(args: readonly string[], { cwd, input, env, capture = true }: SpawnOptions = {}): Finished {
+export function spawn(args: readonly string[], { cwd, input, env, capture = true, timeout }: SpawnOptions = {}): Finished {
   const result = Bun.spawnSync({
     cmd: [...args],
     stdin: input ?? "inherit",
@@ -18,9 +18,16 @@ export function spawn(args: readonly string[], { cwd, input, env, capture = true
     stderr: capture ? "pipe" : "inherit",
     ...(cwd === undefined ? {} : { cwd }),
     ...(env === undefined ? {} : { env }),
+    ...(timeout === undefined ? {} : { timeout, killSignal: "SIGKILL" as const, detached: true }),
   });
+  // The kill reaches only the child. Its own group, which `detached` made, takes the rest with it.
+  if (timeout !== undefined && result.exitedDueToTimeout === true) {
+    try {
+      process.kill(-result.pid, "SIGKILL");
+    } catch {}
+  }
   const empty = new Uint8Array();
-  return { code: result.exitCode, stdout: result.stdout ?? empty, stderr: result.stderr ?? empty };
+  return { code: result.exitCode, stdout: result.stdout ?? empty, stderr: result.stderr ?? empty, timedOut: result.exitedDueToTimeout === true };
 }
 
 const WEB_SCHEMES = /^(https?|ftps?)$/i;

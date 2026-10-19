@@ -7,7 +7,7 @@ import { blockHash, blockSpans, type Entry, entriesPath, formatEntry, patchBlock
 import { Book, PB, under } from "./book.ts";
 import { appendSeries, CHANGE_NAME, Change, notAChangeName, readSeries, Roster, saveChange } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
-import { nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
+import { changeDiff, ModelFailed, nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
 import { Fail, Partway } from "./lib/fail.ts";
 import { exists, type File, LINK, type Mode, sameFile, sameMode, writeText } from "./lib/fs.ts";
@@ -277,10 +277,26 @@ function nameAndIntent(
   const known = name === null ? undefined : changes.get(name);
   if (known) return { name, intent: known.intent, said: null, unused: false };
   if (!named && !ask.drafts.length) return { name: null, intent: null, said: null, unused: false };
-  const [picked, intent] = model(name, named);
+  let answer: [string, string];
+  try {
+    answer = model(name, named);
+  } catch (e) {
+    if (e instanceof ModelFailed) return pending(ask, name, roster, e.why);
+    throw e;
+  }
+  const [picked, intent] = answer;
   if (!named) return { name: null, intent, said: `intent: ${intent}`, unused: false };
   const chosen = roster.known(picked) ? picked : roster.free(picked);
   return { name: chosen, intent, said: changes.has(chosen) ? `adding to ${chosen}` : `${chosen}: ${intent}`, unused: false };
+}
+
+function pending(ask: Asked, name: string | null, roster: Roster, why: string): Naming {
+  const chosen = ask.named.length ? roster.free(name ?? "pending") : null;
+  const entries = ask.drafts.length > 0;
+  const what = [chosen, entries ? "the new entries" : null].filter((x) => x !== null).join(" and ");
+  const fill = chosen && !entries ? `patchbook intent ${chosen}` : "patchbook intent";
+  const said = `pending  no intent yet for ${what} (${why}). To fill it: ${fill}`;
+  return chosen ? { name: chosen, intent: "", said, unused: false } : { name: null, intent: "", said, unused: false };
 }
 
 function modelDiff(a: Assembly, current: ReadonlyMap<string, File>, ask: Asked): string {
@@ -296,6 +312,41 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
   if (args.current === undefined) installHookOrWarn(book);
   process.stdout.write(record(book, args.change, args.intent, args).text);
   return 0;
+}
+
+export async function cmdIntent(args: { change: string | null; intent: string | null }) {
+  process.stdout.write(fill(await Book.find(), args.change, args.intent));
+  return 0;
+}
+
+export function fill(book: Book, change: string | null, intent: string | null): string {
+  if (change && !CHANGE_NAME.test(change)) throw new Fail(notAChangeName(change));
+  const changes = Roster.read(book).parsed;
+  const target = change === null ? null : changes.get(change);
+  if (change !== null && !target) throw new Fail(`no change called ${change}`);
+  if (target?.intent) throw new Fail(`${change} already has an intent; to change it, edit ${PB}/changes/${change}/CHANGE.md`);
+  const given = intent === null ? null : oneLine(intent) || null;
+  if (given && change === null) throw new Fail("--intent needs a change name: patchbook intent <change> --intent ...");
+
+  const empty = target ? [target] : Array.from(changes.values()).filter((c) => !c.intent);
+  const filled = empty.map((c): [Change, string] => [c, given ?? writeIntent(book, changes, changeDiff(c), c.name, true, true)[1]]);
+  const files: { rel: string; entries: Map<string, Entry>; intent: string }[] = [];
+  for (const rel of target ? [] : blockFiles(book)) {
+    const entries = readEntries(entriesPath(book, rel));
+    const bare = Array.from(entries.values()).filter((e) => !e.intent);
+    if (!bare.length) continue;
+    const diff = bare.map((e) => unifiedDiff(splitlines(e.upstream + "\n", true), splitlines(e.patched + "\n", true), `upstream/${rel}`, `patched/${rel}`)).join("");
+    const text = given ?? writeIntent(book, changes, diff, null, false)[1];
+    files.push({ rel, entries: new Map(Array.from(entries, ([h, e]) => [h, e.intent ? e : { ...e, intent: text }])), intent: text });
+  }
+
+  if (!filled.length && !files.length) return "no empty intents; nothing to fill\n";
+  for (const [c, text] of filled) {
+    c.intent = text;
+    saveChange(c);
+  }
+  for (const f of files) saveParagraphs(entriesPath(book, f.rel), f.entries);
+  return filled.map(([c, text]) => `intent   ${c.name}: ${text}\n`).join("") + files.map((f) => `entries  ${f.rel}: ${f.intent}\n`).join("");
 }
 
 export function record(book: Book, change: string | null, intent: string | null, opts: { current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean } = {}): RecordResult {
@@ -318,6 +369,7 @@ export function record(book: Book, change: string | null, intent: string | null,
   const ask = asked(edits);
   const naming = nameAndIntent(ask, change, given, roster, (n, named) => writeIntent(book, changes, modelDiff(a, current, ask), n, named));
   const target = naming.name ? changes.get(naming.name) ?? new Change(naming.name, join(book.dir, "changes", naming.name), naming.intent) : null;
+  if (target && naming.name !== null && !target.intent) target.intent = naming.intent;
   if (target && given) target.intent = given;
 
   const touched = new Map<string, Change>();

@@ -104,7 +104,7 @@ export function formatEntry(e: Entry): string {
 export function checkEntry(e: Entry): string | null {
   if (blockHash(e.upstream) !== e.hash) return "its upstream text does not match its hash";
   if (!ENTRY_KINDS.includes(e.kind)) return `kind must be one of ${ENTRY_KINDS.join(", ")}`;
-  if (!e.intent) return "it has no intent";
+  if (!e.intent) return "it has no intent; fill it with `patchbook intent`";
   if (e.kind === "translation" && !e.rules) return "a translation must name its rules";
   if (e.kind === "keep" && e.patched !== e.upstream) return "a keep entry must leave the block unchanged";
   return null;
