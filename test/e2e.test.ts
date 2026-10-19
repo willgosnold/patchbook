@@ -3032,6 +3032,26 @@ for (const path of [".patchbook", ".patchbook/config.toml", ".patchbook/series",
   }, TIMEOUT);
 }
 
+for (const layout of ["fork", "folder"]) {
+  test(`test_a_${layout}_init_refuses_a_patchbook_folder_without_a_config_that_holds_series_or_retired_md`, () => {
+    for (const [held, named] of [[["series", "retired.md"], "series"], [["retired.md"], "retired.md"]] as const) {
+      const t = new Case();
+      try {
+        const { up, repo, output } = startingRepo(t, layout);
+        const files = { series: "keep-me\n", "retired.md": "my own retired notes\n" };
+        for (const file of held) repo.write(`.patchbook/${file}`, files[file as keyof typeof files]);
+        const before = repoState(repo.path);
+        const init = t.pb(["init", "--upstream", up.path, ...output], { cwd: repo.path, code: 1 });
+        expect(init.stderr).toContain(`patchbook: .patchbook/${named} already exists. Move it away, or restore .patchbook/config.toml, then run init again.`);
+        for (const file of held) expect(repo.read(`.patchbook/${file}`)).toBe(files[file as keyof typeof files]);
+        expect(repoState(repo.path)).toEqual(before);
+      } finally {
+        t.cleanup();
+      }
+    }
+  }, TIMEOUT);
+}
+
 const INIT_STEPS: [string, string[], string, (repo: Repo) => string[]][] = [
   ["its_pin", ["fork", "folder"], ".patchbook/upstream.lock: permission denied", (repo) => (repo.write(".patchbook/upstream.lock", "{}\n", 0o444), [])],
   ["the_upstream_remote", ["fork"], "could not lock config file", (repo) => (writeFileSync(join(repo.path, ".git/config.lock"), ""), [])],
@@ -3040,8 +3060,6 @@ const INIT_STEPS: [string, string[], string, (repo: Repo) => string[]][] = [
     chmodSync(join(repo.path, "ro"), 0o555);
     return ["--vendor", "ro/copy"];
   }],
-  ["its_series", ["fork", "folder"], ".patchbook/series: permission denied", (repo) => (repo.write(".patchbook/series", "", 0o444), [])],
-  ["retired_md", ["fork", "folder"], ".patchbook/retired.md: permission denied", (repo) => (repo.write(".patchbook/retired.md", "", 0o444), [])],
 ];
 
 for (const [step, layouts, failure, block] of INIT_STEPS) {
@@ -3111,20 +3129,22 @@ describe.skipIf(!!process.env["PATCHBOOK_CMD"])("init stopped by a preload, so o
   const preloaded = (t: Case, cwd: string, env: Record<string, string>, args: string[]): Run =>
     sh([process.execPath, "--preload", join(import.meta.dir, "crash.ts"), TOOL, ...args], { cwd, env: { ...t.env, PATCHBOOK_HOOK: "", ...env }, check: false });
 
-  for (const layout of ["fork", "folder"]) {
-    test(`test_a_${layout}_init_that_cannot_write_its_config_leaves_the_repo_as_it_was`, () => {
-      const t = new Case();
-      try {
-        const { up, repo, output } = startingRepo(t, layout);
-        const before = repoState(repo.path);
-        const init = preloaded(t, repo.path, { FAIL_WRITE: "/.patchbook/config.toml" }, ["init", "--upstream", up.path, ...output]);
-        expect(init.code).toBe(1);
-        expect(init.stderr).toContain(".patchbook/config.toml: i/o error");
-        expect(repoState(repo.path)).toEqual(before);
-      } finally {
-        t.cleanup();
-      }
-    }, TIMEOUT);
+  for (const [step, layouts, file] of [["its_series", ["fork", "folder"], "series"], ["retired_md", ["fork", "folder"], "retired.md"], ["its_config", ["fork", "folder"], "config.toml"]] as const) {
+    for (const layout of layouts) {
+      test(`test_a_${layout}_init_that_cannot_write_${step}_leaves_the_repo_as_it_was`, () => {
+        const t = new Case();
+        try {
+          const { up, repo, output } = startingRepo(t, layout);
+          const before = repoState(repo.path);
+          const init = preloaded(t, repo.path, { FAIL_WRITE: `/.patchbook/${file}` }, ["init", "--upstream", up.path, ...output]);
+          expect(init.code).toBe(1);
+          expect(init.stderr).toContain(`.patchbook/${file}: i/o error`);
+          expect(repoState(repo.path)).toEqual(before);
+        } finally {
+          t.cleanup();
+        }
+      }, TIMEOUT);
+    }
   }
 
   test("test_a_retried_fork_init_records_the_skill_a_killed_first_run_left_on_disk", () => {
@@ -12321,8 +12341,6 @@ exec '${Bun.which("git")}' "$@"
       const repo = new Repo(join(t.tmp, "mine"));
       repo.write("README.md", "mine\n");
       repo.commit("start");
-      repo.write(".patchbook/series", "my-change\n");
-      repo.write(".patchbook/retired.md", "my retired notes\n");
       repo.write(".patchbook/notes.txt", "keep me\n");
       const before = tree(repo.path);
       const out = t.pb(["init", "--upstream", evil.path, "--output-to", "out"], { cwd: repo.path, code: 1 });

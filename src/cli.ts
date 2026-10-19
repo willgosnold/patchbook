@@ -112,6 +112,9 @@ async function cmdInit(args: {
   const root = git(["rev-parse", "--show-toplevel"], { cwd: process.cwd() });
   refuseDanglingLinks(root);
   if (lexists(join(root, PB, "config.toml"))) throw new Fail(`${root} already has a patchbook. To follow another upstream: patchbook track`);
+  for (const file of ["series", "retired.md"]) {
+    if (lexists(join(root, PB, file))) throw new Fail(`${PB}/${file} already exists. Move it away, or restore ${PB}/config.toml, then run init again.`);
+  }
   const name = args.name || defaultName(redact(args.upstream), args.path);
   if (args.outputTo !== null) {
     const text = configText("folder", upstreamToml(name, args.upstream, args.path, args.branch, "", args.vendor), [args.outputFrom, args.outputTo]);
