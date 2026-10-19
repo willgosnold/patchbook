@@ -10714,6 +10714,23 @@ exec '${Bun.which("git")}' "$@"
     }
   });
 
+  test("test_init_refuses_an_upstream_that_holds_a_dot_git_and_leaves_no_patchbook", () => {
+    const t = new Case();
+    try {
+      const evil = upstreamWithDotGit(t, "evil");
+      const repo = new Repo(join(t.tmp, "mine"));
+      repo.write("README.md", "mine\n");
+      repo.commit("start");
+      const before = tree(repo.path);
+      const out = t.pb(["init", "--upstream", evil.path, "--output-to", "out"], { cwd: repo.path, code: 1 });
+      expect(out.stderr).toContain("upstream evil holds .git, which git reads as .git");
+      expect(tree(repo.path)).toEqual(before);
+      expect(existsSync(join(repo.path, ".patchbook"))).toBe(false);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+
   const brokenLinks: [string, string, (t: Case, repo: Repo) => string][] = [
     ["out_of_the_repo", "lnk/copy", (t, repo) => (symlinkSync(join(t.tmp, "gone/missing/deep"), join(repo.path, "lnk")), "lnk")],
     ["into_a_missing_folder_of_the_patchbook", "lnkdp/x", (_t, repo) => (symlinkSync(".patchbook/nope", join(repo.path, "lnkdp")), "lnkdp")],
