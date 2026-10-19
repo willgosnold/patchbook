@@ -3003,11 +3003,15 @@ for (const layout of ["fork", "folder"]) {
   }, TIMEOUT);
 }
 
-const CREDENTIAL_URLS = [
-  ["a_password", "https://user:s3cretpw@host.invalid/team/up", "https://host.invalid/team/up"],
-  ["a_token_as_the_user_name", "https://s3cretpw@host.invalid/team/up", "https://host.invalid/team/up"],
-  ["an_ssh_password", "ssh://git:s3cretpw@host.invalid/team/up", "ssh://git@host.invalid/team/up"],
-] as const;
+const CREDENTIAL_URLS: readonly (readonly [string, string, string, string])[] = [
+  ["a_password", "https://user:s3cretpw@host.invalid/team/up", "https://host.invalid/team/up", "s3cretpw"],
+  ["a_token_as_the_user_name", "https://s3cretpw@host.invalid/team/up", "https://host.invalid/team/up", "s3cretpw"],
+  ["an_ssh_password", "ssh://git:s3cretpw@host.invalid/team/up", "ssh://git@host.invalid/team/up", "s3cretpw"],
+  ["a_token_as_the_user_name_of_a_git_plus_https_url", "git+https://s3cretpw@host.invalid/team/up", "git+https://host.invalid/team/up", "s3cretpw"],
+  ...([["a_no_break_space", "\u00a0"], ["a_space", " "], ["a_tab", "\t"], ["a_newline", "\n"]] as const).map(
+    ([name, blank]) => [`a_password_with_${name}`, `https://user:SEKRITa${blank}SEKRITb@host.invalid/team/up`, "https://host.invalid/team/up", "SEKRIT"] as const,
+  ),
+];
 
 const storeState = (t: Case): Record<string, string> | null => (existsSync(join(t.tmp, "store")) ? tree(join(t.tmp, "store")) : null);
 
@@ -3018,13 +3022,14 @@ const reachableAs = (t: Case, url: string, repo: Repo): void =>
     GIT_CONFIG_KEY_1: "protocol.file.allow", GIT_CONFIG_VALUE_1: "always",
   });
 
-const expectCredentialRefusal = (stderr: string, shown: string): void => {
+const expectCredentialRefusal = ({ stdout, stderr }: { stdout: string; stderr: string }, shown: string, secret: string): void => {
   expect(stderr).toContain(`patchbook: ${shown} has credentials that patchbook would not keep.`);
   expect(stderr).toContain("Give git the password through a credential helper instead. See: git help credential");
-  expect(stderr).not.toContain("s3cretpw");
+  expect(stdout).not.toContain(secret);
+  expect(stderr).not.toContain(secret);
 };
 
-for (const [how, url, shown] of CREDENTIAL_URLS) {
+for (const [how, url, shown, secret] of CREDENTIAL_URLS) {
   test(`test_clone_refuses_a_url_with_${how}_and_creates_nothing`, () => {
     const t = new Case();
     try {
@@ -3034,7 +3039,7 @@ for (const [how, url, shown] of CREDENTIAL_URLS) {
       reachableAs(t, url, up);
       const before = readdirSync(t.tmp).sort();
       const refused = t.pb(["clone", url, "fork"], { cwd: t.tmp, code: 1 });
-      expectCredentialRefusal(refused.stderr, shown);
+      expectCredentialRefusal(refused, shown, secret);
       expect(readdirSync(t.tmp).sort()).toEqual(before);
       expect(storeState(t)).toBeNull();
     } finally {
@@ -3050,7 +3055,7 @@ for (const [how, url, shown] of CREDENTIAL_URLS) {
         reachableAs(t, url, up);
         const before = repoState(repo.path);
         const refused = t.pb(["init", "--upstream", url, ...output], { cwd: repo.path, code: 1 });
-        expectCredentialRefusal(refused.stderr, shown);
+        expectCredentialRefusal(refused, shown, secret);
         expect(repoState(repo.path)).toEqual(before);
         expect(storeState(t)).toBeNull();
       } finally {
@@ -3072,7 +3077,7 @@ for (const [how, url, shown] of CREDENTIAL_URLS) {
       const before = repoState(repo.path);
       const store = storeState(t);
       const refused = t.pb(["track", "extra", url], { cwd: repo.path, code: 1 });
-      expectCredentialRefusal(refused.stderr, shown);
+      expectCredentialRefusal(refused, shown, secret);
       expect(repoState(repo.path)).toEqual(before);
       expect(storeState(t)).toEqual(store);
     } finally {
