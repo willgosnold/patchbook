@@ -5,13 +5,13 @@ import { join } from "node:path";
 import type { Assembly } from "./assemble.ts";
 import type { Book } from "./book.ts";
 import { CHANGE_NAME, type Change, notAChangeName } from "./changes.ts";
-import { unifiedDiff } from "./lib/difflib.ts";
+import { unifiedDiff } from "./lib/diff.ts";
 import { Fail } from "./lib/fail.ts";
 import type { File } from "./lib/fs.ts";
 import { spawn, which } from "./lib/proc.ts";
 import { strRepr } from "./lib/repr.ts";
 import { object, readJson, string } from "./lib/shape.ts";
-import { decode, decodeReplace, encode, isText, lines } from "./lib/text.ts";
+import { decodeReplace, encode, isText } from "./lib/text.ts";
 import { configured, readToml, type Source, setting, SETTINGS, type Table, USER_CONFIG } from "./settings.ts";
 
 type Provider = { model: string; effort: string; command(model: string, effort: string, tmp: string): string[] };
@@ -54,8 +54,7 @@ export function pendingDiff(a: Assembly, current: ReadonlyMap<string, File>, pat
       parts.push(`binary file ${p} ${!built ? "added" : !now ? "deleted" : "changed"}\n`);
       continue;
     }
-    parts.push(unifiedDiff(lines(decode(old)), lines(decode(fresh)), built ? `built/${p}` : "/dev/null",
-      now ? `disk/${p}` : "/dev/null"));
+    parts.push(unifiedDiff(old, fresh, built ? `built/${p}` : "/dev/null", now ? `disk/${p}` : "/dev/null"));
   }
   const chars = Array.from(parts.join(""));
   return chars.slice(0, 40000).join("") + (chars.length > 40000 ? "\n[diff truncated]\n" : "");

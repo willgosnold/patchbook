@@ -1,4 +1,4 @@
-// A line-for-line port of CPython's difflib.SequenceMatcher (without isjunk) and unified_diff.
+// A line-for-line port of CPython's difflib.SequenceMatcher (without isjunk).
 // Strings are compared by code point, as Python iterates them, and elements are keyed in a Map, so
 // "constructor" and "__proto__" are ordinary elements.
 
@@ -110,59 +110,9 @@ export class SequenceMatcher<T> {
     return (this.opcodes = answer);
   }
 
-  *getGroupedOpcodes(n = 3): Generator<Opcode[]> {
-    const codes: Opcode[] = this.getOpcodes().map((op) => [...op]);
-    if (codes.length === 0) codes.push(["equal", 0, 1, 0, 1]);
-    const first = codes[0]!;
-    if (first[0] === "equal") codes[0] = ["equal", Math.max(first[1], first[2] - n), first[2], Math.max(first[3], first[4] - n), first[4]];
-    const last = codes[codes.length - 1]!;
-    if (last[0] === "equal") codes[codes.length - 1] = ["equal", last[1], Math.min(last[2], last[1] + n), last[3], Math.min(last[4], last[3] + n)];
-    const nn = n + n;
-    let group: Opcode[] = [];
-    for (let [tag, i1, i2, j1, j2] of codes) {
-      if (tag === "equal" && i2 - i1 > nn) {
-        group.push([tag, i1, Math.min(i2, i1 + n), j1, Math.min(j2, j1 + n)]);
-        yield group;
-        group = [];
-        i1 = Math.max(i1, i2 - n);
-        j1 = Math.max(j1, j2 - n);
-      }
-      group.push([tag, i1, i2, j1, j2]);
-    }
-    if (group.length && !(group.length === 1 && group[0]![0] === "equal")) yield group;
-  }
-
   ratio(): number {
     const matches = this.getMatchingBlocks().reduce((sum, m) => sum + m[2], 0);
     const length = this.a.length + this.b.length;
     return length ? (2.0 * matches) / length : 1.0;
   }
-}
-
-function formatRange(start: number, stop: number): string {
-  let beginning = start + 1;
-  const length = stop - start;
-  if (length === 1) return `${beginning}`;
-  if (!length) beginning -= 1;
-  return `${beginning},${length}`;
-}
-
-/** `difflib.unified_diff(a, b, fromfile, tofile)`, joined. Lines keep their own endings. */
-export function unifiedDiff(a: readonly string[], b: readonly string[], fromfile = "", tofile = "", n = 3): string {
-  const out: string[] = [];
-  for (const group of new SequenceMatcher(a, b).getGroupedOpcodes(n)) {
-    if (out.length === 0) out.push(`--- ${fromfile}\n`, `+++ ${tofile}\n`);
-    const first = group[0]!;
-    const last = group[group.length - 1]!;
-    out.push(`@@ -${formatRange(first[1], last[2])} +${formatRange(first[3], last[4])} @@\n`);
-    for (const [tag, i1, i2, j1, j2] of group) {
-      if (tag === "equal") {
-        for (const line of a.slice(i1, i2)) out.push(" " + line);
-        continue;
-      }
-      if (tag === "replace" || tag === "delete") for (const line of a.slice(i1, i2)) out.push("-" + line);
-      if (tag === "replace" || tag === "insert") for (const line of b.slice(j1, j2)) out.push("+" + line);
-    }
-  }
-  return out.join("");
 }

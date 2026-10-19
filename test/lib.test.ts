@@ -3,60 +3,19 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TomlDocument } from "@decimalturn/toml-patch";
-import { type Opcode, SequenceMatcher, unifiedDiff } from "../src/lib/difflib.ts";
+import { unifiedDiff } from "../src/lib/diff.ts";
+import { type Opcode, SequenceMatcher } from "../src/lib/difflib.ts";
 import { nonFolders, rmFolders } from "../src/lib/fs.ts";
 import { git, shellQuote } from "../src/lib/proc.ts";
 import { strRepr } from "../src/lib/repr.ts";
-import { byCodePoint, lines, withoutFinalNewline } from "../src/lib/text.ts";
+import { byCodePoint, encode, withoutFinalNewline } from "../src/lib/text.ts";
 
 type Fixture = {
   matcher: { a: string | string[]; b: string | string[]; autojunk: boolean; ratio: number; opcodes: Opcode[] }[];
-  unified: { a: string; b: string; fromfile: string; tofile: string; diff: string }[];
   repr: { s: string; repr: string }[];
 };
 
 const cases: Fixture = JSON.parse(readFileSync(new URL("fixtures/cpython.json", import.meta.url), "utf8"));
-
-describe("lines", () => {
-  test("ends each line after its \\n, which the line keeps", () => {
-    expect(lines("one\ntwo\n")).toEqual(["one\n", "two\n"]);
-  });
-
-  test("keeps the \\r of a \\r\\n in the line, as git does", () => {
-    expect(lines("one\r\ntwo\r\n")).toEqual(["one\r\n", "two\r\n"]);
-  });
-
-  test("breaks only at \\n, so a lone \\r, \\f, \\v, \\x1c, U+0085, U+2028 and U+2029 stay inside a line", () => {
-    expect(lines("a\rb\fc\vd\x1ce\x85f\u2028g\u2029h\n")).toEqual(["a\rb\fc\vd\x1ce\x85f\u2028g\u2029h\n"]);
-  });
-
-  test("a last line with no \\n is still a line", () => {
-    expect(lines("one\ntwo")).toEqual(["one\n", "two"]);
-  });
-
-  test("an empty text has no lines, and a lone \\n is one empty line", () => {
-    expect(lines("")).toEqual([]);
-    expect(lines("\n")).toEqual(["\n"]);
-  });
-
-  test("the lines join back into the text", () => {
-    for (const text of ["", "\n\n", "a\r\nb\rc", "x\u2028y\n\nz"]) expect(lines(text).join("")).toBe(text);
-  });
-
-  test("counts the lines git counts", () => {
-    const dir = mkdtempSync(join(tmpdir(), "lines"));
-    try {
-      for (const text of ["a\rb\fc\u2028d\ne", "one\r\ntwo\r\n", "\n\n\n", "no newline"]) {
-        const file = join(dir, "file");
-        writeFileSync(file, text);
-        const r = Bun.spawnSync(["git", "diff", "--no-index", "--numstat", "/dev/null", file], { cwd: import.meta.dir });
-        expect([text, Number(r.stdout.toString().split("\t")[0])]).toEqual([text, lines(text).length]);
-      }
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});
 
 describe("byCodePoint", () => {
   test("puts a character above U+FFFF after U+E000 to U+FFFF, where sort() alone puts it before them", () => {
@@ -195,12 +154,72 @@ describe("SequenceMatcher", () => {
   });
 });
 
-// generate.py cut these texts with Python's str.splitlines, which also breaks at \r, \v, \f, \x1c-\x1e, \x85, U+2028 and U+2029.
-const pythonLines = (s: string): string[] =>
-  s.match(/[^\n\r\v\f\x1c-\x1e\x85\u2028\u2029]*(?:\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029])|[^\n\r\v\f\x1c-\x1e\x85\u2028\u2029]+$/gu) ?? [];
+describe("unifiedDiff", () => {
+  const clean = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  const inRepo = <T>(use: (dir: string) => T): T => {
+    const dir = mkdtempSync(join(tmpdir(), "diff"));
+    try {
+      Bun.spawnSync(["git", "init", "-q"], { cwd: dir, env: clean });
+      return use(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const gitHunks = (old: string, fresh: string): string => inRepo((dir) => {
+    writeFileSync(join(dir, "old"), old);
+    writeFileSync(join(dir, "new"), fresh);
+    const out = Bun.spawnSync(["git", "diff", "--no-index", "--no-color", "old", "new"], { cwd: dir, env: clean }).stdout.toString();
+    return out.slice(out.indexOf("@@"));
+  });
+  const diff = (old: string, fresh: string) => unifiedDiff(encode(old), encode(fresh), "upstream/x", "ours/x");
 
-test.each(cases.unified)("unified_diff %#", (c) => {
-  expect(unifiedDiff(pythonLines(c.a), pythonLines(c.b), c.fromfile, c.tofile)).toBe(c.diff);
+  test.each([
+    ["marks a last line with no newline on both sides", "a\nb", "a\nc", "@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+c\n\\ No newline at end of file\n"],
+    ["marks the old side when a final newline is added", "a\nb", "a\nb\n", "@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+b\n"],
+    ["marks the new side when a final newline is removed", "a\nb\n", "a\nb", "@@ -1,2 +1,2 @@\n a\n-b\n+b\n\\ No newline at end of file\n"],
+    ["gives an empty old side the range 0,0", "", "a\nb\n", "@@ -0,0 +1,2 @@\n+a\n+b\n"],
+    ["gives an empty new side the range 0,0", "a\nb\n", "", "@@ -1,2 +0,0 @@\n-a\n-b\n"],
+    ["names the function above a hunk after its @@", "int main(void)\n{\n\ta;\n\tb;\n\tc;\n\td;\n}\n", "int main(void)\n{\n\ta;\n\tb;\n\tc;\n\tD;\n}\n",
+      "@@ -3,5 +3,5 @@ int main(void)\n \ta;\n \tb;\n \tc;\n-\td;\n+\tD;\n }\n"],
+  ])("is git's diff under patchbook's --- and +++ lines: %s", (_, old, fresh, hunks) => {
+    expect(gitHunks(old, fresh)).toBe(hunks);
+    expect(diff(old, fresh)).toBe(`--- upstream/x\n+++ ours/x\n${hunks}`);
+  });
+
+  test("is empty for equal sides", () => {
+    expect(diff("a\n", "a\n")).toBe("");
+    expect(diff("", "")).toBe("");
+  });
+
+  test("ignores the git config and GIT_* variables around it, and a repo around its temporary folder", () => {
+    const old = "y\ny\n\ny\n}\ny\n{\nz\n";
+    const fresh = "x\n\ny\n{\n{\nz\n\nz\n";
+    const reference = gitHunks(old, fresh);
+    inRepo((repo) => {
+      Bun.spawnSync(["git", "config", "diff.algorithm", "histogram"], { cwd: repo, env: clean });
+      mkdirSync(join(repo, "tmp"));
+      const poison = {
+        GIT_DIFF_OPTS: "-u0",
+        GIT_EXTERNAL_DIFF: "false",
+        GIT_CONFIG_PARAMETERS: "'diff.algorithm'='histogram' 'diff.noprefix'='true'",
+        GIT_DIR: join(repo, ".git"),
+        TMPDIR: join(repo, "tmp"),
+      };
+      const saved = Object.keys(poison).map((k) => [k, process.env[k]] as const);
+      Object.assign(process.env, poison);
+      try {
+        writeFileSync(join(repo, "old"), old);
+        writeFileSync(join(repo, "new"), fresh);
+        expect(Bun.spawnSync(["git", "diff", "--no-index", "old", "new"], { cwd: repo }).stdout.toString()).not.toContain(reference);
+        expect(diff(old, fresh)).toBe(`--- upstream/x\n+++ ours/x\n${reference}`);
+      } finally {
+        for (const [k, v] of saved) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
+      }
+    });
+  });
 });
 
 test("repr(str)", () => {
