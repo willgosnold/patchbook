@@ -303,7 +303,7 @@ function isUnrecorded(book: Book, current: ReadonlyMap<string, File>, key: strin
 
 const NEW_SCRIPT_MODE: Mode = 0o755;
 
-async function putFirst(book: Book, hook: Extract<Hook, { kind: "script" }>): Promise<void> {
+async function putFirst(book: Book, hook: Extract<Hook, { kind: "script" }>, undo?: Undo): Promise<void> {
   const where = shown(book.root, hook.path);
   if (writesThroughALink(book, hook.path)) {
     process.stderr.write(ADD_TO_FOREIGN(where));
@@ -313,6 +313,7 @@ async function putFirst(book: Book, hook: Extract<Hook, { kind: "script" }>): Pr
   const edited = withPatchbook(text ?? new Uint8Array());
   const wrote = text === null || !bytesEqual(edited, text);
   if (wrote) {
+    undo?.hold(hook.path);
     if (text === null) mkdirs(dirname(hook.path));
     writeBytes(hook.path, edited);
     if (text === null) chmodSync(hook.path, NEW_SCRIPT_MODE);
@@ -421,9 +422,10 @@ function updateScript(path: string): boolean {
   return true;
 }
 
-export function keepGitHook(book: Book): void {
+export function keepGitHook(book: Book, undo?: Undo): void {
   const { hooksPath, hookFile } = hookPaths(book.root);
   if (hooksPath !== null || !hookEnabled(book) || !inBookRepo(book)) return;
+  undo?.hold(dirname(hookFile));
   if (!exists(hookFile)) {
     writeHook(hookFile);
     process.stderr.write("patchbook: installed a pre-commit hook that records and builds on each commit\n");
@@ -442,14 +444,14 @@ export function keepGitHook(book: Book): void {
 }
 
 /** Make the hook git runs call patchbook, once `keepGitHook` has installed its own in `.git/hooks`. A config or foreign hook is printed every time, because patchbook can't check where its line sits. */
-export async function installHook(book: Book): Promise<boolean> {
+export async function installHook(book: Book, undo?: Undo): Promise<boolean> {
   if (!hookEnabled(book) || !inBookRepo(book)) return true;
   const hook = findHook(book.root);
   switch (hook.kind) {
     case "git":
       return true;
     case "script":
-      await putFirst(book, hook);
+      await putFirst(book, hook, undo);
       return true;
     case "config": {
       const files = configFiles(book.root, hook.manager);
@@ -470,9 +472,9 @@ export async function installHook(book: Book): Promise<boolean> {
 }
 
 /** Install the hook, or warn why not. Until it is installed, a commit doesn't record hand edits. */
-export function installHookOrWarn(book: Book): void {
+export function installHookOrWarn(book: Book, undo?: Undo): void {
   try {
-    keepGitHook(book);
+    keepGitHook(book, undo);
   } catch (e) {
     if (!(e instanceof Error && "errno" in e)) throw e;
     process.stderr.write(`patchbook: couldn't install the pre-commit hook: ${e.message}\nUntil it is installed, a commit doesn't record hand edits to the build output in the patchbook.\n`);
