@@ -13445,3 +13445,130 @@ describe("PendingIntentTest", () => {
     });
   });
 });
+
+describe("RecordRollbackTest", () => {
+  const hookCommit = (t: ForkCase, env: Record<string, string> = {}) => {
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    return sh(["git", "commit", "-qm", "edit"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", ...env }, check: false });
+  };
+
+  /** Each path under `.patchbook` with its mode and a hash of its bytes, so a test sees any write, however small. */
+  const book = (t: ForkCase): string[] => {
+    const root = join(t.fork.path, ".patchbook");
+    const found: string[] = [];
+    const walk = (dir: string): void => {
+      for (const name of readdirSync(dir).sort()) {
+        const path = join(dir, name);
+        const stat = lstatSync(path);
+        const mode = (stat.mode & 0o7777).toString(8);
+        if (stat.isDirectory()) {
+          found.push(`${relative(root, path)}/ ${mode}`);
+          walk(path);
+        } else found.push(`${relative(root, path)} ${mode} ${new Bun.CryptoHasher("sha256").update(readFileSync(path)).digest("hex")}`);
+      }
+    };
+    walk(root);
+    return found;
+  };
+
+  const changeFile = (t: ForkCase, name: string): string => join(t.fork.path, ".patchbook/changes", name, "CHANGE.md");
+
+  const shouted = (t: ForkCase): void => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "shout", "--intent", "Shout the second line."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("shout");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE"));
+  };
+
+  const readOnly = (path: string, body: () => void): void => {
+    chmodSync(path, 0o444);
+    try {
+      body();
+    } finally {
+      chmodSync(path, 0o644);
+    }
+  };
+
+  forkTest("test_record_retried_after_a_failed_change_write_keeps_the_new_intent", (t) => {
+    if (process.getuid?.() === 0) return;
+    shouted(t);
+    readOnly(changeFile(t, "shout"), () => {
+      t.pb(["record", "shout", "--intent", "New intent."], { cwd: t.fork.path, code: 1 });
+    });
+    const retry = t.pb(["record", "shout", "--intent", "New intent."], { cwd: t.fork.path });
+    expect(retry.stdout).toBe("file     app.txt\n");
+    expect(read(changeFile(t, "shout"))).toContain("intent: New intent.");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_leaves_the_patchbook_as_it_was_when_a_change_write_fails", (t) => {
+    if (process.getuid?.() === 0) return;
+    shouted(t);
+    const before = book(t);
+    readOnly(changeFile(t, "shout"), () => {
+      t.pb(["record", "shout", "--intent", "New intent."], { cwd: t.fork.path, code: 1 });
+      expect(book(t)).toEqual(before.map((line) => (line.startsWith("changes/shout/CHANGE.md ") ? line.replace(" 644 ", " 444 ") : line)));
+    });
+  });
+
+  forkTest("test_hook_leaves_the_patchbook_as_it_was_when_a_change_write_fails_and_records_on_the_retry", (t) => {
+    if (process.getuid?.() === 0) return;
+    shouted(t);
+    const before = book(t);
+    readOnly(changeFile(t, "shout"), () => {
+      const failed = hookCommit(t);
+      expect(failed.code).not.toBe(0);
+      expect(failed.stdout).not.toContain("app.txt");
+      expect(book(t)).toEqual(before.map((line) => (line.startsWith("changes/shout/CHANGE.md ") ? line.replace(" 644 ", " 444 ") : line)));
+    });
+    const retried = hookCommit(t);
+    expect(retried.code).toBe(0);
+    expect(retried.stdout).toContain("file     app.txt (in shout)");
+    expect(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.fork.path }).stdout).toContain(".patchbook/changes/shout/ours/app.txt.pb");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_leaves_the_patchbook_as_it_was_when_the_series_cannot_be_written", (t) => {
+    if (process.getuid?.() === 0) return;
+    t.fork.write("extra.txt", "ours\n");
+    const series = join(t.fork.path, ".patchbook/series");
+    const before = book(t);
+    readOnly(series, () => {
+      t.pb(["record", "extra", "--intent", "Add extra."], { cwd: t.fork.path, code: 1 });
+      expect(book(t)).toEqual(before.map((line) => (line.startsWith("series ") ? line.replace(" 644 ", " 444 ") : line)));
+    });
+    const retry = t.pb(["record", "extra", "--intent", "Add extra."], { cwd: t.fork.path });
+    expect(retry.stdout).toBe("add      extra.txt\n");
+    expect(read(series)).toBe("extra\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_leaves_the_patchbook_as_it_was_when_the_build_lock_cannot_be_written", (t) => {
+    if (process.getuid?.() === 0) return;
+    shouted(t);
+    const before = book(t);
+    const lock = join(t.fork.path, ".patchbook/build.lock");
+    readOnly(lock, () => {
+      t.pb(["record", "shout", "--intent", "New intent."], { cwd: t.fork.path, code: 1 });
+      expect(book(t)).toEqual(before.map((line) => (line.startsWith("build.lock ") ? line.replace(" 644 ", " 444 ") : line)));
+    });
+    t.pb(["record", "shout", "--intent", "New intent."], { cwd: t.fork.path });
+    expect(read(changeFile(t, "shout"))).toContain("intent: New intent.");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_that_fails_prints_no_note_of_what_it_saved", (t) => {
+    if (process.getuid?.() === 0) return;
+    shouted(t);
+    t.fork.write("extra.txt", "ours\n");
+    readOnly(changeFile(t, "shout"), () => {
+      const failed = t.pb(["record", "shout", "--intent", "New intent."], { cwd: t.fork.path, code: 1 });
+      expect(failed.stdout).toBe("");
+    });
+    readOnly(join(t.fork.path, ".patchbook/build.lock"), () => {
+      const failed = t.pb(["record", "shout", "--intent", "New intent."], { cwd: t.fork.path, code: 1 });
+      expect(failed.stdout).toBe("");
+    });
+  });
+});
