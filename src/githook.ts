@@ -788,7 +788,8 @@ async function runHook(undo: Undo) {
     a = recorded.after ?? assemble(book);
   }
   let built: string[] = [];
-  const left = stagedEdits(a.out);
+  const lostDeletes = Array.from(sinceHead).filter(([p, c]) => c.staged === null && a.dropped.has(p)).map(([p]) => p);
+  const left = [...new Set([...stagedEdits(a.out), ...lostDeletes])].sort(byCodePoint);
   if (left.length) {
     throw new Fail("couldn't record these hand edits:\n  " + left.join("\n  ")
       + (a.problems.length ? "\nThe patchbook has problems, which may be why; `patchbook status` lists them." : "")
