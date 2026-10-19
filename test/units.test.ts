@@ -14,7 +14,7 @@ process.env["XDG_CONFIG_HOME"] = join(sandbox, "config");
 const { applyStructure } = await import("../src/assemble.ts");
 const { blockSpans, formatEntry, nearest, readEntries } = await import("../src/blocks.ts");
 const { Book, globRe } = await import("../src/book.ts");
-const { Change, parseChange } = await import("../src/changes.ts");
+const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
 const { intentSettings, pendingDiff, PROVIDERS, writeIntent } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
 const { setToml, USER_CONFIG } = await import("../src/settings.ts");
@@ -654,10 +654,12 @@ describe("parseChange", () => {
     return { edits: change.edits, held: change.held, refused };
   };
 
-  test("never trims a path: spaces and a BOM at either end of a path are part of it", () => {
+  const KINDS = ["file", "add", "replace", "delete"] as const;
+
+  test("reads a quoted path with nothing cut at either end", () => {
     const edits = [
-      "- file  lead", "- file trail ", "- add \uFEFFbom-lead", "- delete bom-trail\uFEFF",
-      "- replace a/ b /c", "- move  from\uFEFF ->  to ", "- copy from\uFEFF -> \uFEFFto\uFEFF",
+      '- file " lead"', '- file "trail "', '- add "\uFEFFbom-lead"', '- delete "bom-trail\uFEFF"',
+      '- replace "a/ b /c"', '- move " from\uFEFF " -> " to "', '- copy "from -> x" -> "\uFEFFto\uFEFF"',
     ];
     expect(parse(edits).edits).toEqual([
       { kind: "file", path: " lead" },
@@ -665,16 +667,124 @@ describe("parseChange", () => {
       { kind: "add", path: "\uFEFFbom-lead" },
       { kind: "delete", path: "bom-trail\uFEFF" },
       { kind: "replace", path: "a/ b /c" },
-      { kind: "move", path: " from\uFEFF", dest: " to " },
-      { kind: "copy", path: "from\uFEFF", dest: "\uFEFFto\uFEFF" },
+      { kind: "move", path: " from\uFEFF ", dest: " to " },
+      { kind: "copy", path: "from -> x", dest: "\uFEFFto\uFEFF" },
     ]);
   });
 
-  test("holds an unsafe path as written, edges included", () => {
-    const got = parse(["- file ../up "]);
+  test("reads a bare path as written, so a space inside it or a quote or backslash that does not start it is part of it", () => {
+    expect(parse(["- add a b/c d", '- add a"b', "- delete a\\b", "- move a -> b -> c"]).edits).toEqual([
+      { kind: "add", path: "a b/c d" },
+      { kind: "add", path: 'a"b' },
+      { kind: "delete", path: "a\\b" },
+      { kind: "move", path: "a", dest: "b -> c" },
+    ]);
+  });
+
+  test("refuses a bare path that starts or ends with whitespace, for every kind, naming the file, the line and the quoted form", () => {
+    for (const ws of [" ", "\t", "\uFEFF", "\u00A0", "\u3000"]) {
+      for (const kind of KINDS) {
+        const quoted = editText({ kind: "add", path: `a${ws}` }).slice("add ".length);
+        expect(() => parse([`- ${kind} a${ws}`])).toThrow(`CHANGE.md:6: the path ${JSON.stringify(`a${ws}`)} starts or ends with whitespace; write it in double quotes: ${quoted}`);
+        expect(() => parse([`- ${kind} ${ws}a`])).toThrow("CHANGE.md:6: the path ");
+      }
+      for (const kind of ["move", "copy"] as const) {
+        expect(() => parse([`- ${kind} a${ws} -> b`])).toThrow("starts or ends with whitespace");
+        expect(() => parse([`- ${kind} a -> b${ws}`])).toThrow("starts or ends with whitespace");
+        expect(() => parse([`- ${kind} a -> ${ws}b`])).toThrow("starts or ends with whitespace");
+      }
+    }
+  });
+
+  test("a move destination with a trailing space is refused, not built under the name with the space", () => {
+    expect(() => parse(["- move a.txt -> moved.txt "])).toThrow('CHANGE.md:6: the path "moved.txt " starts or ends with whitespace; write it in double quotes: "moved.txt "');
+    expect(() => parse(["- copy a.txt -> copied.txt "])).toThrow("CHANGE.md:6: the path");
+  });
+
+  test("a line number counts from the top of the file", () => {
+    expect(() => parse(["- file a", "- add b ", "- file c"])).toThrow("CHANGE.md:7: ");
+  });
+
+  test.each([
+    ["is not closed", '- add "a'],
+    ["has text after the closing quote", '- add "a" b'],
+    ["has an escape that is not one", '- add "a\\qb"'],
+    ["has an octal escape of fewer than three digits", '- add "a\\39b"'],
+    ["has an octal escape above 377", '- add "a\\400b"'],
+    ["has octal escapes that are not UTF-8", '- add "\\377"'],
+    ["has a NUL", '- add "a\\000b"'],
+    ["has a destination that is not closed", '- move a -> "b'],
+    ["has text after the destination", '- move a -> "b" c'],
+    ["has a source with text after it", '- move "a" b -> c'],
+  ])("refuses a quoted path that %s", (_why, line) => {
+    expect(() => parse([line])).toThrow(/CHANGE\.md:6: .*quoted path.*malformed.*\\" \\\\ \\t \\n/);
+  });
+
+  test("only move and copy take an arrow, quoted or not", () => {
+    expect(() => parse(['- add "a" -> b'])).toThrow("only move and copy take");
+    expect(() => parse(["- add a -> b"])).toThrow("only move and copy take");
+    expect(() => parse(['- move "a"'])).toThrow("only move and copy take");
+  });
+
+  test("writes a path bare unless it needs quotes", () => {
+    for (const path of ["a.txt", "a b/c d", "a-b", "dir/sub dir/file.txt", "é/日本", "a>b", "a->b", "a ->b", "a- >b", "a'b"]) {
+      expect(editText({ kind: "add", path })).toBe(`add ${path}`);
+    }
+  });
+
+  test.each([
+    [" lead", '" lead"'],
+    ["trail ", '"trail "'],
+    ["\uFEFFx", '"\uFEFFx"'],
+    ["x\uFEFF", '"x\uFEFF"'],
+    ["\u00A0x", '"\u00A0x"'],
+    ["a -> b", '"a -> b"'],
+    ['a"b', '"a\\"b"'],
+    ["a\\b", '"a\\\\b"'],
+    ["a\tb", '"a\\tb"'],
+    ["a\nb", '"a\\nb"'],
+    ["a\rb", '"a\\015b"'],
+    ["a\x01b", '"a\\001b"'],
+    ["a\x7fb", '"a\\177b"'],
+    ["a\u0085b", '"a\\302\\205b"'],
+    ['"', '"\\""'],
+  ])("writes %j in double quotes", (path, written) => {
+    expect(editText({ kind: "add", path })).toBe(`add ${written}`);
+    expect(parse([`- add ${written}`]).edits).toEqual([{ kind: "add", path }]);
+  });
+
+  test("a move or copy writes each side by itself and reads it back", () => {
+    for (const kind of ["move", "copy"] as const) {
+      const edit = { kind, path: " from -> x", dest: 'to"\\\n ' };
+      expect(editText(edit)).toBe(`${kind} " from -> x" -> "to\\"\\\\\\n "`);
+      expect(parse([`- ${editText(edit)}`]).edits).toEqual([edit]);
+      expect(editText({ kind, path: "a", dest: "b c" })).toBe(`${kind} a -> b c`);
+    }
+  });
+
+  test("reads the escapes git writes for a path", () => {
+    const escapes = '- add "\\a\\b\\f\\n\\r\\t\\v\\"\\\\ \\357\\273\\277 \\303\\251"';
+    expect(parse([escapes]).edits).toEqual([{ kind: "add", path: '\x07\b\f\n\r\t\v"\\ \uFEFF é' }]);
+  });
+
+  test("what formatChange writes for any path parses back to the same edits", () => {
+    const paths = [" lead", "trail ", "\uFEFFx", "x\uFEFF", "a -> b", 'q"q', "back\\slash", "t\tab", "new\nline", "ctl\x01\x1f\x7f", "plain", "in side"];
+    const dir = scratch();
+    const change = new Change("edits", join(dir, "edits"), "Try paths.");
+    change.edits = paths.flatMap((path) => [
+      { kind: "add" as const, path },
+      { kind: "move" as const, path, dest: `${path}2` },
+      { kind: "copy" as const, path: `1${path}`, dest: path },
+    ]);
+    const file = put(join(dir, "edits", "CHANGE.md"), formatChange(change));
+    expect(parseChange(file, () => {}).edits).toEqual(change.edits);
+  });
+
+  test("holds an unsafe path as written", () => {
+    const got = parse(['- file "../up "', "- add ../x"]);
     expect(got.edits).toEqual([]);
-    expect(got.held).toEqual(["- file ../up "]);
-    expect(got.refused.map(([edit]) => edit)).toEqual(["file ../up "]);
+    expect(got.held).toEqual(['- file "../up "', "- add ../x"]);
+    expect(got.refused.map(([edit]) => edit)).toEqual(['file "../up "', "add ../x"]);
   });
 
   test("an edit line starts in the first column, so an indented one is refused", () => {

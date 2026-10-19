@@ -7511,20 +7511,36 @@ describe("VendorTest", () => {
     expect(read(join(t.tmp, "prompt.txt"))).toContain("@@ -1 +1 @@\n-Then wave.\n+Then\fwave\u2028twice.\n");
   });
 
-  forkTest("test_record_lists_and_records_a_file_under_its_real_name_when_the_name_starts_or_ends_with_a_space_or_a_bom", (t) => {
-    const names = [" lead.txt", "trail.txt ", "\uFEFFbom-lead.txt", "bom-trail.txt\uFEFF"];
+  forkTest("test_record_writes_a_quoted_edit_line_for_a_name_that_starts_or_ends_with_whitespace_or_holds_an_arrow", (t) => {
+    const names = [" lead.txt", "trail.txt ", "\uFEFFbom-lead.txt", "bom-trail.txt\uFEFF", "arrow -> name.txt"];
     for (const name of names) t.fork.write(name, `${JSON.stringify(name)}\n`);
-    const out = t.pb(["record", "names", "--intent", "Add files whose names start and end with whitespace."], { cwd: t.fork.path }).stdout;
-    const change = read(join(t.fork.path, ".patchbook/changes/names/CHANGE.md"));
+    const out = t.pb(["record", "names", "--intent", "Add files whose names need quoting."], { cwd: t.fork.path }).stdout;
+    const file = join(t.fork.path, ".patchbook/changes/names/CHANGE.md");
+    const change = read(file);
     for (const name of names) {
       expect(out).toContain(`${"add".padEnd(9)}${name}\n`);
-      expect(change).toContain(`\n- add ${name}\n`);
+      expect(change).toContain(`\n- add "${name}"\n`);
     }
     t.pb(["build"], { cwd: t.fork.path });
     expect(read(join(t.fork.path, ".patchbook/build.lock")).split("\n").filter(Boolean).map((l) => l.slice(41))).toEqual(expect.arrayContaining(names));
     for (const name of names) rmSync(join(t.fork.path, name));
     t.pb(["build", "--force"], { cwd: t.fork.path });
     for (const name of names) expect(read(join(t.fork.path, name))).toBe(`${JSON.stringify(name)}\n`);
+  });
+
+  forkTest("test_a_hand_written_edit_line_with_whitespace_at_the_end_of_a_path_is_refused_and_a_quoted_one_builds", (t) => {
+    const dir = join(t.fork.path, ".patchbook/changes/hand");
+    const file = join(dir, "CHANGE.md");
+    mkdirNew(dir);
+    writeFileSync(join(t.fork.path, ".patchbook/series"), "hand\n");
+    writeFileSync(file, "# hand\n\nintent: Move the guide.\n\nedits:\n- move docs/guide.md -> moved.txt \n");
+    const refused = t.pb(["build"], { cwd: t.fork.path, code: 1 });
+    expect(refused.stderr).toContain(`${file}:6: the path "moved.txt " starts or ends with whitespace; write it in double quotes: "moved.txt "`);
+    expect(existsSync(join(t.fork.path, "moved.txt "))).toBe(false);
+    writeFileSync(file, '# hand\n\nintent: Move the guide.\n\nedits:\n- move docs/guide.md -> "moved.txt "\n');
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(read(join(t.fork.path, "moved.txt "))).toBe("a guide\n");
+    expect(existsSync(join(t.fork.path, "moved.txt"))).toBe(false);
   });
 
   vendorTest("test_record_skips_a_paragraph_edit_whose_entry_uses_a_placeholder_that_is_empty", (t) => {
