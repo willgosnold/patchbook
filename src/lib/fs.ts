@@ -24,12 +24,35 @@ const GIT_MODES = new Map<string, Mode>([["100644", 0o644], ["100755", 0o755], [
 
 export const gitMode = (mode: Mode): string => Array.from(GIT_MODES).find(([, m]) => m === mode)![0];
 /** Whether a change's ours copy has a mode of its own, one that differs from its base copy's. */
-export const setsMode = (ours: File, base: File, tracksExecBit = true): boolean => !sameMode(ours.mode, base.mode, tracksExecBit);
+export const setsMode = (ours: File, base: File): boolean => ours.mode !== base.mode;
 
 /** The mode an output gets from a change's copy. It follows upstream's until the copy sets one of its own, which a base copy at upstream's mode marks. */
-export const outputMode = (ours: File, base: File | null, up: File | undefined, tracksExecBit = true): Mode =>
-  up === undefined || (base !== null && setsMode(ours, base, tracksExecBit)) ? ours.mode : up.mode;
+export const outputMode = (ours: File, base: File | null, up: File | undefined): Mode =>
+  up === undefined || (base !== null && setsMode(ours, base)) ? ours.mode : up.mode;
 export const parseGitMode = (name: string): Mode | undefined => GIT_MODES.get(name);
+
+/** A file of the output as a commit would take it. `chosen` says whether its exec bit is the user's: always under
+ * core.fileMode=true; under false, only when the index holds a mode `git add` alone wouldn't give (HEAD's, or 644 for a
+ * new path). An unchosen bit says nothing about the mode the user wants, so it stands for the build's. */
+export type Seen = File & { readonly chosen: boolean };
+
+/** The mode the user means an output to have once `now` is recorded: `now`'s own when its bit was chosen, else the
+ * build's. A link, or a change between a link and a file, is always meant. */
+export const meantMode = (now: Seen, built: Mode | undefined): Mode =>
+  now.chosen || built === undefined || now.mode === LINK || built === LINK ? now.mode : built;
+
+/** A change's copies of one output, by mode. null for a copy the change doesn't have. */
+export type CopyModes = { ours: Mode | null; base: Mode | null };
+
+/** The copy modes a recording of `now` leaves, given the build's mode, upstream's mode and the copies the change had.
+ * outputMode at the returned modes, over upstream's, is meantMode(now, built). A copy the build already turns into the
+ * meant mode is left as it is, so a copy that follows upstream keeps following it. */
+export function recordedModes(now: Seen, built: Mode | undefined, up: Mode | undefined, had: CopyModes): { ours: Mode; base: Mode | null } {
+  const meant = meantMode(now, built);
+  if (had.ours !== null && meant === built) return { ours: had.ours, base: had.base };
+  if (up === undefined || meant === LINK || up === LINK) return { ours: meant, base: had.base };
+  return { ours: meant, base: had.base !== null || meant !== up ? up : null };
+}
 
 export function isMode(mode: unknown): mode is Mode {
   return mode === 0o644 || mode === 0o755 || mode === LINK;

@@ -145,7 +145,7 @@ function installed(book: Book, p: string): boolean {
 const recorded = (book: Book) => readChanges(book, []).some((c) => c.name === CHANGE);
 
 /** The skill files on disk that no change records yet. Unlike `changed`, this counts files an earlier run already wrote. */
-export const unrecordedSkill = (book: Book): string[] => handEdits(book, assemble(book).out, book.currentOutput()).filter(ownsSkill);
+export const unrecordedSkill = (book: Book): string[] => handEdits(book, assemble(book).out, book.seen("disk")).filter(ownsSkill);
 
 /** The unrecorded skill files that no commit holds, which an earlier `init` that stopped early left behind. */
 export const leftBehindSkill = (book: Book): string[] =>

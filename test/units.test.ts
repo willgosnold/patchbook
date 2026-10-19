@@ -15,12 +15,14 @@ const { Book, globRe } = await import("../src/book.ts");
 const { Change } = await import("../src/changes.ts");
 const { intentSettings, PROVIDERS } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
+const { meantMode, outputMode, recordedModes } = await import("../src/lib/fs.ts");
 const { setToml, USER_CONFIG } = await import("../src/settings.ts");
 
 type Entry = ReturnType<typeof readEntries> extends Map<string, infer E> ? E : never;
 type Source = ReturnType<typeof applyStructure> extends Map<string, infer S> ? S : never;
 type Opened = Awaited<ReturnType<typeof Book.open>>;
 type Layers = NonNullable<Parameters<typeof intentSettings>[2]>;
+type Mode = ReturnType<typeof meantMode>;
 
 if (ambientConfigHome === undefined) delete process.env["XDG_CONFIG_HOME"];
 else process.env["XDG_CONFIG_HOME"] = ambientConfigHome;
@@ -590,5 +592,31 @@ describe.skipIf(!inSandbox)("intentSettings", () => {
     process.env["PATCHBOOK_PROVIDER"] = "claude";
     const book = await project("[intent]\nmodel = 3\n");
     expect(() => intentSettings(book, true)).toThrow(`intent.model in ${join(book.dir, "config.toml")} can't be 3`);
+  });
+});
+
+describe("recordedModes", () => {
+  const regular: Mode[] = [0o644, 0o755];
+  const file = (mode: Mode) => ({ data: new Uint8Array(), mode });
+  const worlds = regular.flatMap((now) => [true, false].flatMap((chosen) => [...regular, undefined].flatMap((up) =>
+    ([null, ...regular] as (Mode | null)[]).flatMap((ours) => ([null, ...regular] as (Mode | null)[]).flatMap((base) => {
+      if (ours === null && base !== null) return [];
+      const built = ours === null ? up : outputMode(file(ours), base === null ? null : file(base), up === undefined ? undefined : file(up));
+      return [{ now: { ...file(now), chosen }, built, up, had: { ours, base } }];
+    })))));
+
+  test("the recorded copies build the meant mode", () => {
+    for (const w of worlds) {
+      const { ours, base } = recordedModes(w.now, w.built, w.up, w.had);
+      const builds = outputMode(file(ours), base === null ? null : file(base), w.up === undefined ? undefined : file(w.up));
+      expect({ ...w, builds }).toEqual({ ...w, builds: meantMode(w.now, w.built) });
+    }
+  });
+
+  test("a bit that isn't the user's leaves the copies as they were", () => {
+    for (const w of worlds.filter((w) => !w.now.chosen && w.had.ours !== null)) {
+      const left: { ours: Mode | null; base: Mode | null } = recordedModes(w.now, w.built, w.up, w.had);
+      expect({ ...w, left }).toEqual({ ...w, left: w.had });
+    }
   });
 });

@@ -5,7 +5,10 @@ import { pathToFileURL } from "node:url";
 import type { Hooks, Problem } from "./api.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, GITLINK, isDir, isMode, isSymlink, lexists, mkdirs, type Mode, normMode, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
+import {
+  exists, type File, GITLINK, isDir, isMode, isSymlink, lexists, LINK, mkdirs, type Mode, normMode, parseGitMode, pjoin, readDisk, readText, relative, resolve,
+  type Seen, writeText,
+} from "./lib/fs.ts";
 import { dumps, loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
 import { length, type PyValue, sortedBy, strRepr } from "./lib/py.ts";
@@ -154,6 +157,8 @@ export type Check = { files: RegExp[]; exclude: RegExp[]; pattern: RegExp };
 export type Placeholder = { file: string | null; format: string };
 export type Reserved = { place: string; refuse: boolean };
 export type Layout = { kind: "fork" } | { kind: "folder"; from: string; dir: string };
+/** Where the output is read from: the index the commit hook sees, or the working tree as `git add -A` would stage it. */
+export type OutputSource = "index" | "disk";
 
 /** How `path` spells the repo root: its outermost ancestor that resolves into the repo, or null when that one is a link into a folder of the repo. */
 function repoAsSpelled(realRoot: string, path: string): string | null {
@@ -624,6 +629,33 @@ export class Book {
       out.set(key, readDisk(p));
     }
     return out;
+  }
+
+  /** The output from `source`, each file marked with whether its exec bit is the user's. Under core.fileMode=false a
+   * disk read takes the index's mode, which is what `git add -A` stages. */
+  seen(source: OutputSource): Map<string, Seen> {
+    const files = source === "index" ? this.stagedOutput() : this.currentOutput();
+    if (this.tracksExecBit()) return new Map(Array.from(files, ([p, f]) => [p, { ...f, chosen: true }]));
+    const index = source === "index" ? new Map(Array.from(files, ([p, f]) => [p, f.mode])) : this.indexModes();
+    const since = this.stagedChanges();
+    const regular = (mode: Mode | null | undefined) => (mode === 0o644 || mode === 0o755 ? mode : undefined);
+    return new Map(Array.from(files, ([p, f]) => {
+      const c = since.get(p);
+      const chosen = c !== undefined && regular(c.staged) !== undefined && c.staged !== (regular(c.head) ?? 0o644);
+      return [p, { data: f.data, mode: f.mode === LINK ? LINK : regular(index.get(p)) ?? 0o644, chosen }];
+    }));
+  }
+
+  private indexModes(): Map<string, Mode> {
+    const root = this.outputRoot();
+    const rel = root !== this.root ? relative(this.root, root) : "";
+    const modes = new Map<string, Mode>();
+    for (const entry of decode(run(["git", "--literal-pathspecs", "ls-files", "-s", "-z", ...(rel ? ["--", rel] : [])], { cwd: this.root })).split("\0")) {
+      const tab = entry.indexOf("\t");
+      const mode = parseGitMode(entry.slice(0, tab).split(" ")[0]!);
+      if (tab > 0 && mode !== undefined) modes.set(rel ? entry.slice(tab + rel.length + 2) : entry.slice(tab + 1), mode);
+    }
+    return modes;
   }
 
   /** The output a commit takes: the index as `write-tree` sees it, so paths only marked with `git add -N` are left out. */

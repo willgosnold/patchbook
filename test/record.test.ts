@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Source } from "../src/assemble.ts";
 import { Change, type Edit } from "../src/changes.ts";
-import type { File } from "../src/lib/fs.ts";
+import type { File, Seen } from "../src/lib/fs.ts";
 import { encode } from "../src/lib/text.ts";
 import { classify, type Edited, needOf, type Snapshot } from "../src/record.ts";
 
@@ -57,9 +57,10 @@ const cases: [path: string, built: string | null, disk: string | null, source: S
   ["unplanned.md", "up", "edited", up("skills/unplanned.md"), { kind: "skip", reason: "no plan" }, false],
 ];
 const pick = (i: 1 | 2) => new Map(cases.flatMap((c) => (c[i] === null ? [] : [[c[0], f(c[i])] as const])));
+const seen = (files: Map<string, File>): Map<string, Seen> => new Map(Array.from(files, ([p, file]) => [p, { ...file, chosen: true }]));
 const world: Snapshot = {
   out: pick(1),
-  current: pick(2),
+  current: seen(pick(2)),
   sources: new Map(cases.flatMap(([p, , , s]) => (s ? [[p, s] as const] : []))),
   upstream: new Map(cases.flatMap(([, , , s]) => (s?.kind === "up" ? [[s.path, f("upstream")] as const] : []))),
   changes: new Map([added, replaced, edited, moved, templated, owner, ownerTpl, goish].map((c) => [c.name, c])),
@@ -67,7 +68,6 @@ const world: Snapshot = {
   blocks: new Set(["skills/dropped.md", "skills/gone-para.md", "skills/para.md", "skills/para-new.md", "skills/unplanned.md"]),
   entriesAt: (rel) => `blocks/${rel}.entries`,
   prefix: "skills/",
-  tracksExecBit: true,
   uses: (copy) => copy !== null && new TextDecoder().decode(copy).includes("{{snippet:"),
   plan: (rel) => plans.get(rel) ?? "no plan",
 };
@@ -86,21 +86,21 @@ test("an owned file edit goes to the very change that owns it", () => {
 });
 
 test("a paragraph edit needs an intent only for its new entries that have none", () => {
-  const w = { ...world, out: new Map([["para-new.md", f("up")]]), current: new Map([["para-new.md", f("edited")]]),
+  const w = { ...world, out: new Map([["para-new.md", f("up")]]), current: seen(new Map([["para-new.md", f("edited")]])),
     sources: new Map([["para-new.md", up("skills/para-new.md")]]) };
   expect(needOf(one(w, "para-new.md"))).toEqual({ named: false, drafts: [fresh] });
   expect(needOf(one(world, "para.md"))).toEqual({ named: false, drafts: [] });
 });
 
 test("a path built from nothing throws while classifying", () => {
-  const w = { ...world, out: new Map([["ghost.md", f("x")]]), current: new Map([["ghost.md", f("y")]]) };
+  const w = { ...world, out: new Map([["ghost.md", f("x")]]), current: seen(new Map([["ghost.md", f("y")]])) };
   expect(() => one(w, "ghost.md")).toThrow("ghost.md is built from nothing");
 });
 
 const twins = (sources: [string, Source][], edits: Record<string, string | null>): Snapshot => ({
   ...world,
   out: new Map(sources.map(([p]) => [p, f("built")])),
-  current: new Map(Object.entries(edits).flatMap(([p, t]) => (t === null ? [] : [[p, f(t)] as const]))),
+  current: seen(new Map(Object.entries(edits).flatMap(([p, t]) => (t === null ? [] : [[p, f(t)] as const])))),
   sources: new Map(sources),
 });
 
@@ -135,7 +135,7 @@ test("outputs built from one upstream file are all skipped when more than one is
 
 test("a mode change to a file with block entries names the file as a string literal", () => {
   const path = 'para"x.md';
-  const w = { ...world, out: new Map([[path, f("up")]]), current: new Map([[path, { ...f("up"), mode: 0o755 as const }]]),
+  const w = { ...world, out: new Map([[path, f("up")]]), current: seen(new Map([[path, { ...f("up"), mode: 0o755 as const }]])),
     sources: new Map([[path, up("skills/para.md")]]) };
   expect(one(w, path)).toMatchObject({ kind: "skip", reason: expect.stringContaining('out.get("para\\"x.md")!.mode = 0o755;') });
 });
