@@ -3008,6 +3008,9 @@ const CREDENTIAL_URLS: readonly (readonly [string, string, string, string])[] = 
   ["a_token_as_the_user_name", "https://s3cretpw@host.invalid/team/up", "https://host.invalid/team/up", "s3cretpw"],
   ["an_ssh_password", "ssh://git:s3cretpw@host.invalid/team/up", "ssh://git@host.invalid/team/up", "s3cretpw"],
   ["a_token_as_the_user_name_of_a_git_plus_https_url", "git+https://s3cretpw@host.invalid/team/up", "git+https://host.invalid/team/up", "s3cretpw"],
+  ["an_ssh_password_with_an_encoded_colon", "ssh://u%3ASEKRIT@127.0.0.1:1/team/up", "ssh://u@127.0.0.1:1/team/up", "SEKRIT"],
+  ["an_ssh_password_with_a_lower_case_encoded_colon", "ssh://u%3aSEKRIT@127.0.0.1:1/team/up", "ssh://u@127.0.0.1:1/team/up", "SEKRIT"],
+  ["a_git_plus_ssh_password_with_an_encoded_colon", "git+ssh://u%3ASEKRIT@127.0.0.1:1/team/up", "git+ssh://u@127.0.0.1:1/team/up", "SEKRIT"],
   ...([["a_no_break_space", "\u00a0"], ["a_space", " "], ["a_tab", "\t"], ["a_newline", "\n"]] as const).map(
     ([name, blank]) => [`a_password_with_${name}`, `https://user:SEKRITa${blank}SEKRITb@host.invalid/team/up`, "https://host.invalid/team/up", "SEKRIT"] as const,
   ),
@@ -3101,6 +3104,26 @@ test("test_init_and_track_still_take_an_ssh_url_with_only_a_user_name", () => {
     repo.commit("start a patchbook");
     t.pb(["track", "extra", `ssh://git@fake${extra.path}`], { cwd: repo.path });
     expect(repo.read(".patchbook/config.toml")).toContain(`remote = "ssh://git@fake${extra.path}"`);
+  } finally {
+    delete process.env["GIT_SSH_COMMAND"];
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_init_and_track_still_take_an_ssh_url_whose_user_name_has_an_encoded_character_and_no_colon", () => {
+  const t = new Case();
+  try {
+    fakeSsh(t);
+    const { up, repo } = startingRepo(t, "fork");
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("lib.txt", "lib\n");
+    extra.commit("start");
+    const given = `ssh://g%69t@fake${up.path}`;
+    t.pb(["init", "--upstream", given], { cwd: repo.path });
+    expect(repo.read(".patchbook/config.toml")).toContain(`remote = "${given}"`);
+    repo.commit("start a patchbook");
+    t.pb(["track", "extra", `ssh://g%69t@fake${extra.path}`], { cwd: repo.path });
+    expect(repo.read(".patchbook/config.toml")).toContain(`remote = "ssh://g%69t@fake${extra.path}"`);
   } finally {
     delete process.env["GIT_SSH_COMMAND"];
     t.cleanup();
