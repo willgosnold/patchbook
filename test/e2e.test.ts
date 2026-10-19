@@ -10482,6 +10482,72 @@ exec '${Bun.which("git")}' "$@"
     expect(tree(t.repo.path)).toEqual(before);
   });
 
+  for (const [what, moves] of [["moved_pin", true], ["unchanged_upstream", false]] as const) {
+    vendorTest(`test_sync_with_a_${what}_refuses_a_vendor_path_that_is_a_file_of_yours_and_keeps_it`, (t) => {
+      const extra = extraAt(t);
+      t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+      if (moves) {
+        extra.write("b.md", "b\n");
+        extra.commit("b");
+      }
+      rmSync(join(t.repo.path, "vendor/extra"), { recursive: true });
+      t.repo.write("vendor/extra", "my file\n");
+      const lock = lockOf(t);
+      const before = tree(t.repo.path);
+      const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+      expect(out.stderr).toContain("upstream extra");
+      expect(out.stderr).toContain("vendor/extra");
+      expect(out.stderr).toContain("Nothing was changed.");
+      expect(t.repo.read("vendor/extra")).toBe("my file\n");
+      expect(lockOf(t)).toBe(lock);
+      expect(tree(t.repo.path)).toEqual(before);
+      noJournal(t);
+    });
+  }
+
+  describe.skipIf(!!process.env["PATCHBOOK_CMD"])("killed by a preload, so only from source", () => {
+    const killedSync = (t: VendorCase): Repo => {
+      const extra = extraAt(t);
+      t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+      extra.write("b.md", "b\n");
+      extra.commit("b");
+      const env = { ...t.env, CRASH_BEFORE_WRITE: "/.patchbook/sync-extra/lock" };
+      sh([process.execPath, "--preload", join(import.meta.dir, "crash.ts"), TOOL, "sync", "extra"], { cwd: t.repo.path, env, check: false });
+      expect(existsSync(join(t.repo.path, ".patchbook/sync-extra/old"))).toBe(true);
+      return extra;
+    };
+
+    vendorTest("test_a_sync_after_a_killed_sync_refuses_to_delete_a_file_added_to_the_copy_and_keeps_it", (t) => {
+      killedSync(t);
+      t.repo.write("vendor/extra/mine.md", "my notes\n");
+      const before = tree(t.repo.path);
+      const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+      expect(out.stderr).toContain("vendor/extra/mine.md");
+      expect(out.stderr).toContain("sync-extra");
+      expect(t.repo.read("vendor/extra/mine.md")).toBe("my notes\n");
+      expect(tree(t.repo.path)).toEqual(before);
+      expect(existsSync(join(t.repo.path, ".patchbook/sync-extra/old"))).toBe(true);
+    });
+
+    vendorTest("test_a_sync_after_a_killed_sync_goes_through_once_the_file_is_moved_out", (t) => {
+      killedSync(t);
+      t.repo.write("vendor/extra/mine.md", "my notes\n");
+      t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+      renameSync(join(t.repo.path, "vendor/extra/mine.md"), join(t.repo.path, "mine.md"));
+      t.pb(["sync", "extra"], { cwd: t.repo.path });
+      expect(t.repo.read("vendor/extra/b.md")).toBe("b\n");
+      expect(t.repo.read("mine.md")).toBe("my notes\n");
+      noJournal(t);
+    });
+
+    vendorTest("test_a_sync_after_a_killed_sync_with_nothing_of_yours_in_the_copy_still_finishes", (t) => {
+      killedSync(t);
+      t.pb(["sync", "extra"], { cwd: t.repo.path });
+      expect(t.repo.read("vendor/extra/b.md")).toBe("b\n");
+      noJournal(t);
+    });
+  });
+
   vendorTest("test_a_refusal_names_a_few_files_and_counts_the_rest", (t) => {
     const extra = extraAt(t);
     for (let i = 1; i <= 8; i++) t.repo.write(`vendor/extra/mine${i}.md`, `${i}\n`);
