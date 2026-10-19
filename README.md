@@ -2,7 +2,7 @@
 
 Keep your own version of someone else's repo, with every change written down along with why you made it, so you can keep taking their updates without redoing your work by hand.
 
-A build applies your changes to a pinned upstream commit. When upstream moves, an agent redoes the changes that broke from their intent, and asks you only when it can't decide. See [DESIGN.md](DESIGN.md) for the model.
+A build applies your changes to a pinned upstream commit. When upstream moves, an agent redoes the changes that broke from their intent. It merges on its own only when nothing needed redoing or handling, or your test command passes, and asks you otherwise. See [DESIGN.md](DESIGN.md) for the model.
 
 ## Install
 
@@ -53,7 +53,7 @@ A pre-commit hook moves your edits into the patchbook, rebuilds, and adds both t
 
 The intent matters most. It's how an agent redoes your change later, if upstream rewrites the code underneath it.
 
-**3. Keep up with upstream.** Add a daily T3 scheduled task in the repo with the prompt "Use the patchbook-update skill." Most days nothing has changed and the run tidies up after itself. When upstream moves, it pulls the new version, redoes any change that broke from its intent, tests, reviews its own work, then merges and deploys. It only comes to you when it can't decide.
+**3. Keep up with upstream.** Add a daily T3 scheduled task in the repo with the prompt "Use the patchbook-update skill." Most days nothing has changed and the run tidies up after itself. When upstream moves, it pulls the new version, redoes any change that broke from its intent, tests, and has a second agent review the work. It merges and deploys on its own only when nothing is left broken and either the update needed no repair or other handling, or your test command passes on the result. Otherwise it asks you, opening a pull request when it has commits to push.
 
 To update by hand instead:
 
