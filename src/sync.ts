@@ -365,8 +365,9 @@ function stuck(book: Book, u: Upstream, why: string): Fail {
     lexists(join(j, "old")) && "old/ holds the vendored copy as it was",
     lexists(join(j, "before")) && "before/ holds the files it wrote over as they were",
   ].filter(Boolean);
-  return new Fail(`${relative(book.root, j)} holds a sync of ${u.name} that stopped partway, but ${why}. `
-    + (held.length ? `In it, ${held.join(", and ")}. Put back what you need, then delete the folder.` : "Delete the folder."));
+  const shown = relative(book.root, j);
+  return new Fail(`${shown} holds a sync of ${u.name} that stopped partway, but ${why}. `
+    + (held.length ? `In it, ${held.join(", and ")}. Put back what you need, then delete ${shown}.` : `Delete ${shown}.`));
 }
 
 function release(book: Book, u: Upstream, added: string): void {
