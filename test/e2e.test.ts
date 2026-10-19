@@ -9314,8 +9314,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     t.pb(["build"], { cwd: t.fork.path });
   });
 
-  // A placeholder copy record must skip, and a series line naming no change, which status reports as a problem.
-  const skipWithAProblem = (t: ForkCase): void => {
+  const placeholderCopyAndMissingChange = (t: ForkCase): void => {
     ownedFileEdit(t, "{{snippet:v}}", true);
     t.fork.write(".patchbook/series", t.fork.read(".patchbook/series") + "ghost\n");
     t.fork.commit("a problem");
@@ -9323,7 +9322,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
   };
 
   forkTest("test_hook_refuses_an_edit_it_cant_record_when_the_patchbook_has_a_problem", (t) => {
-    skipWithAProblem(t);
+    placeholderCopyAndMissingChange(t);
     t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("one", "ONE"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     const state = gitState(t);
@@ -9336,7 +9335,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
   });
 
   forkTest("test_hook_still_commits_with_a_problem_when_every_edit_is_recorded", (t) => {
-    skipWithAProblem(t);
+    placeholderCopyAndMissingChange(t);
     const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
     t.fork.write(".patchbook/notes.md", "a note\n");
     sh(["git", "add", ".patchbook/notes.md"], { cwd: t.fork.path });
