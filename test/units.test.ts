@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Problem } from "../src/api.ts";
+import type { Reserved } from "../src/book.ts";
 
 const sandbox = mkdtempSync(join(tmpdir(), "units"));
 const ambientConfigHome = process.env["XDG_CONFIG_HOME"];
@@ -311,13 +312,14 @@ describe("applyStructure", () => {
   const upstream = (...paths: string[]) => new Map(paths.map((p) => [p, { data: bytes(p), mode: 0o644 as const }]));
   const up = (path: string): Source => ({ kind: "up", path });
   const ours = (change: string, path: string): Source => ({ kind: "ours", change, path });
-  const none = (): string | null => null;
+  const none = (): Reserved | null => null;
+  const vendored = (p: string): Reserved | null => (p.startsWith("vendor/") ? { place: "the vendored copy vendor", refuse: false } : null);
   const change = (name: string, edits: ConstructorParameters<typeof Change>[3], withOurs: string[] = []) => {
     const c = new Change(name, scratch(), "intent", edits);
     for (const p of withOurs) c.write("ours", p, bytes(`ours ${p}`));
     return c;
   };
-  const apply = (changes: InstanceType<typeof Change>[], files: ReturnType<typeof upstream>, held: (p: string) => string | null = none) => {
+  const apply = (changes: InstanceType<typeof Change>[], files: ReturnType<typeof upstream>, held: (p: string) => Reserved | null = none) => {
     const problems: Problem[] = [];
     const tree = applyStructure(changes, files, problems, held);
     return { tree: Object.fromEntries([...tree].sort(([a], [b]) => (a < b ? -1 : 1))), problems };
@@ -356,7 +358,7 @@ describe("applyStructure", () => {
     });
 
     test("refuses a path inside a vendored copy", () => {
-      const r = apply([change("c", [{ kind: "add", path: "vendor/x" }], ["vendor/x"])], upstream("a"), (p) => (p.startsWith("vendor/") ? "vendor" : null));
+      const r = apply([change("c", [{ kind: "add", path: "vendor/x" }], ["vendor/x"])], upstream("a"), vendored);
       expect(r.tree).toEqual({ a: up("a") });
       expect(r.problems).toMatchObject([{ problem: "invalid", detail: "vendor/x would be written into the vendored copy vendor" }]);
     });
@@ -416,7 +418,7 @@ describe("applyStructure", () => {
     });
 
     test("refuses to land in a vendored copy", () => {
-      const r = apply([change("c", [{ kind: "move", path: "a", dest: "vendor/a" }])], upstream("a"), (p) => (p.startsWith("vendor/") ? "vendor" : null));
+      const r = apply([change("c", [{ kind: "move", path: "a", dest: "vendor/a" }])], upstream("a"), vendored);
       expect(r.tree).toEqual({ a: up("a") });
       expect(r.problems).toMatchObject([{ problem: "invalid", detail: "vendor/a would be written into the vendored copy vendor" }]);
     });
@@ -483,7 +485,7 @@ describe.skipIf(!inSandbox)("intentSettings", () => {
   const user = (text: string): void => void put(USER_CONFIG, text);
   const project = async (intent = ""): Promise<Opened> => {
     const root = scratch();
-    put(join(root, ".patchbook", "config.toml"), `[[upstream]]\nremote = "x"\nmount = ""\n${intent}`);
+    put(join(root, ".patchbook", "config.toml"), `[[upstream]]\nremote = "https://example.com/x.git"\nmount = ""\n${intent}`);
     return Book.open(root);
   };
   const sources = (book: Opened | null) => {
