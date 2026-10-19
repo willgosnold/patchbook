@@ -11,7 +11,7 @@ import { cmdShow } from "./changes.ts";
 import { cmdHook, commitAdvice, installHook, installHookOrWarn, keepGitHook } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, isSymlink, lexists, readText, resolve, writeText } from "./lib/fs.ts";
-import { git, redact } from "./lib/proc.ts";
+import { git, refuseCredentials } from "./lib/proc.ts";
 import { rstrip, split, strRepr } from "./lib/py.ts";
 import { quoteToml } from "./lib/toml.ts";
 import { cmdIntent, cmdRecord } from "./record.ts";
@@ -52,8 +52,8 @@ function writeConfig(root: string, text: string): void {
 const noHook = () => ({ ...process.env, PATCHBOOK_HOOK: "0" });
 
 async function cmdClone(args: { url: string; dir: string | null; branch: string | null }) {
-  const shown = redact(args.url);
-  const dest = resolve(args.dir || basename(rstrip(shown, "/")).replace(/\.git$/, ""));
+  refuseCredentials(args.url);
+  const dest = resolve(args.dir || basename(rstrip(args.url, "/")).replace(/\.git$/, ""));
   if (exists(dest)) throw new Fail(`${dest} already exists`);
   const clone = ["clone", "--quiet", "--origin", "upstream", ...(args.branch ? ["--branch", args.branch] : [])];
   git([...clone, "--end-of-options", args.url, dest], { cwd: dirname(dest) });
@@ -61,8 +61,8 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   const commit = git(["rev-parse", "HEAD"], { cwd: dest });
   const inherited = lexists(join(dest, PB));
   if (inherited) rmSync(join(dest, PB), { recursive: true, force: true });
-  const name = defaultName(shown, "");
-  const text = configText("fork", upstreamToml(name, shown, "", branch, ""));
+  const name = defaultName(args.url, "");
+  const text = configText("fork", upstreamToml(name, args.url, "", branch, ""));
   await Book.fromText(dest, text);
   writeConfig(dest, text);
   const book = await Book.open(dest);
@@ -74,7 +74,7 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   if (installSkill(book)) await recordSkill(book);
   git(["add", "-A"], { cwd: dest });
   git(["commit", "--quiet", "-m", `Start a patchbook at upstream ${commit.slice(0, 7)}`], { cwd: dest, env: noHook() });
-  process.stdout.write(`cloned ${shown} into ${dest}, pinned at ${commit.slice(0, 7)}.\n`
+  process.stdout.write(`cloned ${args.url} into ${dest}, pinned at ${commit.slice(0, 7)}.\n`
     + (inherited ? `Upstream has a ${PB}/ of its own. It is not part of this fork, so patchbook removed it and builds leave it out.\n` : "")
     + `${commitAdvice(book)}\n`
     + `${SCHEDULE}\n`
@@ -109,13 +109,14 @@ async function allOrNothing(book: Book, write: (undo: Undo) => Promise<void>): P
 async function cmdInit(args: {
   upstream: string; name: string | null; branch: string; path: string; outputTo: string | null; outputFrom: string; vendor: string | null;
 }) {
+  refuseCredentials(args.upstream);
   const root = git(["rev-parse", "--show-toplevel"], { cwd: process.cwd() });
   refuseDanglingLinks(root);
   if (lexists(join(root, PB, "config.toml"))) throw new Fail(`${root} already has a patchbook. To follow another upstream: patchbook track`);
   for (const file of ["series", "retired.md"]) {
     if (lexists(join(root, PB, file))) throw new Fail(`${PB}/${file} already exists. Move it away, or restore ${PB}/config.toml, then run init again.`);
   }
-  const name = args.name || defaultName(redact(args.upstream), args.path);
+  const name = args.name || defaultName(args.upstream, args.path);
   if (args.outputTo !== null) {
     const text = configText("folder", upstreamToml(name, args.upstream, args.path, args.branch, "", args.vendor), [args.outputFrom, args.outputTo]);
     const book = await Book.fromText(root, text);
@@ -135,8 +136,7 @@ async function cmdInit(args: {
   if (args.vendor !== null) {
     throw new Fail("--vendor needs --output-to: the root upstream of a fork builds into the whole repo, so no folder can hold a vendored copy of it. To vendor another upstream, use patchbook track --vendor.");
   }
-  const follows = redact(args.upstream);
-  const text = configText("fork", upstreamToml(name, follows, args.path, args.branch, ""));
+  const text = configText("fork", upstreamToml(name, args.upstream, args.path, args.branch, ""));
   const book = await Book.fromText(root, text);
   notThisRepo(root, args.upstream);
   const hasRemote = split(git(["remote"], { cwd: root })).includes("upstream");
@@ -153,13 +153,14 @@ async function cmdInit(args: {
     await installHook(book, undo);
     if (installed && (installed.changed.length || leftBehindSkill(book).length)) await recordSkill(book);
   });
-  process.stdout.write(`pinned upstream at ${base.slice(0, 7)}, where this repo branched from ${follows}.\n`
+  process.stdout.write(`pinned upstream at ${base.slice(0, 7)}, where this repo branched from ${args.upstream}.\n`
     + "Capture your existing changes with `patchbook record`, then `patchbook build`, stage, and commit.\n" + SCHEDULE + "\n");
   return 0;
 }
 
 /** Follow one more upstream, mounted at its own folder of the staged tree. */
 async function cmdTrack(args: { name: string; url: string; branch: string; path: string; mount: string | null; vendor: string | null }) {
+  refuseCredentials(args.url);
   const book = await Book.find();
   installHookOrWarn(book);
   if (book.upstreams.some((u) => u.name === args.name)) throw new Fail(`already following an upstream called ${args.name}`);

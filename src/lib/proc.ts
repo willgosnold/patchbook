@@ -37,6 +37,14 @@ export function redact(text: string): string {
     WEB_SCHEMES.test(scheme) ? `${scheme}://` : `${scheme}://${userinfo.split(":")[0]}@`);
 }
 
+/** Refuse a URL that `redact` would change, since patchbook records a URL without those credentials and could not fetch from it again. */
+export function refuseCredentials(url: string): void {
+  const shown = redact(url);
+  if (shown !== url) {
+    throw new Fail(`${shown} has credentials that patchbook would not keep. Give git the password through a credential helper instead. See: git help credential`);
+  }
+}
+
 /** Run a command and return its stdout, failing if it exits non-zero. */
 export function run(args: readonly string[], options: SpawnOptions & { check?: boolean } = {}): Uint8Array {
   const result = spawn(args, options);
