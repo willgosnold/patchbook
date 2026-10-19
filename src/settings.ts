@@ -4,7 +4,6 @@ import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { TomlDocument } from "@decimalturn/toml-patch";
 import { Book, NoBook } from "./book.ts";
-import { installHookOrWarn } from "./githook.ts";
 import { intentSettings, PROVIDERS } from "./intent.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, mkdirs, pjoin, readBytes, readText, writeText } from "./lib/fs.ts";
@@ -346,14 +345,6 @@ export async function cmdConfig(args: { name: string | null; value: string | nul
     } catch (e) {
       if (!(e instanceof Fail)) throw e;
       if (!(e instanceof NoBook)) broken = e;
-    }
-  } else {
-    const root = Book.root();
-    try {
-      if (root !== null) installHookOrWarn(root);
-    } catch (e) {
-      if (!(e instanceof Fail)) throw e;
-      process.stderr.write(`patchbook: couldn't install the pre-commit hook: ${e.message}\n`);
     }
   }
   const name = args.name || null;

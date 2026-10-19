@@ -8,7 +8,7 @@ import { cmdBuild, cmdScaffold, cmdStatus, writeBuildLock } from "./assemble.ts"
 import { cmdBlocks } from "./blocks.ts";
 import { Book, noticeLeftOut, PB } from "./book.ts";
 import { cmdShow } from "./changes.ts";
-import { cmdHook, installHook, installHookOrWarn, keepGitHook } from "./githook.ts";
+import { cmdHook, commitAdvice, installHook, installHookOrWarn, keepGitHook } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, lexists, readText, resolve, writeText } from "./lib/fs.ts";
 import { git, redact } from "./lib/proc.ts";
@@ -67,15 +67,15 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   const book = await Book.open(dest);
   book.writeLock(name, commit, git(["rev-parse", "HEAD^{tree}"], { cwd: dest }));
   writeBuildLock(book, book.currentOutput());
-  keepGitHook(dest);
   process.chdir(dest);
+  keepGitHook(book);
   await installHook(book);
   if (installSkill(book)) await recordSkill(book);
   git(["add", "-A"], { cwd: dest });
   git(["commit", "--quiet", "-m", `Start a patchbook at upstream ${commit.slice(0, 7)}`], { cwd: dest, env: noHook() });
   process.stdout.write(`cloned ${shown} into ${dest}, pinned at ${commit.slice(0, 7)}.\n`
     + (inherited ? `Upstream has a ${PB}/ of its own. It is not part of this fork, so patchbook removed it and builds leave it out.\n` : "")
-    + "Make your changes, stage them, and commit: the hook records what you staged in the patchbook and rebuilds.\n"
+    + `${commitAdvice(book)}\n`
     + `${SCHEDULE}\n`
     + `To publish it: gh repo create <name> --private --source ${dest} --push\n`);
   return 0;
@@ -95,7 +95,7 @@ async function cmdInit(args: {
     syncUpstream(book, book.upstreams[0]!, args.branch, []);
     installSkill(book);
     writeConfig(root, text);
-    installHookOrWarn(root);
+    installHookOrWarn(book);
     await installHook(book);
     process.stdout.write(`Next: patchbook build, then stage and commit.\n${SCHEDULE}\n`);
     return 0;
@@ -112,7 +112,7 @@ async function cmdInit(args: {
   if (!hasRemote) git(["remote", "add", "--end-of-options", "upstream", args.upstream], { cwd: root });
   const installed = installSkill(book);
   writeConfig(root, text);
-  installHookOrWarn(root);
+  installHookOrWarn(book);
   await installHook(book);
   if (installed && (installed.changed.length || leftBehindSkill(book).length)) await recordSkill(book);
   process.stdout.write(`pinned upstream at ${base.slice(0, 7)}, where this repo branched from ${follows}.\n`
@@ -123,6 +123,7 @@ async function cmdInit(args: {
 /** Follow one more upstream, mounted at its own folder of the staged tree. */
 async function cmdTrack(args: { name: string; url: string; branch: string; path: string; mount: string | null; vendor: string | null }) {
   const book = await Book.find();
+  installHookOrWarn(book);
   if (book.upstreams.some((u) => u.name === args.name)) throw new Fail(`already following an upstream called ${args.name}`);
   const config = join(book.dir, "config.toml");
   const mount = args.mount ?? args.name;
@@ -255,9 +256,9 @@ const COMMANDS = new Map<string, Command>([
     run: (a) => cmdRecord({ change: a.maybe("change"), intent: a.maybe("intent") }),
   }],
   ["hook", {
-    help: "install the pre-commit hook, or run it",
-    positionals: [{ dest: "action", choices: ["install", "run"] }],
-    run: (a) => cmdHook({ action: a.text("action") === "install" ? "install" : "run" }),
+    help: "install the pre-commit hook, run it, or show which hook git runs",
+    positionals: [{ dest: "action", choices: ["install", "run", "status"] }],
+    run: (a) => cmdHook({ action: a.text("action") === "install" ? "install" : a.text("action") === "status" ? "status" : "run" }),
   }],
   ["skill", {
     help: "write this patchbook's update skill into the repo",

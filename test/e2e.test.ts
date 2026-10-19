@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { accessSync, appendFileSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import { Case, Repo, dedent, lstrip, mkdirNew, partitionHead, replace, sh, shlexSplit, words } from "./helpers";
+import { CMD, Case, Repo, type Run, dedent, lstrip, mkdirNew, partitionHead, replace, sh, shlexSplit, words } from "./helpers";
 
 const TIMEOUT = 120_000;
 
@@ -2946,9 +2946,8 @@ for (const layout of ["fork", "folder"]) {
       } finally {
         sh(["chmod", "u+w", hooks], { cwd: fork.path });
       }
-      const status = t.pb(["status"], { cwd: fork.path });
-      expect(status.stderr).toContain("installed a pre-commit hook");
-      expect(status.stdout).toContain("no problems");
+      expect(t.pb(["record", "mine", "--intent", "Keep mine.txt"], { cwd: fork.path }).stderr).toContain("installed a pre-commit hook");
+      expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
     } finally {
       t.cleanup();
     }
@@ -2967,14 +2966,14 @@ test("test_a_command_warns_and_runs_while_the_pre_commit_hook_cannot_be_installe
     rmSync(join(hooks, "pre-commit"));
     sh(["chmod", "a-w", hooks], { cwd: fork.path });
     try {
-      const status = t.pb(["status"], { cwd: fork.path });
-      expect(status.stderr).toContain("couldn't install the pre-commit hook");
-      expect(status.stderr).toContain("hand edits");
-      expect(status.stdout).toContain("no problems");
+      const record = t.pb(["record", "mine", "--intent", "Keep mine.txt"], { cwd: fork.path });
+      expect(record.stderr).toContain("couldn't install the pre-commit hook");
+      expect(record.stderr).toContain("hand edits");
+      expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
     } finally {
       sh(["chmod", "u+w", hooks], { cwd: fork.path });
     }
-    expect(t.pb(["status"], { cwd: fork.path }).stderr).toContain("installed a pre-commit hook");
+    expect(t.pb(["record", "mine", "--intent", "Keep mine.txt"], { cwd: fork.path }).stderr).toContain("installed a pre-commit hook");
   } finally {
     t.cleanup();
   }
@@ -3629,6 +3628,376 @@ test("test_migration_mode_advice_follows_pre_commit_not_a_stray_lefthook_config"
     t.cleanup();
   }
 }, TIMEOUT);
+
+const hookFile = (repo: Repo) => join(repo.path, ".git/hooks/pre-commit");
+
+function forkWithoutAHook(t: Case): Repo {
+  const fork = forkWith(t, {});
+  rmSync(hookFile(fork));
+  return fork;
+}
+
+test("test_read_only_commands_do_not_install_the_hook", () => {
+  const t = new Case();
+  try {
+    const fork = forkWithoutAHook(t);
+    for (const args of [["status"], ["check"], ["upstream", "upstream"], ["show", "nothing"], ["config"], ["hook", "status"]]) {
+      t.pb(args, { cwd: fork.path, code: null });
+      expect(existsSync(hookFile(fork))).toBe(false);
+    }
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_commands_that_change_things_install_the_hook", () => {
+  const t = new Case();
+  try {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("lib.txt", "lib\n");
+    extra.commit("start");
+    const fork = forkWith(t, {});
+    for (const args of [["build"], ["sync"], ["record"], ["track", "extra", extra.path]]) {
+      rmSync(hookFile(fork), { force: true });
+      t.pb(args, { cwd: fork.path, code: null });
+      expect(existsSync(hookFile(fork))).toBe(true);
+    }
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_no_command_installs_the_hook_while_hook_enabled_is_false", () => {
+  const t = new Case();
+  try {
+    const fork = forkWithoutAHook(t);
+    t.pb(["config", "--project", "hook.enabled", "false"], { cwd: fork.path });
+    for (const args of [["build"], ["sync"], ["record"], ["hook", "install"]]) {
+      t.pb(args, { cwd: fork.path, code: null });
+      expect(existsSync(hookFile(fork))).toBe(false);
+    }
+    t.pb(["config", "--project", "--unset", "hook.enabled"], { cwd: fork.path });
+    t.pb(["build"], { cwd: fork.path });
+    expect(existsSync(hookFile(fork))).toBe(true);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_hook_status_says_which_hook_git_runs_and_whether_it_calls_patchbook", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, {});
+    const ours = t.pb(["hook", "status"], { cwd: fork.path }).stdout;
+    expect(ours).toContain("hook.enabled: on");
+    expect(ours).toContain("git runs: .git/hooks/pre-commit");
+    expect(ours).toContain("calls patchbook: yes");
+    fork.write(".git/hooks/pre-commit", "#!/bin/sh\necho their hook\n", 0o755);
+    const theirs = t.pb(["hook", "status"], { cwd: fork.path }).stdout;
+    expect(theirs).toContain("git runs: .git/hooks/pre-commit");
+    expect(theirs).toContain("calls patchbook: no");
+    expect(theirs).toContain("patchbook hook install");
+    t.pb(["config", "--project", "hook.enabled", "false"], { cwd: fork.path });
+    expect(t.pb(["hook", "status"], { cwd: fork.path }).stdout).toContain("hook.enabled: off");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_hook_status_says_when_git_runs_no_hook_and_does_not_write_one", () => {
+  const t = new Case();
+  try {
+    const fork = forkWithoutAHook(t);
+    const out = t.pb(["hook", "status"], { cwd: fork.path }).stdout;
+    expect(out).toContain("git runs: nothing");
+    expect(out).toContain("calls patchbook: no");
+    expect(out).toContain("patchbook hook install");
+    expect(existsSync(hookFile(fork))).toBe(false);
+    expect(t.pb(["status"], { cwd: fork.path }).stderr).toContain("git runs no pre-commit hook");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_hook_status_names_the_file_that_calls_patchbook", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, { ".husky/pre-commit": NOTE_STAGED });
+    fork.write(".husky/pre-commit", "echo lint\n");
+    const out = t.pb(["hook", "status"], { cwd: fork.path }).stdout;
+    expect(out).toContain("git runs: .git/hooks/pre-commit");
+    expect(out).toContain("calls patchbook: yes");
+    expect(out).not.toContain(".husky");
+    installManager(fork, ".husky");
+    fork.write(".husky/pre-commit", "patchbook hook run || exit 1\n");
+    expect(t.pb(["hook", "status"], { cwd: fork.path }).stdout).toContain("calls patchbook: yes, in .husky/pre-commit");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_hook_status_says_when_git_ignores_a_hook_that_is_not_executable", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, {});
+    chmodSync(hookFile(fork), 0o644);
+    const out = t.pb(["hook", "status"], { cwd: fork.path }).stdout;
+    expect(out).toContain("git runs: nothing");
+    expect(out).toContain("chmod +x .git/hooks/pre-commit");
+    expect(t.pb(["status"], { cwd: fork.path }).stderr).toContain("isn't executable");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_no_command_installs_the_hook_while_PATCHBOOK_HOOK_is_0", () => {
+  const t = new Case();
+  try {
+    const fork = forkWithoutAHook(t);
+    const off = { cwd: fork.path, env: { ...t.env, PATCHBOOK_HOOK: "0" } };
+    sh([...CMD, "build"], off);
+    expect(existsSync(hookFile(fork))).toBe(false);
+    expect(sh([...CMD, "hook", "status"], off).stdout).toContain("hook.enabled: off (env)");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+const SWITCHES = ["user config", "PATCHBOOK_HOOK=0"] as const;
+
+function hookOffBy(t: Case, how: (typeof SWITCHES)[number]): (args: string[], cwd: string) => Run {
+  if (how === "user config") {
+    t.pb(["config", "hook.enabled", "false"], { cwd: t.tmp });
+    return (args, cwd) => t.pb(args, { cwd });
+  }
+  return (args, cwd) => sh([...CMD, ...args], { cwd, env: { ...t.env, PATCHBOOK_HOOK: "0" } });
+}
+
+for (const how of SWITCHES) {
+  test(`test_clone_does_not_say_the_hook_records_when_${how === "user config" ? "the_user_config" : "PATCHBOOK_HOOK"}_turned_it_off`, () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\ntwo\n");
+      up.commit("start");
+      const cloned = hookOffBy(t, how)(["clone", up.path, "fork"], t.tmp).stdout;
+      expect(existsSync(join(t.tmp, "fork/.git/hooks/pre-commit"))).toBe(false);
+      expect(cloned).not.toContain("the hook records what you staged");
+      expect(cloned).toContain("hook.enabled is off");
+      expect(cloned).toContain(how === "user config" ? "`patchbook config hook.enabled true`" : "Unset PATCHBOOK_HOOK");
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
+test("test_clone_says_the_hook_records_only_when_it_was_installed", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\ntwo\n");
+    up.commit("start");
+    expect(t.pb(["clone", up.path, "fork"], { cwd: t.tmp }).stdout).toContain("the hook records what you staged");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_hook_install_names_the_setting_that_turned_the_hook_off", () => {
+  const t = new Case();
+  try {
+    const fork = forkWithoutAHook(t);
+    const install = (env: Record<string, string> = {}) => sh([...CMD, "hook", "install"], { cwd: fork.path, env: { ...t.env, PATCHBOOK_HOOK: "", ...env } }).stderr;
+    t.pb(["config", "hook.enabled", "false"], { cwd: fork.path });
+    const user = install();
+    expect(user).toContain("hook.enabled is off");
+    expect(user).toContain("`patchbook config hook.enabled true`");
+    t.pb(["config", "--project", "hook.enabled", "false"], { cwd: fork.path });
+    expect(install()).toContain("`patchbook config --project hook.enabled true`");
+    const env = install({ PATCHBOOK_HOOK: "0" });
+    expect(env).toContain("Unset PATCHBOOK_HOOK");
+    expect(env).not.toContain("patchbook config");
+    expect(existsSync(hookFile(fork))).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_install_commands_make_patchbooks_own_hook_executable_again", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, {});
+    for (const args of [["build"], ["record"], ["hook", "install"]]) {
+      chmodSync(hookFile(fork), 0o644);
+      const out = t.pb(args, { cwd: fork.path, code: null });
+      expect(out.stderr).toContain("executable");
+      expect(statSync(hookFile(fork)).mode & 0o777).toBe(0o755);
+    }
+    expect(t.pb(["hook", "status"], { cwd: fork.path }).stdout).toContain("git runs: .git/hooks/pre-commit");
+    fork.write("app.txt", "one\nTWO\n");
+    sh(["git", "commit", "-qam", "shout"], { cwd: fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Shout the second line." } });
+    expect(committedFiles(fork).some((f) => f.startsWith(".patchbook/changes/"))).toBe(true);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_install_commands_leave_another_tools_hook_alone_and_hook_install_says_git_ignores_it", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, {});
+    const theirs = "#!/bin/sh\necho their hook\n";
+    fork.write(".git/hooks/pre-commit", theirs, 0o644);
+    expect(t.pb(["build"], { cwd: fork.path }).stderr).not.toContain("executable");
+    const install = t.pb(["hook", "install"], { cwd: fork.path }).stderr;
+    expect(install).toContain("isn't executable");
+    expect(install).toContain("chmod +x .git/hooks/pre-commit");
+    expect(fork.read(".git/hooks/pre-commit")).toBe(theirs);
+    expect(statSync(hookFile(fork)).mode & 0o777).toBe(0o644);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+for (const how of SWITCHES) {
+  const huskyFiles = { ".husky/pre-commit": NOTE_STAGED };
+  const noInstall = (repo: Repo): void => {
+    expect(existsSync(hookFile(repo))).toBe(false);
+    expect(repo.read(".husky/pre-commit")).toBe(NOTE_STAGED);
+    expect(sh(["git", "diff", "--cached", "--name-only"], { cwd: repo.path }).stdout).toBe("");
+    expect(sh(["git", "status", "--porcelain", "--", ".husky"], { cwd: repo.path }).stdout).toBe("");
+  };
+
+  test(`test_clone_of_a_husky_repo_installs_nothing_while_hook_enabled_is_off_by_${how.replaceAll(" ", "_")}`, () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\ntwo\n");
+      for (const [path, text] of Object.entries(huskyFiles)) up.write(path, text);
+      up.commit("start");
+      hookOffBy(t, how)(["clone", up.path, "fork"], t.tmp);
+      noInstall(new Repo(join(t.tmp, "fork")));
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+
+  test(`test_init_in_a_husky_repo_installs_nothing_while_hook_enabled_is_off_by_${how.replaceAll(" ", "_")}`, () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("skills/a/SKILL.md", "Para one.\n");
+      up.commit("start");
+      const folder = new Repo(join(t.tmp, "adapted"));
+      for (const [path, text] of Object.entries(huskyFiles)) folder.write(path, text);
+      folder.commit("start");
+      hookOffBy(t, how)(["init", "--upstream", up.path, "--output-from", "skills", "--output-to", "skills"], folder.path);
+      noInstall(folder);
+      sh(["git", "clone", "-q", up.path, "mine"], { cwd: t.tmp });
+      const mine = new Repo(join(t.tmp, "mine"));
+      for (const [path, text] of Object.entries(huskyFiles)) mine.write(path, text);
+      mine.commit("husky");
+      hookOffBy(t, how)(["init", "--upstream", up.path], mine.path);
+      noInstall(mine);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+
+  test(`test_track_in_a_husky_fork_installs_nothing_while_hook_enabled_is_off_by_${how.replaceAll(" ", "_")}`, () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\ntwo\n");
+      for (const [path, text] of Object.entries(huskyFiles)) up.write(path, text);
+      up.commit("start");
+      const extra = new Repo(join(t.tmp, "extra"));
+      extra.write("lib.txt", "lib\n");
+      extra.commit("start");
+      const off = hookOffBy(t, how);
+      off(["clone", up.path, "fork"], t.tmp);
+      const fork = new Repo(join(t.tmp, "fork"));
+      off(["track", "extra", extra.path], fork.path);
+      noInstall(fork);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
+test("test_hook_run_never_installs_or_writes_a_hook", () => {
+  const t = new Case();
+  try {
+    const fork = forkWithoutAHook(t);
+    fork.write("app.txt", "one\nTWO\n");
+    sh(["git", "add", "app.txt"], { cwd: fork.path });
+    const env = { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Shout the second line." };
+    const ran = sh([...CMD, "hook", "run"], { cwd: fork.path, env });
+    expect(ran.stdout).toContain("app.txt");
+    expect(existsSync(hookFile(fork))).toBe(false);
+    sh([...CMD, "hook", "run"], { cwd: fork.path, env });
+    expect(existsSync(hookFile(fork))).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_commands_that_install_skip_a_patchbook_in_the_repo_around_the_one_you_are_in", () => {
+  const t = new Case();
+  try {
+    const fork = forkWithoutAHook(t);
+    const inner = new Repo(join(t.tmp, "fork/vendor/inner"));
+    inner.write("a.txt", "a\n");
+    inner.commit("inner");
+    t.pb(["build"], { cwd: inner.path, code: null });
+    expect(existsSync(hookFile(fork))).toBe(false);
+    expect(existsSync(join(inner.path, ".git/hooks/pre-commit"))).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_commands_that_install_treat_a_linked_worktree_of_the_book_repo_as_the_same_repo", () => {
+  const t = new Case();
+  try {
+    const fork = forkWithoutAHook(t);
+    // The worktree's commit has no .patchbook, so Book.find walks up to the main checkout's book.
+    sh(["git", "worktree", "add", "-q", "--detach", ".claude-wt", "HEAD~1"], { cwd: fork.path });
+    const wt = join(fork.path, ".claude-wt");
+    expect(existsSync(join(wt, ".patchbook"))).toBe(false);
+    t.pb(["hook", "install"], { cwd: wt });
+    expect(existsSync(hookFile(fork))).toBe(true);
+    rmSync(hookFile(fork));
+    t.pb(["sync"], { cwd: wt, code: null });
+    expect(existsSync(hookFile(fork))).toBe(true);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+for (const [name, dir, install] of [["husky", ".husky", "npx husky"], ["Vite+", ".vite-hooks", "vp config"]] as const) {
+  test(`test_status_and_hook_status_say_when_${name === "husky" ? "husky" : "vite_plus"}_has_not_installed_its_hook_in_a_new_worktree`, () => {
+    const t = new Case();
+    try {
+      const fork = forkWith(t, { [`${dir}/pre-commit`]: NOTE_STAGED });
+      installManager(fork, dir);
+        expect(t.pb(["status"], { cwd: fork.path }).stderr).not.toContain("git runs no pre-commit hook");
+      sh(["git", "worktree", "add", "-q", "../wt", "-b", "wt"], { cwd: fork.path });
+      const wt = join(t.tmp, "wt");
+      expect(existsSync(join(wt, dir, "_"))).toBe(false);
+      const status = t.pb(["status"], { cwd: wt }).stderr;
+      expect(status).toContain("git runs no pre-commit hook");
+      expect(status).toContain(`${name}`);
+      expect(status).toContain(install);
+      const hook = t.pb(["hook", "status"], { cwd: wt }).stdout;
+      expect(hook).toContain("git runs: nothing");
+      expect(hook).toContain(install);
+      expect(existsSync(join(wt, dir, "_"))).toBe(false);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
 
 describe("ForkTest", () => {
   // Each layout puts a vendored copy where its own upstream's build writes, so a build would land in it.
@@ -5774,7 +6143,9 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
   forkTest("test_hook_from_the_python_version_is_rewritten", (t) => {
     const hook = join(t.fork.path, ".git/hooks/pre-commit");
     writeFileSync(hook, pythonHook());
-    expect(t.pb(["status", "--json"], { cwd: t.fork.path }).stderr).toContain("to run patchbook from PATH");
+    expect(t.pb(["status", "--json"], { cwd: t.fork.path }).stderr).not.toContain("to run patchbook from PATH");
+    expect(read(hook)).toBe(pythonHook());
+    expect(t.pb(["build"], { cwd: t.fork.path }).stderr).toContain("to run patchbook from PATH");
     expect(read(hook)).not.toContain("/opt/my tools");
     expect(read(hook)).toContain("command -v patchbook");
   });
@@ -6171,18 +6542,15 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(read(user)).not.toContain("fake-x");
   });
 
-  forkTest("test_config_writes_the_user_config_and_installs_a_missing_hook_in_a_clone", (t) => {
+  forkTest("test_config_writes_the_user_config_and_leaves_a_missing_hook_alone_in_a_clone", (t) => {
     sh(["git", "clone", "-q", t.fork.path, "teammate"], { cwd: t.tmp });
     const teammate = new Repo(join(t.tmp, "teammate"));
     const hook = join(teammate.path, ".git/hooks/pre-commit");
     expect(existsSync(hook)).toBe(false);
     const out = t.pb(["config", "intent.model", "fake-x"], { cwd: teammate.path });
     expect(out.stdout).toContain("intent.model");
-    expect(out.stderr).toContain("installed a pre-commit hook");
-    expect(read(hook)).toContain("Installed by patchbook");
-    teammate.write("app.txt", replace(teammate.read("app.txt"), "two", "TWO"));
-    sh(["git", "commit", "-qam", "shout"], { cwd: teammate.path, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
-    expect(existsSync(join(teammate.path, ".patchbook/changes/shout/CHANGE.md"))).toBe(true);
+    expect(out.stderr).not.toContain("pre-commit hook");
+    expect(existsSync(hook)).toBe(false);
   });
 
   forkTest("test_config_writes_the_user_config_in_a_book_outside_a_git_repo", (t) => {
@@ -6191,7 +6559,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     mkdirSync(join(loose, ".patchbook"), { recursive: true });
     writeFileSync(join(loose, ".patchbook/config.toml"), read(join(t.fork.path, ".patchbook/config.toml")));
     const out = t.pb(["config", "intent.model", "fake-x"], { cwd: loose });
-    expect(out.stderr).toContain("couldn't install the pre-commit hook");
+    expect(out.stderr).not.toContain("pre-commit hook");
     expect((Bun.TOML.parse(read(user)) as { intent: { model: string } }).intent.model).toBe("fake-x");
   });
 

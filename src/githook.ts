@@ -1,5 +1,5 @@
 // The pre-commit hook: on each commit, record the hand edits staged in the output, rebuild, and stage both.
-import { chmodSync } from "node:fs";
+import { chmodSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join } from "node:path";
 import type { Problem } from "./api.ts";
 import { assemble, buildLockPath, type BuildLock, type Changes, changesOf, describe, handEdits, parseBuildLock, readBuildLock, writeOutput } from "./assemble.ts";
@@ -11,7 +11,7 @@ import { blobOid } from "./lib/hash.ts";
 import { git, run, spawn } from "./lib/proc.ts";
 import { quote, sorted, strip } from "./lib/py.ts";
 import { bytesEqual, concat, decode, decodeReplace, encode } from "./lib/text.ts";
-import { setting } from "./settings.ts";
+import { type Source, setting } from "./settings.ts";
 import { linksUnder, Undo } from "./undo.ts";
 
 const SCRIPT = `#!/bin/sh
@@ -141,13 +141,13 @@ const PRE_COMMIT: Snippet = {
 };
 
 /** Git runs `<dir>/_/pre-commit`, which runs `<dir>/pre-commit`. */
-type ScriptManager = { name: string; dir: string };
+type ScriptManager = { name: string; dir: string; install: string };
 /** `dispatcher` marks the hook the manager installs in `.git/hooks`. `legacy` is what its migration mode appends to the name of the hook it replaced and still runs. */
 type ConfigManager = { name: string; files: readonly string[]; dispatcher: RegExp; legacy?: string; snippets: Readonly<Record<string, Snippet>>; note?: string };
 
 const SCRIPT_MANAGERS: readonly ScriptManager[] = [
-  { name: "Vite+", dir: ".vite-hooks" },
-  { name: "husky", dir: ".husky" },
+  { name: "Vite+", dir: ".vite-hooks", install: "vp config" },
+  { name: "husky", dir: ".husky", install: "npx husky" },
 ];
 // pre-commit comes first because its dispatcher marker is the more specific, and a pre-commit hook can name lefthook in a path.
 const CONFIG_MANAGERS: readonly ConfigManager[] = [
@@ -246,6 +246,17 @@ const UNHOOKED = (where: string) =>
   `patchbook: ${where} doesn't run \`patchbook hook run\`, so commits won't record hand edits to the build output. `
   + "Run `patchbook hook install` to see what to add.\n";
 
+const NOT_RUN = (hook: Hook, where: string) =>
+  "patchbook: git runs no pre-commit hook here, so commits won't record hand edits to the build output. "
+  + (hook.kind === "script" && hook.gitRunsIt
+    ? `${hook.manager.name} hasn't installed its hook in this checkout, as in a new git worktree. Run \`${hook.manager.install}\`.\n`
+    : hook.kind === "foreign"
+      ? `core.hooksPath has no ${where}. Run \`patchbook hook install\` to see what to put there.\n`
+      : "Run `patchbook hook install`.\n");
+
+const NOT_EXECUTABLE = (where: string) =>
+  `patchbook: git ignores ${where} because it isn't executable, so git runs no pre-commit hook and commits won't record hand edits to the build output. Run \`chmod +x ${where}\`.\n`;
+
 function writesThroughALink(book: Book, path: string): boolean {
   const inside = relative(book.root, dirname(path));
   return isSymlink(path) || inside === ".." || inside.startsWith("../") || resolve(dirname(path)) !== join(resolve(book.root), inside);
@@ -292,11 +303,24 @@ async function recordAndStage(book: Book, current: Map<string, File>, key: strin
   git(["--literal-pathspecs", "add", "-A", "-f", "--", key, ...wrote], { cwd: book.root });
 }
 
-/** Install the pre-commit hook in git's own hooks folder, or rewrite the stock one the Python version wrote. Does nothing
- * under `core.hooksPath`, where git doesn't read that folder. Never edits a tracked file or records, so `Book.find` can call it. */
-export function keepGitHook(root: string): void {
-  const { hooksPath, hookFile } = hookPaths(root);
-  if (hooksPath !== null) return;
+const hookEnabled = (book: Book) => setting("hook.enabled", book)[0];
+
+const turnOn = (source: Source) =>
+  source === "env" ? "Unset PATCHBOOK_HOOK to turn it on." : `Turn it on with \`patchbook config${source === "project" ? " --project" : ""} hook.enabled true\`.`;
+
+/** What `clone` tells you to do next, which depends on whether commits will record. */
+export function commitAdvice(book: Book): string {
+  const { enabled, source, calls } = inspect(book);
+  if (!enabled) return `hook.enabled is off, so commits won't record what you stage. ${turnOn(source)}`;
+  if (!calls) return "Commits won't record what you stage until git runs a hook that calls patchbook; see above.";
+  return "Make your changes, stage them, and commit: the hook records what you staged in the patchbook and rebuilds.";
+}
+
+const isExecutable = (path: string) => (statSync(path).mode & 0o111) !== 0;
+
+export function keepGitHook(book: Book): void {
+  const { hooksPath, hookFile } = hookPaths(book.root);
+  if (hooksPath !== null || !hookEnabled(book) || !inBookRepo(book)) return;
   if (!exists(hookFile)) {
     writeHook(hookFile);
     process.stderr.write("patchbook: installed a pre-commit hook that records and builds on each commit\n");
@@ -305,11 +329,15 @@ export function keepGitHook(root: string): void {
   if (PYTHON_HOOK.test(readTextReplace(hookFile))) {
     writeHook(hookFile);
     process.stderr.write(`patchbook: updated ${hookFile} to run patchbook from PATH\n`);
+  } else if (ours(hookFile) && !isExecutable(hookFile)) {
+    chmodSync(hookFile, 0o755);
+    process.stderr.write(`patchbook: made ${shown(book.root, hookFile)} executable, so git runs it\n`);
   }
 }
 
 /** Make the hook git runs call patchbook, once `keepGitHook` has installed its own in `.git/hooks`. A config or foreign hook is printed every time, because patchbook can't check where its line sits. */
 export async function installHook(book: Book): Promise<void> {
+  if (!hookEnabled(book) || !inBookRepo(book)) return;
   const hook = findHook(book.root);
   switch (hook.kind) {
     case "git":
@@ -319,29 +347,50 @@ export async function installHook(book: Book): Promise<void> {
       return;
     case "config":
       process.stderr.write(ADD_TO_CONFIG(hook.manager, shown(book.root, hook.path), readTextReplace(hook.path)));
-      return;
+      break;
     case "foreign":
       process.stderr.write(ADD_TO_FOREIGN(shown(book.root, hook.path)));
-      return;
+      break;
   }
+  const { hookFile } = hookPaths(book.root);
+  if (hook.gitRunsIt && exists(hookFile) && !isExecutable(hookFile)) process.stderr.write(NOT_EXECUTABLE(shown(book.root, hookFile)));
 }
 
 /** Install the hook, or warn why not. Until it is installed, a commit doesn't record hand edits. */
-export function installHookOrWarn(root: string): void {
+export function installHookOrWarn(book: Book): void {
   try {
-    keepGitHook(root);
+    keepGitHook(book);
   } catch (e) {
     if (!(e instanceof Error && "errno" in e)) throw e;
     process.stderr.write(`patchbook: couldn't install the pre-commit hook: ${e.message}\nUntil it is installed, a commit doesn't record hand edits to the build output in the patchbook.\n`);
   }
 }
 
-/** Warn on stderr when the hook git runs doesn't call patchbook. A script or config that git isn't running yet stays quiet. */
-export function warnUnhooked(book: Book): void {
-  if (!setting("hook.enabled", book)[0]) return;
+type HookReport = { enabled: boolean; source: Source; runs: string | null; calls: boolean; checked: string | null; advice: string | null };
+
+function inspect(book: Book): HookReport {
+  const [enabled, source] = setting("hook.enabled", book);
   const hook = findHook(book.root);
-  if (!hook.gitRunsIt || runsPatchbook(hook)) return;
-  process.stderr.write(UNHOOKED(shown(book.root, hook.path)));
+  const { hookFile } = hookPaths(book.root);
+  const present = exists(hookFile);
+  const runs = present && isExecutable(hookFile) ? hookFile : null;
+  const calls = runs !== null && (!hook.gitRunsIt || runsPatchbook(hook));
+  const advice = !enabled || calls ? null
+    : runs !== null ? UNHOOKED(shown(book.root, hook.path))
+    : present ? NOT_EXECUTABLE(shown(book.root, hookFile))
+    : NOT_RUN(hook, shown(book.root, hook.path));
+  return { enabled, source, runs: runs && shown(book.root, runs), calls, checked: hook.gitRunsIt ? shown(book.root, hook.path) : null, advice };
+}
+
+export function warnUnhooked(book: Book): void {
+  const { advice } = inspect(book);
+  if (advice !== null) process.stderr.write(advice);
+}
+
+function printHookStatus(book: Book): void {
+  const { enabled, source, runs, calls, checked, advice } = inspect(book);
+  const where = calls && checked !== null && runs !== checked ? `, in ${checked}` : "";
+  process.stdout.write(`hook.enabled: ${enabled ? "on" : "off"} (${source})\ngit runs: ${runs ?? "nothing"}\ncalls patchbook: ${calls ? "yes" : "no"}${where}\n${advice ?? ""}`);
 }
 
 function unstaged(root: string, paths: string[]): string[] {
@@ -420,19 +469,30 @@ function partialCommit(root: string): { lock: string | null } | null {
   return { lock: exists(lock) ? lock : null };
 }
 
+function inBookRepo(book: Book): boolean {
+  // The common dir, not the git dir: every linked worktree of a repo runs the same hooks folder.
+  const gitDir = (cwd: string) => resolve(git(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd }));
+  return gitDir(process.cwd()) === gitDir(book.root);
+}
+
 function refuseOtherRepo(book: Book): void {
-  const gitDir = (cwd: string) => resolve(git(["rev-parse", "--path-format=absolute", "--git-dir"], { cwd }));
-  if (gitDir(process.cwd()) === gitDir(book.root)) return;
+  if (inBookRepo(book)) return;
   throw new Fail(`${PB}/config.toml is in ${book.root}, which is another git repo than the one you're in, so no hook was installed. `
     + `Run \`patchbook hook install\` in ${book.root}, or start a patchbook here with \`patchbook init\`.`);
 }
 
-export async function cmdHook(args: { action: "install" | "run" }) {
+export async function cmdHook(args: { action: "install" | "run" | "status" }) {
+  if (args.action === "status") {
+    printHookStatus(await Book.find());
+    return 0;
+  }
   if (args.action === "install") {
     const book = await Book.find();
     refuseOtherRepo(book);
-    keepGitHook(book.root);
-    await installHook(book);
+    if (hookEnabled(book)) {
+      keepGitHook(book);
+      await installHook(book);
+    } else process.stderr.write(`patchbook: hook.enabled is off, so no hook was installed. ${turnOn(setting("hook.enabled", book)[1])}\n`);
     return 0;
   }
   const undo = new Undo();
