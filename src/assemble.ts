@@ -16,7 +16,6 @@ import {
 import { blobOid } from "./lib/hash.ts";
 import { dumps, type Json, loads } from "./lib/json.ts";
 import { type Env, git, run, spawn } from "./lib/proc.ts";
-import { ljust } from "./lib/py.ts";
 import { byCodePoint, bytesEqual, decode, encode, isText } from "./lib/text.ts";
 import { pinned, refuseMergedUpstream } from "./store.ts";
 
@@ -39,7 +38,7 @@ export function describe(p: Problem): string {
     case "placeholder":
     case "check": {
       const extra = "edit" in p && p.edit ? ` ${p.edit}` : "";
-      return `${ljust(p.problem, 9)} ${at}${extra}: ${p.detail}`;
+      return `${p.problem.padEnd(9)} ${at}${extra}: ${p.detail}`;
     }
     default: {
       const _exhaustive: never = p;

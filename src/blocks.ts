@@ -8,7 +8,7 @@ import { Fail } from "./lib/fail.ts";
 import { pjoin, readText } from "./lib/fs.ts";
 import { sha256 } from "./lib/hash.ts";
 import { loads } from "./lib/json.ts";
-import { length, str, strRepr } from "./lib/py.ts";
+import { str, strRepr } from "./lib/py.ts";
 import { byCodePoint, decode } from "./lib/text.ts";
 
 export const ENTRY_FIELDS = ["kind", "rules", "intent"] as const;
@@ -45,7 +45,7 @@ export function blockSpans(lines: readonly string[]): [number, number][] {
     const stripped = line.trim();
     const m = FENCE.exec(line);
     if (fence === null && m) fence = m[1]!;
-    else if (fence && stripped && [...stripped].every((c) => c === fence![0]) && length(stripped) >= length(fence)) fence = null;
+    else if (fence && stripped && [...stripped].every((c) => c === fence![0]) && stripped.length >= fence.length) fence = null;
     if (stripped || fence) start ??= i;
     else if (start !== null) {
       spans.push([start, i]);

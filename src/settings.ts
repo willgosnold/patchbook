@@ -7,7 +7,7 @@ import { Book, NoBook } from "./book.ts";
 import { intentSettings, PROVIDERS } from "./intent.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, mkdirs, pjoin, readBytes, readText, writeText } from "./lib/fs.ts";
-import { ljust, strRepr } from "./lib/py.ts";
+import { strRepr } from "./lib/py.ts";
 import { decode } from "./lib/text.ts";
 import { quoteToml } from "./lib/toml.ts";
 
@@ -374,7 +374,7 @@ export async function cmdConfig(args: { name: string | null; value: string | nul
   for (const n of name !== null ? [name] : NAMES) {
     const [shown, source] = listed(n, book);
     const env = SETTINGS[n].env;
-    process.stdout.write(`${ljust(n, 20)} ${ljust(shown, 28)} ${source}` + (env && name === null ? `  [${env}]` : "") + "\n");
+    process.stdout.write(`${n.padEnd(20)} ${shown.padEnd(28)} ${source}` + (env && name === null ? `  [${env}]` : "") + "\n");
   }
   return 0;
 }

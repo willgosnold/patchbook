@@ -8,7 +8,7 @@ import { exists, type File, GITLINK, isDir, isMode, isSymlink, lexists, mkdirs, 
 import { dumps, loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
 import type { JsonValue } from "./lib/json.ts";
-import { length, strRepr } from "./lib/py.ts";
+import { strRepr } from "./lib/py.ts";
 import { byCodePoint, decode } from "./lib/text.ts";
 import { isTable, parseToml, type Table } from "./settings.ts";
 import { stagedFolder, treeFiles, Upstream } from "./store.ts";
@@ -427,7 +427,7 @@ export class Book {
   upstreamFor(path: string): Upstream | null {
     let best: Upstream | null = null;
     for (const u of this.upstreams) {
-      if ((!u.mount || under(path, u.mount)) && (best === null || length(u.mount) > length(best.mount))) best = u;
+      if ((!u.mount || under(path, u.mount)) && (best === null || u.mount.length > best.mount.length)) best = u;
     }
     return best;
   }

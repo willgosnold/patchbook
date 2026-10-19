@@ -2,19 +2,6 @@
 // JavaScript strings UTF-16 code units, so anything that counts, slices or orders characters is here.
 import type { JsonValue } from "./json.ts";
 
-export const length = (s: string) => {
-  let n = 0;
-  for (const _ of s) n++;
-  return n;
-};
-
-/** `s[start:end]` by code points, with Python's negative indices. */
-export function slice(s: string, start: number, end?: number): string {
-  return Array.from(s).slice(start, end).join("");
-}
-
-export const ljust = (s: string, width: number) => s + " ".repeat(Math.max(0, width - length(s)));
-
 const NOT_PRINTABLE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}]/u;
 
 function hex(c: number, width: number): string {

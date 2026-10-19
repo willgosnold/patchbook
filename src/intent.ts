@@ -10,7 +10,7 @@ import { Fail } from "./lib/fail.ts";
 import type { File } from "./lib/fs.ts";
 import { JsonError, type JsonValue, loads } from "./lib/json.ts";
 import { spawn, which } from "./lib/proc.ts";
-import { length, slice, str, strRepr } from "./lib/py.ts";
+import { str, strRepr } from "./lib/py.ts";
 import { decode, decodeReplace, encode, isText, lines } from "./lib/text.ts";
 import { configured, readToml, type Source, setting, SETTINGS, type Table, USER_CONFIG } from "./settings.ts";
 
@@ -57,8 +57,8 @@ export function pendingDiff(a: Assembly, current: ReadonlyMap<string, File>, pat
     parts.push(unifiedDiff(lines(decode(old)), lines(decode(fresh)), built ? `built/${p}` : "/dev/null",
       now ? `disk/${p}` : "/dev/null"));
   }
-  const text = parts.join("");
-  return slice(text, 0, 40000) + (length(text) > 40000 ? "\n[diff truncated]\n" : "");
+  const chars = Array.from(parts.join(""));
+  return chars.slice(0, 40000).join("") + (chars.length > 40000 ? "\n[diff truncated]\n" : "");
 }
 
 /** The provider, model and effort for writing intents.
@@ -108,7 +108,7 @@ function askModel(provider: string, spec: Provider, model: string, effort: strin
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
-  if (result.code !== 0) throw new Fail(`${provider} failed: ${slice(decodeReplace(result.stderr).trim(), -500)}. Pass --intent instead.`);
+  if (result.code !== 0) throw new Fail(`${provider} failed: ${Array.from(decodeReplace(result.stderr).trim()).slice(-500).join("")}. Pass --intent instead.`);
   return decodeReplace(result.stdout);
 }
 
@@ -160,7 +160,7 @@ export function writeIntent(
   let chosen = typeof given === "string" ? given : "";
   let intent: string | null = oneLine(str(fields.has("intent") ? fields.get("intent")! : ""));
   if (!CHANGE_NAME.test(chosen) || !intent) {
-    throw new Fail(`${provider} didn't return a usable name and intent:\n${slice(reply.trim(), 0, 500)}\nPass a name and --intent instead.`);
+    throw new Fail(`${provider} didn't return a usable name and intent:\n${Array.from(reply.trim()).slice(0, 500).join("")}\nPass a name and --intent instead.`);
   }
   if (name && chosen !== name) chosen = name;
   const known = changes.get(chosen);

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Problem } from "../src/api.ts";
+import type { Assembly } from "../src/assemble.ts";
 import type { Reserved } from "../src/book.ts";
 
 const sandbox = mkdtempSync(join(tmpdir(), "units"));
@@ -13,7 +14,7 @@ const { applyStructure } = await import("../src/assemble.ts");
 const { blockSpans, formatEntry, nearest, readEntries } = await import("../src/blocks.ts");
 const { Book, globRe } = await import("../src/book.ts");
 const { Change } = await import("../src/changes.ts");
-const { intentSettings, PROVIDERS } = await import("../src/intent.ts");
+const { intentSettings, pendingDiff, PROVIDERS, writeIntent } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
 const { setToml, USER_CONFIG } = await import("../src/settings.ts");
 
@@ -322,6 +323,15 @@ describe("nearest", () => {
   });
 });
 
+describe("pendingDiff", () => {
+  test("cuts a diff past 40000 characters without splitting one", () => {
+    const current = new Map([["ab", { data: new TextEncoder().encode("😀".repeat(50000) + "\n"), mode: 0o644 as const }]]);
+    const diff = pendingDiff({ out: new Map() } as unknown as Assembly, current, ["ab"]);
+    expect(diff.endsWith("😀\n[diff truncated]\n")).toBe(true);
+    expect(Array.from(diff).length).toBe(40000 + "\n[diff truncated]\n".length);
+  });
+});
+
 describe("applyStructure", () => {
   const bytes = (s: string) => new TextEncoder().encode(s);
   const upstream = (...paths: string[]) => new Map(paths.map((p) => [p, { data: bytes(p), mode: 0o644 as const }]));
@@ -602,5 +612,34 @@ describe.skipIf(!inSandbox)("intentSettings", () => {
     process.env["PATCHBOOK_PROVIDER"] = "claude";
     const book = await project("[intent]\nmodel = 3\n");
     expect(() => intentSettings(book, true)).toThrow(`intent.model in ${join(book.dir, "config.toml")} can't be 3`);
+  });
+});
+
+describe.skipIf(!inSandbox)("writeIntent", () => {
+  const ambient = process.env["PATCHBOOK_PROVIDER"];
+
+  afterEach(() => {
+    PROVIDERS.delete("fake");
+    if (ambient === undefined) delete process.env["PATCHBOOK_PROVIDER"];
+    else process.env["PATCHBOOK_PROVIDER"] = ambient;
+  });
+
+  const answering = async (script: string): Promise<Opened> => {
+    PROVIDERS.set("fake", { model: "m", effort: "e", command: () => ["sh", "-c", `cat >/dev/null; ${script}`] });
+    process.env["PATCHBOOK_PROVIDER"] = "fake";
+    rmSync(USER_CONFIG, { force: true });
+    const root = scratch();
+    put(join(root, ".patchbook", "config.toml"), '[[upstream]]\nremote = "https://example.com/x.git"\nmount = ""\n');
+    return Book.open(root);
+  };
+
+  test("shows the last 500 characters of a failed model's errors without splitting one", async () => {
+    const book = await answering(`printf '${"😀".repeat(600)}!' >&2; exit 1`);
+    expect(() => writeIntent(book, new Map(), "", "x", true)).toThrow(`fake failed: ${"😀".repeat(499)}!. Pass --intent instead.`);
+  });
+
+  test("shows the first 500 characters of an unusable reply without splitting one", async () => {
+    const book = await answering(`printf '!${"😀".repeat(600)}'`);
+    expect(() => writeIntent(book, new Map(), "", "x", true)).toThrow(`:\n!${"😀".repeat(499)}\nPass a name and --intent instead.`);
   });
 });
