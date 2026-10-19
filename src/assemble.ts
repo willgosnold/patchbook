@@ -8,11 +8,11 @@ import {
 } from "./blocks.ts";
 import { Book, buildInputs, GIT, PB, type Reserved, under } from "./book.ts";
 import { type Change, editText, readChanges } from "./changes.ts";
-import { installHookOrWarn, warnUnhooked } from "./githook.ts";
+import { installHookOrWarn, stageModes, upstreamModes, warnUnhooked } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import {
   exists, type File, gitMode, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, type Mode, nonFolders, outputMode, parseGitMode, readText, relative, resolve, rglob, rmFolders,
-  sameFile, sameMode, writeDisk, writeText,
+  sameFile, sameMode, type Seen, writeDisk, writeText,
 } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { dumps, type Json, loads } from "./lib/json.ts";
@@ -162,7 +162,7 @@ export function assemble(book: Book): Assembly {
         problems.push({ problem: "stale", ...where, detail: "its base differs from upstream at the pin; run sync" });
       }
       if (isText(ours.data) && hasConflictMarker(decode(ours.data))) problems.push({ problem: "conflict", ...where, detail: "ours has conflict markers" });
-      content.set(e.path, { data: ours.data, mode: outputMode(ours, base, up, book.tracksExecBit()) });
+      content.set(e.path, { data: ours.data, mode: outputMode(ours, base, up) });
       applied++;
     }
   }
@@ -220,7 +220,7 @@ export function assemble(book: Book): Assembly {
       const c = byName.get(src.change)!;
       const copy = c.file("ours", src.path)!;
       let data = copy.data;
-      const mode = outputMode(copy, c.file("base", src.path), upstream.get(src.path), book.tracksExecBit());
+      const mode = outputMode(copy, c.file("base", src.path), upstream.get(src.path));
       const where: InOutput = { file: `changes/${c.name}`, output: outPath };
       if (isText(data)) {
         const text = rules.expand(decode(data), (detail) => problems.push({ problem: "placeholder", ...where, detail }));
@@ -342,15 +342,16 @@ export function builtAs(file: File | undefined, stamp: Stamp | undefined, built:
   return blobOid(file.data) === stamp.oid && sameMode(stamp.mode ?? built ?? file.mode, file.mode, tracksExecBit);
 }
 
+/** The outputs edited by hand since the last build. A file's mode counts only where its exec bit is the user's. */
 export function handEdits(
-  book: Book, fresh: ReadonlyMap<string, File>, files: ReadonlyMap<string, File>, builds: (BuildLock | null)[] = [readBuildLock(book)],
+  book: Book, fresh: ReadonlyMap<string, File>, files: ReadonlyMap<string, Seen>, builds: (BuildLock | null)[] = [readBuildLock(book)],
 ): string[] {
   refuseIfUncontained(book, changesOf(files, fresh));
-  const execBit = book.tracksExecBit();
+  const chosen = (p: string) => files.get(p)?.chosen ?? true;
   const last = builds.filter((b) => b !== null);
-  if (!last.length) return sorted(Array.from(files.keys()).filter((p) => !sameFile(files.get(p), fresh.get(p), execBit))); // never built here
+  if (!last.length) return sorted(Array.from(files.keys()).filter((p) => !sameFile(files.get(p), fresh.get(p), chosen(p)))); // never built here
   const paths = new Set([...files.keys(), ...last.flatMap((b) => [...b.keys()])]);
-  return sorted(Array.from(paths).filter((p) => !sameFile(files.get(p), fresh.get(p), execBit) && last.every((b) => !builtAs(files.get(p), b.get(p), fresh.get(p)?.mode, execBit))));
+  return sorted(Array.from(paths).filter((p) => !sameFile(files.get(p), fresh.get(p), chosen(p)) && last.every((b) => !builtAs(files.get(p), b.get(p), fresh.get(p)?.mode, chosen(p)))));
 }
 
 /** A folder where the build writes a file goes only if it holds nothing but folders and files this build removes. */
@@ -394,7 +395,7 @@ export async function cmdBuild(args: { force: boolean; commit: boolean }) {
     for (const p of a.problems) process.stderr.write(describe(p) + "\n");
     throw new Fail(`${a.problems.length} problems; nothing built. \`patchbook status\` lists them.`);
   }
-  const current = book.currentOutput();
+  const current = book.seen("disk");
   const edited = handEdits(book, a.out, current);
   if (edited.length && !args.force) {
     const shown = edited.slice(0, 20).join("\n  ") + (edited.length > 20 ? "\n  ..." : "");
@@ -403,17 +404,19 @@ export async function cmdBuild(args: { force: boolean; commit: boolean }) {
   }
   writeOutput(book, a.out, changesOf(current, a.out, book.tracksExecBit()));
   process.stdout.write(`built ${a.out.size} files from ${book.pins()} with ${a.applied} edits\n`);
-  if (args.commit) commitBuild(book);
+  if (args.commit) commitBuild(book, a);
   return 0;
 }
 
-function commitBuild(book: Book): void {
+function commitBuild(book: Book, a: Assembly): void {
   const root = book.root;
+  const modes = upstreamModes(book, a, Array.from(a.out.keys()));
   const addBuild = (env: Env) => {
     const tracked = (p: string) => git(["--literal-pathspecs", "ls-files", "-z", "--", p], { cwd: root, env }) !== "";
     const matchable = (paths: string[]) => paths.filter((p) => lexists(join(root, p)) || tracked(p));
     const output = matchable([relative(root, book.outputRoot()), ...book.vendors()]).map((p) => `:(literal)${p}`);
     if (output.length) run(["git", "add", "-A", "--", ...output, `:(exclude,literal)${PB}`], { cwd: root, env: { ...env, GIT_LITERAL_PATHSPECS: "0" } });
+    stageModes(root, modes, env);
     const inputs = matchable([...buildInputs(book), `${PB}/retired.md`]);
     const ignored = new Set(decode(run(["git", "--literal-pathspecs", "ls-files", "-z", "-o", "-i", "--exclude-standard", "--", ...inputs], { cwd: root, env })).split("\0"));
     const addable = inputs.filter((p) => !ignored.has(p));

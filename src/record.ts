@@ -10,7 +10,7 @@ import { installHookOrWarn } from "./githook.ts";
 import { changeDiff, ModelFailed, nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, LINK, type Mode, sameFile, sameMode, writeText } from "./lib/fs.ts";
+import { exists, type File, LINK, meantMode, type Mode, recordedModes, relative, sameFile, type Seen, writeText } from "./lib/fs.ts";
 import { replace, splitlines, strip } from "./lib/py.ts";
 import { bytesEqual, decode, encode, isText } from "./lib/text.ts";
 import { Undo } from "./undo.ts";
@@ -19,24 +19,17 @@ import { Undo } from "./undo.ts";
 type Draft = Omit<Entry, "intent"> & { intent: string | null };
 type Plan = { path: string; entries: Map<string, Draft>; notes: [string, string][] };
 
-/** The mode to write for an edited file's own copy: a link follows `now`, and so does a regular file where git tracks the
- * executable bit. Otherwise a regular file over a recorded link is a plain file, and the copy keeps its mode. */
-function recordedMode(now: Mode, built: Mode, tracksExecBit: boolean): Mode | undefined {
-  if (now === LINK || tracksExecBit) return now;
-  return built === LINK ? 0o644 : undefined;
-}
-
 type Copy = { change: Change; staged: string };
 
 type Destination = { kind: "owned"; change: Change; up?: File | undefined } | { kind: "recorded"; base: File };
 
 type Data = {
-  "add": { staged: string; now: File };
+  "add": { staged: string; now: Seen };
   "delete-upstream": { staged: string; entries: string | null };
   "unadd": Copy;
   "unreplace": Copy;
-  "update-ours": Copy & { now: File; built: File; up: File | undefined };
-  "file-edit": { rel: string; now: File; to: Destination };
+  "update-ours": Copy & { now: Seen; built: File; up: File | undefined };
+  "file-edit": { rel: string; now: Seen; built: Mode; to: Destination };
   "paragraph-edit": { plan: Plan; modeNotRecorded: string | null };
   "skip": { reason: string };
 };
@@ -48,8 +41,9 @@ type Need = { named: boolean; drafts: readonly Draft[] };
 const NOTHING: Need = { named: false, drafts: [] };
 const NAMED: Need = { named: true, drafts: [] };
 
-type Recording = { target: Change | null; intent: string | null; tracksExecBit: boolean };
-type Done = { touched: readonly Change[]; notes: readonly string[]; afterSave?: () => void };
+type Recording = { target: Change | null; intent: string | null };
+/** `copies` are the copies whose mode the row picked, absolute, for the commit hook to stage. */
+type Done = { touched: readonly Change[]; notes: readonly string[]; copies?: readonly [string, Mode][]; afterSave?: () => void };
 
 type Row<K extends Kind> = { needs(e: Edited<K>): Need; apply(e: Edited<K>, r: Recording): Done };
 
@@ -59,8 +53,8 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     apply: (e, r) => {
       const c = r.target!;
       c.edits.push({ kind: "add", path: e.staged });
-      c.write("ours", e.staged, e.now.data, e.now.mode);
-      return { touched: [c], notes: [`add      ${e.path}`] };
+      const copies = writeCopy(c, e.staged, e.now, undefined, undefined);
+      return { touched: [c], notes: [`add      ${e.path}`], copies };
     },
   },
   "delete-upstream": {
@@ -93,10 +87,9 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
   },
   "update-ours": {
     needs: () => NOTHING,
-    apply: (e, r) => {
-      e.change.write("ours", e.staged, e.now.data, recordedMode(e.now.mode, e.built.mode, r.tracksExecBit));
-      pinMode(e.change, e.staged, e.now, e.up, r.tracksExecBit);
-      return { touched: [e.change], notes: [`update   ${e.path} (in ${e.change.name})`] };
+    apply: (e) => {
+      const copies = writeCopy(e.change, e.staged, e.now, e.built.mode, e.up);
+      return { touched: [e.change], notes: [`update   ${e.path} (in ${e.change.name})`], copies };
     },
   },
   "file-edit": {
@@ -104,15 +97,14 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     apply: (e, r) => {
       if (e.to.kind === "owned") {
         const c = e.to.change;
-        c.write("ours", e.rel, e.now.data, e.now.mode);
-        pinMode(c, e.rel, e.now, e.to.up, r.tracksExecBit);
-        return { touched: [c], notes: [`file     ${e.path}` + (c !== r.target ? ` (in ${c.name})` : "")] };
+        const copies = writeCopy(c, e.rel, e.now, e.built, e.to.up);
+        return { touched: [c], notes: [`file     ${e.path}` + (c !== r.target ? ` (in ${c.name})` : "")], copies };
       }
       const c = r.target!;
       c.edits.push({ kind: "file", path: e.rel });
       c.write("base", e.rel, e.to.base.data, e.to.base.mode);
-      c.write("ours", e.rel, e.now.data, e.now.mode);
-      return { touched: [c], notes: [`file     ${e.path}`] };
+      const copies = writeCopy(c, e.rel, e.now, e.built, e.to.base);
+      return { touched: [c], notes: [`file     ${e.path}`], copies: [[c.content("base", e.rel), e.to.base.mode], ...copies] };
     },
   },
   "paragraph-edit": {
@@ -127,10 +119,19 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
   "skip": { needs: () => NOTHING, apply: (e) => ({ touched: [], notes: [`skipped  ${e.path}: ${e.reason}`] }) },
 };
 
-/** A copy whose mode differs from upstream's needs a base copy at upstream's mode, which marks the mode as the change's own. */
-function pinMode(c: Change, path: string, now: File, up: File | undefined, tracksExecBit: boolean): void {
-  if (up === undefined || sameMode(now.mode, up.mode, tracksExecBit) || now.mode === LINK || up.mode === LINK) return;
-  c.write("base", path, c.read("base", path) ?? up.data, up.mode);
+/** Write `now` as a change's copy at `path`, at the copy modes recordedModes picks. Returns the copies whose mode it
+ * picked, with that mode. A copy left at the mode it had isn't one: that mode was only read back from disk. */
+function writeCopy(c: Change, path: string, now: Seen, built: Mode | undefined, up: File | undefined): [string, Mode][] {
+  const had = { ours: c.file("ours", path)?.mode ?? null, base: c.file("base", path)?.mode ?? null };
+  const modes = recordedModes(now, built, up?.mode, had);
+  const picked: [string, Mode][] = [];
+  if (modes.base !== null && modes.base !== had.base) {
+    c.write("base", path, c.read("base", path) ?? up!.data, modes.base);
+    picked.push([c.content("base", path), modes.base]);
+  }
+  c.write("ours", path, now.data, modes.ours);
+  if (had.ours === null || meantMode(now, built) !== built) picked.push([c.content("ours", path), modes.ours]);
+  return picked;
 }
 
 function dropCopies(c: Change, path: string): void {
@@ -146,13 +147,12 @@ export type Snapshot = {
   out: ReadonlyMap<string, File>;
   sources: ReadonlyMap<string, Source>;
   upstream: ReadonlyMap<string, File>;
-  current: ReadonlyMap<string, File>;
+  current: ReadonlyMap<string, Seen>;
   changes: ReadonlyMap<string, Change>;
   owners: ReadonlyMap<string, Change>;
   blocks: ReadonlySet<string>;
   entriesAt(rel: string): string;
   prefix: string;
-  tracksExecBit: boolean;
   /** Whether a change's copy is text with a placeholder of a configured kind. The build expands only text. */
   uses(copy: Uint8Array | null): boolean;
   plan(rel: string, path: string, built: File, now: File): Plan | string;
@@ -212,7 +212,7 @@ function classifyOne(s: Snapshot, path: string): Edited {
   if (s.blocks.has(src.path)) {
     const plan = s.plan(src.path, path, built, now);
     if (typeof plan === "string") return { kind: "skip", path, reason: plan };
-    if (sameMode(now.mode, built.mode, s.tracksExecBit) || now.mode === LINK || built.mode === LINK) return { kind: "paragraph-edit", path, plan, modeNotRecorded: null };
+    if (meantMode(now, built.mode) === built.mode || now.mode === LINK || built.mode === LINK) return { kind: "paragraph-edit", path, plan, modeNotRecorded: null };
     const modeNotRecorded = `block entries hold no mode, so the mode change was not recorded; to set it, make your finish hook in ${PB}/hooks.ts run `
       + `out.get(${JSON.stringify(path)})!.mode = 0o${now.mode.toString(8)};`;
     return bytesEqual(built.data, now.data) ? { kind: "skip", path, reason: modeNotRecorded } : { kind: "paragraph-edit", path, plan, modeNotRecorded };
@@ -220,13 +220,13 @@ function classifyOne(s: Snapshot, path: string): Edited {
   const owner = s.owners.get(src.path);
   if (owner && s.uses(owner.read("ours", src.path))) return skipPlaceholders(path, owner);
   const to: Destination = owner ? { kind: "owned", change: owner, up: s.upstream.get(src.path) } : { kind: "recorded", base: s.upstream.get(src.path)! };
-  return { kind: "file-edit", path, rel: src.path, now, to };
+  return { kind: "file-edit", path, rel: src.path, now, built: built.mode, to };
 }
 
 const skipPlaceholders = (path: string, change: Change): Edited =>
   ({ kind: "skip", path, reason: `its copy in ${change.name} uses placeholders; edit that copy directly` });
 
-function snapshot(book: Book, a: Assembly, current: ReadonlyMap<string, File>, changes: ReadonlyMap<string, Change>): Snapshot {
+function snapshot(book: Book, a: Assembly, current: ReadonlyMap<string, Seen>, changes: ReadonlyMap<string, Change>): Snapshot {
   const owners = new Map<string, Change>();
   for (const c of changes.values()) for (const e of c.edits) if (e.kind === "file") owners.set(e.path, c);
   const rules = new Rules(book, new Set(a.sources.keys()));
@@ -235,7 +235,6 @@ function snapshot(book: Book, a: Assembly, current: ReadonlyMap<string, File>, c
     blocks: new Set(blockFiles(book)),
     entriesAt: (rel) => entriesPath(book, rel),
     prefix: book.layout.kind === "folder" && book.layout.from ? book.layout.from + "/" : "",
-    tracksExecBit: book.tracksExecBit(),
     uses: (copy) => copy !== null && isText(copy) && rules.uses(decode(copy)),
     plan: (rel, path, built, now) => planParagraphs(book, rules, rel, path, decode(a.upstream.get(rel)!.data), built.data, now.data),
   };
@@ -306,12 +305,13 @@ function modelDiff(a: Assembly, current: ReadonlyMap<string, File>, ask: Asked):
     .join("");
 }
 
-export type RecordResult = { text: string };
+/** What a recording says, and the copies whose mode it picked, repo-relative, for the commit hook to stage. */
+export type RecordResult = { text: string; copies: ReadonlyMap<string, Mode> };
 
-export async function cmdRecord(args: { change: string | null; intent: string | null; current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean; undo?: Undo }) {
+export async function cmdRecord(args: { change: string | null; intent: string | null; only?: (path: string) => boolean }) {
   const book = await Book.find();
-  if (args.current === undefined) installHookOrWarn(book);
-  process.stdout.write(record(book, args.change, args.intent, args).text);
+  installHookOrWarn(book);
+  process.stdout.write(record(book, args.change, args.intent, { seen: book.seen("disk"), only: args.only }).text);
   return 0;
 }
 
@@ -350,7 +350,10 @@ export function fill(book: Book, change: string | null, intent: string | null): 
   return filled.map(([c, text]) => `intent   ${c.name}: ${text}\n`).join("") + files.map((f) => `entries  ${f.rel}: ${f.intent}\n`).join("");
 }
 
-export function record(book: Book, change: string | null, intent: string | null, opts: { current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean; undo?: Undo } = {}): RecordResult {
+export function record(
+  book: Book, change: string | null, intent: string | null,
+  opts: { seen: ReadonlyMap<string, Seen>; edits?: readonly string[]; only?: ((path: string) => boolean) | undefined; undo?: Undo },
+): RecordResult {
   if (change && !CHANGE_NAME.test(change)) throw new Fail(notAChangeName(change));
   const problems: Problem[] = [];
   const roster = Roster.read(book, problems);
@@ -358,10 +361,10 @@ export function record(book: Book, change: string | null, intent: string | null,
   const badName = problems.find((p) => p.file === "series" && "refuse" in p);
   if (badName) throw new Fail(`refusing to record: ${describe(badName)}\nRename it to lowercase letters, digits and dashes in series and changes/ first.`);
   const a = assemble(book);
-  const current = opts.current ?? book.currentOutput();
+  const current = opts.seen;
   // Only files edited by hand since the last build. Others differ because the patchbook changed.
   const edited = (opts.edits ?? handEdits(book, a.out, current)).filter(opts.only ?? (() => true));
-  if (!edited.length) return { text: "no hand edits to the output since the last build; nothing to record\n" };
+  if (!edited.length) return { text: "no hand edits to the output since the last build; nothing to record\n", copies: new Map() };
   refuseLinkTurnedFile(a, current, edited);
   const s = snapshot(book, a, current, changes);
   const edits = classify(s, edited);
@@ -375,14 +378,16 @@ export function record(book: Book, change: string | null, intent: string | null,
 
   const touched = new Map<string, Change>();
   const notes: string[] = [];
+  const copies = new Map<string, Mode>();
   const afterSave: (() => void)[] = [];
   const undo = opts.undo ?? new Undo();
   undo.hold(book.dir);
   try {
     for (const e of edits) {
-      const done = row(e).apply(e, { target, intent: naming.intent, tracksExecBit: book.tracksExecBit() });
+      const done = row(e).apply(e, { target, intent: naming.intent });
       for (const c of done.touched) touched.set(c.name, c);
       notes.push(...done.notes);
+      for (const [p, mode] of done.copies ?? []) copies.set(relative(book.root, p), mode);
       if (done.afterSave) afterSave.push(done.afterSave);
     }
     if (target && (target.edits.length || (given && changes.has(target.name)))) touched.set(target.name, target);
@@ -395,7 +400,8 @@ export function record(book: Book, change: string | null, intent: string | null,
       const after = assemble(book).out;
       for (const p of edited) {
         const built = after.get(p);
-        if (built !== undefined && sameFile(current.get(p), built, book.tracksExecBit())) lock.set(p, stampOf(built));
+        const now = current.get(p);
+        if (built !== undefined && sameFile(now, built, now?.chosen ?? true)) lock.set(p, stampOf(built));
         else if (built === undefined && !current.has(p)) lock.delete(p);
       }
       writeBuildLines(book, lock);
@@ -412,7 +418,8 @@ export function record(book: Book, change: string | null, intent: string | null,
   }
   const owners = Array.from(touched.keys()).join(", ");
   const dropped = naming.unused && edits.some((e) => e.kind !== "skip");
-  return { text: (naming.said !== null ? naming.said + "\n" : "") + notes.map((n) => n + "\n").join("") + (dropped ? `intent   not used${owners ? `: the edits went to ${owners}` : ""}\n` : "") };
+  const text = (naming.said !== null ? naming.said + "\n" : "") + notes.map((n) => n + "\n").join("") + (dropped ? `intent   not used${owners ? `: the edits went to ${owners}` : ""}\n` : "");
+  return { text, copies };
 }
 
 /** An upstream link keeps its type in the build, so a regular file over it would be written back as a link. */
