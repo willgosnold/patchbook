@@ -320,16 +320,15 @@ async function putFirst(book: Book, hook: Extract<Hook, { kind: "script" }>): Pr
     if (wrote) process.stderr.write(PUT_FIRST(hook.manager, where) + "\n");
     return;
   }
-  // The 755 of a hook file it creates is the patchbook's choice. Staged, it is chosen under core.fileMode=false too.
-  if (text === null) {
-    git(["--literal-pathspecs", "add", "-f", "--", key], { cwd: book.root });
-    stageModes(book.root, new Map([[key, 0o755]]));
-  }
-  recordAndStage(book, book.seen("disk"), key, hookIntent(hook.manager, where));
+  const seen = book.seen("disk");
+  const created = text === null ? seen.get(key) : undefined;
+  // The 755 of a hook file it creates is the patchbook's choice, under core.fileMode=false too.
+  if (created) seen.set(key, { ...created, mode: 0o755, chosen: true });
+  recordAndStage(book, seen, key, hookIntent(hook.manager, where), created !== undefined);
   process.stderr.write(`${PUT_FIRST(hook.manager, where)}, recorded the edit in the patchbook, and staged both\n`);
 }
 
-function recordAndStage(book: Book, seen: ReadonlyMap<string, Seen>, key: string, intent: string): void {
+function recordAndStage(book: Book, seen: ReadonlyMap<string, Seen>, key: string, intent: string, created: boolean): void {
   const oids = (): Map<string, string | null> => new Map<string, string | null>([
     ...unstaged(book.root, [PB]).map((p): [string, string | null] => [p, lexists(join(book.root, p)) ? blobOid(readDisk(join(book.root, p)).data) : null]),
     ...ignoredInPatchbook(book.root),
@@ -339,7 +338,7 @@ function recordAndStage(book: Book, seen: ReadonlyMap<string, Seen>, key: string
   process.stdout.write(recorded.text);
   const wrote = Array.from(oids()).filter(([p, oid]) => oid !== before.get(p)).map(([p]) => p);
   git(["--literal-pathspecs", "add", "-A", "-f", "--", key, ...wrote], { cwd: book.root });
-  stageModes(book.root, recorded.copies);
+  stageModes(book.root, created ? new Map([...recorded.copies, [key, 0o755]]) : recorded.copies);
 }
 
 /** Give each listed index entry its mode, and return the paths it changed. `git add` keeps an entry's mode under
@@ -364,9 +363,9 @@ export function stageModes(root: string, modes: ReadonlyMap<string, Mode>, env: 
   return changed;
 }
 
-/** The copies behind the outputs whose bit was chosen in this commit, where a copy decides the mode the patchbook builds
- * and builds that bit: ours at the chosen bit, and a base copy at upstream's. That covers a copy an earlier `patchbook
- * record` wrote, which `git add` left at 644. Under core.fileMode=true `git add` takes a copy's mode from disk already. */
+/** The copies behind the outputs whose bit was chosen in this commit and that the patchbook builds at that bit: ours at
+ * the chosen bit, and a base copy at upstream's, which together build it. That covers a copy an earlier `patchbook record`
+ * wrote, which `git add` left at its old mode or at 644. Under core.fileMode=true `git add` takes a copy's mode from disk. */
 function chosenCopies(book: Book, a: Assembly, staged: ReadonlyMap<string, Seen>, sinceHead: ReadonlyMap<string, unknown>): Map<string, Mode> {
   const modes = new Map<string, Mode>();
   if (book.tracksExecBit()) return modes;
@@ -376,7 +375,7 @@ function chosenCopies(book: Book, a: Assembly, staged: ReadonlyMap<string, Seen>
   for (const [p, now] of staged) {
     const src = a.sources.get(p);
     const up = src && a.upstream.get(src.path)?.mode;
-    if (!now.chosen || !sinceHead.has(p) || now.mode === LINK || src === undefined || a.out.get(p)?.mode !== now.mode || now.mode === up) continue;
+    if (!now.chosen || !sinceHead.has(p) || now.mode === LINK || src === undefined || a.out.get(p)?.mode !== now.mode) continue;
     const change = src.kind === "ours" ? changes.get(src.change) : owners.get(src.path);
     if (change === undefined) continue;
     modes.set(relative(book.root, change.content("ours", src.path)), now.mode);
@@ -762,8 +761,9 @@ async function runHook(undo: Undo) {
     refuseBehindLinks(book, removed);
     return sorted(new Set([...committable(book, staged, handEdits(book, out, staged, [lock, committed])), ...removed]));
   };
+  // Bytes are staged for a change of content. A mode alone, under core.fileMode=false, is staged with stageModes below.
   const plan = (out: ReadonlyMap<string, File>) => {
-    const { stale, changed } = changesOf(staged, out);
+    const { stale, changed } = changesOf(staged, out, book.tracksExecBit());
     const stage = new Set([...stale, ...committable(book, staged, changed)]);
     const { writes, userOnly } = diskWrites(book, lock, staged, out);
     refuseOverwrites(book, userOnly.filter((p) => stage.has(p)));
@@ -848,7 +848,8 @@ async function runHook(undo: Undo) {
   if (recordedIgnored.length) adds.push(["--literal-pathspecs", "add", "-A", "-f", "--", ...recordedIgnored]);
   // The modes the patchbook decided, which `git add` alone wouldn't stage under core.fileMode=false. Copies this run
   // wrote come last, so their mode wins.
-  const modes = new Map([...chosenCopies(book, a, staged, sinceHead), ...upstreamModes(book, a, built), ...copies]);
+  const upstream = a.problems.length ? new Map<string, Mode>() : upstreamModes(book, a, Array.from(a.out.keys()));
+  const modes = new Map([...chosenCopies(book, a, staged, sinceHead), ...upstream, ...copies]);
   for (const add of adds) git(add, { cwd: book.root });
   const moded = stageModes(book.root, modes);
   const partial = partialCommit(book.root);
