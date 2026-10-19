@@ -7543,6 +7543,39 @@ describe("VendorTest", () => {
     expect(existsSync(join(t.fork.path, "moved.txt"))).toBe(false);
   });
 
+  forkTest("test_a_hand_written_edit_path_that_ends_in_a_slash_is_refused_and_nothing_is_built", (t) => {
+    const dir = join(t.fork.path, ".patchbook/changes/hand");
+    mkdirNew(dir);
+    writeFileSync(join(t.fork.path, ".patchbook/series"), "hand\n");
+    writeFileSync(join(dir, "CHANGE.md"), "# hand\n\nintent: Move the guide.\n\nedits:\n- move docs/guide.md -> moved /\n");
+    const before = tree(t.fork.path);
+    const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
+    expect(status).toContain("changes/hand move docs/guide.md -> moved /: ");
+    expect(status).toContain("no slash at the end");
+    expect(t.pb(["build"], { cwd: t.fork.path, code: 1 }).stderr).toContain("nothing built");
+    expect(tree(t.fork.path)).toEqual(before);
+  });
+
+  forkTest("test_record_keeps_a_hand_written_move_whose_source_ends_in_an_arrow_and_build_moves_that_file", (t) => {
+    t.up.write("a ->", "AAA\n");
+    t.up.write("a", "alpha\n");
+    t.up.commit("names that end in an arrow");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "mv", "--intent", "Shout two and move a file."], { cwd: t.fork.path });
+    const file = join(t.fork.path, ".patchbook/changes/mv/CHANGE.md");
+    writeFileSync(file, read(file) + '- move "a ->" -> b.txt\n');
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE"));
+    t.pb(["record", "mv", "--intent", "Shout two and move a file."], { cwd: t.fork.path });
+    expect(read(file)).toContain('\n- move "a ->" -> b.txt\n');
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(read(join(t.fork.path, "b.txt"))).toBe("AAA\n");
+    expect(read(join(t.fork.path, "a"))).toBe("alpha\n");
+    expect(existsSync(join(t.fork.path, "a ->"))).toBe(false);
+    expect(existsSync(join(t.fork.path, "-> b.txt"))).toBe(false);
+  });
+
   vendorTest("test_record_skips_a_paragraph_edit_whose_entry_uses_a_placeholder_that_is_empty", (t) => {
     const entries = t.missingScaffoldPatchBuild();
     t.repo.write(".patchbook/snippets.md", "## none\n\n## greet\n\nSay hello in T3.\n");

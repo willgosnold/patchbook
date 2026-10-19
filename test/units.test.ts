@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import type { Problem } from "../src/api.ts";
 import type { Assembly } from "../src/assemble.ts";
 import type { Reserved } from "../src/book.ts";
+import type { Edit } from "../src/changes.ts";
 import { SequenceMatcher } from "../src/lib/difflib.ts";
 
 const sandbox = mkdtempSync(join(tmpdir(), "units"));
@@ -656,6 +657,32 @@ describe("parseChange", () => {
 
   const KINDS = ["file", "add", "replace", "delete"] as const;
 
+  const AWKWARD = (() => {
+    const tokens = [" ", "\t", "\n", "\r", '"', "\\", "-", ">", " -> ", " ->", " ", "﻿", "\u0085", " ", "\0", "\x01", "\x1b", "\x1f", "\x7f", "😀", "é", "/", ".", "a", "b"];
+    let seed = 155;
+    const random = () => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let r = Math.imul(seed ^ (seed >>> 15), seed | 1);
+      r ^= r + Math.imul(r ^ (r >>> 7), r | 61);
+      return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+    };
+    const names = ["a ->", "a -> b", "-> b", '"a', '"a"', "a\rb", "a\nb", " a", "a ", "﻿a", "a\tb", 'a"b', "a\\b", "/a", "a/", "a//b", ".", "a/../b", "", "a\0b"];
+    for (let i = 0; i < 1000; i++) names.push(Array.from({ length: 1 + Math.floor(random() * 6) }, () => tokens[Math.floor(random() * tokens.length)]).join(""));
+    return names;
+  })();
+  const clean = (path: string) => !path.includes("\0") && path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+  const fuzz = join(scratch(), "fuzz", "CHANGE.md");
+  const readLine = (line: string): Edit[] | "held" | "failed" => {
+    put(fuzz, `# fuzz\n\nintent: Try paths.\n\nedits:\n${line}\n`);
+    try {
+      const change = parseChange(fuzz, () => {});
+      return change.held.length ? "held" : change.edits;
+    } catch (e) {
+      if (!(e instanceof Fail)) throw e;
+      return "failed";
+    }
+  };
+
   test("reads a quoted path with nothing cut at either end", () => {
     const edits = [
       '- file " lead"', '- file "trail "', '- add "\uFEFFbom-lead"', '- delete "bom-trail\uFEFF"',
@@ -726,31 +753,42 @@ describe("parseChange", () => {
     expect(() => parse(['- move "a"'])).toThrow("only move and copy take");
   });
 
-  test("writes a path bare unless it needs quotes", () => {
-    for (const path of ["a.txt", "a b/c d", "a-b", "dir/sub dir/file.txt", "é/日本", "a>b", "a->b", "a ->b", "a- >b", "a'b"]) {
+  test("writes a path bare when the bare text reads back as that path", () => {
+    for (const path of ["a.txt", "a b/c d", "a-b", "dir/sub dir/file.txt", "é/日本", "a>b", "a->b", "a ->b", "a- >b", "a'b", 'a"b', "a\\b", "a ->", "a b"]) {
       expect(editText({ kind: "add", path })).toBe(`add ${path}`);
     }
+    for (const kind of ["move", "copy"] as const) expect(editText({ kind, path: "a", dest: "b -> c" })).toBe(`${kind} a -> b -> c`);
   });
 
   test.each([
     [" lead", '" lead"'],
     ["trail ", '"trail "'],
-    ["\uFEFFx", '"\uFEFFx"'],
-    ["x\uFEFF", '"x\uFEFF"'],
-    ["\u00A0x", '"\u00A0x"'],
+    ["﻿x", '"﻿x"'],
+    ["x﻿", '"x﻿"'],
+    [" x", '" x"'],
     ["a -> b", '"a -> b"'],
-    ['a"b', '"a\\"b"'],
-    ["a\\b", '"a\\\\b"'],
+    ['"a', '"\\"a"'],
+    ['"a"', '"\\"a\\""'],
     ["a\tb", '"a\\tb"'],
     ["a\nb", '"a\\nb"'],
     ["a\rb", '"a\\015b"'],
     ["a\x01b", '"a\\001b"'],
+    ["a\x1bb", '"a\\033b"'],
     ["a\x7fb", '"a\\177b"'],
     ["a\u0085b", '"a\\302\\205b"'],
     ['"', '"\\""'],
   ])("writes %j in double quotes", (path, written) => {
     expect(editText({ kind: "add", path })).toBe(`add ${written}`);
     expect(parse([`- add ${written}`]).edits).toEqual([{ kind: "add", path }]);
+  });
+
+  test("refuses a bare path that holds a control character, and shows it only in quotes", () => {
+    for (const ch of ["\t", "\x01", "\x1b", "\x7f", "\u0085"]) {
+      const quoted = editText({ kind: "add", path: `a${ch}b` }).slice("add ".length);
+      for (const line of [`- add a${ch}b`, `- move a${ch}b -> c`, `- copy c -> a${ch}b`]) {
+        expect(() => parse([line])).toThrow(`CHANGE.md:6: a bare path can't hold a control character; write it in double quotes: ${quoted}`);
+      }
+    }
   });
 
   test("a move or copy writes each side by itself and reads it back", () => {
@@ -785,6 +823,56 @@ describe("parseChange", () => {
     expect(got.edits).toEqual([]);
     expect(got.held).toEqual(['- file "../up "', "- add ../x"]);
     expect(got.refused.map(([edit]) => edit)).toEqual(['file "../up "', "add ../x"]);
+  });
+
+  test("a move or copy source that ends in an arrow reads back as itself, and so does the line record writes for it", () => {
+    for (const kind of ["move", "copy"] as const) {
+      const edit = { kind, path: "a ->", dest: "b.txt" };
+      expect(parse([`- ${editText(edit)}`]).edits).toEqual([edit]);
+      const dir = scratch();
+      const file = put(join(dir, "mv", "CHANGE.md"), `# mv\n\nintent: Move a file.\n\nedits:\n- ${kind} "a ->" -> b.txt\n`);
+      const change = parseChange(file, () => {});
+      writeFileSync(file, formatChange(change));
+      expect(parseChange(file, () => {}).edits).toEqual([edit]);
+    }
+  });
+
+  test("a path with a slash at either end is refused, bare or quoted, and never read without the slash", () => {
+    const lines = ["- move a.txt -> moved /", "- copy a.txt -> b/", "- move /a -> b", "- file a/", "- add /a", "- delete a /", '- add "a/"', '- replace "/a"', '- move "a" -> "b /"'];
+    const got = parse(lines);
+    expect(got.edits).toEqual([]);
+    expect(got.held).toEqual(lines);
+    for (const [, detail] of got.refused) expect(detail).toContain("no slash at the end");
+  });
+
+  test("every path the writer writes, as a single path, a source or a destination, reads back as itself, or is refused when it is not a clean path inside the tree, and is in quotes only when its bare text would not read back", () => {
+    for (const [i, name] of AWKWARD.entries()) {
+      const other = AWKWARD[(i + 1) % AWKWARD.length]!;
+      const pair = i % 2 ? "copy" : "move";
+      const single: Edit = { kind: KINDS[i % 4]!, path: name };
+      for (const edit of [single, { kind: pair, path: name, dest: other }, { kind: pair, path: other, dest: name }] satisfies Edit[]) {
+        const paths = "dest" in edit ? [edit.path, edit.dest] : [edit.path];
+        const line = `- ${editText(edit)}`;
+        expect({ line, got: readLine(line) }).toEqual({ line, got: paths.some((p) => p.includes("\0")) ? "failed" : paths.every(clean) ? [edit] : "held" });
+      }
+      const bare = `- ${single.kind} ${name}`;
+      if (`- ${editText(single)}` !== bare) expect({ bare, got: readLine(bare) }).not.toEqual({ bare, got: [single] });
+    }
+  });
+
+  test("a hand-written bare line is read exactly as written, with clean paths and no whitespace at an end or control character, or it is refused", () => {
+    for (const [i, name] of AWKWARD.entries()) {
+      const other = AWKWARD[(i + 1) % AWKWARD.length]!;
+      for (const paths of [[name], [name, other]]) {
+        const text = `${paths.length === 2 ? "move" : KINDS[i % 4]} ${paths.join(" -> ")}`;
+        if (/[\r\n]/.test(text) || paths.some((p) => p.startsWith('"'))) continue;
+        const got = readLine(`- ${text}`);
+        if (typeof got === "string") continue;
+        const read = "dest" in got[0]! ? [got[0].path, got[0].dest] : [got[0]!.path];
+        expect({ text, read: `${got[0]!.kind} ${read.join(" -> ")}` }).toEqual({ text, read: text });
+        for (const p of read) expect({ p, ok: clean(p) && !/^\s|\s$|\p{Cc}/u.test(p) }).toEqual({ p, ok: true });
+      }
+    }
   });
 
   test("an edit line starts in the first column, so an indented one is refused", () => {
