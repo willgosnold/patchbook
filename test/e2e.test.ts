@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { accessSync, appendFileSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
+import type { Nearest } from "../src/api.ts";
 import { CMD, Case, Repo, TOOL, type Run, dedent, lstrip, mkdirNew, partitionHead, replace, sh, shlexSplit, words } from "./helpers";
 
 const TIMEOUT = 120_000;
@@ -5142,6 +5143,22 @@ describe("ForkTest", () => {
     expect(status.last_sync.upstreams.upstream.conflicts).toEqual([{ change: "feature", path: "app.txt", count: 1 }]);
   });
 
+  forkTest("test_check_and_last_sync_list_upstreams_in_config_order", (t) => {
+    const names = ["up", "2"];
+    for (const name of names) {
+      const repo = new Repo(join(t.tmp, `up-${name}`));
+      repo.write("a.txt", "a\n");
+      repo.commit("start");
+      t.pb(["track", name, repo.path, "--mount", `m-${name}`], { cwd: t.fork.path });
+      repo.write("a.txt", "b\n");
+      repo.commit("move");
+    }
+    const keys = (text: string): string[] => [...text.matchAll(/^ {4}"([^"]*)": \{$/gm)].map((m) => m[1]!);
+    expect(keys(t.pb(["check"], { cwd: t.fork.path, code: 10 }).stdout)).toEqual(["upstream", ...names]);
+    t.pb(["sync"], { cwd: t.fork.path });
+    expect(keys(t.fork.read(".patchbook/last-sync.json"))).toEqual(names);
+  });
+
   forkTest("test_a_last_sync_written_before_versions_still_reads", (t) => {
     t.recordFeature();
     const from = JSON.parse(t.fork.read(".patchbook/upstream.lock")).upstream.commit;
@@ -5156,6 +5173,35 @@ describe("ForkTest", () => {
     expect(status.last_sync).toEqual({ upstreams });
     expect(t.pb(["upstream", "upstream", "--diff"], { cwd: t.fork.path }).stdout).toContain("SIX");
     expect(upstreams.upstream.from).toBe(from);
+  });
+
+  vendorTest("test_status_json_prints_the_nearest_similarity_as_a_number", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.repo.commit("built");
+    const skill = "plugin/skills/hello/SKILL.md";
+    t.up.write(skill, replace(t.up.read(skill), "say hello", "say hi"));
+    t.up.commit("reword");
+    t.pb(["sync"], { cwd: t.repo.path });
+    const out = t.pb(["status", "--json"], { cwd: t.repo.path, code: 1 }).stdout;
+    const orphan = JSON.parse(out).problems.find((p: { problem: string }) => p.problem === "orphan");
+    const first: Nearest = { line: 7, hash: orphan.nearest[0].hash, similarity: 0.9 };
+    expect(orphan.nearest[0]).toEqual(first);
+    expect(out).toContain('"similarity": 0.9\n');
+  });
+
+  vendorTest("test_a_check_hook_may_return_an_orphan", (t) => {
+    writeFileSync(join(t.repo.path, ".patchbook/hooks.ts"), dedent(`
+      export function check() {
+        return [{
+          problem: "orphan", file: "skills/hello/SKILL.md", hash: "abc", kind: "keep", rules: "", intent: "Keep it.",
+          upstream: "u", patched: "u", nearest: [{ line: 1, hash: "h", similarity: 0.5 }],
+        }];
+      }
+    `));
+    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout).toContain("nearest new blocks: line 1 [h] 0.5\n");
+    const out = t.pb(["status", "--json"], { cwd: t.repo.path, code: 1 }).stdout;
+    const orphan = JSON.parse(out).problems.find((p: { hash: string }) => p.hash === "abc");
+    expect(orphan.nearest).toEqual([{ line: 1, hash: "h", similarity: 0.5 }]);
   });
 
   forkTest("test_record_writes_the_name_and_intent", (t) => {
