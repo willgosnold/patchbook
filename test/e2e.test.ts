@@ -7892,7 +7892,7 @@ describe("VendorTest", () => {
     expect(JSON.parse(t.repo.read(".patchbook/upstream.lock")).extra.tree).toBe(EMPTY_TREE);
     t.pb(["build"], { cwd: t.repo.path, code: null });
     t.repo.write("note.txt", "a note\n");
-    gitIn(t, ["add", "note.txt", ".patchbook/upstream.lock"]);
+    gitIn(t, ["add", "note.txt", ".patchbook/upstream.lock", ".patchbook/build.lock"]);
     const commit = hookedCommit(t, ["-qm", "empty pin"]);
     expect(commit.code).toBe(0);
     expect(JSON.parse(gitIn(t, ["show", "HEAD:.patchbook/upstream.lock"])).extra.tree).toBe(EMPTY_TREE);
@@ -7909,11 +7909,14 @@ describe("VendorTest", () => {
     t.pb(["sync", "extra"], { cwd: t.repo.path });
     t.repo.write("note.txt", "a note\n");
     gitIn(t, ["add", "note.txt"]);
+    const head = gitIn(t, ["rev-parse", "HEAD"]);
     const commit = hookedCommit(t, ["-qm", "an unrelated note"]);
-    expect(commit.code).toBe(0);
+    expect(commit.code).toBe(1);
+    expect(commit.stderr).toContain("aren't in this commit:\n  .patchbook/upstream.lock");
     expect(commit.stderr).not.toContain("pinned copy");
+    expect(gitIn(t, ["rev-parse", "HEAD"])).toBe(head);
     expect(gitIn(t, ["show", "HEAD:vendor/extra/a.md"])).toBe("one\n");
-    expect(gitIn(t, ["show", "--name-only", "--format=", "HEAD"])).not.toContain("vendor/");
+    expect(gitIn(t, ["diff", "--cached", "--name-only"]).trim()).toBe("note.txt");
     gitIn(t, ["clone", "-q", ".", "../clone"]);
     expect(t.pb(["status"], { cwd: join(t.tmp, "clone") }).stdout).toContain("no problems");
   });
@@ -7925,9 +7928,10 @@ describe("VendorTest", () => {
     t.repo.write("note.txt", "a note\n");
     gitIn(t, ["add", "note.txt"]);
     const commit = hookedCommit(t, ["-qm", "no lock staged"]);
-    expect(commit.code).toBe(0);
+    expect(commit.code).toBe(1);
+    expect(commit.stderr).toContain("aren't in this commit:\n  .patchbook/upstream.lock");
     expect(commit.stderr).not.toContain("pinned copy");
-    expect(inHead(t, "vendor/extra")).toEqual([]);
+    expect(gitIn(t, ["ls-files", "vendor"])).toBe("");
   });
 
   for (const [index, where] of [["alt", "the git dir"], ["next-index-copy", "the git dir"], ["next-index-7.lock", "another folder"]] as const) {
@@ -8019,17 +8023,18 @@ describe("VendorTest", () => {
     gitIn(t, ["add", "-A"]);
     gitIn(t, ["commit", "-qm", "setup"]);
     const missing = "1".repeat(40);
-    stageLock(t, (text) => text.replace(/"tree": "[0-9a-f]{40}"/, `"tree": "${missing}"`));
+    const lock = join(t.repo.path, ".patchbook/upstream.lock");
+    writeFileSync(lock, readFileSync(lock, "utf8").replace(/"tree": "[0-9a-f]{40}"/, `"tree": "${missing}"`));
+    gitIn(t, ["add", ".patchbook/upstream.lock"]);
     t.repo.write("note.txt", "a note\n");
     gitIn(t, ["add", "note.txt"]);
     const head = gitIn(t, ["rev-parse", "HEAD"]);
     const index = gitIn(t, ["ls-files", "-s"]);
     const commit = hookedCommit(t, ["-qm", "pin to a tree the repo lacks"]);
     expect(commit.code).toBe(1);
-    expect(commit.stderr).toContain("patchbook:");
-    expect(commit.stderr).toContain("extra");
-    expect(commit.stderr).toContain(missing);
-    expect(commit.stderr).toContain("patchbook sync extra");
+    expect(commit.stderr).toContain("patchbook: vendor/extra");
+    expect(commit.stderr).toContain(`differs from the pin (tree ${missing.slice(0, 7)})`);
+    expect(commit.stderr).toContain("run sync");
     expect(commit.stderr).not.toContain("fatal:");
     expect(gitIn(t, ["rev-parse", "HEAD"])).toBe(head);
     expect(gitIn(t, ["ls-files", "-s"])).toBe(index);
@@ -8048,7 +8053,6 @@ describe("VendorTest", () => {
     expect(commit.code).toBe(1);
     expect(commit.stderr).toContain("patchbook:");
     expect(commit.stderr).toContain(".patchbook/upstream.lock");
-    expect(commit.stderr).toContain("index");
     expect(commit.stderr).not.toMatch(/\n\s+at /);
     expect(gitIn(t, ["rev-parse", "HEAD"])).toBe(head);
     expect(gitIn(t, ["ls-files", "-s"])).toBe(index);
