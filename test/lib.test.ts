@@ -9,9 +9,7 @@ import { type Opcode, SequenceMatcher, unifiedDiff } from "../src/lib/difflib.ts
 import { nonFolders, rmFolders } from "../src/lib/fs.ts";
 import { dumps, loads } from "../src/lib/json.ts";
 import { shellQuote } from "../src/lib/proc.ts";
-import {
-  str, strRepr,
-} from "../src/lib/py.ts";
+import { str, strRepr } from "../src/lib/repr.ts";
 import { byCodePoint, lines } from "../src/lib/text.ts";
 
 type Fixture = {

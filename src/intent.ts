@@ -10,7 +10,7 @@ import { Fail } from "./lib/fail.ts";
 import type { File } from "./lib/fs.ts";
 import { JsonError, type JsonValue, loads } from "./lib/json.ts";
 import { spawn, which } from "./lib/proc.ts";
-import { str, strRepr } from "./lib/py.ts";
+import { str, strRepr } from "./lib/repr.ts";
 import { decode, decodeReplace, encode, isText, lines } from "./lib/text.ts";
 import { configured, readToml, type Source, setting, SETTINGS, type Table, USER_CONFIG } from "./settings.ts";
 

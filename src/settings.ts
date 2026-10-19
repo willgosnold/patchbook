@@ -7,7 +7,7 @@ import { Book, NoBook } from "./book.ts";
 import { intentSettings, PROVIDERS } from "./intent.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, mkdirs, pjoin, readBytes, readText, writeText } from "./lib/fs.ts";
-import { strRepr } from "./lib/py.ts";
+import { strRepr } from "./lib/repr.ts";
 import { decode } from "./lib/text.ts";
 import { quoteToml } from "./lib/toml.ts";
 

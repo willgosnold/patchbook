@@ -1,5 +1,4 @@
-// Python's str and number semantics where JavaScript's differ. Python strings index code points,
-// JavaScript strings UTF-16 code units, so anything that counts, slices or orders characters is here.
+// Python's repr() of a string and str() of a JSON value, which messages and placeholder values still use.
 import type { JsonValue } from "./json.ts";
 
 const NOT_PRINTABLE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}]/u;
@@ -26,7 +25,7 @@ export function strRepr(s: string): string {
   return out + quote;
 }
 
-export function repr(v: JsonValue): string {
+function repr(v: JsonValue): string {
   return typeof v === "string" ? strRepr(v) : str(v);
 }
 

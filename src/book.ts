@@ -8,7 +8,7 @@ import { exists, type File, GITLINK, isDir, isMode, isSymlink, lexists, mkdirs, 
 import { dumps, loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
 import type { JsonValue } from "./lib/json.ts";
-import { strRepr } from "./lib/py.ts";
+import { strRepr } from "./lib/repr.ts";
 import { byCodePoint, decode } from "./lib/text.ts";
 import { isTable, parseToml, type Table } from "./settings.ts";
 import { stagedFolder, treeFiles, Upstream } from "./store.ts";

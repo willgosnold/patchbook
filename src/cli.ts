@@ -12,7 +12,7 @@ import { cmdHook, commitAdvice, installHook, installHookOrWarn, keepGitHook } fr
 import { Fail } from "./lib/fail.ts";
 import { exists, lexists, readText, resolve, writeText } from "./lib/fs.ts";
 import { git, redact } from "./lib/proc.ts";
-import { strRepr } from "./lib/py.ts";
+import { strRepr } from "./lib/repr.ts";
 import { quoteToml } from "./lib/toml.ts";
 import { cmdRecord } from "./record.ts";
 import { checkUpstreamRemote, notThisRepo } from "./remote.ts";

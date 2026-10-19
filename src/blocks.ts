@@ -8,7 +8,7 @@ import { Fail } from "./lib/fail.ts";
 import { pjoin, readText } from "./lib/fs.ts";
 import { sha256 } from "./lib/hash.ts";
 import { loads } from "./lib/json.ts";
-import { str, strRepr } from "./lib/py.ts";
+import { str, strRepr } from "./lib/repr.ts";
 import { byCodePoint, decode } from "./lib/text.ts";
 
 export const ENTRY_FIELDS = ["kind", "rules", "intent"] as const;
