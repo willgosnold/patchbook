@@ -87,7 +87,7 @@ export function parseChange(path: string, reject: (edit: string, detail: string)
     } else if (line.trim() === "edits:") section = "edits";
     else if (section === "intent" && line.trim()) change.intent += " " + line.trim();
     else if (section === "edits" && line.trim()) {
-      const m = EDIT_LINE.exec(line.trim());
+      const m = EDIT_LINE.exec(line);
       const kind = m?.[1];
       if (!m || kind === undefined || !isEditKind(kind)) throw new Fail(`${path}:${n}: expected \`- <${EDIT_KINDS.join("|")}> <path>\``);
       const [, , src = "", dest] = m;
@@ -95,7 +95,7 @@ export function parseChange(path: string, reject: (edit: string, detail: string)
       const unsafe = unsafePath(src) ?? (dest === undefined ? null : unsafePath(dest));
       if (unsafe) {
         change.held.push(line);
-        reject(line.trim().slice(2), unsafe);
+        reject(line.slice(2), unsafe);
       } else {
         change.edits.push(
           kind === "move" || kind === "copy" ? { kind, path: src.replace(OUTER_SLASHES, ""), dest: (dest ?? "").replace(OUTER_SLASHES, "") } : { kind, path: src.replace(OUTER_SLASHES, "") },
