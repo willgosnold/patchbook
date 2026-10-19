@@ -9352,6 +9352,41 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.fork.path }).stdout).toContain(".patchbook/changes/shout-two/CHANGE.md");
   });
 
+  const addWithItsCopyGone = (t: ForkCase): void => {
+    t.fork.write("new.txt", "new file\n");
+    sh(["git", "add", "new.txt"], { cwd: t.fork.path });
+    expect(intoKeptCommit(t).code).toBe(0);
+    t.fork.rm(".patchbook/changes/shout-two/ours/new.txt.pb");
+    t.fork.commit("lose the copy");
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("add new.txt: its ours copy is missing");
+  };
+
+  for (const [name, change] of [["deletes", ["rm", "-q", "new.txt"]], ["renames", ["mv", "new.txt", "new2.txt"]]] as const) {
+    forkTest(`test_hook_refuses_when_it_${name}_an_output_a_problem_dropped`, (t) => {
+      addWithItsCopyGone(t);
+      sh(["git", ...change], { cwd: t.fork.path });
+      const state = gitState(t);
+      const files = tree(t.fork.path);
+      const refused = intoKeptCommit(t);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("couldn't record these hand edits:\n  new.txt\n");
+      expect(gitState(t)).toBe(state);
+      expect(tree(t.fork.path)).toEqual(files);
+    });
+  }
+
+  forkTest("test_hook_commits_a_deletion_the_patchbook_makes_while_it_has_a_problem", (t) => {
+    placeholderCopyAndMissingChange(t);
+    const change = ".patchbook/changes/ver/CHANGE.md";
+    t.fork.write(change, t.fork.read(change) + "- delete docs/guide.md\n");
+    sh(["git", "add", change], { cwd: t.fork.path });
+    sh(["git", "rm", "-q", "docs/guide.md"], { cwd: t.fork.path });
+    const committed = intoKeptCommit(t);
+    expect(committed.code).toBe(0);
+    expect(committed.stderr).toContain("1 problems, so the output wasn't rebuilt.");
+    expect(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.fork.path }).stdout).toContain("docs/guide.md");
+  });
+
   forkTest("a symlink the fork adds stays a symlink in the build", (t) => {
     symlinkSync("app.txt", join(t.fork.path, "link"));
     t.pb(["record", "link", "--intent", "Link to the app."], { cwd: t.fork.path });
