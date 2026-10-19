@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readdirSync, readFileSync } from "node:fs";
 import type { LastSync, SyncReport } from "../src/api.ts";
 import { lockText, parseLock } from "../src/book.ts";
 import { parsePlaceholders } from "../src/blocks.ts";
@@ -370,4 +371,10 @@ describe("a placeholder file with format = json", () => {
   test("refuses a list with something other than a string in it, naming the item", () => {
     expect(refusal(() => parsePlaceholders('{"a": ["x", 1]}', "strings.json"))).toBe('strings.json: "a"[1] must be a string, not 1.');
   });
+});
+
+test("only src/lib/shape.ts calls JSON.parse", () => {
+  const sources = readdirSync(new URL("../src", import.meta.url), { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".ts"));
+  const parsing = sources.filter((f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8").includes("JSON.parse("));
+  expect(parsing).toEqual(["lib/shape.ts"]);
 });
