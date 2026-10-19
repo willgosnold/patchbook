@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { LastSync, SyncReport } from "../src/api.ts";
 import { lockText, parseLock } from "../src/book.ts";
+import { parsePlaceholders } from "../src/blocks.ts";
 import { Fail } from "../src/lib/fail.ts";
 import {
   boolean, count, jsonText, list, named, nullable, object, oid, readJson, type Shape, string, table, versioned, writeJson,
@@ -333,5 +334,40 @@ describe("last-sync.json", () => {
   test("refuses the old snake_case key", () => {
     expect(refusal(() => parseLastSync(text((r) => ((r["replaced_upstream_changed"] = r["replacedUpstreamChanged"]), delete r["replacedUpstreamChanged"])))))
       .toBe(`${what}: upstreams[0].replacedUpstreamChanged is missing. ${fix}`);
+  });
+});
+
+describe("a placeholder file with format = json", () => {
+  test("gives each key a string, or a list of strings joined with a comma and a space", () => {
+    const read = parsePlaceholders('{"greet": "Say hello.", "tools": ["a", "b"], "none": [], "naïve": "é"}', "strings.json");
+    expect([...read]).toEqual([["greet", "Say hello."], ["tools", "a, b"], ["none", ""], ["naïve", "é"]]);
+  });
+
+  test("skips a key that starts with an underscore, whatever it holds", () => {
+    expect([...parsePlaceholders('{"_note": 5, "_list": [1, {}], "a": "x"}', "strings.json")]).toEqual([["a", "x"]]);
+  });
+
+  test("takes constructor as a name like any other, and __proto__ as a comment", () => {
+    expect([...parsePlaceholders('{"__proto__": 1, "constructor": "x"}', "strings.json")]).toEqual([["constructor", "x"]]);
+  });
+
+  test("refuses text that isn't JSON, naming the file", () => {
+    expect(refusal(() => parsePlaceholders("greet: hi", "strings.json"))).toStartWith("strings.json isn't JSON: ");
+    expect(refusal(() => parsePlaceholders('{"a": NaN}', "strings.json"))).toStartWith("strings.json isn't JSON: ");
+  });
+
+  test("refuses a document that isn't an object", () => {
+    expect(refusal(() => parsePlaceholders('["a"]', "strings.json"))).toBe("strings.json must be an object, not a list.");
+  });
+
+  test("refuses a value that is neither, naming the key and what it is", () => {
+    expect(refusal(() => parsePlaceholders('{"enabled": true}', "strings.json"))).toBe('strings.json: "enabled" must be a string or a list of strings, not true.');
+    expect(refusal(() => parsePlaceholders('{"n": 1}', "strings.json"))).toBe('strings.json: "n" must be a string or a list of strings, not 1.');
+    expect(refusal(() => parsePlaceholders('{"n": null}', "strings.json"))).toBe('strings.json: "n" must be a string or a list of strings, not null.');
+    expect(refusal(() => parsePlaceholders('{"n": {"a": "b"}}', "strings.json"))).toBe('strings.json: "n" must be a string or a list of strings, not an object.');
+  });
+
+  test("refuses a list with something other than a string in it, naming the item", () => {
+    expect(refusal(() => parsePlaceholders('{"a": ["x", 1]}', "strings.json"))).toBe('strings.json: "a"[1] must be a string, not 1.');
   });
 });

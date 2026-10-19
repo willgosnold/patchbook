@@ -7,8 +7,8 @@ import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { pjoin, readText } from "./lib/fs.ts";
 import { sha256 } from "./lib/hash.ts";
-import { loads } from "./lib/json.ts";
-import { str, strRepr } from "./lib/repr.ts";
+import { strRepr } from "./lib/repr.ts";
+import { list, readJson, type Shape, ShapeError, shown, string, table } from "./lib/shape.ts";
 import { byCodePoint, decode } from "./lib/text.ts";
 
 export const ENTRY_FIELDS = ["kind", "rules", "intent"] as const;
@@ -136,6 +136,21 @@ export function orphan(rel: string, entry: Entry, candidates: readonly Unmatched
   };
 }
 
+/** A placeholder's value: a string, or a list of strings joined with ", ". */
+const VALUE: Shape<string> = (v, at) => {
+  if (Array.isArray(v)) return list(string)(v, at).join(", ");
+  if (typeof v === "string") return v;
+  throw new ShapeError(at, `must be a string or a list of strings, not ${shown(v)}`);
+};
+
+const PLACEHOLDERS: Shape<Map<string, string>> = (v, at) =>
+  new Map(Object.entries(table(v, at)).filter(([k]) => !k.startsWith("_")).map(([k, x]) => [k, VALUE(x, JSON.stringify(k))]));
+
+/** A placeholder file with format = "json": each key not starting with _ to a string, or a list of strings joined with ", ". */
+export function parsePlaceholders(text: string, file: string): Map<string, string> {
+  return readJson(text, PLACEHOLDERS, file);
+}
+
 export class Rules {
   private readonly placeholder: RegExp | null;
   private readonly loaded = new Map<string, Map<string, string>>();
@@ -174,11 +189,7 @@ export class Rules {
           } else if (name) lines.get(name)!.push(line);
         }
         for (const [k, v] of lines) values.set(k, v.join("\n").trim());
-      } else {
-        const raw = loads(text);
-        if (!(raw instanceof Map)) throw new Fail(`${spec.file} must hold a JSON object`);
-        for (const [k, v] of raw) if (!k.startsWith("_")) values.set(k, Array.isArray(v) ? v.map(str).join(", ") : str(v));
-      }
+      } else values = parsePlaceholders(text, spec.file);
     }
     this.loaded.set(kind, values);
     return values;

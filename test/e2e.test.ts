@@ -5255,6 +5255,32 @@ describe("ForkTest", () => {
     t.pb(["upstream", "upstream", "--since", sh(["git", "rev-parse", "HEAD"], { cwd: t.up.path }).stdout.trim()], { cwd: t.fork.path });
   });
 
+  describe("a json placeholder file", () => {
+    const useJson = (t: VendorCase, json: string): string => {
+      const entries = t.missingScaffoldPatchBuild();
+      const config = join(t.repo.path, ".patchbook/config.toml");
+      writeFileSync(config, read(config) + '\n[placeholders.str]\nfile = ".patchbook/strings.json"\nformat = "json"\n');
+      t.repo.write(".patchbook/strings.json", json);
+      writeFileSync(entries, replace(read(entries), "{{snippet:greet}}", "{{str:greet}} {{str:tools}}"));
+      return entries;
+    };
+
+    vendorTest("test_a_json_placeholder_file_fills_a_string_and_a_list_of_strings", (t) => {
+      useJson(t, '{"_note": 5, "greet": "Say hello in T3.", "tools": ["a", "b"]}');
+      t.pb(["build"], { cwd: t.repo.path });
+      expect(t.repo.read("skills/hello/SKILL.md")).toContain("Say hello in T3. a, b\n");
+      expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+    });
+
+    vendorTest("test_a_json_placeholder_file_that_holds_a_boolean_is_refused_naming_the_key", (t) => {
+      useJson(t, '{"greet": "Say hello in T3.", "tools": true}');
+      const before = tree(t.repo.path);
+      const { stderr } = t.pb(["build"], { cwd: t.repo.path, code: 1 });
+      expect(stderr).toBe('patchbook: .patchbook/strings.json: "tools" must be a string or a list of strings, not true.\n');
+      expect(tree(t.repo.path)).toEqual(before);
+    });
+  });
+
   vendorTest("test_status_json_prints_the_nearest_similarity_as_a_number", (t) => {
     t.missingScaffoldPatchBuild();
     t.repo.commit("built");
