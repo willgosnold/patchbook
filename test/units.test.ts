@@ -11,8 +11,8 @@ const sandbox = mkdtempSync(join(tmpdir(), "units"));
 const ambientConfigHome = process.env["XDG_CONFIG_HOME"];
 process.env["XDG_CONFIG_HOME"] = join(sandbox, "config");
 
-const { applyStructure } = await import("../src/assemble.ts");
-const { blockSpans, formatEntry, nearest, parsePlaceholders, readEntries, Rules } = await import("../src/blocks.ts");
+const { applyStructure, describe: describeProblem } = await import("../src/assemble.ts");
+const { blockHash, blockSpans, checkEntry, formatEntry, nearest, parsePlaceholders, readEntries, Rules } = await import("../src/blocks.ts");
 const { Book, globRe, lockText, parseLock } = await import("../src/book.ts");
 const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
 const { intentSettings, pendingDiff, PROVIDERS, writeIntent } = await import("../src/intent.ts");
@@ -290,6 +290,22 @@ describe("entries", () => {
   test("the fields can come in any order", () => {
     const path = put(join(scratch(), "x.entries"), "=== entry 0123456789ab\nintent: I\nrules: r\nkind: translation\n--- upstream\nu\n--- patched\np\n");
     expect(readEntries(path).get("0123456789ab")).toEqual(entry({ intent: "I", rules: "r", upstream: "u", patched: "p" }));
+  });
+
+  test("an entry with an empty intent reads back empty, and checkEntry says it has none", () => {
+    const upstream = "Open Cursor.";
+    const e = entry({ hash: blockHash(upstream), upstream, intent: "" });
+    const written = formatEntry(e);
+    expect(written).toContain("\nintent: \n");
+    expect(written).not.toContain("None");
+    const [read] = roundTrip(e);
+    expect(read?.intent).toBe("");
+    expect(checkEntry(read!)).toBe("it has no intent");
+  });
+
+  test("status shows an orphan entry with no intent as (no intent yet)", () => {
+    const orphan: Problem = { problem: "orphan", file: "a.md", hash: "0123456789ab", kind: "policy", rules: "", intent: "", upstream: "u", patched: "p", nearest: [] };
+    expect(describeProblem(orphan)).toStartWith("orphan    a.md [0123456789ab] intent: (no intent yet)\n");
   });
 
   test("an empty file has no entries", () => {
@@ -892,6 +908,20 @@ describe.skipIf(!inSandbox)("writeIntent", () => {
     expect(() => writeIntent(book, new Map(), "", "x", true)).toThrow(`.\n!${"😀".repeat(499)}\nPass a name and --intent instead.`);
   });
 
+  test("lists a change with no intent as (no intent yet) in the prompt, never None or nothing", async () => {
+    const book = await answering("true");
+    const prompt = join(scratch(), "prompt.txt");
+    PROVIDERS.set("fake", { model: "m", effort: "e", command: () => ["sh", "-c", `cat >${prompt}; echo '{"change": "x", "intent": "Do x."}'`] });
+    const changes = new Map([
+      ["null", new Change("null", "", null)],
+      ["blank", new Change("blank", "", "")],
+      ["said", new Change("said", "", "Say it.")],
+    ]);
+    writeIntent(book, changes, "", "x", true);
+    const text = readFileSync(prompt, "utf8");
+    expect(text).toContain("null: (no intent yet)\nblank: (no intent yet)\nsaid: Say it.");
+    expect(text).not.toContain("None");
+  });
 });
 
 describe("a message quotes a value from outside in double quotes", () => {
@@ -958,6 +988,17 @@ describe("a message quotes a value from outside in double quotes", () => {
       [".patchbook/o'ut", `".patchbook/o'ut"`, "is inside .patchbook."],
     ] as const) {
       await expect(book(`layout = "folder"\n[output]\nto = ${JSON.stringify(to)}\n`)).rejects.toThrow(`[output] to ${shown} ${why}`);
+    }
+  });
+});
+
+describe("formatChange", () => {
+  test("writes a change with no intent as an empty intent line that reads back empty, never None", () => {
+    for (const intent of [null, ""]) {
+      const text = formatChange(new Change("c", "", intent));
+      expect(text).toBe("# c\n\nintent:\n\nedits:\n");
+      const path = put(join(scratch(), "c", "CHANGE.md"), text);
+      expect(parseChange(path, () => {}).intent).toBe("");
     }
   });
 });

@@ -181,7 +181,7 @@ export function parseChange(path: string, reject: (edit: string, detail: string)
 
 export function formatChange(change: Change): string {
   const edits = change.edits.map((e) => `- ${editText(e)}\n`).join("") + change.held.map((l) => `${l}\n`).join("");
-  return `# ${change.name}\n\nintent: ${change.intent ?? "None"}\n\nedits:\n${edits}`;
+  return `# ${change.name}\n\nintent:${change.intent ? " " + change.intent : ""}\n\nedits:\n${edits}`;
 }
 
 export function saveChange(change: Change): void {
@@ -235,7 +235,7 @@ export async function cmdShow(args: { change: string }) {
   if (!CHANGE_NAME.test(args.change) || !exists(path)) throw new Fail(`no change called ${args.change}`);
   const rejected: string[] = [];
   const c = parseChange(path, (edit, detail) => rejected.push(`invalid ${edit}: ${detail}\n`));
-  process.stdout.write(`${c.name}: ${c.intent}\n\n`);
+  process.stdout.write(`${c.name}: ${c.intent || "(no intent yet)"}\n\n`);
   process.stdout.write(rejected.join(""));
   for (const e of c.edits) {
     if (e.kind === "file") {

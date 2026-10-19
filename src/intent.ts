@@ -136,7 +136,7 @@ export function writeIntent(
   book: Book, changes: ReadonlyMap<string, Change>, diff: string, name: string | null, named: boolean,
 ): [string | null, string | null] {
   const [provider, model, effort] = intentSettings(book);
-  const listed = Array.from(changes.values(), (c) => `${c.name}: ${c.intent ?? "None"}`).join("\n") || "(none yet)";
+  const listed = Array.from(changes.values(), (c) => `${c.name}: ${c.intent || "(no intent yet)"}`).join("\n") || "(none yet)";
   let instruction: string;
   if (!named) {
     name = "paragraphs";

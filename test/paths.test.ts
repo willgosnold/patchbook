@@ -501,6 +501,18 @@ describe("planning paragraph edits", () => {
     expect(t.changes()).toEqual([]);
   });
 
+  docTest("an edit recorded into a change with no intent writes an empty intent, never None, and status reports it missing", (t) => {
+    mkdirSync(join(t.repo.path, ".patchbook/changes/mine"), { recursive: true });
+    writeFileSync(join(t.repo.path, ".patchbook/changes/mine/CHANGE.md"), "# mine\n\nintent:\n\nedits:\n");
+    appendFileSync(join(t.repo.path, ".patchbook/series"), "mine\n");
+    t.edit("Then wave.", "Then wave twice.");
+    t.record(["mine"]);
+    const entries = read(t.entries);
+    expect(entries).toContain("kind: policy\nrules: \nintent: \n--- upstream\nThen wave.\n--- patched\nThen wave twice.\n");
+    expect(entries).not.toContain("None");
+    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout).toContain("it has no intent");
+  });
+
   docTest("a paragraph put back as upstream wrote it loses its entry", (t) => {
     t.edit("Open T3 and say hello.", "Open Cursor and say hello.");
     const out = t.record().stdout;

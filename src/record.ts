@@ -280,6 +280,6 @@ function mapLine(changed: readonly Changed[], i: number): number {
 
 function saveParagraphs(plan: Plan): void {
   if (plan.entries.size) {
-    writeText(plan.path, Array.from(plan.entries.values(), (e) => formatEntry({ ...e, intent: e.intent ?? "None" })).join("\n"));
+    writeText(plan.path, Array.from(plan.entries.values(), (e) => formatEntry({ ...e, intent: e.intent ?? "" })).join("\n"));
   } else if (exists(plan.path)) unlinkSync(plan.path);
 }

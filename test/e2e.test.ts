@@ -5393,6 +5393,16 @@ describe("ForkTest", () => {
     expect(prompt).toContain(`--- /dev/null\n+++ disk/added.txt\n${hunks.added}`);
   });
 
+  forkTest("test_show_says_when_a_change_has_no_intent_yet", (t) => {
+    mkdirSync(join(t.fork.path, ".patchbook/changes/noted"), { recursive: true });
+    writeFileSync(join(t.fork.path, ".patchbook/changes/noted/CHANGE.md"), "# noted\n\nintent:\n\nedits:\n");
+    appendFileSync(join(t.fork.path, ".patchbook/series"), "noted\n");
+    const shown = t.pb(["show", "noted"], { cwd: t.fork.path }).stdout;
+    expect(shown).toStartWith("noted: (no intent yet)\n");
+    expect(shown).not.toContain("None");
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("it has no intent");
+  });
+
   forkTest("test_record_keeps_a_given_intent_when_no_name_is_given", (t) => {
     const prompt = join(t.tmp, "prompt.txt");
     const intent = "Make the second line loud so it stands out.";
