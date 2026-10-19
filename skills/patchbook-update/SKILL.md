@@ -13,25 +13,42 @@ Never commit `.patchbook/last-sync.json`. To stage everything, use `git add -A -
 
 To read an upstream, use `patchbook upstream <name>`: `<name> <path>` prints a file at the pin, `--diff` shows what upstream changed in the sync that last pinned it, and `--export <dir>` writes it all out for searching. Export outside the worktree. Use `--diff` only for an upstream `patchbook sync` printed `pinned` for in this run, since for any other it shows an older run's change.
 
+## What this run can use
+
+Tell from the tools you have, not from the model name. A tool's name can carry a prefix, such as `mcp__t3-code__`. If you can't tell whether a tool is there, take the path without it.
+
+- **Thread tools**: `t3_thread_organize`. Without it, skip each step that archives or settles the thread.
+- **A subagent tool**: T3's `delegate_task`, or the agent's own, such as Claude Code's `Agent`. Step 5 says what to do with each, and without one.
+- **Pull request linking**: `link_pull_request`. Without it, open the pull request and don't link it.
+
+Never wait for an answer, even when someone is there: a run from cron or CI has no one to answer. To ask, leave the work where a person finds it (step 6) and end the run.
+
+End every run with one of these as its last line, so a scheduler can read the outcome:
+
+- `patchbook-update: up to date`
+- `patchbook-update: merged`
+- `patchbook-update: needs you: <the decision>`, naming the pull request, branch or worktree that holds the work
+- `patchbook-update: failed: <the error>`
+
 ## 1. Check
 
 First, upgrade patchbook the way it was installed, if you can tell: `npm install -g patchbook@latest` for an npm install, or rerun the install script for a script install. If you can't tell how it was installed, or the upgrade fails, carry on with the installed version. `patchbook --version` prints it.
 
 Then run `patchbook check`.
 
-- Exit 0: no upstream has moved. If a scheduled task started this thread, clean up (below) and archive the thread with `t3_thread_organize` (`archive`) as your last action. Otherwise say so and stop.
+- Exit 0: no upstream has moved. Archive the thread with `t3_thread_organize` (`archive`) if you have it. End with `patchbook-update: up to date`.
 - Exit 10: continue. The JSON says which upstreams moved and which of their files changed.
-- Anything else: report the error and stop, leaving the thread for the user.
+- Anything else: report the error, leave the thread active, and end with `patchbook-update: failed: <the error>`.
 
-## 2. Sync on this thread's branch
+## 2. Sync on the run's own branch
 
-T3 gives each run its own worktree and branch. Work there.
+Every run makes its own worktree and branch here, in T3 too. Never work in, or clean up, the checkout the run started in, even when it is a linked worktree: it may hold someone's work.
 
 1. Find the main branch and the main checkout. Shell variables don't last between commands, so note both values:
    - `MAIN_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##')`
-   - `MAIN_CHECKOUT=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')`
-2. Run `git fetch origin && git rebase origin/$MAIN_BRANCH`. The branch must have no commits of its own yet. If this thread is in the main checkout instead of a worktree, create a branch, `patchbook/upstream-<date>`, first.
-3. Run `patchbook sync`. It moves every upstream that moved, and prints `<name>: pinned <short sha>` for each one. If it exits non-zero, quote its message and ask (step 6), before any commit. If it exits 0 and prints no `pinned` line, every upstream that moved has moved back to its pin since step 1. Say that in one line, and end the run as step 1 does when no upstream has moved, with no commit. Otherwise commit everything it changed except `.patchbook/last-sync.json` (`git add -A -- . ':!.patchbook/last-sync.json'`, then `PATCHBOOK_HOOK=0 git commit`) as "Sync upstream <name> to <short sha>", naming each upstream.
+   - `MAIN_CHECKOUT=$(git worktree list --porcelain | sed -n 's/^worktree //p' | head -n 1)`
+2. Make the run's worktree outside the repo: `git fetch origin && git worktree add -b "$RUN_BR" "$RUN_WT" origin/$MAIN_BRANCH`, with `RUN_BR=patchbook/upstream-<time>` and `RUN_WT="${XDG_CACHE_HOME:-$HOME/.cache}/patchbook/worktrees/<repo>-<time>"`, `<time>` as `date -u +%Y%m%d-%H%M%S` prints it and `<repo>` the main checkout's folder name. Note both values. Run every later command there, starting each with `cd "$RUN_WT" &&`, since some agents, Claude Code among them, move the shell back to where the run started after each command. Edit its files by their full path.
+3. Run `patchbook sync`. It moves every upstream that moved, and prints `<name>: pinned <short sha>` for each one. If it exits non-zero, quote its message and ask (step 6), before any commit. If it exits 0 and prints no `pinned` line, every upstream that moved has moved back to its pin since step 1. Say that in one line, Clean up (below), archive the thread as step 1 does, and end with `patchbook-update: up to date`, with no commit. Otherwise commit everything it changed except `.patchbook/last-sync.json` (`git add -A -- . ':!.patchbook/last-sync.json'`, then `PATCHBOOK_HOOK=0 git commit`) as "Sync upstream <name> to <short sha>", naming each upstream.
 4. Read `.patchbook/last-sync.json` (per upstream: what changed and what merged on its own) and the `problems` in `patchbook status --json` (what broke). Ignore its `last_sync`, which can hold older runs' reports. Here and in steps 3, 5 and 6, read only the reports of the upstreams `patchbook sync` printed `pinned` for. An upstream can move after step 1, so this list can be longer than `patchbook check`'s.
 
 ## 3. Repair
@@ -61,13 +78,21 @@ Then run the `[test]` from the config on `origin/$MAIN_BRANCH` (`git show origin
 
 ## 5. Review
 
-Start a reviewer with `delegate_task`, `mode: "wait"` and `timeoutMs: 3600000`, and go on to step 6 only after it returns. If it returns `waitTimedOut` or `hasPendingQuestion`, or ends with no verdicts at all, stop it with `task_cancel` and count the round as a fail. Call `orchestrator_capabilities` first, and choose the reviewer's model from its `providers`:
+Start a reviewer in a subagent on every run that reaches this step, however small the diff, and go on to step 6 only after it returns.
+
+With `delegate_task`, use `mode: "wait"` and `timeoutMs: 3600000`. If it returns `waitTimedOut` or `hasPendingQuestion`, or ends with no verdicts at all, stop it with `task_cancel` and count the round as a fail. Call `orchestrator_capabilities` first, and choose the reviewer's model from its `providers`:
 
 - Take the first provider, other than `inheritedProviderInstanceId`, with `canRunCrossProviderChildTask` true.
 - Of its models, take the one whose `label` has the highest version number, such as 6.1 in `GPT-6.1-Sol`. On a tie, or when no label has one, take the first listed.
 - If that model has an `effort` or `reasoningEffort` option, set it to the highest of `max`, `xhigh` and `high` that the option lists.
 
-Set `target` to the provider's `providerInstanceId`, the model's `id` (not its `label`) and that option. If the model lists none of `max`, `xhigh` and `high`, leave the option out. If no other provider qualifies, omit `target`, so the reviewer runs on this thread's model and effort. Its brief holds:
+Set `target` to the provider's `providerInstanceId`, the model's `id` (not its `label`) and that option. If the model lists none of `max`, `xhigh` and `high`, leave the option out. If no other provider qualifies, omit `target`, so the reviewer runs on this thread's model and effort.
+
+With another subagent tool, start the reviewer on it and wait for its answer. If it ends with no verdicts at all, count the round as a fail.
+
+With no subagent tool, review the work yourself as a separate pass: take the brief below, read each file it names again, and answer from what the files say now.
+
+Its brief holds:
 
 - the guide's path;
 - each repaired or retired change, with its intent;
@@ -99,7 +124,7 @@ Ask the user instead of merging when that doesn't hold, or when:
 - the branch changes `[test]` in `.patchbook/config.toml` (see `git diff origin/$MAIN_BRANCH...HEAD -- .patchbook/config.toml`);
 - the only fix you can find for a failing test changes the test, its scripts or its fixtures.
 
-To ask, push the branch (`git push -u origin HEAD`), open a pull request against `$MAIN_BRANCH` and link it with `link_pull_request`, then end with one short message that names the decision. If the branch has no commits of its own, as after a failed sync, skip the push and the pull request. Keep the worktree, since the operator's answer needs what is in it, and leave the thread active.
+To ask, push the branch (`git push -u origin HEAD`) and open a pull request against `$MAIN_BRANCH` with `gh pr create`, and link it with `link_pull_request` if you have it. If `gh` is missing or can't open one, as for an `origin` outside GitHub, the pushed branch holds the work. If the push fails, the worktree holds it. If the branch has no commits of its own, as after a failed sync, skip the push and the pull request. Keep the worktree, since the operator's answer needs what is in it, and leave the thread active. End with `patchbook-update: needs you: <the decision>`.
 
 Otherwise:
 
@@ -108,17 +133,14 @@ Otherwise:
 3. Fast-forward the main checkout, if it is on `$MAIN_BRANCH` and clean: `git -C "$MAIN_CHECKOUT" pull --ff-only`.
 4. Run the config's `[deploy]` command from this worktree's root, and report its output.
 5. Reply in a few lines: each upstream's range, what merged on its own, what you repaired and how, what you retired, and the test, review and deploy results.
-6. Clean up (below), then settle the thread with `t3_thread_organize` (`settle`) as your last action.
+6. Clean up (below), and settle the thread with `t3_thread_organize` (`settle`) if you have it. End with `patchbook-update: merged`, or with `patchbook-update: failed: deploy: <the error>` if `[deploy]` exited non-zero.
 
 ## Clean up
 
-Remove this run's worktree and branch, unless you stopped to ask:
+Only after step 2 made the run's worktree, and not when you stopped to ask, remove that worktree and branch by the values you noted, never by where the shell is. Delete its `.patchbook/last-sync.json` first, since no commit holds it:
 
 ```sh
-HERE=$(git rev-parse --show-toplevel)
-BRANCH=$(git branch --show-current)
-MAIN_CHECKOUT=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')
-if [ "$HERE" != "$MAIN_CHECKOUT" ]; then
-  cd "$MAIN_CHECKOUT" && git worktree remove --force "$HERE" && git branch -D "$BRANCH"
-fi
+rm -f "$RUN_WT/.patchbook/last-sync.json" && cd "$MAIN_CHECKOUT" && git worktree remove "$RUN_WT" && git branch -d "$RUN_BR"
 ```
+
+Never add `--force` or `-D`, and never remove any other worktree or branch. If git refuses, because files are left in the worktree or the branch isn't merged, leave what it refused, and say above the last line which worktree or branch you kept and git's message.
