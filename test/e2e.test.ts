@@ -2623,17 +2623,20 @@ for (const [how, branch] of [["a stale mirror", "main"], ["a branch only the giv
     try {
       const up = new Repo(join(t.tmp, "upstream"));
       up.write("app.txt", "one\n");
-      up.commit("start");
+      const start = up.commit("start");
       const fork = forkOf(t, up);
+      const mirror = join(t.tmp, "mirror");
       sh(["git", "clone", "-q", up.path, "mirror"], { cwd: t.tmp });
-      sh(["git", "remote", "add", "upstream", join(t.tmp, "mirror")], { cwd: fork.path });
+      sh(["git", "remote", "add", "upstream", mirror], { cwd: fork.path });
       up.write("app.txt", "two\n");
-      up.commit("two");
+      const two = up.commit("two");
       sh(["git", "branch", "feature"], { cwd: up.path });
       const refused = t.pb(["init", "--upstream", up.path, "--branch", branch], { cwd: fork.path, code: 1 });
-      expect(refused.stderr).toContain(`the upstream remote and --upstream serve different commits for ${branch}`);
-      expect(refused.stderr).not.toContain("different repos");
-      expect(refused.stderr).toContain(`git config --replace-all remote.upstream.url ${up.path}`);
+      const onRemote = branch === "main" ? start.slice(0, 7) : "missing";
+      expect(refused.stderr).toBe(
+        `patchbook: the upstream remote and --upstream serve different commits for ${branch}. The remote fetches ${mirror}, --upstream is ${up.path}. `
+        + `${branch} is ${onRemote} on the remote and ${two.slice(0, 7)} on --upstream. To follow ${up.path}: git config --replace-all remote.upstream.url ${up.path}\n`,
+      );
     } finally {
       t.cleanup();
     }
@@ -2649,8 +2652,11 @@ test("clone does not print or commit the password in the URL", () => {
     up.commit("start");
     const clone = t.pb(["clone", `ssh://user:s3cretpw@fake${up.path}`, "fork"], { cwd: t.tmp });
     expect(clone.stdout).toContain(`cloned ssh://user@fake${up.path} into`);
-    expect(clone.stdout).not.toContain("s3cretpw");
+    expect(clone.stdout + clone.stderr).not.toContain("s3cretpw");
     expect(read(join(t.tmp, "fork/.patchbook/config.toml"))).toContain(`remote = "ssh://user@fake${up.path}"`);
+    const committed = sh(["git", "log", "-p", "--all", "--format=%B"], { cwd: join(t.tmp, "fork") }).stdout;
+    expect(committed).toContain(`+remote = "ssh://user@fake${up.path}"`);
+    expect(committed).not.toContain("s3cretpw");
   } finally {
     delete process.env["GIT_SSH_COMMAND"];
     t.cleanup();
@@ -4553,8 +4559,8 @@ describe("ForkTest", () => {
     ["add absolute", "add /outside.txt"],
     ["delete docs//guide.md", "delete docs//guide.md"],
     ["copy dest climbing out", "copy app.txt -> ../copied.txt"],
-    ["copy dest ./.patchbook/config.toml", "copy app.txt -> ./.patchbook/config.toml"],
-    ["copy dest .//.patchbook/config.toml", "copy app.txt -> .//.patchbook/config.toml"],
+    ["copy dest through a . segment into .patchbook", "copy app.txt -> ./.patchbook/config.toml"],
+    ["copy dest through an empty segment into .patchbook", "copy app.txt -> .//.patchbook/config.toml"],
     ["file climbing out", "file ../app.txt"],
   ] as const;
   for (const [name, edit] of hookRefusesUnsafe) {
@@ -4612,15 +4618,34 @@ describe("ForkTest", () => {
     ["copy source climbing out", "copy ../app.txt -> copied.txt"],
     ["move dest climbing out", "move docs/guide.md -> ../guide.md"],
     ["move source absolute", "move /docs/guide.md -> guide.md"],
-    ["copy dest ./.patchbook/config.toml", "copy app.txt -> ./.patchbook/config.toml"],
-    ["copy dest .//.patchbook/config.toml", "copy app.txt -> .//.patchbook/config.toml"],
-    ["add ./.patchbook/new.md", "add ./.patchbook/new.md"],
+    ["copy dest through a . segment into .patchbook", "copy app.txt -> ./.patchbook/config.toml"],
+    ["copy dest through an empty segment into .patchbook", "copy app.txt -> .//.patchbook/config.toml"],
+    ["add through a . segment into .patchbook", "add ./.patchbook/new.md"],
     ["add ./new.md", "add ./new.md"],
     ["add docs/./new.md", "add docs/./new.md"],
     ["delete docs//guide.md", "delete docs//guide.md"],
     ["delete .", "delete ."],
     ["move source ./docs/guide.md", "move ./docs/guide.md -> guide.md"],
   ] as const;
+  const FS_TRACE = join(import.meta.dir, "fs-trace.ts");
+  /** `t.pb`, and from source also the paths outside the folder it ran in and the user's config that patchbook handed to node:fs, as fs-trace.ts logs them. */
+  const pbOutside = (t: Case, args: string[], opts: { cwd: string; code: number }): { run: Run; outside: string[] } => {
+    if (process.env["PATCHBOOK_CMD"]) return { run: t.pb(args, opts), outside: [] };
+    const dir = mkdtempSync(join(tmpdir(), "trace"));
+    try {
+      const log = join(dir, "paths");
+      writeFileSync(log, "");
+      const env = { ...t.env, PATCHBOOK_HOOK: t.env["PATCHBOOK_HOOK"] === "0" ? "" : t.env["PATCHBOOK_HOOK"]!, PATCHBOOK_FS_TRACE: log };
+      const run = sh([process.execPath, "--preload", FS_TRACE, TOOL, ...args], { cwd: opts.cwd, env, check: false });
+      expect(run.code).toBe(opts.code);
+      const paths = read(log).split("\n").filter(Boolean);
+      expect(paths.length).toBeGreaterThan(0);
+      const allowed = [opts.cwd, t.env["XDG_CONFIG_HOME"]!];
+      return { run, outside: [...new Set(paths.filter((p) => !allowed.some((a) => p === a || p.startsWith(a + "/"))))] };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
   for (const [name, edit] of escaping) {
     forkTest(`${name} is invalid and nothing is read or written outside`, (t) => {
       const change = join(t.fork.path, ".patchbook/changes/esc");
@@ -4635,15 +4660,19 @@ describe("ForkTest", () => {
       const before = tree(t.fork.path);
       const beside = readdirSync(t.tmp).sort();
       const detail = "must be a path inside the tree: not absolute, with no empty, . or .. segment";
-      const status = t.pb(["status"], { cwd: t.fork.path, code: 1 });
-      expect(status.stdout).toContain(`changes/esc ${edit}`);
-      expect(status.stdout).toContain(detail);
-      const problems = JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path, code: 1 }).stdout).problems;
+      const status = pbOutside(t, ["status"], { cwd: t.fork.path, code: 1 });
+      expect(status.run.stdout).toContain(`changes/esc ${edit}`);
+      expect(status.run.stdout).toContain(detail);
+      expect(status.outside).toEqual([]);
+      const json = pbOutside(t, ["status", "--json"], { cwd: t.fork.path, code: 1 });
+      const problems = JSON.parse(json.run.stdout).problems;
       expect(problems).toHaveLength(1);
       expect(problems[0]).toMatchObject({ problem: "invalid", file: "changes/esc", edit, refuse: true });
       expect(problems[0].detail).toContain(detail);
-      const refused = t.pb(["build", "--force"], { cwd: t.fork.path, code: 1 });
-      expect(refused.stderr).toContain("nothing built");
+      expect(json.outside).toEqual([]);
+      const refused = pbOutside(t, ["build", "--force"], { cwd: t.fork.path, code: 1 });
+      expect(refused.run.stderr).toContain("nothing built");
+      expect(refused.outside).toEqual([]);
       expect(tree(t.fork.path)).toEqual(before);
       expect(readdirSync(t.tmp).sort()).toEqual(beside);
     });
@@ -6178,9 +6207,11 @@ describe("ForkTest", () => {
     t.fork.write("app.txt", t.fork.read("app.txt") + "local\n");
     const commit = hookCommit(t, ["-m", "Sync upstream"], false);
     expect(commit.code).not.toBe(0);
-    expect(commit.stderr).not.toContain("Stage them");
     const stash = "git --literal-pathspecs stash push -a -- app.txt";
-    expect(commit.stderr).toContain(stash);
+    expect(commit.stderr).toBe(
+      "patchbook: the build changes these files, which have changes you haven't staged:\n  app.txt\n"
+      + `Staging them would record them over the build's change. Stash them with \`${stash}\`, commit, then \`git stash pop\` puts them back on the new build. Or skip the hook once with PATCHBOOK_HOOK=0.\n`,
+    );
     sh(stash.split(" "), { cwd: t.fork.path });
     hookCommit(t, ["-m", "Sync upstream"]);
     sh(["git", "stash", "pop", "-q"], { cwd: t.fork.path });
@@ -7855,12 +7886,12 @@ describe("VendorTest", () => {
     expect(t.repo.read(skill)).toContain("Say hello in T3. Smile.");
   });
 
-  vendorTest("record paragraph edit with an intent keeps the intent of a change named unnamed", (t) => {
+  vendorTest("record gives a paragraph edit the intent it is given and keeps the intent of a change named unnamed", (t) => {
     const entries = t.missingScaffoldPatchBuild();
     t.repo.write("skills/hello/notes.txt", "added by hand\n");
     t.pb(["record", "unnamed", "--intent", "Add notes."], { cwd: t.repo.path });
     t.recordEdit("Then wave.", "Then wave twice.", "--intent", "Wave twice.");
-    expect(read(entries)).toContain("--- patched\nThen wave twice.");
+    expect(read(entries)).toContain("intent: Wave twice.\n--- upstream\nThen wave.\n--- patched\nThen wave twice.\n");
     expect(read(join(t.repo.path, ".patchbook/changes/unnamed/CHANGE.md"))).toContain("intent: Add notes.");
     expect(read(join(t.repo.path, ".patchbook/changes/unnamed/CHANGE.md"))).not.toContain("Wave twice.");
   });
@@ -8261,12 +8292,16 @@ exec '${Bun.which("git")}' "$@"
       t.repo.write(`${saved}/extra/a.md.pb`, t.repo.read(ours));
       t.repo.write(ours, "ONE\ntwo\nthree\nfour\nFIVE\n");
       t.repo.write(".gitignore", "*.log\n");
+      const journal = () => Object.entries(tree(t.repo.path)).filter(([p]) => p.startsWith(".patchbook/sync-extra/"));
+      const kept = journal();
       sh(["chmod", "000", saved], { cwd: t.repo.path });
       try {
-        expect(t.pb(["sync", "extra"], { cwd: t.repo.path, code: null }).code).not.toBe(0);
+        // It exits with a Bun stack trace, not a message: #274.
+        t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
       } finally {
         sh(["chmod", "755", saved], { cwd: t.repo.path });
       }
+      expect(journal()).toEqual(kept);
       t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
       expect(tree(t.repo.path)).toEqual({ ...before, ".gitignore": "*.log\n" });
     });

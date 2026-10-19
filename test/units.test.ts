@@ -97,6 +97,7 @@ describe("blockSpans", () => {
   });
 
   test("a fence closes on a line of the same character that is at least as long", () => {
+    expect(spans("````\na\n\n````\n\nafter")).toEqual([[0, 4], [5, 6]]);
     expect(spans("````\na\n\n`````\n\nafter")).toEqual([[0, 4], [5, 6]]);
   });
 
@@ -264,7 +265,7 @@ describe("entries", () => {
   });
 
   test("several entries keep their order", () => {
-    const all = [entry({ hash: "aaaaaaaaaaaa" }), entry({ hash: "bbbbbbbbbbbb", kind: "policy", rules: "" }), entry({ hash: "cccccccccccc", kind: "keep", patched: "Open Cursor." })];
+    const all = [entry({ hash: "cccccccccccc" }), entry({ hash: "aaaaaaaaaaaa", kind: "policy", rules: "" }), entry({ hash: "bbbbbbbbbbbb", kind: "keep", patched: "Open Cursor." })];
     expect(roundTrip(...all)).toEqual(all);
   });
 
