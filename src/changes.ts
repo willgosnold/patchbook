@@ -22,7 +22,6 @@ export const notAChangeName = (name: string) =>
 
 const ESCAPES: Record<string, number> = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, '"': 34, "\\": 92 };
 
-/** A path in double quotes, with git's C-style escapes: `\"`, `\\`, `\t`, `\n`, and `\ooo` for each UTF-8 byte of any other control character. */
 function quotePath(path: string): string {
   let out = '"';
   for (const ch of path) {
@@ -62,7 +61,6 @@ function readQuoted(text: string, start: number): { path: string; end: number } 
   return null;
 }
 
-/** A path as an edit line holds it at `place`: bare when `readPath` reads the bare text back as that path there, in double quotes otherwise. */
 function pathText(path: string, place: "single" | "source" | "dest"): string {
   try {
     const read = readPath(place === "source" ? path + ARROW : path, 0, "", place === "dest");
@@ -130,7 +128,6 @@ function isEditKind(kind: string): kind is EditKind {
 const malformed = (where: string) =>
   new Fail(`${where}: a quoted path is malformed; close it with a quote, put nothing after it, and write only \\" \\\\ \\t \\n and \\ooo (three octal digits of a UTF-8 byte) after a backslash`);
 
-/** The path of an edit line that starts at `from` in `rest`: quoted if it starts with a quote, otherwise bare, which runs to the first ` -> ` or, for a destination, to the end. A bare path is taken as written, so one with whitespace at either end or a control character is refused. */
 function readPath(rest: string, from: number, where: string, isDest = false): { path: string; end: number } {
   if (rest[from] === '"') {
     const quoted = readQuoted(rest, from);
