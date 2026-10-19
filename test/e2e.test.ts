@@ -10633,6 +10633,17 @@ exec '${Bun.which("git")}' "$@"
     expect(t.repo.read("vendor/other/b.md")).toBe("b\n");
   });
 
+  vendorTest("test_a_refused_track_vendor_leaves_no_upstream_block_and_status_as_it_was", (t) => {
+    const config = join(t.repo.path, ".patchbook/config.toml");
+    const kept = readFileSync(config);
+    const status = t.pb(["status"], { cwd: t.repo.path, code: null });
+    const evil = upstreamWithDotGit(t, "evil", ".git/config");
+    const out = t.pb(["track", "evil", evil.path, "--vendor", "vendor/evil"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("upstream evil holds .git/config, which git reads as .git, so it can't be vendored into vendor/evil. Nothing was changed.");
+    expect(readFileSync(config)).toEqual(kept);
+    expect(t.pb(["status"], { cwd: t.repo.path, code: null })).toEqual(status);
+  });
+
   vendorTest("test_an_upstream_that_holds_a_dot_git_is_refused_when_a_sync_would_only_rewrite_the_copy", (t) => {
     const gentry = extraAt(t);
     t.pb(["track", "gentry", gentry.path], { cwd: t.repo.path });
@@ -10718,6 +10729,23 @@ exec '${Bun.which("git")}' "$@"
         }
       }, TIMEOUT);
     }
+
+    test("test_a_refused_track_leaves_a_crlf_config_byte_for_byte_and_status_as_it_was", () => {
+      const { t, repo } = dotGitCase();
+      try {
+        const config = join(repo.path, ".patchbook/config.toml");
+        writeFileSync(config, read(config).replaceAll("\n", "\r\n"));
+        const kept = readFileSync(config);
+        const status = t.pb(["status"], { cwd: repo.path, code: null });
+        const evil = upstreamWithDotGit(t, "evil", ".git/config");
+        const out = t.pb(["track", "evil", evil.path], { cwd: repo.path, code: 1 });
+        expect(out.stderr).toContain("upstream evil holds .git/config, which git reads as .git, so a build would put a git repo of its own in your tree. Nothing was changed.");
+        expect(readFileSync(config)).toEqual(kept);
+        expect(t.pb(["status"], { cwd: repo.path, code: null })).toEqual(status);
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
   });
 
   test("test_init_refuses_an_upstream_that_holds_a_dot_git_and_leaves_no_patchbook", () => {
@@ -10732,6 +10760,26 @@ exec '${Bun.which("git")}' "$@"
       expect(out.stderr).toContain("upstream evil holds .git, which git reads as .git");
       expect(tree(repo.path)).toEqual(before);
       expect(existsSync(join(repo.path, ".patchbook"))).toBe(false);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+
+  test("test_init_refused_in_a_patchbook_folder_with_no_config_leaves_every_file_in_it", () => {
+    const t = new Case();
+    try {
+      const evil = upstreamWithDotGit(t, "evil", "GIT~1/config");
+      const repo = new Repo(join(t.tmp, "mine"));
+      repo.write("README.md", "mine\n");
+      repo.commit("start");
+      repo.write(".patchbook/series", "my-change\n");
+      repo.write(".patchbook/retired.md", "my retired notes\n");
+      repo.write(".patchbook/notes.txt", "keep me\n");
+      const before = tree(repo.path);
+      const out = t.pb(["init", "--upstream", evil.path, "--output-to", "out"], { cwd: repo.path, code: 1 });
+      expect(out.stderr).toContain("upstream evil holds GIT~1/config, which git reads as .git, so a build would put a git repo of its own in your tree. Nothing was changed.");
+      expect(tree(repo.path)).toEqual(before);
+      expect(existsSync(join(repo.path, ".patchbook/config.toml"))).toBe(false);
     } finally {
       t.cleanup();
     }

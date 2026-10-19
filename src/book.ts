@@ -4,7 +4,7 @@ import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Hooks, Problem } from "./api.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
-import { Fail, Refused } from "./lib/fail.ts";
+import { Fail } from "./lib/fail.ts";
 import { exists, type File, GITLINK, isDir, isMode, isSymlink, lexists, mkdirs, type Mode, normMode, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
 import { dumps, loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
@@ -266,7 +266,7 @@ export function refuseUpstreamGit(name: string, vendor: string, files: Iterable<
 /** Refuses a staged path of upstream `u` that holds a name git reads as `.git`: the build would write a repo config the upstream controls into the user's tree. */
 function refuseBuiltGit(u: Upstream, staged: string): void {
   const path = u.mount ? staged.slice(u.mount.length + 1) : staged;
-  if (path.split("/").some(segmentNamesGit)) throw new Refused(`upstream ${u.name} holds ${path}, which git reads as ${GIT}, so a build would put a git repo of its own in your tree. Nothing was changed.`);
+  if (path.split("/").some(segmentNamesGit)) throw new Fail(`upstream ${u.name} holds ${path}, which git reads as ${GIT}, so a build would put a git repo of its own in your tree. Nothing was changed.`);
 }
 
 /** `**` matches any number of folders, `*` and `?` stay within one. */
