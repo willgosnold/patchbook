@@ -10284,6 +10284,89 @@ exec '${Bun.which("git")}' "$@"
     expect(t.repo.read("vendor/extra/a.md")).toBe("edited by hand\n");
   });
 
+  vendorTest("test_sync_keeps_a_repo_made_in_the_vendored_copy_while_it_pins_the_new_commit", (t) => {
+    const extra = extraAt(t);
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    extra.write("b.md", "b\n");
+    const head = extra.commit("b");
+    const lock = lockOf(t);
+    doDuring(t, `update-ref refs/pins/${head}`, makeRepoLater(t));
+    const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("the vendored copy of extra (vendor/extra) holds vendor/extra/proj/.git");
+    expect(read(join(t.repo.path, "vendor/extra/proj/wip.txt"))).toBe("uncommitted\n");
+    expect(existsSync(join(t.repo.path, ".patchbook/sync-extra"))).toBe(false);
+    expect(lockOf(t)).toBe(lock);
+    expect(t.repo.read("vendor/extra/a.md")).toBe("a\n");
+    expect(existsSync(join(t.repo.path, "vendor/extra/b.md"))).toBe(false);
+    expect(pinRefs(t, head)).toBe(0);
+  });
+
+  vendorTest("test_a_recovery_keeps_a_repo_made_in_the_vendored_copy_while_it_releases_the_ref", (t) => {
+    const extra = extraAt(t);
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    extra.write("b.md", "b\n");
+    extra.commit("b");
+    killSync(t, "write-tree --prefix=vendor/extra/");
+    const journal = join(t.repo.path, ".patchbook/sync-extra");
+    expect(existsSync(join(journal, "old/a.md"))).toBe(true);
+    doDuring(t, "update-ref -d", makeRepoLater(t));
+    const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain(".patchbook/sync-extra holds a sync of extra that stopped partway, and the vendored copy (vendor/extra) holds vendor/extra/proj/.git");
+    expect(read(join(t.repo.path, "vendor/extra/proj/wip.txt"))).toBe("uncommitted\n");
+    expect(existsSync(join(journal, "old/a.md"))).toBe(true);
+    rmSync(join(t.repo.path, "vendor/extra/proj"), { recursive: true });
+    t.pb(["sync", "extra"], { cwd: t.repo.path });
+    expect(existsSync(journal)).toBe(false);
+    expect(t.repo.read("vendor/extra/b.md")).toBe("b\n");
+  });
+
+  /** A commit whose tree holds a `.git` blob, which `git add` refuses to stage and only `git mktree` can store. */
+  const upstreamWithDotGit = (t: VendorCase, name: string): Repo => {
+    const up = new Repo(join(t.tmp, name));
+    up.write("a.md", "a\n");
+    up.commit("a");
+    const git = (args: string[], input = ""): string => {
+      const r = Bun.spawnSync(["git", ...args], { cwd: up.path, env: process.env, stdin: Buffer.from(input), stdout: "pipe" });
+      return r.stdout.toString().trim();
+    };
+    const blob = git(["hash-object", "-w", "a.md"]);
+    const treeId = git(["mktree"], `100644 blob ${blob}\t.git\n100644 blob ${blob}\ta.md\n`);
+    git(["update-ref", "refs/heads/main", git(["commit-tree", treeId, "-p", "HEAD", "-m", "with .git"])]);
+    return up;
+  };
+
+  vendorTest("test_an_upstream_that_holds_a_dot_git_is_refused_by_track_and_sync_before_anything_is_written", (t) => {
+    const other = extraAt(t);
+    t.pb(["track", "other", other.path, "--vendor", "vendor/other"], { cwd: t.repo.path });
+    const gentry = upstreamWithDotGit(t, "gentry");
+    const refused = "upstream gentry holds .git";
+    const out = t.pb(["track", "gentry", gentry.path, "--vendor", "vendor/gentry"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain(refused);
+    expect(out.stderr).toContain("vendor/gentry");
+    const before = tree(t.repo.path);
+    expect(readdirSync(join(t.repo.path, ".patchbook")).filter((n) => n.startsWith("sync-"))).toEqual([]);
+    expect(existsSync(join(t.repo.path, "vendor/gentry/a.md"))).toBe(false);
+    const again = t.pb(["sync", "gentry"], { cwd: t.repo.path, code: 1 });
+    expect(again.stderr).toContain(refused);
+    expect(readdirSync(join(t.repo.path, ".patchbook")).filter((n) => n.startsWith("sync-"))).toEqual([]);
+    expect(tree(t.repo.path)).toEqual(before);
+    other.write("b.md", "b\n");
+    other.commit("b");
+    t.pb(["sync", "other"], { cwd: t.repo.path });
+    expect(t.repo.read("vendor/other/b.md")).toBe("b\n");
+  });
+
+  vendorTest("test_an_upstream_that_holds_a_dot_git_is_refused_when_a_sync_would_only_rewrite_the_copy", (t) => {
+    const gentry = upstreamWithDotGit(t, "gentry");
+    t.pb(["track", "gentry", gentry.path], { cwd: t.repo.path });
+    const config = join(t.repo.path, ".patchbook/config.toml");
+    writeFileSync(config, replace(read(config), 'name = "gentry"', 'name = "gentry"\nvendor = "vendor/gentry"'));
+    const before = tree(t.repo.path);
+    const out = t.pb(["sync", "gentry"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("upstream gentry holds .git");
+    expect(tree(t.repo.path)).toEqual(before);
+  });
+
   const brokenLinks: [string, string, (t: Case, repo: Repo) => string][] = [
     ["out_of_the_repo", "lnk/copy", (t, repo) => (symlinkSync(join(t.tmp, "gone/missing/deep"), join(repo.path, "lnk")), "lnk")],
     ["into_a_missing_folder_of_the_patchbook", "lnkdp/x", (_t, repo) => (symlinkSync(".patchbook/nope", join(repo.path, "lnkdp")), "lnkdp")],
