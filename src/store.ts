@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
 import { Book, PB } from "./book.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, lexists, mkdirs, normMode, pjoin, readDisk, readText, relative, resolve, writeDisk } from "./lib/fs.ts";
+import { exists, type File, isDir, isSymlink, lexists, mkdirs, normMode, pjoin, readDisk, readText, relative, resolve, writeDisk } from "./lib/fs.ts";
 import { sha1 } from "./lib/hash.ts";
 import { loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
@@ -246,20 +246,47 @@ export class Upstream {
     return { files: new Map(Array.from(files, ([p, f]) => [p.slice(rel.length + 1), f])), tree };
   }
 
+  /** The vendored copy's files, once the copy on disk is known to hash to the pin's tree. */
+  vendoredCopy(vendor: string, pinTree: string): Files {
+    const rel = relative(this.book.root, vendor);
+    if (lexists(vendor) && (isSymlink(vendor) || !isDir(vendor))) {
+      throw new Fail(`the vendored copy of ${this.name} (${rel}) is a ${isSymlink(vendor) ? "link" : "file"}, not a folder. Delete it, then run: patchbook sync ${this.name}.`);
+    }
+    const hidden = () => {
+      const rule = hidingRule(this.book.root, rel);
+      if (rule === null) return;
+      throw new Fail(
+        `${rule.source} hides the vendored copy of ${this.name} (${rel}), by the rule ${rule.pattern} at ${rule.source}:${rule.line}. `
+          + `Git can't track a copy it never sees, so change that rule, or move the vendor folder of upstream ${this.name} in .patchbook/config.toml.`,
+      );
+    };
+    let found: ReturnType<Upstream["vendorTree"]>;
+    try {
+      found = this.vendorTree(vendor);
+    } catch (e) {
+      if (e instanceof Fail) hidden();
+      throw e;
+    }
+    if (found.tree !== pinTree) {
+      if (found.files.size === 0) {
+        hidden();
+        throw new Fail(`the vendored copy of ${this.name} (${rel}) is empty or missing. Run: patchbook sync ${this.name}, or delete the vendor line of upstream ${this.name} in .patchbook/config.toml.`);
+      }
+      throw new Fail(
+        `${rel} (tree ${found.tree.slice(0, 7)}) differs from the pin (tree ${pinTree.slice(0, 7)}). `
+          + "Never edit the vendored copy. Record the change in the patchbook, or run sync.",
+      );
+    }
+    return found.files;
+  }
+
   /** Upstream's files at the pin, mounted. A vendored copy must match the pin exactly. */
   staged(): Files {
     const pin = this.pin();
     if (!pin.tree) throw new Fail(`upstream ${this.name} has no pin yet. Run: patchbook sync ${this.name}`);
     let files: Files;
     if (this.vendor) {
-      const found = this.vendorTree(this.vendor);
-      if (found.tree !== pin.tree) {
-        throw new Fail(
-          `${relative(this.book.root, this.vendor)} (tree ${found.tree.slice(0, 7)}) differs from the pin (tree ${pin.tree.slice(0, 7)}). `
-            + "Never edit the vendored copy. Record the change in the patchbook, or run sync.",
-        );
-      }
-      files = found.files;
+      files = this.vendoredCopy(this.vendor, pin.tree);
       if (pin.commit) this.healIfHeld(pin.commit);
     } else files = this.files(this.heal(pinned(this, pin)));
     return this.mounted(files);
@@ -342,6 +369,37 @@ export function indexFiles(root: string, rel: string): { files: Files; tree: str
     files.set(path, { data: readDisk(join(root, path)).data, mode: normMode(mode) });
   }
   return { files, tree };
+}
+
+/** The ignore rule that hides every file under rel from git, if one does. */
+function hidingRule(root: string, rel: string): { source: string; line: string; pattern: string } | null {
+  const tmp = mkdtempSync(join(tmpdir(), "tmp"));
+  try {
+    const env = { ...process.env, GIT_INDEX_FILE: join(tmp, "index") };
+    const files = (flags: string[]) => decode(run(["git", "ls-files", "-o", ...flags, "--exclude-standard", "-z", "--", rel], { cwd: root, env })).split("\0")[0];
+    const hidden = files(["-i"]);
+    if (!hidden || files([])) return null;
+    // Not git(): check-ignore refuses the literal pathspec magic git() sets, and it reads hidden as a path, not a pattern.
+    const found = /^(.+):(\d+):(.*)\t/.exec(decode(run(["git", "check-ignore", "-v", "--no-index", "--", hidden], { cwd: root, check: false })));
+    return found ? { source: found[1]!, line: found[2]!, pattern: found[3]! } : null;
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+/** The tree git has staged under the folder rel, which is the empty tree when it holds nothing there. Null when the index holds a file at rel itself, which no tree matches. */
+export function stagedTree(root: string, rel: string): string | null {
+  const tmp = mkdtempSync(join(tmpdir(), "tmp"));
+  try {
+    const env = { ...process.env, GIT_INDEX_FILE: join(tmp, "index") };
+    const entries = run(["git", "--literal-pathspecs", "ls-files", "-s", "-z", "--", rel], { cwd: root });
+    if (decode(entries).split("\0").some((item) => item.slice(item.indexOf("\t") + 1) === rel)) return null;
+    git(["read-tree", "--empty"], { cwd: root, env });
+    if (entries.length) run(["git", "update-index", "-z", "--index-info"], { cwd: root, env, input: entries });
+    return git(entries.length ? ["write-tree", `--prefix=${rel}/`] : ["write-tree"], { cwd: root, env });
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 function get(value: PyValue | undefined, key: string): PyValue | undefined {

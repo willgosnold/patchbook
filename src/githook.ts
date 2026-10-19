@@ -8,11 +8,12 @@ import { cmdRecord } from "./record.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, isDir, isSymlink, lexists, mkdirs, readBytes, readDisk, readTextReplace, relative, resolve, sameFile, writeBytes, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
+import { JsonError, loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
 import { quote, sorted, strip } from "./lib/py.ts";
 import { bytesEqual, concat, decode, decodeReplace, encode } from "./lib/text.ts";
 import { type Source, setting } from "./settings.ts";
-import { refuseMergedUpstream } from "./store.ts";
+import { refuseMergedUpstream, stagedTree } from "./store.ts";
 import { linksUnder, Undo } from "./undo.ts";
 
 /** Git runs hooks from the top of the checkout. A linked worktree shares the hooks folder of its repo, and may hold a commit with no patchbook. */
@@ -447,6 +448,14 @@ function unstaged(root: string, paths: string[]): string[] {
   return sorted(new Set([...listed(["diff-files", "--name-only", "-z"]), ...listed(["ls-files", "-z", "-o", "--exclude-standard"])].filter(Boolean)));
 }
 
+/** Git sees a staged link as unchanged when only its target changed, so the in-repo file each build input links to is checked too.
+ * A target outside the repo has no index entry and is read from disk. */
+function linkTargets(book: Book, inputs: string[]): string[] {
+  const root = resolve(book.root);
+  return inputs.filter((p) => isSymlink(join(book.root, p))).map((p) => relative(root, resolve(join(book.root, p))))
+    .filter((p) => p !== "." && p !== ".." && !p.startsWith("../") && p !== ".git" && !p.startsWith(".git/"));
+}
+
 function ignoredInPatchbook(root: string): Map<string, string> {
   const listed = decode(run(["git", "ls-files", "-z", "-o", "-i", "--exclude-standard", "--", PB], { cwd: root })).split("\0");
   return new Map(listed.filter(Boolean).map((p) => [p, blobOid(readDisk(join(root, p)).data)]));
@@ -542,6 +551,84 @@ function refuseOtherRepo(book: Book): void {
     + `Run \`patchbook hook install\` in ${book.root}, or start a patchbook here with \`patchbook init\`.`);
 }
 
+/** The tree each upstream is pinned to by the upstream.lock in the index, or null when the index holds no lock.
+ * The index holds only the path of a staged link, so the lock it points to is read, as the build reads it. */
+function stagedPins(book: Book): Map<string, string> | null {
+  const rel = relative(book.root, join(book.dir, "upstream.lock"));
+  const staged = spawn(["git", "cat-file", "blob", `:${rel}`], { cwd: book.root });
+  if (staged.code !== 0) return null;
+  const linked = git(["ls-files", "-s", "--", rel], { cwd: book.root }).startsWith("120000 ");
+  let data;
+  try {
+    data = linked ? book.lock() : loads(decode(staged.stdout));
+  } catch (e) {
+    if (!(e instanceof JsonError)) throw e;
+    throw new Fail(`the ${relative(book.root, join(book.dir, "upstream.lock"))} in the index can't be read (${e.message}), so the hook can't tell which copy to stage. `
+      + "Stage a good lock, or skip the hook once with PATCHBOOK_HOOK=0.");
+  }
+  if (!(data instanceof Map)) return null;
+  const pins = new Map<string, string>();
+  for (const [name, pin] of data) {
+    const tree = pin instanceof Map ? pin.get("tree") : null;
+    if (typeof tree === "string" && tree) pins.set(name, tree);
+  }
+  return pins;
+}
+
+/** The tree git would commit from the index, or null when it can't write one, as with unmerged paths. */
+function indexTree(root: string): string | null {
+  const out = spawn(["git", "write-tree"], { cwd: root });
+  return out.code === 0 ? strip(decode(out.stdout)) : null;
+}
+
+function headTree(root: string): string {
+  const head = spawn(["git", "rev-parse", "--verify", "--quiet", "HEAD^{tree}"], { cwd: root });
+  if (head.code === 0) return strip(decode(head.stdout));
+  return strip(decode(run(["git", "hash-object", "-t", "tree", "--stdin"], { cwd: root, input: new Uint8Array() })));
+}
+
+/**
+ * Put the pinned copy into the index for each vendor folder where the index holds anything else. The pin is the one the index's own
+ * upstream.lock names, and a folder whose upstream the index has no pin for is left alone. Git has already decided what the commit holds
+ * from the index it read before the hook, so a step that leaves nothing to commit says so and refuses, and any other replacement says so too.
+ */
+function stageVendors(book: Book): void {
+  if (partialCommit(book.root) !== null) return;
+  const pins = stagedPins(book);
+  if (!pins) return;
+  const stale: { name: string; rel: string; tree: string }[] = [];
+  for (const u of book.upstreams) {
+    const tree = pins.get(u.name);
+    if (!u.vendor || !tree) continue;
+    const rel = relative(book.root, u.vendor);
+    if (stagedTree(book.root, rel) !== tree) stale.push({ name: u.name, rel, tree });
+  }
+  if (!stale.length) return;
+  for (const { name, tree } of stale) {
+    if (spawn(["git", "cat-file", "-e", `${tree}^{tree}`], { cwd: book.root }).code !== 0) {
+      throw new Fail(`the pin for ${name} names tree ${tree}, which this repo doesn't have, so the hook can't stage the copy. Run \`patchbook sync ${name}\` to fetch it.`);
+    }
+  }
+  const was = indexTree(book.root);
+  try {
+    for (const { rel, tree } of stale) {
+      git(["--literal-pathspecs", "rm", "-rqf", "--cached", "--ignore-unmatch", "--", rel], { cwd: book.root });
+      git(["read-tree", `--prefix=${rel}/`, tree], { cwd: book.root });
+    }
+    const head = headTree(book.root);
+    if (was && was !== head && indexTree(book.root) === head) {
+      throw new Fail(`nothing would be left to commit. The staged changes were all under ${stale.map((s) => s.rel).join(", ")}, `
+        + `which the pre-commit hook replaces with the pinned copy of ${stale.map((s) => s.name).join(", ")}. `
+        + "Record the change in the patchbook, or skip the hook once with PATCHBOOK_HOOK=0. "
+        + "If the change is the removal of the copy, delete the upstream's vendor line to stop vendoring it.");
+    }
+  } catch (e) {
+    if (was) git(["read-tree", was], { cwd: book.root });
+    throw e;
+  }
+  for (const { name, rel } of stale) process.stderr.write(`patchbook: the pre-commit hook staged the pinned copy of ${name} under ${rel}, in place of what the index held\n`);
+}
+
 export async function cmdHook(args: { action: "install" | "run" | "status" }) {
   if (args.action === "status") {
     printHookStatus(await Book.find());
@@ -597,7 +684,8 @@ async function runHook(undo: Undo) {
   refuseMergedUpstream(book, "hook");
   const lock = readBuildLock(book);
   const readEdits = placeholderOutputs(book).filter((p) => !leftByLastBuild(book, lock, p)).map((p) => inRepo(book, p));
-  const loose = unstaged(book.root, [...buildInputs(book), ...readEdits]);
+  const inputs = buildInputs(book);
+  const loose = unstaged(book.root, [...inputs, ...linkTargets(book, inputs), ...readEdits]);
   if (loose.length) throw new Fail("the patchbook has changes that aren't in this commit:\n  " + loose.join("\n  ") + "\nThe build reads them, so stage them (or name them in `git commit <path>`) or stash them, or skip the hook once with PATCHBOOK_HOOK=0.");
   const ignored = ignoredInPatchbook(book.root);
   const staged = book.stagedOutput();
@@ -708,5 +796,6 @@ async function runHook(undo: Undo) {
         + `\`git --literal-pathspecs reset -q -- ${[...wrote, ...recordedIgnored].map(quote).join(" ")}\`\n`);
     }
   }
+  stageVendors(book);
   return 0;
 }
