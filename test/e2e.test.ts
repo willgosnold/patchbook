@@ -11194,7 +11194,7 @@ exec '${Bun.which("git")}' "$@"
           const before = tree(repo.path);
           const config = repo.read(".git/config");
           const out = t.pb(["upstream", "evil", "--export", dest], { cwd: repo.path, code: 1 });
-          expect(out.stderr).toContain(`upstream evil holds ${path}, which git reads as .git, so it can't be exported into ${dest}. Nothing was changed.`);
+          expect(out.stderr).toContain(`upstream evil holds ${path}, which git reads as .git, so it can't be exported into ${join(realpathSync(repo.path), "exp")}. Nothing was changed.`);
           expect(out.stdout).toBe("");
           expect(existsSync(dest)).toBe(false);
           expect(tree(repo.path)).toEqual(before);
@@ -11226,7 +11226,7 @@ exec '${Bun.which("git")}' "$@"
         repo.write("exp/other.txt", "other\n");
         const before = tree(repo.path);
         const out = t.pb(["upstream", "evil", "--export", dest], { cwd: repo.path, code: 1 });
-        expect(out.stderr).toContain(`can't export upstream evil into ${dest}, which already exists and isn't empty. Name a new or empty folder. Nothing was changed.`);
+        expect(out.stderr).toContain(`can't export upstream evil into ${realpathSync(dest)}, which already exists and isn't empty. Name a new or empty folder. Nothing was changed.`);
         expect(out.stdout).toBe("");
         expect(tree(repo.path)).toEqual(before);
         expect(repo.read("exp/a.md")).toBe("mine, not upstream's\n");
