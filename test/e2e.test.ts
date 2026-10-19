@@ -5435,16 +5435,17 @@ describe("ForkTest", () => {
     });
   }
 
-  forkTest("test_record_refuses_a_model_reply_whose_intent_is_not_a_string", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
-    for (const intent of ["null", "7", "true", '{"a": 1}', "[]"]) {
+  forkTest("test_record_leaves_the_intent_empty_for_a_model_reply_whose_intent_is_not_a_string", (t) => {
+    const intents = ["null", "7", "true", '{"a": 1}', "[]"];
+    for (const [i, intent] of intents.entries()) {
+      t.fork.write(`extra${i}.txt`, "ours\n");
       writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "model-name", "intent": ${intent}}'\n`);
-      const run = t.pb(["record"], { cwd: t.fork.path, code: 1 });
-      expect(run.stdout).toBe("");
-      expect(run.stderr).toContain("didn't return a usable name and intent");
-      expect(existsSync(join(t.fork.path, ".patchbook/changes/model-name"))).toBe(false);
-      expect(existsSync(join(t.fork.path, ".patchbook/series")) ? read(join(t.fork.path, ".patchbook/series")) : "").not.toContain("model-name");
+      const run = t.pb(["record"], { cwd: t.fork.path });
+      expect(run.stdout).toContain("no intent yet for ");
+      expect(run.stdout).toContain("claude didn't return a usable name and intent)");
     }
+    expect(readdirSync(join(t.fork.path, ".patchbook/changes")).sort()).toEqual(["pending", "pending-2", "pending-3", "pending-4", "pending-5"]);
+    expect(read(join(t.fork.path, ".patchbook/series"))).not.toContain("model-name");
   });
 
   forkTest("test_record_lets_the_model_pick_a_name_the_series_lists_without_a_folder", (t) => {
@@ -9194,15 +9195,14 @@ describe("VendorTest", () => {
     expect(existsSync(entries)).toBe(true);
   });
 
-  vendorTest("test_record_of_a_paragraph_refuses_a_model_reply_whose_intent_is_not_a_string", (t) => {
+  vendorTest("test_record_of_a_paragraph_leaves_the_intent_empty_for_a_model_reply_whose_intent_is_not_a_string", (t) => {
     const entries = t.missingScaffoldPatchBuild();
-    const before = read(entries);
     t.repo.write("skills/hello/SKILL.md", replace(t.repo.read("skills/hello/SKILL.md"), "Then wave.", "Then wave twice."));
     writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "paragraphs", "intent": null}'\n`);
-    const run = t.pb(["record"], { cwd: t.repo.path, code: 1 });
-    expect(run.stdout).toBe("");
-    expect(run.stderr).toContain("didn't return a usable name and intent");
-    expect(read(entries)).toBe(before);
+    const run = t.pb(["record"], { cwd: t.repo.path });
+    expect(run.stdout).toContain("no intent yet for the new entries (claude didn't return a usable name and intent)");
+    expect(read(entries)).toMatch(/--- patched\nThen wave twice\./);
+    expect(read(entries)).toMatch(/kind: policy\nrules: \nintent: \n/);
   });
 
   vendorTest("test_record_notes_come_in_path_order", (t) => {
@@ -12879,5 +12879,395 @@ describe("ModeTest", () => {
     t.pb(["build"], { cwd: t.fork.path });
     expect(existsSync(guide)).toBe(false);
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+});
+
+describe("PendingIntentTest", () => {
+  type Failure = "missing" | "missing_with_provider" | "exit" | "unusable" | "timeout";
+  const FAILURES: readonly (readonly [Failure, string])[] = [
+    ["missing", "no claude or codex CLI found"],
+    ["missing_with_provider", "the claude CLI isn't installed"],
+    ["exit", "claude failed: fake claude: offline"],
+    ["unusable", "claude didn't return a usable name and intent"],
+    ["timeout", "claude took longer than 1s"],
+  ];
+  const WORKING = (t: Case) => `#!/bin/sh\ncat > ${t.tmp}/prompt.txt\necho 'Sure. {"change": "shout", "intent": "Shout the second line."}'\n`;
+
+  const breakModel = (t: Case, kind: Failure): (() => void) => {
+    const claude = join(t.tmp, "bin/claude");
+    const path = t.env["PATH"];
+    delete t.env["PATCHBOOK_PROVIDER"];
+    if (kind === "missing" || kind === "missing_with_provider") {
+      rmSync(claude);
+      t.env["PATH"] = (path ?? "").split(":").filter((d) => !existsSync(join(d, "claude")) && !existsSync(join(d, "codex"))).join(":");
+      if (kind === "missing_with_provider") t.env["PATCHBOOK_PROVIDER"] = "claude";
+    } else {
+      const body = {
+        exit: "echo 'fake claude: offline' >&2\nexit 1",
+        unusable: "echo 'I cannot help with that.'",
+        timeout: `sleep 3\necho '{"change": "slow", "intent": "Too late."}'`,
+      }[kind];
+      writeFileSync(claude, `#!/bin/sh\ncat > /dev/null\n${body}\n`);
+      if (kind === "timeout") t.env["PATCHBOOK_INTENT_TIMEOUT"] = "1";
+    }
+    return () => {
+      t.env["PATH"] = path ?? "";
+      delete t.env["PATCHBOOK_PROVIDER"];
+      delete t.env["PATCHBOOK_INTENT_TIMEOUT"];
+      writeFileSync(claude, WORKING(t));
+      chmodSync(claude, 0o755);
+    };
+  };
+
+  const hookCommit = (t: ForkCase) => {
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    return sh(["git", "commit", "-qm", "edit"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "" }, check: false });
+  };
+  const changeText = (t: ForkCase, name: string): string => read(join(t.fork.path, ".patchbook/changes", name, "CHANGE.md"));
+  const changeNames = (t: ForkCase): string[] => readdirSync(join(t.fork.path, ".patchbook/changes")).sort();
+  const committed = (t: ForkCase): string => sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.fork.path }).stdout;
+
+  const expectPending = (t: ForkCase, name: string): void => {
+    expect(changeText(t, name)).toContain("\nintent: \n");
+    expect(read(join(t.fork.path, ".patchbook/series")).split("\n")).toContain(name);
+    const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
+    expect(status).toContain(`changes/${name}: it has no intent; fill it with \`patchbook intent ${name}\``);
+    expect(t.pb(["build"], { cwd: t.fork.path, code: 1 }).stderr).toContain("nothing built");
+  };
+
+  for (const [kind, why] of FAILURES) {
+    forkTest(`test_hook_commits_with_a_pending_intent_when_the_model_is_${kind}`, (t) => {
+      breakModel(t, kind);
+      t.fork.write("extra.txt", "ours\n");
+      const run = hookCommit(t);
+      expect(run.code).toBe(0);
+      expect(run.stderr).toContain(`pending  no intent yet for pending (${why}`);
+      expect(run.stderr).toContain("To fill it: patchbook intent pending");
+      expect(run.stderr).toContain("1 problems, so the output wasn't rebuilt.");
+      expect(committed(t)).toContain("extra.txt");
+      expect(committed(t)).toContain(".patchbook/changes/pending/CHANGE.md");
+      expect(changeText(t, "pending")).toContain("- add extra.txt");
+      expectPending(t, "pending");
+    });
+
+    forkTest(`test_record_records_a_pending_intent_when_the_model_is_${kind}`, (t) => {
+      breakModel(t, kind);
+      t.fork.write("extra.txt", "ours\n");
+      const run = t.pb(["record"], { cwd: t.fork.path });
+      expect(run.stdout).toMatch(new RegExp(`^pending  no intent yet for pending \\(${why}[^\\n]*\\). To fill it: patchbook intent pending\\nadd      extra.txt\\n$`));
+      expect(changeText(t, "pending")).toContain("- add extra.txt");
+      expectPending(t, "pending");
+    });
+  }
+
+  forkTest("test_record_names_a_pending_change_through_the_roster_and_never_joins_an_existing_one", (t) => {
+    t.recordFeature();
+    breakModel(t, "exit");
+    const feature = changeText(t, "feature");
+    t.fork.write("more.txt", "more\n");
+    expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toContain("no intent yet for pending (claude failed: fake claude: offline)");
+    t.fork.write("third.txt", "third\n");
+    expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toContain("no intent yet for pending-2 (claude failed: fake claude: offline)");
+    expect(changeNames(t)).toEqual(["feature", "pending", "pending-2"]);
+    expect(changeText(t, "feature")).toBe(feature);
+    expect(changeText(t, "pending")).toContain("- add more.txt");
+    expect(changeText(t, "pending-2")).toContain("- add third.txt");
+  });
+
+  forkTest("test_record_keeps_a_given_name_and_leaves_its_intent_pending", (t) => {
+    breakModel(t, "exit");
+    t.fork.write("extra.txt", "ours\n");
+    const run = t.pb(["record", "mine"], { cwd: t.fork.path });
+    expect(run.stdout).toBe("pending  no intent yet for mine (claude failed: fake claude: offline). To fill it: patchbook intent mine\nadd      extra.txt\n");
+    expectPending(t, "mine");
+  });
+
+  forkTest("test_record_does_not_call_the_model_for_an_edit_that_needs_neither_a_name_nor_an_intent", (t) => {
+    t.recordFeature();
+    breakModel(t, "exit");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE"));
+    expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe("file     app.txt (in feature)\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_with_a_given_intent_does_not_call_the_model", (t) => {
+    breakModel(t, "exit");
+    t.fork.write("extra.txt", "ours\n");
+    t.pb(["record", "--intent", "Ship extra.txt."], { cwd: t.fork.path });
+    expect(changeText(t, "ship-extra-txt")).toContain("intent: Ship extra.txt.");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  for (const [what, picked, said] of [
+    ["a_new_name", "louder", "louder: Make it louder.\n"],
+    ["an_existing_change", "feature", "adding to feature\n"],
+  ] as const) {
+    forkTest(`test_record_with_a_working_model_prints_the_line_for_${what}`, (t) => {
+      t.recordFeature();
+      writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "${picked}", "intent": "Make it louder."}'\n`);
+      t.fork.write("more.txt", "more\n");
+      expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe(said + "add      more.txt\n");
+    });
+
+    forkTest(`test_hook_with_a_working_model_prints_the_line_for_${what}`, (t) => {
+      t.recordFeature();
+      writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "${picked}", "intent": "Make it louder."}'\n`);
+      t.fork.write("more.txt", "more\n");
+      const run = hookCommit(t);
+      expect(run.code).toBe(0);
+      expect(run.stderr).toContain(said + "add      more.txt\n");
+    });
+  }
+
+  describe("provider none", () => {
+    const marker = (t: Case): string => {
+      const file = join(t.tmp, "model-ran");
+      writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ntouch ${file}\necho '{"change": "x", "intent": "y"}'\n`);
+      return file;
+    };
+
+    forkTest("test_record_with_provider_none_records_a_pending_intent_without_calling_the_model", (t) => {
+      const ran = marker(t);
+      t.env["PATCHBOOK_PROVIDER"] = "none";
+      t.fork.write("extra.txt", "ours\n");
+      const run = t.pb(["record"], { cwd: t.fork.path });
+      expect(run.stdout).toBe("pending  no intent yet for pending (intent.provider is none). To fill it: patchbook intent pending\nadd      extra.txt\n");
+      expect(existsSync(ran)).toBe(false);
+      expectPending(t, "pending");
+    });
+
+    forkTest("test_hook_with_provider_none_in_the_project_config_commits_with_a_pending_intent", (t) => {
+      const ran = marker(t);
+      t.pb(["config", "--project", "intent.provider", "none"], { cwd: t.fork.path });
+      t.fork.write("extra.txt", "ours\n");
+      const run = hookCommit(t);
+      expect(run.code).toBe(0);
+      expect(run.stderr).toContain("no intent yet for pending (intent.provider is none)");
+      expect(existsSync(ran)).toBe(false);
+      expectPending(t, "pending");
+    });
+
+    forkTest("test_config_accepts_none_for_the_provider", (t) => {
+      expect(t.pb(["config", "intent.provider", "none"], { cwd: t.fork.path }).stdout).toContain('intent.provider = "none"');
+      expect(t.pb(["config", "intent.provider"], { cwd: t.fork.path }).stdout).toMatch(/^intent\.provider\s+"none"\s+user$/m);
+      t.pb(["config", "intent.provider", "gemini"], { cwd: t.fork.path, code: 1 });
+    });
+
+    forkTest("test_intent_with_provider_none_and_no_intent_given_fails_and_writes_nothing", (t) => {
+      breakModel(t, "exit");
+      t.fork.write("extra.txt", "ours\n");
+      t.pb(["record"], { cwd: t.fork.path });
+      t.env["PATCHBOOK_PROVIDER"] = "none";
+      const before = tree(t.fork.path);
+      expect(t.pb(["intent", "pending"], { cwd: t.fork.path, code: 1 }).stderr).toContain("intent.provider is none");
+      expect(tree(t.fork.path)).toEqual(before);
+    });
+  });
+
+  describe("intent.timeout", () => {
+    forkTest("test_config_shows_the_default_timeout_and_where_a_set_one_comes_from", (t) => {
+      expect(t.pb(["config", "intent.timeout"], { cwd: t.fork.path }).stdout).toMatch(/^intent\.timeout\s+60\s+default$/m);
+      t.env["PATCHBOOK_INTENT_TIMEOUT"] = "5";
+      expect(t.pb(["config", "intent.timeout"], { cwd: t.fork.path }).stdout).toMatch(/^intent\.timeout\s+5\s+env$/m);
+      delete t.env["PATCHBOOK_INTENT_TIMEOUT"];
+      t.pb(["config", "--project", "intent.timeout", "2.5"], { cwd: t.fork.path });
+      expect(t.pb(["config", "intent.timeout"], { cwd: t.fork.path }).stdout).toMatch(/^intent\.timeout\s+2\.5\s+project$/m);
+    });
+
+    forkTest("test_a_timeout_that_is_not_a_positive_number_of_seconds_is_refused", (t) => {
+      for (const bad of ["abc", "0", "-3", ""]) {
+        if (bad) expect(t.pb(["config", "intent.timeout", bad], { cwd: t.fork.path, code: 1 }).stderr).toContain("intent.timeout is a positive number of seconds");
+      }
+      t.env["PATCHBOOK_INTENT_TIMEOUT"] = "soon";
+      expect(t.pb(["config", "intent.timeout"], { cwd: t.fork.path, code: 1 }).stderr).toContain("intent.timeout is a positive number of seconds, not 'soon'");
+    });
+
+    forkTest("test_a_timeout_that_is_not_a_whole_number_of_milliseconds_still_calls_the_model", (t) => {
+      t.env["PATCHBOOK_INTENT_TIMEOUT"] = "2.01";
+      t.fork.write("extra.txt", "ours\n");
+      expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe("shout: Shout the second line.\nadd      extra.txt\n");
+    });
+
+    forkTest("test_a_model_that_ignores_sigterm_is_still_stopped_at_the_timeout", (t) => {
+      writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ntrap '' TERM\nsleep 3\n`);
+      t.env["PATCHBOOK_INTENT_TIMEOUT"] = "1";
+      t.fork.write("extra.txt", "ours\n");
+      const started = Date.now();
+      expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toContain("claude took longer than 1s");
+      expect(Date.now() - started).toBeLessThan(2500);
+    });
+
+    forkTest("test_a_slow_model_is_stopped_at_the_timeout_and_the_edits_are_recorded", (t) => {
+      breakModel(t, "timeout");
+      t.fork.write("extra.txt", "ours\n");
+      const started = Date.now();
+      t.pb(["record"], { cwd: t.fork.path });
+      expect(Date.now() - started).toBeLessThan(2500);
+      expect(changeNames(t)).toEqual(["pending"]);
+    });
+  });
+
+  describe("patchbook intent", () => {
+    const pending = (t: ForkCase, kind: Failure = "exit", file = "more.txt"): (() => void) => {
+      const restore = breakModel(t, kind);
+      t.fork.write(file, "more\n");
+      t.pb(["record"], { cwd: t.fork.path });
+      return restore;
+    };
+    const clean = (t: ForkCase): void => {
+      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+      expect(t.pb(["build"], { cwd: t.fork.path }).stdout).toContain("built");
+    };
+
+    forkTest("test_intent_fills_a_pending_change_from_a_given_intent_and_keeps_its_name", (t) => {
+      pending(t);
+      const run = t.pb(["intent", "pending", "--intent", "Ship more.txt."], { cwd: t.fork.path });
+      expect(run.stdout).toBe("intent   pending: Ship more.txt.\n");
+      expect(changeText(t, "pending")).toContain("intent: Ship more.txt.");
+      expect(changeNames(t)).toEqual(["pending"]);
+      clean(t);
+    });
+
+    forkTest("test_intent_fills_a_pending_change_with_the_model_over_its_edits", (t) => {
+      pending(t)();
+      const run = t.pb(["intent", "pending"], { cwd: t.fork.path });
+      expect(run.stdout).toBe("intent   pending: Shout the second line.\n");
+      expect(changeText(t, "pending")).toContain("intent: Shout the second line.");
+      expect(changeNames(t)).toEqual(["pending"]);
+      const prompt = read(join(t.tmp, "prompt.txt"));
+      expect(prompt).toContain("more.txt");
+      expect(prompt).toContain("pending");
+      clean(t);
+    });
+
+    forkTest("test_intent_with_no_name_fills_every_empty_change_and_leaves_the_others", (t) => {
+      t.recordFeature();
+      const feature = changeText(t, "feature");
+      const restore = pending(t);
+      t.fork.write("third.txt", "third\n");
+      t.pb(["record"], { cwd: t.fork.path });
+      restore();
+      const run = t.pb(["intent"], { cwd: t.fork.path });
+      expect(run.stdout).toBe("intent   pending: Shout the second line.\nintent   pending-2: Shout the second line.\n");
+      expect(changeText(t, "feature")).toBe(feature);
+      expect(changeNames(t)).toEqual(["feature", "pending", "pending-2"]);
+      clean(t);
+    });
+
+    forkTest("test_intent_with_a_failing_model_exits_1_and_writes_nothing", (t) => {
+      for (const kind of ["exit", "unusable", "timeout", "missing_with_provider"] as const) {
+        const restore = pending(t, kind, `${kind}.txt`);
+        const before = tree(t.fork.path);
+        const run = t.pb(["intent"], { cwd: t.fork.path, code: 1 });
+        expect(run.stdout).toBe("");
+        expect(run.stderr).toContain("patchbook: ");
+        expect(tree(t.fork.path)).toEqual(before);
+        expect(t.pb(["intent", "pending"], { cwd: t.fork.path, code: 1 }).stderr).toContain("patchbook: ");
+        expect(tree(t.fork.path)).toEqual(before);
+        restore();
+        t.pb(["intent", "--intent", "Reset."], { cwd: t.fork.path });
+        t.pb(["build"], { cwd: t.fork.path });
+        t.fork.commit(`after ${kind}`);
+      }
+    });
+
+    forkTest("test_intent_with_a_failing_model_for_the_second_change_writes_neither", (t) => {
+      const restore = pending(t);
+      t.fork.write("third.txt", "third\n");
+      t.pb(["record"], { cwd: t.fork.path });
+      restore();
+      writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\nif [ -f ${t.tmp}/called ]; then echo nope >&2; exit 1; fi\ntouch ${t.tmp}/called\necho '{"change": "x", "intent": "First."}'\n`);
+      const before = tree(t.fork.path);
+      t.pb(["intent"], { cwd: t.fork.path, code: 1 });
+      expect(tree(t.fork.path)).toEqual(before);
+    });
+
+    forkTest("test_intent_never_touches_an_intent_that_is_not_empty", (t) => {
+      t.recordFeature();
+      const before = tree(t.fork.path);
+      const filled = t.pb(["intent", "feature", "--intent", "Other."], { cwd: t.fork.path, code: 1 });
+      expect(filled.stderr).toContain("patchbook: feature already has an intent");
+      const none = t.pb(["intent"], { cwd: t.fork.path });
+      expect(none.stdout).toBe("no empty intents; nothing to fill\n");
+      expect(existsSync(join(t.tmp, "prompt.txt"))).toBe(false);
+      expect(tree(t.fork.path)).toEqual(before);
+    });
+
+    forkTest("test_intent_for_a_change_that_does_not_exist_fails", (t) => {
+      const run = t.pb(["intent", "nosuch", "--intent", "X."], { cwd: t.fork.path, code: 1 });
+      expect(run.stderr).toBe("patchbook: no change called nosuch\n");
+      expect(t.pb(["intent", "Bad_Name"], { cwd: t.fork.path, code: 1 }).stderr).toContain("isn't a valid change name");
+    });
+
+    forkTest("test_intent_help_describes_the_command", (t) => {
+      expect(t.pb(["--help"], { cwd: t.fork.path }).stdout).toContain("fill the empty intents");
+      const help = t.pb(["intent", "--help"], { cwd: t.fork.path }).stdout;
+      expect(help).toContain("usage: patchbook intent [-h] [--intent INTENT] [change]");
+    });
+  });
+
+  describe("block entries", () => {
+    const edit = (t: VendorCase): string => {
+      const entries = t.missingScaffoldPatchBuild();
+      t.repo.write("skills/hello/SKILL.md", replace(t.repo.read("skills/hello/SKILL.md"), "Then wave.", "Then wave twice."));
+      return entries;
+    };
+    const expectEmptyEntry = (t: VendorCase, entries: string): void => {
+      expect(read(entries)).toMatch(/--- patched\nThen wave twice\./);
+      expect(read(entries)).toMatch(/kind: policy\nrules: \nintent: \n/);
+      const status = t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout;
+      expect(status).toMatch(/invalid {3}skills\/hello\/SKILL\.md:\d+ \[[0-9a-f]+\] \(output hello\/SKILL\.md\): it has no intent; fill it with `patchbook intent`/);
+      expect(t.pb(["build"], { cwd: t.repo.path, code: 1 }).stderr).toContain("nothing built");
+    };
+
+    for (const [kind, why] of FAILURES) {
+      vendorTest(`test_record_leaves_a_paragraph_entry_with_an_empty_intent_when_the_model_is_${kind}`, (t) => {
+        const entries = edit(t);
+        breakModel(t, kind);
+        const run = t.pb(["record"], { cwd: t.repo.path });
+        expect(run.stdout).toMatch(new RegExp(`^pending  no intent yet for the new entries \\(${why}[^\\n]*\\). To fill it: patchbook intent\\nentry    hello/SKILL\\.md \\[[0-9a-f]+\\] added\\n$`));
+        expect(existsSync(join(t.repo.path, ".patchbook/changes"))).toBe(false);
+        expectEmptyEntry(t, entries);
+      });
+    }
+
+    vendorTest("test_hook_commits_a_paragraph_entry_with_an_empty_intent_when_the_model_fails", (t) => {
+      const entries = edit(t);
+      breakModel(t, "exit");
+      sh(["git", "add", "-A"], { cwd: t.repo.path });
+      const run = sh(["git", "commit", "-qm", "wave"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "" }, check: false });
+      expect(run.code).toBe(0);
+      expect(run.stderr).toContain("no intent yet for the new entries (claude failed: fake claude: offline). To fill it: patchbook intent");
+      expect(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.repo.path }).stdout).toContain(".patchbook/blocks/skills/hello/SKILL.md.entries");
+      expectEmptyEntry(t, entries);
+    });
+
+    vendorTest("test_intent_fills_an_empty_entry_and_a_pending_change_together", (t) => {
+      const entries = edit(t);
+      t.repo.write("skills/hello/notes.txt", "added by hand\n");
+      const restore = breakModel(t, "exit");
+      const run = t.pb(["record"], { cwd: t.repo.path });
+      expect(run.stdout).toContain("no intent yet for pending and the new entries (claude failed: fake claude: offline). To fill it: patchbook intent\n");
+      expect(read(join(t.repo.path, ".patchbook/changes/pending/CHANGE.md"))).toContain("\nintent: \n");
+      restore();
+      const fill = t.pb(["intent"], { cwd: t.repo.path });
+      expect(fill.stdout).toBe("intent   pending: Shout the second line.\nentries  skills/hello/SKILL.md: Shout the second line.\n");
+      expect(read(join(t.repo.path, ".patchbook/changes/pending/CHANGE.md"))).toContain("intent: Shout the second line.");
+      expect(read(entries)).toMatch(/kind: policy\nrules: \nintent: Shout the second line\.\n/);
+      expect(read(entries)).toContain("intent: Speak T3.");
+      expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+      t.pb(["build"], { cwd: t.repo.path });
+    });
+
+    vendorTest("test_intent_fills_empty_entries_from_a_given_intent_and_keeps_the_filled_ones", (t) => {
+      const entries = edit(t);
+      breakModel(t, "exit");
+      t.pb(["record"], { cwd: t.repo.path });
+      expect(t.pb(["intent", "--intent", "Wave twice."], { cwd: t.repo.path }).stdout).toBe("entries  skills/hello/SKILL.md: Wave twice.\n");
+      expect(read(entries)).toMatch(/kind: policy\nrules: \nintent: Wave twice\.\n/);
+      expect(read(entries)).toContain("intent: Speak T3.");
+      expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+      t.pb(["build"], { cwd: t.repo.path });
+    });
   });
 });

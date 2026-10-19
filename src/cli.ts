@@ -14,7 +14,7 @@ import { exists, lexists, readText, resolve, writeText } from "./lib/fs.ts";
 import { git, redact } from "./lib/proc.ts";
 import { rstrip, split, strRepr } from "./lib/py.ts";
 import { quoteToml } from "./lib/toml.ts";
-import { cmdRecord } from "./record.ts";
+import { cmdIntent, cmdRecord } from "./record.ts";
 import { checkUpstreamRemote, notThisRepo } from "./remote.ts";
 import { cmdConfig } from "./settings.ts";
 import { cmdSkill, installSkill, recordSkill, SCHEDULE, leftBehindSkill } from "./skill.ts";
@@ -258,8 +258,14 @@ const COMMANDS = new Map<string, Command>([
   ["record", {
     help: "move edits made to the output in the working tree into a change (the commit hook records only what's staged)",
     positionals: [{ dest: "change", nargs: "?", help: "the change to add them to (default: the model picks or names one)" }],
-    options: [{ flag: "--intent", takes: "value", help: "what the change is for (default: the model writes it)" }],
+    options: [{ flag: "--intent", takes: "value", help: "what the change is for (default: the model writes it; if it can't, the intent is left empty)" }],
     run: (a) => cmdRecord({ change: a.maybe("change"), intent: a.maybe("intent") }),
+  }],
+  ["intent", {
+    help: "fill the empty intents that record left when the model failed",
+    positionals: [{ dest: "change", nargs: "?", help: "only this change (default: every change and block entry with an empty intent)" }],
+    options: [{ flag: "--intent", takes: "value", help: "the intent to write (default: the model writes it)" }],
+    run: (a) => cmdIntent({ change: a.maybe("change"), intent: a.maybe("intent") }),
   }],
   ["hook", {
     help: "install the pre-commit hook, run it, or show which hook git runs",
