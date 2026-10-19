@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { accessSync, appendFileSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import { CMD, Case, Repo, type Run, dedent, lstrip, mkdirNew, partitionHead, replace, sh, shlexSplit, words } from "./helpers";
+import { CMD, Case, Repo, TOOL, type Run, dedent, lstrip, mkdirNew, partitionHead, replace, sh, shlexSplit, words } from "./helpers";
 
 const TIMEOUT = 120_000;
 
@@ -6697,7 +6697,111 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
       expect(lastSync(t).upstream.to).toBe(second);
       expect(lock()).not.toBe(pinned);
     });
+
+    const secondEdits = [
+      ["merge", "four", "FOUR", "1 of ours merged cleanly, 0 conflicts", { merged: [{ change: "feature", path: "app.txt" }], conflicts: [] }],
+      ["conflict", "two", "TWO_UP", "0 of ours merged cleanly, 1 conflicts", { merged: [], conflicts: [{ change: "feature", path: "app.txt", count: 1 }] }],
+    ] as const;
+    for (const blocked of ["last-sync.json", "upstream.lock"]) {
+      for (const [kind, line, edited, summary, carried] of secondEdits) {
+        forkTest(`test_a_sync_that_cannot_write_${blocked}_after_a_${kind}_changes_nothing_and_reports_the_${kind}_when_run_again`, (t) => {
+          t.recordFeature();
+          t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+          const first = t.up.commit("first edit");
+          t.pb(["sync"], { cwd: t.fork.path });
+          t.up.write("app.txt", replace(t.up.read("app.txt"), line, edited));
+          const second = t.up.commit("second edit");
+          const file = join(t.fork.path, ".patchbook", blocked);
+          const before = tree(t.fork.path);
+          chmodSync(file, 0o444);
+          try {
+            t.pb(["sync"], { cwd: t.fork.path, code: 1 });
+          } finally {
+            chmodSync(file, 0o644);
+          }
+          expect(tree(t.fork.path)).toEqual(before);
+          expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain(summary);
+          expect(lastSync(t).upstream).toMatchObject({ from: first, to: second, ...carried });
+        });
+      }
+    }
+
+    forkTest("test_a_sync_that_cannot_write_upstream.lock_puts_back_a_last_sync_json_that_is_a_link", (t) => {
+      t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+      t.up.commit("first edit");
+      t.pb(["sync"], { cwd: t.fork.path });
+      const report = join(t.fork.path, ".patchbook/last-sync.json");
+      const kept = join(t.tmp, "last-sync.json");
+      renameSync(report, kept);
+      symlinkSync(kept, report);
+      const reported = read(kept);
+      t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
+      t.up.commit("second edit");
+      const lock = join(t.fork.path, ".patchbook/upstream.lock");
+      chmodSync(lock, 0o444);
+      try {
+        t.pb(["sync"], { cwd: t.fork.path, code: 1 });
+      } finally {
+        chmodSync(lock, 0o644);
+      }
+      expect(readlinkSync(report)).toBe(kept);
+      expect(read(kept)).toBe(reported);
+    });
   }
+
+  describe.skipIf(!!process.env["PATCHBOOK_CMD"])("killed by a preload, so only from source", () => {
+    const killedBeforeWriting = (t: ForkCase, path: string, args: string[]): void => {
+      const env = { ...t.env, CRASH_BEFORE_WRITE: path };
+      sh([process.execPath, "--preload", join(import.meta.dir, "crash.ts"), TOOL, ...args], { cwd: t.fork.path, env, check: false });
+    };
+
+    forkTest("test_a_sync_of_one_upstream_first_undoes_a_killed_sync_of_another_and_its_report", (t) => {
+      const { lib } = twoMovedUpstreams(t);
+      t.pb(["sync"], { cwd: t.fork.path });
+      const reported = lastSync(t);
+      const lock = t.fork.read(".patchbook/upstream.lock");
+      t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
+      t.up.commit("second edit");
+      lib.write("src/lib.txt", "v3\n");
+      lib.commit("lib v3");
+      killedBeforeWriting(t, "/.patchbook/sync-upstream/lock", ["sync", "upstream"]);
+      expect(t.fork.read(".patchbook/upstream.lock")).toBe(lock);
+      expect(lastSync(t).upstream).not.toEqual(reported.upstream);
+      t.pb(["sync", "lib"], { cwd: t.fork.path });
+      expect(lastSync(t).upstream).toEqual(reported.upstream);
+      t.pb(["sync"], { cwd: t.fork.path });
+      expect(lastSync(t).lib).toMatchObject({ from: reported.lib!.to, upstream: ["changed lib/lib.txt"] });
+    });
+
+    forkTest("test_a_killed_track_cannot_put_back_a_report_that_undoing_another_killed_sync_rolled_back", (t) => {
+      twoMovedUpstreams(t);
+      t.pb(["sync"], { cwd: t.fork.path });
+      const reported = lastSync(t);
+      t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
+      t.up.commit("second edit");
+      killedBeforeWriting(t, "/.patchbook/sync-upstream/lock", ["sync", "upstream"]);
+      expect(lastSync(t).upstream).not.toEqual(reported.upstream);
+      const extra = new Repo(join(t.tmp, "extra"));
+      extra.write("a.md", "extra\n");
+      extra.commit("start");
+      killedBeforeWriting(t, "/.patchbook/sync-extra/lock", ["track", "extra", extra.path, "--vendor", "vendor/extra"]);
+      t.pb(["sync", "lib"], { cwd: t.fork.path });
+      expect(lastSync(t).upstream).toEqual(reported.upstream);
+    });
+
+    forkTest("test_undoing_a_killed_first_sync_deletes_the_report_it_wrote", (t) => {
+      const report = join(t.fork.path, ".patchbook/last-sync.json");
+      const lock = t.fork.read(".patchbook/upstream.lock");
+      t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+      t.up.commit("upstream edit");
+      expect(existsSync(report)).toBe(false);
+      killedBeforeWriting(t, "/.patchbook/sync-upstream/lock", ["sync"]);
+      expect(existsSync(report)).toBe(true);
+      t.pb(["sync", "upstream", "refs/heads/nope"], { cwd: t.fork.path, code: 1 });
+      expect(existsSync(report)).toBe(false);
+      expect(t.fork.read(".patchbook/upstream.lock")).toBe(lock);
+    });
+  });
 
   forkTest("test_sync_replaces_a_last_sync_file_that_does_not_parse", (t) => {
     writeFileSync(join(t.fork.path, ".patchbook/last-sync.json"), "{ not json");
@@ -7179,6 +7283,386 @@ exec '${Bun.which("git")}' "$@"
       });
     }
   }
+
+  const extraWithAChange = (t: VendorCase, vendored: boolean): Repo => {
+    t.missingScaffoldPatchBuild();
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "one\ntwo\nthree\nfour\nfive\n");
+    extra.commit("a");
+    t.pb(["track", "extra", extra.path, ...(vendored ? ["--vendor", "vendor/extra"] : [])], { cwd: t.repo.path });
+    const change = join(t.repo.path, ".patchbook/changes/tweak");
+    mkdirNew(change);
+    writeFileSync(join(change, "CHANGE.md"), "# tweak\n\nintent: Shout the first line.\n\nedits:\n- file extra/a.md\n");
+    mkdirSync(join(change, "base/extra"), { recursive: true });
+    mkdirSync(join(change, "ours/extra"), { recursive: true });
+    writeFileSync(join(change, "base/extra/a.md.pb"), "one\ntwo\nthree\nfour\nfive\n");
+    writeFileSync(join(change, "ours/extra/a.md.pb"), "ONE\ntwo\nthree\nfour\nfive\n");
+    writeFileSync(join(t.repo.path, ".patchbook/series"), "tweak\n");
+    t.pb(["build"], { cwd: t.repo.path });
+    if (vendored) {
+      writeFileSync(join(t.repo.path, ".git/info/exclude"), "scratch\n");
+      writeFileSync(join(t.repo.path, "vendor/extra/scratch"), "ignored, and only here\n");
+    }
+    extra.write("a.md", "one\ntwo\nthree\nfour\nFIVE\n");
+    return extra;
+  };
+  const killSync = (t: VendorCase, call: string, name = "extra"): void => {
+    const bin = join(t.tmp, "crash");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "git"), `#!/bin/sh\ncase "$*" in *"${call}"*) kill -9 $PPID;; esac\nexec ${Bun.which("git")} "$@"\n`, { mode: 0o755 });
+    const path = t.env["PATH"]!;
+    t.env["PATH"] = `${bin}:${path}`;
+    expect(t.pb(["sync", name], { cwd: t.repo.path, code: null }).code).not.toBe(0);
+    t.env["PATH"] = path;
+  };
+  const pinRefs = (t: Case, commit: string): number => readdirSync(join(t.tmp, "store/upstreams"))
+    .map((d) => join(t.tmp, "store/upstreams", d))
+    .filter((s) => inStore(s, commit) && sh(["git", "rev-parse", "--verify", "--quiet", `refs/pins/${commit}`], { cwd: s, check: false }).code === 0)
+    .length;
+
+  const failedSyncs: [string, (t: VendorCase, extra: Repo) => void][] = [
+    ["the_repos_gitignore_hides_an_upstream_file", (t, extra) => {
+      t.repo.write(".gitignore", "*.log\n");
+      extra.write("c.log", "hidden\n");
+      extra.commit("v2");
+    }],
+    ["upstreams_own_gitignore_hides_one_of_its_files", (_, extra) => {
+      extra.write(".gitignore", "*.log\n");
+      extra.write("x.log", "kept\n");
+      sh(["git", "add", "-f", "x.log"], { cwd: extra.path });
+      extra.commit("v2");
+    }],
+    ["a_file_name_is_too_long_to_write", (_, extra) => {
+      const blob = sh(["git", "hash-object", "-w", "a.md"], { cwd: extra.path }).stdout.trim();
+      sh(["git", "add", "a.md"], { cwd: extra.path });
+      sh(["git", "update-index", "--add", "--cacheinfo", `100644,${blob},z${"x".repeat(300)}`], { cwd: extra.path });
+      sh(["git", "commit", "-qm", "v2"], { cwd: extra.path });
+    }],
+  ];
+  for (const [why, move] of failedSyncs) {
+    vendorTest(`test_a_failed_sync_leaves_the_vendored_copy_and_the_changes_as_they_were_when_${why}`, (t) => {
+      const extra = extraWithAChange(t, true);
+      move(t, extra);
+      const before = tree(t.repo.path);
+      t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+      expect(tree(t.repo.path)).toEqual(before);
+      expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+    });
+  }
+
+  vendorTest("test_a_failed_sync_to_a_new_upstream_path_at_the_same_commit_leaves_the_vendored_copy_as_it_was", (t) => {
+    t.missingScaffoldPatchBuild();
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("x/a.md", "x\n");
+    extra.write("y/a.md", "y\n");
+    extra.write("y/c.log", "hidden\n");
+    extra.commit("a");
+    t.pb(["track", "extra", extra.path, "--path", "x", "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    writeFileSync(join(t.repo.path, ".git/info/exclude"), "scratch\n");
+    t.repo.write("vendor/extra/scratch", "ignored, and only here\n");
+    t.repo.write(".patchbook/config.toml", t.repo.read(".patchbook/config.toml").replace('path = "x"', 'path = "y"'));
+    t.repo.write(".gitignore", "*.log\n");
+    const before = tree(t.repo.path);
+    t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(tree(t.repo.path)).toEqual(before);
+  });
+
+  describe.skipIf(process.getuid?.() === 0)("where chmod blocks writes, so not as root", () => {
+    for (const [what, blocked] of [["a_change_file", ".patchbook/changes/tweak/base"], ["the_lock", ".patchbook/upstream.lock"]] as const) {
+      for (const layout of ["folder", "vendored"]) {
+        vendorTest(`test_a_failed_sync_leaves_the_changes_as_they_were_when_${what}_cannot_be_written_${layout}`, (t) => {
+          const extra = extraWithAChange(t, layout === "vendored");
+          extra.commit("v2");
+          sh(["chmod", "-R", "a-w", blocked], { cwd: t.repo.path });
+          const before = tree(t.repo.path);
+          try {
+            t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+          } finally {
+            sh(["chmod", "-R", "u+w", blocked], { cwd: t.repo.path });
+          }
+          expect(tree(t.repo.path)).toEqual(before);
+          expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+        });
+      }
+    }
+
+    vendorTest("test_a_killed_sync_keeps_its_journal_while_a_saved_change_file_cannot_be_read", (t) => {
+      const extra = extraWithAChange(t, true);
+      extra.write("c.log", "hidden\n");
+      extra.commit("v2");
+      t.repo.commit("follow extra");
+      const before = tree(t.repo.path);
+      killSync(t, "write-tree --prefix=vendor/extra/");
+      const ours = ".patchbook/changes/tweak/ours/extra/a.md.pb";
+      const saved = ".patchbook/sync-extra/before/changes/tweak/ours";
+      t.repo.write(`${saved}/extra/a.md.pb`, t.repo.read(ours));
+      t.repo.write(ours, "ONE\ntwo\nthree\nfour\nFIVE\n");
+      t.repo.write(".gitignore", "*.log\n");
+      sh(["chmod", "000", saved], { cwd: t.repo.path });
+      try {
+        expect(t.pb(["sync", "extra"], { cwd: t.repo.path, code: null }).code).not.toBe(0);
+      } finally {
+        sh(["chmod", "755", saved], { cwd: t.repo.path });
+      }
+      t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+      expect(tree(t.repo.path)).toEqual({ ...before, ".gitignore": "*.log\n" });
+    });
+
+    forkTest("test_a_failed_sync_of_the_forks_own_upstream_drops_its_ref_though_an_upstream_on_that_remote_pins_the_commit", (t) => {
+      t.pb(["track", "mirror", t.up.path], { cwd: t.fork.path });
+      t.fork.commit("track mirror");
+      t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+      const head = t.up.commit("v2");
+      t.pb(["sync", "mirror"], { cwd: t.fork.path });
+      const lock = join(t.fork.path, ".patchbook/upstream.lock");
+      chmodSync(lock, 0o444);
+      try {
+        t.pb(["sync", "upstream"], { cwd: t.fork.path, code: 1 });
+      } finally {
+        chmodSync(lock, 0o644);
+      }
+      expect(pinRefs(t, head)).toBe(1);
+      expect(sh(["git", "rev-parse", "--verify", "--quiet", `refs/pins/${head}`], { cwd: t.fork.path, check: false }).code).not.toBe(0);
+    });
+  });
+
+  for (const [when, call] of [["checks_the_new_copy", "write-tree --prefix=vendor/extra/"], ["keeps_the_new_commit", "update-ref refs/pins/"]] as const) {
+    vendorTest(`test_a_sync_killed_while_it_${when}_is_put_right_by_the_next_sync`, (t) => {
+      const extra = extraWithAChange(t, true);
+      extra.write("c.log", "hidden\n");
+      const head = extra.commit("v2");
+      t.repo.commit("follow extra");
+      const before = tree(t.repo.path);
+      killSync(t, call);
+      expect(sh(["git", "status", "--porcelain", "--untracked-files=all"], { cwd: t.repo.path }).stdout).not.toContain(".patchbook");
+
+      t.repo.write(".gitignore", "*.log\n");
+      t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+      expect(tree(t.repo.path)).toEqual({ ...before, ".gitignore": "*.log\n" });
+      expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+      expect(pinRefs(t, head)).toBe(0);
+
+      t.repo.rm(".gitignore");
+      t.pb(["sync", "extra"], { cwd: t.repo.path });
+      expect(t.repo.read("vendor/extra/c.log")).toBe("hidden\n");
+      expect(t.repo.read(".patchbook/changes/tweak/ours/extra/a.md.pb")).toBe("ONE\ntwo\nthree\nfour\nFIVE\n");
+      const ignored = sh(["git", "status", "--porcelain", "--ignored", "--untracked-files=all"], { cwd: t.repo.path }).stdout;
+      expect(ignored.split("\n").filter((line) => line.startsWith("!!"))).toEqual([]);
+      expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+    });
+  }
+
+  const lockChanges: [string, (t: VendorCase) => void, boolean][] = [
+    ["the_lock_has_changed_since", (t) => sh(["git", "checkout", "HEAD~1", "--", ".patchbook/upstream.lock"], { cwd: t.repo.path }), false],
+    ["the_lock_has_changed_since_the_sync_wrote_it", (t) => {
+      t.repo.write(".patchbook/sync-extra/lock", t.repo.read(".patchbook/upstream.lock"));
+      sh(["git", "checkout", "HEAD~1", "--", ".patchbook/upstream.lock"], { cwd: t.repo.path });
+    }, true],
+    ["the_lock_no_longer_parses", (t) => t.repo.write(".patchbook/upstream.lock", "<<<<<<< HEAD\n"), true],
+    ["its_record_cannot_be_read", (t) => t.repo.write(".patchbook/sync-extra/pin", ""), true],
+  ];
+  for (const [how, change, refLeft] of lockChanges) {
+    vendorTest(`test_a_killed_sync_is_left_for_the_user_when_${how}`, (t) => {
+      const extra = extraWithAChange(t, true);
+      extra.commit("v2");
+      t.repo.commit("follow extra");
+      t.pb(["sync", "extra"], { cwd: t.repo.path });
+      t.repo.commit("sync extra");
+      extra.write("b.md", "b\n");
+      const head = extra.commit("v3");
+      killSync(t, "write-tree --prefix=vendor/extra/");
+      change(t);
+      const before = tree(t.repo.path);
+      const { stderr } = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+      expect(stderr).toContain(".patchbook/sync-extra holds a sync of extra");
+      expect(stderr).toContain("old/ holds the vendored copy as it was");
+      expect(stderr).not.toContain("before/");
+      expect(tree(t.repo.path)).toEqual(before);
+      expect(pinRefs(t, head)).toBe(refLeft ? 1 : 0);
+    });
+  }
+
+  vendorTest("test_a_killed_sync_left_for_the_user_stops_a_sync_or_track_of_another_upstream", (t) => {
+    const extra = extraWithAChange(t, true);
+    extra.commit("v2");
+    t.repo.commit("follow extra");
+    killSync(t, "write-tree --prefix=vendor/extra/");
+    t.repo.write(".patchbook/sync-extra/pin", "");
+    const more = new Repo(join(t.tmp, "more"));
+    more.write("m.md", "m\n");
+    more.commit("m");
+    for (const args of [["sync", "plugin"], ["track", "more", more.path]]) {
+      expect(t.pb(args, { cwd: t.repo.path, code: 1 }).stderr).toContain(".patchbook/sync-extra holds a sync of extra");
+    }
+  });
+
+  for (const [by, args] of [["the_next_sync", ["sync", "extra"]], ["a_plain_sync_that_reaches_another_upstream_first", ["sync"]]] as const) {
+    vendorTest(`test_a_lock_torn_by_a_killed_sync_is_put_back_by_${by}`, (t) => {
+      const extra = extraWithAChange(t, true);
+      extra.write("c.log", "hidden\n");
+      extra.commit("v2");
+      const before = tree(t.repo.path);
+      killSync(t, "write-tree --prefix=vendor/extra/");
+      const lock = t.repo.read(".patchbook/upstream.lock");
+      t.repo.write(".patchbook/sync-extra/lock", lock);
+      t.repo.write(".patchbook/upstream.lock", lock.slice(0, lock.length / 2));
+      t.repo.write(".gitignore", "*.log\n");
+      t.pb([...args], { cwd: t.repo.path, code: 1 });
+      expect(tree(t.repo.path)).toEqual({ ...before, ".gitignore": "*.log\n" });
+      expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+    });
+  }
+
+  const killedThenChanged: [string, (t: VendorCase) => void][] = [
+    ["its_vendor_folders_parent_was_removed", (t) => rmSync(join(t.repo.path, "vendor"), { recursive: true })],
+    ["a_change_file_was_replaced_by_a_link", (t) => {
+      const ours = ".patchbook/changes/tweak/ours/extra/a.md.pb";
+      t.repo.write(".patchbook/sync-extra/before/changes/tweak/ours/extra/a.md.pb", t.repo.read(ours));
+      rmSync(join(t.repo.path, ours));
+      symlinkSync(join(t.tmp, "victim.txt"), join(t.repo.path, ours));
+    }],
+  ];
+  for (const [what, change] of killedThenChanged) {
+    vendorTest(`test_a_killed_sync_is_put_right_by_the_next_sync_when_${what}`, (t) => {
+      const extra = extraWithAChange(t, true);
+      extra.write("c.log", "hidden\n");
+      extra.commit("v2");
+      t.repo.commit("follow extra");
+      const before = tree(t.repo.path);
+      writeFileSync(join(t.tmp, "victim.txt"), "not patchbook's\n");
+      killSync(t, "write-tree --prefix=vendor/extra/");
+      change(t);
+      t.repo.write(".gitignore", "*.log\n");
+      t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+      expect(readFileSync(join(t.tmp, "victim.txt"), "utf8")).toBe("not patchbook's\n");
+      expect(tree(t.repo.path)).toEqual({ ...before, ".gitignore": "*.log\n" });
+    });
+  }
+
+  vendorTest("test_a_failed_sync_leaves_the_vendored_copy_as_it_was_when_its_folder_name_has_a_newline", (t) => {
+    t.missingScaffoldPatchBuild();
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "a\n");
+    extra.commit("a");
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/plain"], { cwd: t.repo.path });
+    t.repo.write(".patchbook/config.toml", t.repo.read(".patchbook/config.toml").replace('vendor = "vendor/plain"', 'vendor = "vendor/copy\\nother"'));
+    renameSync(join(t.repo.path, "vendor/plain"), join(t.repo.path, "vendor/copy\nother"));
+    t.repo.write("vendor/copy/unrelated.txt", "not upstream's\n");
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+    t.repo.write(".gitignore", "*.log\n");
+    extra.write("c.log", "hidden\n");
+    extra.commit("v2");
+    const before = tree(t.repo.path);
+    t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(tree(t.repo.path)).toEqual(before);
+  });
+
+  vendorTest("test_a_killed_sync_keeps_the_ref_of_a_commit_another_upstream_has_pinned_since", (t) => {
+    t.missingScaffoldPatchBuild();
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("x/a.md", "x\n");
+    extra.write("y/a.md", "y\n");
+    extra.commit("a");
+    t.pb(["track", "extra", extra.path, "--path", "x"], { cwd: t.repo.path });
+    t.pb(["track", "other", extra.path, "--path", "y"], { cwd: t.repo.path });
+    extra.write("x/a.md", "x2\n");
+    extra.write("y/a.md", "y2\n");
+    const head = extra.commit("v2");
+    killSync(t, "update-ref refs/pins/");
+    t.pb(["sync", "other"], { cwd: t.repo.path });
+    t.pb(["sync", "extra", "refs/heads/nope"], { cwd: t.repo.path, code: 1 });
+    expect(pinRefs(t, head)).toBe(1);
+  });
+
+  vendorTest("test_a_killed_sync_drops_its_ref_when_only_an_upstream_on_another_remote_has_pinned_that_commit", (t) => {
+    t.missingScaffoldPatchBuild();
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("x/a.md", "x\n");
+    extra.write("y/a.md", "y\n");
+    extra.commit("a");
+    t.pb(["track", "extra", extra.path, "--path", "x"], { cwd: t.repo.path });
+    t.pb(["track", "other", `${extra.path}/`, "--path", "y"], { cwd: t.repo.path });
+    extra.write("x/a.md", "x2\n");
+    extra.write("y/a.md", "y2\n");
+    const head = extra.commit("v2");
+    killSync(t, "update-ref refs/pins/");
+    t.pb(["sync", "other"], { cwd: t.repo.path });
+    t.pb(["sync", "extra", "refs/heads/nope"], { cwd: t.repo.path, code: 1 });
+    expect(pinRefs(t, head)).toBe(1);
+  });
+
+  forkTest("test_a_failed_sync_drops_its_ref_though_the_forks_own_upstream_on_that_remote_pins_the_commit", (t) => {
+    t.pb(["track", "mirror", t.up.path, "--vendor", "vendor/mirror"], { cwd: t.fork.path });
+    t.fork.commit("track mirror");
+    t.up.write("c.log", "hidden\n");
+    const head = t.up.commit("v2");
+    t.pb(["sync", "upstream"], { cwd: t.fork.path });
+    t.fork.commit("sync");
+    t.fork.write(".gitignore", "*.log\n");
+    expect(t.pb(["sync", "mirror"], { cwd: t.fork.path, code: 1 }).stderr).toContain("the vendored copy of mirror hashes to");
+    expect(pinRefs(t, head)).toBe(0);
+  });
+
+  describe.skipIf(!!process.env["PATCHBOOK_CMD"])("killed by a preload, so only from source", () => {
+    for (const file of ["pin", "lock"]) {
+      vendorTest(`test_a_sync_killed_before_it_deletes_its_journal_${file}_keeps_its_ref_once_an_older_commit_is_checked_out`, (t) => {
+        const extra = extraWithAChange(t, true);
+        extra.commit("v2");
+        t.repo.commit("follow extra");
+        t.pb(["sync", "extra"], { cwd: t.repo.path });
+        t.repo.commit("sync extra");
+        extra.write("b.md", "b\n");
+        const head = extra.commit("v3");
+        const env = { ...t.env, CRASH_BEFORE_RM: `/.patchbook/sync-extra/${file}` };
+        sh([process.execPath, "--preload", join(import.meta.dir, "crash.ts"), TOOL, "sync", "extra"], { cwd: t.repo.path, env, check: false });
+        expect(t.repo.read(".patchbook/upstream.lock")).toContain(head);
+        expect(existsSync(join(t.repo.path, ".patchbook/sync-extra", file))).toBe(true);
+        t.repo.commit("sync extra to v3");
+        sh(["git", "checkout", "-q", "HEAD~2"], { cwd: t.repo.path });
+        t.pb(["sync", "extra"], { cwd: t.repo.path, code: null });
+        expect(pinRefs(t, head)).toBe(1);
+      });
+    }
+  });
+
+  vendorTest("test_a_plain_sync_puts_back_a_torn_lock_before_it_recovers_an_earlier_upstream", (t) => {
+    const extra = extraWithAChange(t, true);
+    extra.write("c.log", "hidden\n");
+    extra.commit("v2");
+    const more = new Repo(join(t.tmp, "more"));
+    more.write("m.md", "m\n");
+    more.commit("m");
+    t.pb(["track", "more", more.path], { cwd: t.repo.path });
+    more.write("m.md", "m2\n");
+    more.commit("v2");
+    t.repo.commit("follow extra and more");
+    const before = tree(t.repo.path);
+    killSync(t, "write-tree --prefix=vendor/extra/");
+    killSync(t, "update-ref refs/pins/", "more");
+    const lock = t.repo.read(".patchbook/upstream.lock");
+    t.repo.write(".patchbook/sync-more/lock", lock);
+    t.repo.write(".patchbook/upstream.lock", lock.slice(0, lock.length / 2));
+    t.repo.write(".gitignore", "*.log\n");
+    t.pb(["sync"], { cwd: t.repo.path, code: 1 });
+    expect(tree(t.repo.path)).toEqual({ ...before, ".gitignore": "*.log\n" });
+  });
+
+  vendorTest("test_a_killed_sync_puts_back_a_deleted_change_file_with_its_mode", (t) => {
+    const extra = extraWithAChange(t, true);
+    extra.write("c.log", "hidden\n");
+    extra.commit("v2");
+    const ours = ".patchbook/changes/tweak/ours/extra/a.md.pb";
+    chmodSync(join(t.repo.path, ours), 0o755);
+    t.repo.commit("follow extra");
+    const before = tree(t.repo.path);
+    killSync(t, "write-tree --prefix=vendor/extra/");
+    t.repo.write(".patchbook/sync-extra/before/changes/tweak/ours/extra/a.md.pb", t.repo.read(ours), 0o755);
+    rmSync(join(t.repo.path, ours));
+    t.repo.write(".gitignore", "*.log\n");
+    t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(tree(t.repo.path)).toEqual({ ...before, ".gitignore": "*.log\n" });
+    expect(statSync(join(t.repo.path, ours)).mode & 0o777).toBe(0o755);
+  });
 
   for (const command of ["status", "build"]) {
     vendorTest(`test_${command}_keeps_a_pin_it_held_without_a_ref`, (t) => {
