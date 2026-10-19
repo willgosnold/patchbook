@@ -71,7 +71,7 @@ patchbook sync && patchbook status && patchbook build
 
 ## Scheduled updates
 
-The `patchbook-update` skill runs in any agent that reads `.agents/skills/` or `.claude/skills/`. It uses T3 Code's thread, review and pull request tools when the agent has them. Without them, it makes its own worktree, reviews with the agent's own subagent tool or in a second pass of its own, and opens a pull request with `gh` when it can. It never waits for an answer: when it needs you, it pushes its branch, opens a pull request if it can, and stops. Its last line says how the run ended: `patchbook-update: up to date`, `patchbook-update: merged`, `patchbook-update: needs you: <the decision>` or `patchbook-update: failed: <the error>`.
+The `patchbook-update` skill runs in any agent that reads `.agents/skills/` or `.claude/skills/`. Each run works in a worktree and branch of its own, and removes them when it's done unless it needs you. It uses T3 Code's thread, review and pull request tools when the agent has them. Without them, it reviews with the agent's own subagent tool or in a second pass of its own, and opens a pull request with `gh` when it can. It never waits for an answer: when it needs you, it pushes its branch, opens a pull request if it can, and stops. Its last line says how the run ended: `patchbook-update: up to date`, `patchbook-update: merged`, `patchbook-update: needs you: <the decision>` or `patchbook-update: failed: <the error>`.
 
 Choose a scheduler:
 
