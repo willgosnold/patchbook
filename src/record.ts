@@ -13,7 +13,7 @@ import { Fail, Partway } from "./lib/fail.ts";
 import { exists, type File, LINK, type Mode, sameFile, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { replace, splitlines, strip } from "./lib/py.ts";
-import { bytesEqual, decode, decodeReplace, encode, isText } from "./lib/text.ts";
+import { bytesEqual, decode, encode, isText } from "./lib/text.ts";
 
 /** An entry a recording makes. A null intent means it still needs one. */
 type Draft = Omit<Entry, "intent"> & { intent: string | null };
@@ -136,6 +136,8 @@ export type Snapshot = {
   blocks: ReadonlySet<string>;
   entriesAt(rel: string): string;
   prefix: string;
+  /** Whether a change's copy is text with a placeholder of a configured kind. The build expands only text. */
+  uses(copy: Uint8Array | null): boolean;
   plan(rel: string, path: string, built: File, now: File): Plan | string;
 };
 
@@ -186,9 +188,7 @@ function classifyOne(s: Snapshot, path: string): Edited {
       if (src.path !== staged || readByMoveOrCopy(s, src.path)) return { kind: "delete-upstream", path, staged, entries: null };
       return { kind: change.edits.some((e) => e.kind === "add" && e.path === src.path) ? "unadd" : "unreplace", ...copy };
     }
-    if (decodeReplace(change.read("ours", src.path) ?? new Uint8Array()).search(PLACEHOLDER_HINT) !== -1) {
-      return { kind: "skip", path, reason: `its copy in ${change.name} uses placeholders; edit that copy directly` };
-    }
+    if (s.uses(change.read("ours", src.path))) return skipPlaceholders(path, change);
     return { kind: "update-ours", ...copy, now, built };
   }
   if (now === undefined) return { kind: "delete-upstream", path, staged: s.prefix + path, entries: s.blocks.has(src.path) && !stillBuilt(s, src.path) ? s.entriesAt(src.path) : null };
@@ -197,9 +197,13 @@ function classifyOne(s: Snapshot, path: string): Edited {
     return typeof plan === "string" ? { kind: "skip", path, reason: plan } : { kind: "paragraph-edit", path, plan };
   }
   const owner = s.owners.get(src.path);
+  if (owner && s.uses(owner.read("ours", src.path))) return skipPlaceholders(path, owner);
   const to: Destination = owner ? { kind: "owned", change: owner } : { kind: "recorded", base: s.upstream.get(src.path)! };
   return { kind: "file-edit", path, rel: src.path, now, to };
 }
+
+const skipPlaceholders = (path: string, change: Change): Edited =>
+  ({ kind: "skip", path, reason: `its copy in ${change.name} uses placeholders; edit that copy directly` });
 
 function snapshot(book: Book, a: Assembly, current: ReadonlyMap<string, File>, changes: ReadonlyMap<string, Change>): Snapshot {
   const owners = new Map<string, Change>();
@@ -210,6 +214,7 @@ function snapshot(book: Book, a: Assembly, current: ReadonlyMap<string, File>, c
     blocks: new Set(blockFiles(book)),
     entriesAt: (rel) => entriesPath(book, rel),
     prefix: book.layout.kind === "folder" && book.layout.from ? book.layout.from + "/" : "",
+    uses: (copy) => copy !== null && isText(copy) && rules.uses(decode(copy)),
     plan: (rel, path, built, now) => planParagraphs(book, rules, rel, path, decode(a.upstream.get(rel)!.data), built.data, now.data),
   };
 }

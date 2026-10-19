@@ -172,6 +172,11 @@ export class Rules {
     return values;
   }
 
+  /** Whether the text holds a placeholder of a configured kind. */
+  uses(text: string): boolean {
+    return this.placeholder !== null && text.search(this.placeholder) !== -1;
+  }
+
   /** Fill in `{{kind:name}}`, reporting each placeholder it can't fill. */
   expand(text: string, report: (detail: string) => void): string {
     if (!this.placeholder) return text;

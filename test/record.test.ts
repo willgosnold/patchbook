@@ -23,6 +23,8 @@ const edited = change("edited", [{ kind: "add", path: "skills/copied.md" }], { "
 const moved = change("moved", [{ kind: "add", path: "skills/orig-new.md" }, { kind: "move", path: "skills/orig-new.md", dest: "skills/moved-new.md" }], { "skills/orig-new.md": "new\n" });
 const templated = change("templated", [{ kind: "add", path: "skills/tpl.md" }], { "skills/tpl.md": "Uses {{snippet:v}}.\n" });
 const owner = change("owner", [{ kind: "file", path: "skills/owned.md" }]);
+const ownerTpl = change("ownertpl", [{ kind: "file", path: "skills/owned-tpl.md" }], { "skills/owned-tpl.md": "Uses {{snippet:v}}.\n" });
+const goish = change("goish", [{ kind: "add", path: "skills/goish.md" }], { "skills/goish.md": "Uses {{go:name}}.\n" });
 const up = (path: string): Source => ({ kind: "up", path });
 const ours = (c: Change, path: string): Source => ({ kind: "ours", change: c.name, path });
 
@@ -45,6 +47,9 @@ const cases: [path: string, built: string | null, disk: string | null, source: S
   ["copied.md", "new", "edited", ours(edited, "skills/copied.md"), { kind: "update-ours", change: edited, staged: "skills/copied.md" }, false],
   ["tpl.md", "Uses v.", "Uses w.", ours(templated, "skills/tpl.md"),
     { kind: "skip", reason: "its copy in templated uses placeholders; edit that copy directly" }, false],
+  ["goish.md", "Uses go.", "Uses go!", ours(goish, "skills/goish.md"), { kind: "update-ours", change: goish, staged: "skills/goish.md" }, false],
+  ["owned-tpl.md", "Uses v.", "Uses w.", up("skills/owned-tpl.md"),
+    { kind: "skip", reason: "its copy in ownertpl uses placeholders; edit that copy directly" }, false],
   ["owned.md", "up", "edited", up("skills/owned.md"), { kind: "file-edit", rel: "skills/owned.md", to: { kind: "owned", change: owner } }, false],
   ["plain.md", "up", "edited", up("skills/plain.md"), { kind: "file-edit", rel: "skills/plain.md", to: { kind: "recorded", base: f("upstream") } }, true],
   ["moved.md", "up", "edited", up("skills/orig.md"), { kind: "file-edit", rel: "skills/orig.md", to: { kind: "recorded", base: f("upstream") } }, true],
@@ -57,11 +62,12 @@ const world: Snapshot = {
   current: pick(2),
   sources: new Map(cases.flatMap(([p, , , s]) => (s ? [[p, s] as const] : []))),
   upstream: new Map(cases.flatMap(([, , , s]) => (s?.kind === "up" ? [[s.path, f("upstream")] as const] : []))),
-  changes: new Map([added, replaced, edited, moved, templated, owner].map((c) => [c.name, c])),
-  owners: new Map([["skills/owned.md", owner]]),
+  changes: new Map([added, replaced, edited, moved, templated, owner, ownerTpl, goish].map((c) => [c.name, c])),
+  owners: new Map([["skills/owned.md", owner], ["skills/owned-tpl.md", ownerTpl]]),
   blocks: new Set(["skills/dropped.md", "skills/gone-para.md", "skills/para.md", "skills/para-new.md", "skills/unplanned.md"]),
   entriesAt: (rel) => `blocks/${rel}.entries`,
   prefix: "skills/",
+  uses: (copy) => copy !== null && new TextDecoder().decode(copy).includes("{{snippet:"),
   plan: (rel) => plans.get(rel) ?? "no plan",
 };
 
