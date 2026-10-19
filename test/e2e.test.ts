@@ -7557,7 +7557,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     });
   }
 
-  const committed = (t: ForkCase): string[] =>
+  const vendoredInHead = (t: ForkCase): string[] =>
     sh(["git", "ls-tree", "-r", "--name-only", "HEAD"], { cwd: t.fork.path }).stdout.split("\n").filter((p) => p.startsWith("vendor/"));
   const pinnedCopy = ["vendor/extra/a.md", "vendor/extra/lib/b.md"];
 
@@ -7570,7 +7570,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
 
       t.pb(["sync", "extra"], { cwd: t.fork.path });
       expect(hooked(t, ["commit", flag, "move them out"]).code).toBe(0);
-      expect(committed(t)).toEqual(pinnedCopy);
+      expect(vendoredInHead(t)).toEqual(pinnedCopy);
       expect(sh(["git", "status", "--short"], { cwd: t.fork.path }).stdout).not.toContain("vendor");
       expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
     });
@@ -7589,7 +7589,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
 
     t.pb(["sync", "extra"], { cwd: t.fork.path });
     expect(hooked(t, ["commit", "-qm", "after the kill"]).code).toBe(0);
-    expect(committed(t)).toEqual(pinnedCopy);
+    expect(vendoredInHead(t)).toEqual(pinnedCopy);
     expect(sh(["git", "show", "HEAD:vendor/extra/a.md"], { cwd: t.fork.path }).stdout).toBe("one\n");
     expect(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.fork.path }).stdout).not.toContain("vendor/");
   });
@@ -7600,7 +7600,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     t.fork.write("note.txt", "a note\n");
     sh(["git", "add", "note.txt"], { cwd: t.fork.path });
     expect(hooked(t, ["commit", "-qm", "note"]).code).toBe(0);
-    expect(committed(t)).toEqual(pinnedCopy);
+    expect(vendoredInHead(t)).toEqual(pinnedCopy);
   });
 
   forkTest("test_a_commit_does_not_record_a_vendored_copy_that_differs_from_the_pin", (t) => {
@@ -7612,7 +7612,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(commit.code).not.toBe(0);
     expect(commit.stderr).toContain("differs from the pin");
     expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
-    expect(committed(t)).toEqual(pinnedCopy);
+    expect(vendoredInHead(t)).toEqual(pinnedCopy);
     expect(sh(["git", "show", "HEAD:vendor/extra/a.md"], { cwd: t.fork.path }).stdout).toBe("one\n");
   });
 
