@@ -2411,6 +2411,30 @@ for (const layout of ["fork", "folder"]) {
   }, TIMEOUT);
 }
 
+test("test_a_retried_fork_init_records_the_skill_a_failed_first_run_left_on_disk", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    up.commit("start");
+    sh(["git", "clone", "-q", up.path, "fork"], { cwd: t.tmp });
+    const fork = new Repo(join(t.tmp, "fork"));
+    mkdirSync(join(fork.path, ".patchbook"));
+    symlinkSync(join(t.tmp, "missing/series"), join(fork.path, ".patchbook/series"));
+    t.pb(["init", "--upstream", up.path], { cwd: fork.path, code: 1 });
+    expect(existsSync(join(fork.path, ".patchbook/config.toml"))).toBe(false);
+    expect(existsSync(join(fork.path, SKILL_FILE))).toBe(true);
+    rmSync(join(fork.path, ".patchbook/series"));
+    t.pb(["init", "--upstream", up.path], { cwd: fork.path });
+    expect(fork.read(".patchbook/series")).toBe("patchbook-update-skill\n");
+    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: fork.path });
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("test_a_fork_init_that_cannot_write_its_pin_leaves_no_config_and_can_be_retried", () => {
   const t = new Case();
   try {

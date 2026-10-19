@@ -17,7 +17,7 @@ import { quoteToml } from "./lib/toml.ts";
 import { cmdRecord } from "./record.ts";
 import { checkUpstreamRemote, notThisRepo } from "./remote.ts";
 import { cmdConfig } from "./settings.ts";
-import { cmdSkill, installSkill, recordSkill, SCHEDULE } from "./skill.ts";
+import { cmdSkill, installSkill, recordSkill, SCHEDULE, leftBehindSkill } from "./skill.ts";
 import { absoluteRemote, defaultName, cmdUpstream } from "./store.ts";
 import { cmdCheck, cmdSync, syncUpstream } from "./sync.ts";
 
@@ -110,7 +110,7 @@ async function cmdInit(args: {
   const installed = installSkill(book);
   writeConfig(root, text);
   installHookOrWarn(root);
-  if (installed?.changed.length) await recordSkill(book);
+  if (installed && (installed.changed.length || leftBehindSkill(book).length)) await recordSkill(book);
   process.stdout.write(`pinned upstream at ${base.slice(0, 7)}, where this repo branched from ${follows}.\n`
     + "Capture your existing changes with `patchbook record`, then `patchbook build`, and commit.\n" + SCHEDULE + "\n");
   return 0;

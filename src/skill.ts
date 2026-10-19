@@ -134,6 +134,13 @@ function installed(book: Book, p: string): boolean {
 
 const recorded = (book: Book) => readChanges(book, []).some((c) => c.name === CHANGE);
 
+/** The skill files on disk that no change records yet. Unlike `changed`, this counts files an earlier run already wrote. */
+export const unrecordedSkill = (book: Book): string[] => handEdits(book, assemble(book).out).filter(ownsSkill);
+
+/** The unrecorded skill files that no commit holds, which an earlier `init` that stopped early left behind. */
+export const leftBehindSkill = (book: Book): string[] =>
+  unrecordedSkill(book).filter((p) => !git(["ls-files", "--", p], { cwd: book.root, check: false }));
+
 /** Record the skill files as the `patchbook-update-skill` change, and leave every other edit waiting. */
 export async function recordSkill(book: Book): Promise<number> {
   process.chdir(book.root);
@@ -221,8 +228,7 @@ export async function cmdSkill(): Promise<number> {
   if (refusals.length) throw new Fail(refusals.join("\n"));
   const replacing = wanted(book).filter((p) => lexists(join(book.root, p)) && !installed(book, p));
   const fork = book.layout.kind === "fork";
-  // `handEdits` sees skill files that match the shipped copy but were never recorded, which `changed` does not.
-  const unrecorded = fork ? handEdits(book, a.out).filter(ownsSkill) : [];
+  const unrecorded = fork ? unrecordedSkill(book) : [];
   const result = installSkill(book);
   if (result === null) {
     throw new Fail(setting("start.agents", book)[0].length ? "the update skill was not installed"
