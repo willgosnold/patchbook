@@ -1,10 +1,8 @@
-// Patchbook's matching: which elements of two lists pair up, and how alike two texts are.
-// Elements are equal when they are the same string, and none is skipped however often it appears or however long the lists are.
-
 /** A stretch where two lists differ: old [i1, i2) became new [j1, j2). One side may be empty, never both. */
 export type Changed = readonly [i1: number, i2: number, j1: number, j2: number];
 
-/** Where fresh differs from old under patchbook's matching, in order. */
+/** Where fresh differs from old, in order. The lines that pair are the shared start, then the shared end of what is left,
+ * and between them the longest matching whose pairs come earliest, by old line and then new. */
 export function lineChanges(old: readonly string[], fresh: readonly string[]): Changed[] {
   const changed: Changed[] = [];
   let i = 0;
@@ -29,7 +27,6 @@ export function similarity(a: string, b: string): number {
   return Math.floor((400 * lcsLength(x, y) + total) / (2 * total)) / 100;
 }
 
-/** How many elements the lists share at the start, then at the end of what is left. */
 function ends(a: readonly string[], b: readonly string[]): [start: number, end: number] {
   let p = 0;
   while (p < a.length && p < b.length && a[p] === b[p]) p++;
@@ -48,17 +45,16 @@ function intern(a: readonly string[], b: readonly string[]): [Int32Array, Int32A
   return [Int32Array.from(a, id), Int32Array.from(b, id), ids.size];
 }
 
-/** Where an element occurs in a list: the 32-bit words of the list it occurs in, and its bits in each. */
-type Mask = { words: number[]; bits: number[] };
+type SparseMask = { wordIndexes: number[]; wordBits: number[] };
 
-function masks(b: Int32Array, kinds: number): Mask[] {
-  const out = Array.from({ length: kinds }, (): Mask => ({ words: [], bits: [] }));
+function sparseMasks(b: Int32Array, kinds: number): SparseMask[] {
+  const out = Array.from({ length: kinds }, (): SparseMask => ({ wordIndexes: [], wordBits: [] }));
   for (let t = 0; t < b.length; t++) {
     const m = out[b[t]!]!;
-    if (m.words.at(-1) === t >>> 5) m.bits[m.bits.length - 1]! |= 1 << (t & 31);
+    if (m.wordIndexes.at(-1) === t >>> 5) m.wordBits[m.wordBits.length - 1]! |= 1 << (t & 31);
     else {
-      m.words.push(t >>> 5);
-      m.bits.push(1 << (t & 31));
+      m.wordIndexes.push(t >>> 5);
+      m.wordBits.push(1 << (t & 31));
     }
   }
   return out;
@@ -67,13 +63,13 @@ function masks(b: Int32Array, kinds: number): Mask[] {
 /** The next row of the bit-parallel longest common subsequence (Allison and Dix, Hyyrö), out = (v + (v & m)) | (v & ~m)
  * with m the mask of the row's element. Among a row's first t bits, the zeros count the longest common subsequence of
  * the elements stepped so far and the first t elements of the masked list. */
-function step(v: Uint32Array, out: Uint32Array, mask: Mask): void {
+function step(v: Uint32Array, out: Uint32Array, mask: SparseMask): void {
   let carry = 0;
   let k = 0;
   for (let w = 0; w < v.length; w++) {
     const y = v[w]!;
-    const m = mask.words[k] === w ? mask.bits[k++]! : 0;
-    // v + (v & m) in 16-bit halves: a sum past 2^31 would be a double, which makes similarity 1.6 times slower.
+    const m = mask.wordIndexes[k] === w ? mask.wordBits[k++]! : 0;
+    // v + (v & m) in 16-bit halves: a sum past 2^31 would be a double, which makes similarity slower.
     const u = y & m;
     const lo = (y & 0xffff) + (u & 0xffff) + carry;
     const hi = (y >>> 16) + (u >>> 16) + (lo >>> 16);
@@ -98,28 +94,29 @@ function popcount(x: number): number {
 function lcsLength(a: readonly string[], b: readonly string[]): number {
   const [p, s] = ends(a, b);
   const [x, y, kinds] = intern(a.slice(p, a.length - s), b.slice(p, b.length - s));
-  const mask = masks(y, kinds);
+  const mask = sparseMasks(y, kinds);
   const v = new Uint32Array((y.length + 31) >>> 5).fill(0xffffffff);
   for (const e of x) step(v, v, mask[e]!);
   return p + s + zeros(v, y.length);
 }
 
-/** The pairs of patchbook's matching, in order: the shared start, then the shared end of what is left, and between
- * them the longest matching whose pairs come earliest, by old element and then new. */
+function suffixLcs(x: Int32Array, y: Int32Array, kinds: number): (i: number, j: number) => number {
+  const mask = sparseMasks(y.toReversed(), kinds);
+  const rows = [new Uint32Array((y.length + 31) >>> 5).fill(0xffffffff)];
+  for (let i = x.length - 1; i >= 0; i--) {
+    const row = new Uint32Array(rows[0]!.length);
+    step(rows.at(-1)!, row, mask[x[i]!]!);
+    rows.push(row);
+  }
+  return (i, j) => zeros(rows[x.length - i]!, y.length - j);
+}
+
 function pairs(a: readonly string[], b: readonly string[]): [number, number][] {
   const [p, s] = ends(a, b);
   const [x, y, kinds] = intern(a.slice(p, a.length - s), b.slice(p, b.length - s));
   const n = x.length;
   const m = y.length;
-  // x steps from its end against y reversed, so the zeros of rows[n - i] up to m - j count the longest common subsequence of x[i:] and y[j:].
-  const mask = masks(y.toReversed(), kinds);
-  const rows = [new Uint32Array((m + 31) >>> 5).fill(0xffffffff)];
-  for (let i = n - 1; i >= 0; i--) {
-    const row = new Uint32Array(rows[0]!.length);
-    step(rows.at(-1)!, row, mask[x[i]!]!);
-    rows.push(row);
-  }
-  const longest = (i: number, j: number) => zeros(rows[n - i]!, m - j);
+  const longest = suffixLcs(x, y, kinds);
   const at = Array.from({ length: kinds }, (): number[] => []);
   for (let j = 0; j < m; j++) at[y[j]!]!.push(j);
   const seen = new Int32Array(kinds);

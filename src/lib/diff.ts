@@ -1,4 +1,3 @@
-// The diffs patchbook prints or gives a model are git's, so they read the same as `git diff` beside them.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
