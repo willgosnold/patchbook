@@ -3011,6 +3011,7 @@ const CREDENTIAL_URLS: readonly (readonly [string, string, string, string])[] = 
   ["an_ssh_password_with_an_encoded_colon", "ssh://u%3ASEKRIT@127.0.0.1:1/team/up", "ssh://u@127.0.0.1:1/team/up", "SEKRIT"],
   ["an_ssh_password_with_a_lower_case_encoded_colon", "ssh://u%3aSEKRIT@127.0.0.1:1/team/up", "ssh://u@127.0.0.1:1/team/up", "SEKRIT"],
   ["a_git_plus_ssh_password_with_an_encoded_colon", "git+ssh://u%3ASEKRIT@127.0.0.1:1/team/up", "git+ssh://u@127.0.0.1:1/team/up", "SEKRIT"],
+  ["an_ssh_password_with_an_encoded_colon_and_an_encoded_at_sign_in_the_host", "ssh://u@127.0.0.1%3ASEKRIT%40x/team/up", "ssh://u@127.0.0.1%40x/team/up", "SEKRIT"],
   ...([["a_no_break_space", "\u00a0"], ["a_space", " "], ["a_tab", "\t"], ["a_newline", "\n"]] as const).map(
     ([name, blank]) => [`a_password_with_${name}`, `https://user:SEKRITa${blank}SEKRITb@host.invalid/team/up`, "https://host.invalid/team/up", "SEKRIT"] as const,
   ),
