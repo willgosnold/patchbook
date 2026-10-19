@@ -583,7 +583,7 @@ describe.skipIf(!inSandbox)("intentSettings", () => {
   test("an unknown provider is refused", () => {
     process.env["PATCHBOOK_PROVIDER"] = "gemini";
     expect(() => intentSettings(null, true)).toThrow(Fail);
-    expect(() => intentSettings(null, true)).toThrow("intent.provider is one of claude, codex, not 'gemini'");
+    expect(() => intentSettings(null, true)).toThrow("intent.provider is one of claude, codex, none, not 'gemini'");
   });
 
   test("a setting of the wrong type is refused, naming the file", async () => {

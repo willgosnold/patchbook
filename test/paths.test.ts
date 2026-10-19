@@ -208,12 +208,14 @@ describe("the codex provider", () => {
     expect(read(join(t.tmp, "codex.prompt"))).toContain("The change is new and called mine.");
   });
 
-  forkTest("a codex that fails is named in stderr, and no change takes a name or intent from it", (t) => {
+  forkTest("a codex that fails is named in the pending note, and no change takes a name or intent from it", (t) => {
     t.env["PATCHBOOK_PROVIDER"] = "codex";
     t.fake("codex", answer("codex-shout", "Shout."), 3, "codex: not logged in");
     t.edit();
-    const failed = t.record([], null);
-    expect(failed.stderr).toContain("codex: not logged in");
+    const out = t.record().stdout;
+    expect(out).toContain("pending  no intent yet for pending (codex failed: codex: not logged in). To fill it: patchbook intent pending");
+    expect(t.changes()).toEqual(["pending"]);
+    expect(t.fork.read(".patchbook/changes/pending/CHANGE.md")).toContain("\nintent: \n");
     expect(t.changeText()).not.toContain("codex-shout");
     expect(t.changeText()).not.toContain("Shout.");
   });
@@ -226,13 +228,15 @@ describe("the codex provider", () => {
     '{"change": 5, "intent": "Shout."}',
     '{"intent": "Shout."}',
   ]) {
-    forkTest(`an answer codex garbles (${reply}) is named in stderr, and no change takes a name or intent from it`, (t) => {
+    forkTest(`an answer codex garbles (${reply}) is named in the pending note, and no change takes a name or intent from it`, (t) => {
       t.env["PATCHBOOK_PROVIDER"] = "codex";
       t.fake("codex", reply);
       t.edit();
-      const failed = t.record([], null);
-      expect(failed.stderr).toContain(reply);
-      expect(t.changeText()).not.toMatch(/^intent: $/m);
+      const out = t.record().stdout;
+      expect(out).toContain("pending  no intent yet for pending (codex didn't return a usable name and intent). To fill it: patchbook intent pending");
+      expect(t.called("codex")).toBe(true);
+      expect(t.changes()).toEqual(["pending"]);
+      expect(t.fork.read(".patchbook/changes/pending/CHANGE.md")).toContain("\nintent: \n");
       for (const taken of ["Not Kebab Case", "not-kebab-case", "codex-shout", "Shout."]) expect(t.changeText()).not.toContain(taken);
     });
   }
