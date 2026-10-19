@@ -17,6 +17,7 @@ const { intentSettings, PROVIDERS } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
 const { meantMode, outputMode, recordedModes } = await import("../src/lib/fs.ts");
 const { redact, refuseCredentials } = await import("../src/lib/proc.ts");
+const { bytesEqual } = await import("../src/lib/text.ts");
 const { setToml, USER_CONFIG } = await import("../src/settings.ts");
 
 type Entry = ReturnType<typeof readEntries> extends Map<string, infer E> ? E : never;
@@ -117,6 +118,15 @@ describe("blockSpans", () => {
   test("a fence after frontmatter opens as usual", () => {
     expect(spans("---\nk: v\n---\n```\na\n\nb\n```")).toEqual([[0, 3], [3, 8]]);
   });
+});
+
+test("bytesEqual compares views into a larger buffer by their own bytes", () => {
+  const whole = new TextEncoder().encode("abcabd");
+  const [abc, abc2, abd] = [whole.subarray(0, 3), new TextEncoder().encode("abc"), whole.subarray(3, 6)];
+  expect(bytesEqual(abc, abc2)).toBe(true);
+  expect(bytesEqual(abc, abd)).toBe(false);
+  expect(bytesEqual(abc, whole)).toBe(false);
+  expect(bytesEqual(whole.subarray(2, 2), new Uint8Array())).toBe(true);
 });
 
 describe("globRe", () => {

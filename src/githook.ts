@@ -19,7 +19,7 @@ import { type Env, git, run, spawn } from "./lib/proc.ts";
 import { quote, sorted, strip } from "./lib/py.ts";
 import { bytesEqual, concat, decode, decodeReplace, encode } from "./lib/text.ts";
 import { type Source, setting } from "./settings.ts";
-import { refuseMergedUpstream, stagedTree } from "./store.ts";
+import { readBlobsOf, refuseMergedUpstream, stagedTree } from "./store.ts";
 import { Undo } from "./undo.ts";
 
 /** Git runs hooks from the top of the checkout. A linked worktree shares the hooks folder of its repo, and may hold a commit with no patchbook. */
@@ -763,6 +763,7 @@ async function runHook(undo: Undo) {
   };
   let a = assemble(book);
   const edited = stagedEdits(a.out);
+  readBlobsOf(edited.flatMap((p) => staged.get(p) ?? []));
   const kept = edited.filter((p) => !staged.has(p) && onDisk(book, p) !== undefined);
   if (kept.length) {
     throw new Fail("these files are out of the index but still on disk:\n  " + kept.join("\n  ")
@@ -800,10 +801,10 @@ async function runHook(undo: Undo) {
   if (edited.length) {
     if (!a.problems.length) plan(asRecorded(a.out, edited));
     for (const p of buildInputs(book)) undo.hold(join(book.root, p));
-    const recorded = record(book, null, process.env["PATCHBOOK_INTENT"] ?? null, { seen: staged, edits: edited, undo });
+    const recorded = record(book, null, process.env["PATCHBOOK_INTENT"] ?? null, { seen: staged, edits: edited, undo, assembly: a });
     process.stdout.write(recorded.text);
     copies = recorded.copies;
-    a = assemble(book);
+    a = recorded.after ?? assemble(book);
   }
   let built: string[] = [];
   if (a.problems.length) {

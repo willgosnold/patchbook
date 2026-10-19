@@ -6307,6 +6307,159 @@ describe("ForkTest", () => {
   const committed = (t: ForkCase): string[] => words(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.fork.path }).stdout);
   const porcelain = (t: ForkCase): string => sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout;
 
+  forkTest("test_build_and_commit_keep_an_upstream_file_with_paragraphs_and_no_entries_byte_for_byte", (t) => {
+    const text = "---\ntitle: notes\n---\n# Notes\n\nfirst paragraph\nstill first  \n\n\n\n```sh\necho one\n\necho two\n```\n \t\ncrlf line\r\n\r\n\nlast line, no newline";
+    writeFileSync(join(t.up.path, "docs/notes.md"), text);
+    t.up.commit("notes");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(read(join(t.fork.path, "docs/notes.md"))).toBe(text);
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "notes and shout"]);
+    expect(sh(["git", "show", "HEAD:docs/notes.md"], { cwd: t.fork.path }).stdout).toBe(text);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_status_flags_a_conflict_marker_in_any_output_file", (t) => {
+    t.up.write("docs/merge.md", "é\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> topic\n");
+    t.up.write("docs/inline.md", "a <<<<<<< b and c >>>>>>> d\n");
+    t.up.commit("markers");
+    t.pb(["sync"], { cwd: t.fork.path });
+    const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
+    expect(status).toContain("conflict  docs/merge.md: conflict marker in the output\n");
+    expect(status).not.toContain("docs/inline.md");
+    expect(status).toContain("; 1 conflict\n");
+  });
+
+  forkTest("test_status_flags_the_files_a_check_or_the_block_terms_hook_matches", (t) => {
+    t.up.write("docs/cursor.md", "Open Cursor.\n\nThen wave.\n");
+    t.up.write("docs/other.md", "Open Cursor too.\n");
+    t.up.write("notes.txt", "Ask Claude.\n");
+    t.up.commit("mentions");
+    syncAndBuild(t);
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    writeFileSync(config, read(config) + dedent(`
+      [[check]]
+      name = "cursor"
+      files = ["docs/*.md"]
+      exclude = ["docs/other.md"]
+      pattern = '\\bCursor\\b'
+    `));
+    writeFileSync(join(t.fork.path, ".patchbook/hooks.ts"), dedent(`
+      export const blockTerms = (file: string, block: string) => (file === "notes.txt" && block.includes("Claude") ? ["Claude"] : []);
+    `));
+    const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
+    expect(status.split("\n").filter((l) => l.startsWith("missing")).map((l) => l.replace(/ \[[0-9a-f]{12}\]/, ""))).toEqual([
+      "missing   docs/cursor.md:1 needs an entry (Cursor)",
+      "missing   notes.txt:1 needs an entry (Claude)",
+    ]);
+    expect(status).toContain("; 2 missing\n");
+  });
+
+  forkTest("test_commit_records_a_paragraph_edit_and_rebuilds_from_the_entry_it_wrote", (t) => {
+    t.up.write("greet.md", "Open Cursor.\n\nThen wave.\n");
+    t.up.commit("greet");
+    syncAndBuild(t);
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    writeFileSync(config, read(config) + dedent(`
+      [[check]]
+      name = "cursor"
+      files = ["greet.md"]
+      pattern = '\\bCursor\\b'
+    `));
+    t.pb(["scaffold"], { cwd: t.fork.path });
+    const entries = join(t.fork.path, ".patchbook/blocks/greet.md.entries");
+    const text = replace(read(entries), "rules: \nintent: \n", "rules: t3\nintent: Speak T3.\n");
+    writeFileSync(entries, partitionHead(text, "--- patched\n") + "--- patched\nOpen T3.\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "speak t3"]);
+    t.fork.write("greet.md", "Open T3.\n\nThen wave twice.\n");
+    sh(["git", "add", "greet.md"], { cwd: t.fork.path });
+    expect(hookCommit(t, ["-m", "wave twice"]).stderr).toContain("entry    greet.md [");
+    expect(sh(["git", "show", "HEAD:greet.md"], { cwd: t.fork.path }).stdout).toBe("Open T3.\n\nThen wave twice.\n");
+    expect(sh(["git", "show", "HEAD:.patchbook/blocks/greet.md.entries"], { cwd: t.fork.path }).stdout).toContain("--- patched\nThen wave twice.\n");
+    expect(t.fork.read("greet.md")).toBe("Open T3.\n\nThen wave twice.\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_records_hand_edits_staged_after_a_rebuild_of_a_changed_patchbook", (t) => {
+    t.recordFeature();
+    const ours = join(t.fork.path, ".patchbook/changes/feature/ours/app.txt.pb");
+    writeFileSync(ours, replace(read(ours), "TWO", "Two"));
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app.txt")).toContain("Two");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE"));
+    t.fork.write("bin/run.sh", "#!/bin/sh\necho run fast\n", 0o755);
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    const commit = hookCommit(t, ["-m", "soften and speed up"]);
+    expect(commit.stderr).toContain("file     app.txt (in feature)");
+    expect(commit.stderr).toContain("file     bin/run.sh");
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toBe(t.fork.read("app.txt"));
+    expect(t.fork.read("app.txt")).toContain("Two\nTHREE\n");
+    expect(read(ours)).toContain("Two\nTHREE\n");
+    expect(sh(["git", "show", "HEAD:bin/run.sh"], { cwd: t.fork.path }).stdout).toBe("#!/bin/sh\necho run fast\n");
+    expect(t.pb(["build"], { cwd: t.fork.path }).stdout).toContain("built ");
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_reads_each_output_file_from_the_index_where_the_working_copy_differs", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    const staged = t.fork.read("app.txt");
+    t.fork.write("app.txt", replace(staged, "three", "THREE"));
+    t.fork.write("docs/guide.md", "an unstaged guide\n");
+    hookCommit(t, ["-m", "shout two"]);
+    expect(committed(t).filter((p) => !p.startsWith(".patchbook/"))).toEqual(["app.txt"]);
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toBe(staged);
+    expect(read(join(t.fork.path, ".patchbook/changes/shout/ours/app.txt.pb"))).toBe(staged);
+    expect(sh(["git", "show", "HEAD:docs/guide.md"], { cwd: t.fork.path }).stdout).toBe("a guide\n");
+    expect(t.fork.read("app.txt")).toBe(replace(staged, "three", "THREE"));
+    expect(t.fork.read("docs/guide.md")).toBe("an unstaged guide\n");
+    expect(porcelain(t)).toBe(" M app.txt\n M docs/guide.md\n");
+  });
+
+  forkTest("test_commit_stages_output_a_finish_hook_rewrites_in_a_buffer_it_reuses", (t) => {
+    writeFileSync(join(t.fork.path, ".patchbook/hooks.ts"), dedent(`
+      let mirror = new Uint8Array(0);
+      export const finish = (out: Map<string, { data: Uint8Array; mode: number }>) => {
+        const app = out.get("app.txt")!.data;
+        if (mirror.length !== app.length) mirror = new Uint8Array(app.length);
+        mirror.set(app);
+        out.set("mirror.txt", { data: mirror, mode: 0o644 });
+      };
+    `));
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("mirror");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "shout two"]);
+    expect(sh(["git", "show", "HEAD:mirror.txt"], { cwd: t.fork.path }).stdout).toBe(t.fork.read("app.txt"));
+    expect(t.fork.read("mirror.txt")).toContain("TWO");
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_in_a_sha256_fork_records_only_the_staged_edit", (t) => {
+    sh(["git", "init", "-q", "-b", "main", "--object-format=sha256", "up256"], { cwd: t.tmp });
+    const up = new Repo(join(t.tmp, "up256"));
+    up.write("app.txt", "one\ntwo\nthree\n");
+    up.write("docs/guide.md", "a guide\n");
+    up.commit("start");
+    t.pb(["clone", up.path, "fork256"], { cwd: t.tmp });
+    const fork = join(t.tmp, "fork256");
+    expect(sh(["git", "rev-parse", "--show-object-format"], { cwd: fork }).stdout).toBe("sha256\n");
+    writeFileSync(join(fork, "app.txt"), "one\nTWO\nthree\n");
+    sh(["git", "add", "app.txt"], { cwd: fork });
+    sh(["git", "commit", "-q", "-m", "shout two"], { cwd: fork, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    const names = words(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: fork }).stdout);
+    expect(names.filter((p) => !p.startsWith(".patchbook/"))).toEqual(["app.txt"]);
+    expect(read(join(fork, ".patchbook/changes/shout/ours/app.txt.pb"))).toBe("one\nTWO\nthree\n");
+    expect(sh(["git", "status", "--porcelain"], { cwd: fork }).stdout).toBe("");
+  });
+
   for (const [where, path] of [["inside_the_book_tree", (t: ForkCase) => join(t.fork.path, ".scratch-wt")], ["outside_the_book_tree", (t: ForkCase) => join(t.tmp, "scratch-wt")]] as const) {
     forkTest(`test_commit_from_a_linked_worktree_${where}_with_no_patchbook_goes_through`, (t) => {
       const wt = path(t);
