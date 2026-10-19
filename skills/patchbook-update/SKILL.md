@@ -20,7 +20,7 @@ Tell from the tools you have, not from the model name. A tool's name can carry a
 - **Thread tools**: `t3_thread_organize`. Without it, skip each step that archives or settles the thread.
 - **A subagent tool**: T3's `delegate_task`, or the agent's own, such as Claude Code's `Agent`. Step 5 says what to do with each, and without one.
 - **Pull request linking**: `link_pull_request`. Without it, open the pull request and don't link it.
-- **Its own worktree**: the run has one when `git rev-parse --show-toplevel` is not the main checkout. Without one, step 2 makes one.
+- **Its own worktree**: the run has one only when T3 made it, which is when you have thread tools and `git rev-parse --git-dir` differs from `git rev-parse --git-common-dir`. Otherwise step 2 makes one, even if the run started in another linked worktree, since that one may hold someone's work.
 
 Never wait for an answer, even when someone is there: a run from cron or CI has no one to answer. To ask, leave the work where a person finds it (step 6) and end the run.
 
@@ -43,12 +43,12 @@ Then run `patchbook check`.
 
 ## 2. Sync on the run's own branch
 
-T3 gives each run its own worktree and branch, and a scheduler can too. Work there.
+T3 gives each run its own worktree and branch. Work there.
 
 1. Find the main branch and the main checkout. Shell variables don't last between commands, so note both values:
    - `MAIN_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##')`
-   - `MAIN_CHECKOUT=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')`
-2. If `git rev-parse --show-toplevel` prints the main checkout, make the run's own worktree outside the repo, so the run changes nothing in the main checkout: `git fetch origin && git worktree add -b patchbook/upstream-<time> "${XDG_CACHE_HOME:-$HOME/.cache}/patchbook/worktrees/<repo>-<time>" origin/$MAIN_BRANCH`, with `<time>` as `date -u +%Y%m%d-%H%M%S` prints it and `<repo>` the main checkout's folder name. Note its path. Run every later command there, starting each with `cd <path> &&`, since some agents, Claude Code among them, move the shell back to where the run started after each command. Edit its files by their full path.
+   - `MAIN_CHECKOUT=$(git worktree list --porcelain | sed -n 's/^worktree //p' | head -n 1)`
+2. If the run has no worktree of its own (see above), make one outside the repo, so the run changes nothing in a checkout someone uses: `git fetch origin && git worktree add -b patchbook/upstream-<time> "${XDG_CACHE_HOME:-$HOME/.cache}/patchbook/worktrees/<repo>-<time>" origin/$MAIN_BRANCH`, with `<time>` as `date -u +%Y%m%d-%H%M%S` prints it and `<repo>` the main checkout's folder name. Note its path. Run every later command there, starting each with `cd <path> &&`, since some agents, Claude Code among them, move the shell back to where the run started after each command. Edit its files by their full path.
 3. Run `git fetch origin && git rebase origin/$MAIN_BRANCH`. The branch must have no commits of its own yet.
 4. Run `patchbook sync`. It moves every upstream that moved, and prints `<name>: pinned <short sha>` for each one. If it exits non-zero, quote its message and ask (step 6), before any commit. If it exits 0 and prints no `pinned` line, every upstream that moved has moved back to its pin since step 1. Say that in one line, and end the run as step 1 does when no upstream has moved, with no commit. Otherwise commit everything it changed except `.patchbook/last-sync.json` (`git add -A -- . ':!.patchbook/last-sync.json'`, then `PATCHBOOK_HOOK=0 git commit`) as "Sync upstream <name> to <short sha>", naming each upstream.
 5. Read `.patchbook/last-sync.json` (per upstream: what changed and what merged on its own) and the `problems` in `patchbook status --json` (what broke). Ignore its `last_sync`, which can hold older runs' reports. Here and in steps 3, 5 and 6, read only the reports of the upstreams `patchbook sync` printed `pinned` for. An upstream can move after step 1, so this list can be longer than `patchbook check`'s.
@@ -135,16 +135,16 @@ Otherwise:
 3. Fast-forward the main checkout, if it is on `$MAIN_BRANCH` and clean: `git -C "$MAIN_CHECKOUT" pull --ff-only`.
 4. Run the config's `[deploy]` command from this worktree's root, and report its output.
 5. Reply in a few lines: each upstream's range, what merged on its own, what you repaired and how, what you retired, and the test, review and deploy results.
-6. Clean up (below), and settle the thread with `t3_thread_organize` (`settle`). End with `patchbook-update: merged`.
+6. Clean up (below), and settle the thread with `t3_thread_organize` (`settle`). End with `patchbook-update: merged`, or with `patchbook-update: failed: deploy: <the error>` if `[deploy]` exited non-zero.
 
 ## Clean up
 
-Remove this run's worktree and branch, unless you stopped to ask:
+Remove this run's worktree and branch, unless you stopped to ask. Remove only the worktree T3 made for the run or step 2 made, never any other, and skip this when the run has neither:
 
 ```sh
 HERE=$(git rev-parse --show-toplevel)
 BRANCH=$(git branch --show-current)
-MAIN_CHECKOUT=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')
+MAIN_CHECKOUT=$(git worktree list --porcelain | sed -n 's/^worktree //p' | head -n 1)
 if [ "$HERE" != "$MAIN_CHECKOUT" ]; then
   cd "$MAIN_CHECKOUT" && git worktree remove --force "$HERE" && git branch -D "$BRANCH"
 fi

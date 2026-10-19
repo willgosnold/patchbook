@@ -116,15 +116,15 @@ patchbook sync
 git add -A -- . ':!.patchbook/last-sync.json'
 git diff --cached --quiet && exit 0
 PATCHBOOK_HOOK=0 git commit -q -m "Sync upstream"
-if patchbook status && patchbook build; then
+if body=$(patchbook status 2>&1) && body=$(patchbook build 2>&1); then
   git add -A -- . ':!.patchbook/last-sync.json'
   git diff --cached --quiet || PATCHBOOK_HOOK=0 git commit -q -m "Build"
 fi
 git push -u origin "$branch"
-gh pr create --title "Sync upstream" --body "$(patchbook status 2>&1 || true)"
+gh pr create --title "Sync upstream" --body "$body"
 ```
 
-It needs a full clone (in GitHub Actions, `actions/checkout` with `fetch-depth: 0`), a git identity, `patchbook` installed, and `GH_TOKEN` set for `gh`. The pull request's body is what `patchbook status` prints. It ends in `no problems` when the update built cleanly, and otherwise lists the problems that you or an agent must repair before merging.
+It needs a full clone (in GitHub Actions, `actions/checkout` with `fetch-depth: 0`), a git identity, `patchbook` installed, and `GH_TOKEN` set for `gh`. The pull request's body is what `patchbook build` printed when the update built. Otherwise it is what `patchbook status` or `patchbook build` printed when it stopped: the problems that you or an agent must repair before merging.
 
 ## Rules
 
