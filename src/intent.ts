@@ -8,10 +8,10 @@ import { CHANGE_NAME, type Change, editText, type Roster } from "./changes.ts";
 import { unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import type { File } from "./lib/fs.ts";
-import { JsonError, loads } from "./lib/json.ts";
+import { JsonError, type JsonValue, loads } from "./lib/json.ts";
 import { spawn, which } from "./lib/proc.ts";
-import { length, type PyValue, slice, split, splitlines, strip, strRepr } from "./lib/py.ts";
-import { decode, decodeReplace, encode, isText } from "./lib/text.ts";
+import { strRepr } from "./lib/repr.ts";
+import { decode, decodeReplace, encode, isText, lines } from "./lib/text.ts";
 import { configured, readToml, type Source, setting, SETTINGS, type Table, USER_CONFIG } from "./settings.ts";
 
 export const NO_MODEL = "none";
@@ -67,11 +67,11 @@ export function pendingDiff(a: Assembly, current: ReadonlyMap<string, File>, pat
       parts.push(`binary file ${p} ${!built ? "added" : !now ? "deleted" : "changed"}\n`);
       continue;
     }
-    parts.push(unifiedDiff(splitlines(decode(old), true), splitlines(decode(fresh), true), built ? `built/${p}` : "/dev/null",
+    parts.push(unifiedDiff(lines(decode(old)), lines(decode(fresh)), built ? `built/${p}` : "/dev/null",
       now ? `disk/${p}` : "/dev/null"));
   }
-  const text = parts.join("");
-  return slice(text, 0, 40000) + (length(text) > 40000 ? "\n[diff truncated]\n" : "");
+  const chars = Array.from(parts.join(""));
+  return chars.slice(0, 40000).join("") + (chars.length > 40000 ? "\n[diff truncated]\n" : "");
 }
 
 export function changeDiff(c: Change): string {
@@ -79,14 +79,14 @@ export function changeDiff(c: Change): string {
     const old = before ?? new Uint8Array();
     const fresh = after ?? new Uint8Array();
     if (!(isText(old) && isText(fresh))) return `binary file ${path}\n`;
-    return unifiedDiff(splitlines(decode(old), true), splitlines(decode(fresh), true), before ? `upstream/${path}` : "/dev/null", `ours/${path}`);
+    return unifiedDiff(lines(decode(old)), lines(decode(fresh)), before ? `upstream/${path}` : "/dev/null", `ours/${path}`);
   };
-  const text = c.edits.map((e) => {
+  const chars = Array.from(c.edits.map((e) => {
     if (e.kind === "file") return diff(c.read("base", e.path), c.read("ours", e.path), e.path);
     if (e.kind === "add" || e.kind === "replace") return diff(null, c.read("ours", e.path), e.path);
     return editText(e) + "\n";
-  }).join("");
-  return slice(text, 0, 40000) + (length(text) > 40000 ? "\n[diff truncated]\n" : "");
+  }).join(""));
+  return chars.slice(0, 40000).join("") + (chars.length > 40000 ? "\n[diff truncated]\n" : "");
 }
 
 /** The provider, model and effort for writing intents.
@@ -145,7 +145,7 @@ function askModel(provider: string, spec: Provider, model: string, effort: strin
   }
   if (result.timedOut) throw new ModelFailed(`${provider} took longer than ${seconds}s`, `${provider} took longer than ${seconds}s (intent.timeout). Pass --intent instead.`);
   if (result.code !== 0) {
-    const said = slice(strip(decodeReplace(result.stderr)), -500);
+    const said = Array.from(decodeReplace(result.stderr).trim()).slice(-500).join("");
     throw new ModelFailed(`${provider} failed: ${said.split("\n")[0] || `exit code ${result.code}`}`, `${provider} failed: ${said}. Pass --intent instead.`);
   }
   return decodeReplace(result.stdout);
@@ -154,7 +154,7 @@ function askModel(provider: string, spec: Provider, model: string, effort: strin
 const NAME_LENGTH = 40;
 
 /** An intent on one line, with each run of whitespace a single space. */
-export const oneLine = (text: string): string => split(text).join(" ");
+export const oneLine = (text: string): string => text.trim().replace(/\s+/g, " ");
 
 /** A kebab-case change name from at most the first four words of an intent, kept within `NAME_LENGTH`, that nothing in `changes/` already uses. */
 export function nameFromIntent(intent: string, roster: Roster): string {
@@ -170,8 +170,8 @@ export function nameFromIntent(intent: string, roster: Roster): string {
 const FENCE = /^```(?:json)?[ \t]*\r?\n([\s\S]*)\r?\n[ \t]*```$/;
 
 /** The JSON object a reply is, bare or in one code fence. A reply with anything else around the object has no fields. */
-function replyFields(reply: string): ReadonlyMap<string, PyValue> {
-  const text = strip(reply);
+function replyFields(reply: string): ReadonlyMap<string, JsonValue> {
+  const text = reply.trim();
   try {
     const answer = loads(FENCE.exec(text)?.[1] ?? text);
     if (answer instanceof Map) return answer;
@@ -209,7 +209,7 @@ export function writeIntent(
   if (!CHANGE_NAME.test(chosen) || !intent) {
     throw new ModelFailed(
       `${provider} didn't return a usable name and intent`,
-      `${provider} didn't return a usable name and intent:\n${slice(strip(reply), 0, 500)}\nPass a name and --intent instead.`,
+      `${provider} didn't return a usable name and intent:\n${Array.from(reply.trim()).slice(0, 500).join("")}\nPass a name and --intent instead.`,
     );
   }
   if (name && chosen !== name) chosen = name;

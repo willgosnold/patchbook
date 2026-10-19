@@ -6070,6 +6070,26 @@ describe("ForkTest", () => {
     expect(existsSync(join(t.tmp, "prompt.txt"))).toBe(false);
   });
 
+  forkTest("test_show_and_the_model_prompt_split_lines_where_git_diff_does", (t) => {
+    const before = "form\ffeed\nlone\rreturn\nline\u2028separator\ncrlf\r\nlast\n";
+    const after = before.replace("return", "RETURN");
+    writeFileSync(join(t.up.path, "lines.txt"), before);
+    t.up.commit("add lines.txt");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    writeFileSync(join(t.fork.path, "lines.txt"), after);
+    t.pb(["record"], { cwd: t.fork.path });
+    writeFileSync(join(t.tmp, "before.txt"), before);
+    writeFileSync(join(t.tmp, "after.txt"), after);
+    const files = [join(t.tmp, "before.txt"), join(t.tmp, "after.txt")];
+    const git = sh(["git", "diff", "--no-index", "--no-color", ...files], { cwd: t.fork.path, check: false }).stdout;
+    const hunk = git.slice(git.indexOf("@@"));
+    expect(hunk).toBe("@@ -1,5 +1,5 @@\n form\ffeed\n-lone\rreturn\n+lone\rRETURN\n line\u2028separator\n crlf\r\n last\n");
+    const shown = t.pb(["show", "shout"], { cwd: t.fork.path }).stdout;
+    expect(shown.slice(shown.indexOf("@@"))).toBe(hunk);
+    expect(read(join(t.tmp, "prompt.txt"))).toContain(`+++ disk/lines.txt\n${hunk}`);
+  });
+
   forkTest("test_record_keeps_a_given_intent_when_no_name_is_given", (t) => {
     const prompt = join(t.tmp, "prompt.txt");
     const intent = "Make the second line loud so it stands out.";
@@ -10442,6 +10462,91 @@ describe("VendorTest", () => {
     expect(read(entries)).toContain("--- upstream\nThen wave.\n--- patched\n\n");
     t.recordEdit("# Hello\n\nHi first.\n", "# Hello\n");
     expect(read(entries)).not.toContain("Hi first.");
+  });
+
+  vendorTest("test_record_prompt_breaks_a_paragraph_edit_into_lines_only_at_newlines", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.recordEdit("Then wave.", "Then\fwave\u2028twice.");
+    expect(read(join(t.tmp, "prompt.txt"))).toContain("@@ -1 +1 @@\n-Then wave.\n+Then\fwave\u2028twice.\n");
+  });
+
+  forkTest("test_record_writes_a_quoted_edit_line_for_a_name_that_starts_or_ends_with_whitespace_or_holds_an_arrow", (t) => {
+    const names = [" lead.txt", "trail.txt ", "\uFEFFbom-lead.txt", "bom-trail.txt\uFEFF", "arrow -> name.txt"];
+    for (const name of names) t.fork.write(name, `${JSON.stringify(name)}\n`);
+    const out = t.pb(["record", "names", "--intent", "Add files whose names need quoting."], { cwd: t.fork.path }).stdout;
+    const file = join(t.fork.path, ".patchbook/changes/names/CHANGE.md");
+    const change = read(file);
+    for (const name of names) {
+      expect(out).toContain(`${"add".padEnd(9)}${name}\n`);
+      expect(change).toContain(`\n- add "${name}"\n`);
+    }
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(read(join(t.fork.path, ".patchbook/build.lock")).split("\n").filter(Boolean).map((l) => l.replace(/^(?:\d{6} )?[0-9a-f]{40} /, ""))).toEqual(expect.arrayContaining(names));
+    for (const name of names) rmSync(join(t.fork.path, name));
+    t.pb(["build", "--force"], { cwd: t.fork.path });
+    for (const name of names) expect(read(join(t.fork.path, name))).toBe(`${JSON.stringify(name)}\n`);
+  });
+
+  forkTest("test_a_hand_written_edit_line_with_whitespace_at_the_end_of_a_path_is_refused_and_a_quoted_one_builds", (t) => {
+    const dir = join(t.fork.path, ".patchbook/changes/hand");
+    const file = join(dir, "CHANGE.md");
+    mkdirNew(dir);
+    writeFileSync(join(t.fork.path, ".patchbook/series"), "hand\n");
+    writeFileSync(file, "# hand\n\nintent: Move the guide.\n\nedits:\n- move docs/guide.md -> moved.txt \n");
+    const refused = t.pb(["build"], { cwd: t.fork.path, code: 1 });
+    expect(refused.stderr).toContain(`${file}:6: the path "moved.txt " starts or ends with whitespace; write it in double quotes: "moved.txt "`);
+    expect(existsSync(join(t.fork.path, "moved.txt "))).toBe(false);
+    writeFileSync(file, '# hand\n\nintent: Move the guide.\n\nedits:\n- move docs/guide.md -> "moved.txt "\n');
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(read(join(t.fork.path, "moved.txt "))).toBe("a guide\n");
+    expect(existsSync(join(t.fork.path, "moved.txt"))).toBe(false);
+  });
+
+  forkTest("test_a_hand_written_edit_path_that_ends_in_a_slash_is_refused_and_nothing_is_built", (t) => {
+    const dir = join(t.fork.path, ".patchbook/changes/hand");
+    mkdirNew(dir);
+    writeFileSync(join(t.fork.path, ".patchbook/series"), "hand\n");
+    writeFileSync(join(dir, "CHANGE.md"), "# hand\n\nintent: Move the guide.\n\nedits:\n- move docs/guide.md -> moved /\n");
+    const before = tree(t.fork.path);
+    const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
+    expect(status).toContain("changes/hand move docs/guide.md -> moved /: ");
+    expect(status).toContain("no slash at the end");
+    expect(t.pb(["build"], { cwd: t.fork.path, code: 1 }).stderr).toContain("nothing built");
+    expect(tree(t.fork.path)).toEqual(before);
+  });
+
+  forkTest("test_record_keeps_a_hand_written_move_whose_source_ends_in_an_arrow_and_build_moves_that_file", (t) => {
+    t.up.write("a ->", "AAA\n");
+    t.up.write("a", "alpha\n");
+    t.up.commit("names that end in an arrow");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "mv", "--intent", "Shout two and move a file."], { cwd: t.fork.path });
+    const file = join(t.fork.path, ".patchbook/changes/mv/CHANGE.md");
+    writeFileSync(file, read(file) + '- move "a ->" -> b.txt\n');
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE"));
+    t.pb(["record", "mv", "--intent", "Shout two and move a file."], { cwd: t.fork.path });
+    expect(read(file)).toContain('\n- move "a ->" -> b.txt\n');
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(read(join(t.fork.path, "b.txt"))).toBe("AAA\n");
+    expect(read(join(t.fork.path, "a"))).toBe("alpha\n");
+    expect(existsSync(join(t.fork.path, "a ->"))).toBe(false);
+    expect(existsSync(join(t.fork.path, "-> b.txt"))).toBe(false);
+  });
+
+  vendorTest("test_record_skips_a_paragraph_edit_whose_entry_uses_a_placeholder_that_is_empty", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    t.repo.write(".patchbook/snippets.md", "## none\n\n## greet\n\nSay hello in T3.\n");
+    writeFileSync(entries, replace(read(entries), "--- patched\n{{snippet:greet}}", "--- patched\n{{snippet:none}}{{snippet:greet}}"));
+    t.pb(["build"], { cwd: t.repo.path });
+    const recorded = read(entries);
+    const skill = "skills/hello/SKILL.md";
+    t.repo.write(skill, replace(t.repo.read(skill), "Say hello in T3.", "Say hello in T3. Smile."));
+    const out = t.pb(["record", "--intent", "Smile."], { cwd: t.repo.path }).stdout;
+    expect(out).toContain("skipped  hello/SKILL.md: its block entry uses {{snippet:none}}, which is empty, so the edit can't show where it goes; edit its block entries directly");
+    expect(read(entries)).toBe(recorded);
+    expect(t.repo.read(skill)).toContain("Say hello in T3. Smile.");
   });
 
   vendorTest("test_record_paragraph_edit_with_an_intent_keeps_the_intent_of_a_change_named_unnamed", (t) => {

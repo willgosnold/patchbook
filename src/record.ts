@@ -11,9 +11,8 @@ import { changeDiff, ModelFailed, nameFromIntent, oneLine, pendingDiff, writeInt
 import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, LINK, meantMode, type Mode, recordedModes, relative, sameFile, type Seen, writeText } from "./lib/fs.ts";
-import { replace, splitlines, strip } from "./lib/py.ts";
 import { say, warn } from "./lib/term.ts";
-import { bytesEqual, decode, encode, isText } from "./lib/text.ts";
+import { bytesEqual, decode, encode, isText, lines } from "./lib/text.ts";
 import { Undo } from "./undo.ts";
 
 /** An entry a recording makes. A null intent means it still needs one. */
@@ -302,7 +301,7 @@ function pending(ask: Asked, name: string | null, roster: Roster, why: string): 
 
 function modelDiff(a: Assembly, current: ReadonlyMap<string, File>, ask: Asked): string {
   return pendingDiff(a, current, ask.named) + ask.drafts
-    .map(([p, e]) => unifiedDiff(splitlines(e.upstream + "\n", true), splitlines(e.patched + "\n", true), `upstream/${p}`, `disk/${p}`))
+    .map(([p, e]) => unifiedDiff(lines(e.upstream + "\n"), lines(e.patched + "\n"), `upstream/${p}`, `disk/${p}`))
     .join("");
 }
 
@@ -337,7 +336,7 @@ export function fill(book: Book, change: string | null, intent: string | null): 
     const entries = readEntries(entriesPath(book, rel));
     const bare = Array.from(entries.values()).filter((e) => !e.intent);
     if (!bare.length) continue;
-    const diff = bare.map((e) => unifiedDiff(splitlines(e.upstream + "\n", true), splitlines(e.patched + "\n", true), `upstream/${rel}`, `patched/${rel}`)).join("");
+    const diff = bare.map((e) => unifiedDiff(lines(e.upstream + "\n"), lines(e.patched + "\n"), `upstream/${rel}`, `patched/${rel}`)).join("");
     const text = given ?? writeIntent(book, changes, diff, null, false)[1];
     files.push({ rel, entries: new Map(Array.from(entries, ([h, e]) => [h, e.intent ? e : { ...e, intent: text }])), intent: text });
   }
@@ -493,8 +492,8 @@ function planParagraphs(
     const js = Math.min(mapLine(every, bs, fresh.length), ...mine.map((b) => b.j1));
     const je = Math.max(mapLine(every, be, fresh.length), ...mine.map((b) => b.j2));
     const chunk = fresh.slice(js, je);
-    while (chunk.length && !strip(chunk[0]!)) chunk.shift();
-    while (chunk.length && !strip(chunk.at(-1)!)) chunk.pop();
+    while (chunk.length && !chunk[0]!.trim()) chunk.shift();
+    while (chunk.length && !chunk.at(-1)!.trim()) chunk.pop();
     for (const [i, k] of group.entries()) {
       let piece = i === 0 ? chunk.join("\n") : "";
       const [start, end] = spans[k]!;
@@ -504,7 +503,8 @@ function planParagraphs(
       if (entry) { // keep its placeholders where their values still appear
         for (const [hint] of entry.patched.matchAll(PLACEHOLDER_HINT)) {
           const value = rules.expand(hint, () => {});
-          if (value !== hint && piece.includes(value)) piece = replace(piece, value, hint);
+          if (value === "") return `its block entry uses ${hint}, which is empty, so the edit can't show where it goes; edit its block entries directly`;
+          if (value !== hint) piece = piece.split(value).join(hint);
         }
       }
       if (piece === upstream && (!entry || entry.kind !== "keep")) {
