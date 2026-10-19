@@ -7213,7 +7213,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
       expect(untracked(t)).toEqual([]);
     });
 
-    forkTest("test_status_and_upstream_diff_work_without_the_report_in_a_fresh_clone", (t) => {
+    forkTest("test_status_and_upstream_diff_cope_without_the_report_in_a_fresh_clone", (t) => {
       t.recordFeature();
       moveUpstream(t, "six", "SIX");
       t.pb(["sync"], { cwd: t.fork.path });
@@ -7223,6 +7223,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
       expect(existsSync(join(clone, ".patchbook/last-sync.json"))).toBe(false);
       expect(JSON.parse(t.pb(["status", "--json"], { cwd: clone }).stdout).last_sync).toBeNull();
       expect(t.pb(["upstream", "upstream", "--diff"], { cwd: t.fork.path }).stdout).toContain("+SIX");
+      expect(t.pb(["upstream", "upstream", "--diff"], { cwd: clone, code: 1 }).stderr).toContain("pass --since <commit>");
     });
 
     const folderAtRules = (t: ForkCase): void => {
