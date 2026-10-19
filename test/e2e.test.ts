@@ -11146,7 +11146,7 @@ exec '${Bun.which("git")}' "$@"
         const up = new Repo(join(t.tmp, "upstream"));
         up.write("a.md", "a\n");
         up.commit("a");
-        withBlobAt(up, path);
+        withBlobAt(t, up, path);
         const mine = new Repo(join(t.tmp, "mine"));
         mine.write("README.md", "mine\n");
         mine.commit("mine");
