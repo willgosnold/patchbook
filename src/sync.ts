@@ -88,6 +88,7 @@ function carryMode(c: Change, path: string, theirs: Mode): Write[] {
 
 export async function cmdSync(args: { name: string | null; ref: string | null }) {
   const book = await Book.find();
+  book.refuseLinkedTop();
   installHookOrWarn(book);
   if (args.ref && !args.name && book.upstreams.length > 1) throw new Fail("name the upstream to sync to a ref: patchbook sync <name> <ref>");
   const targets = args.name ? [book.upstream(args.name)] : book.upstreams;
@@ -455,7 +456,9 @@ function recover(book: Book, u: Upstream): void {
     const unreadable: string[] = [];
     const saved = lexists(before) ? nonFolders(before, unreadable) : [];
     if (unreadable.length) throw stuck(book, u, `${relative(book.root, join(before, unreadable[0]!))} can't be read`);
-    for (const rel of saved.filter((rel) => rel !== REPORT)) putBack(join(book.dir, rel), readDisk(join(before, rel)));
+    const files = saved.filter((rel) => rel !== REPORT);
+    const dests = files.map((rel) => book.data(rel));
+    files.forEach((rel, i) => putBack(dests[i]!, readDisk(join(before, rel))));
     if (lexists(before)) putReport(join(book.dir, REPORT), join(before, REPORT));
     if (torn) {
       const was = readFileSync(join(j, "lock"));
@@ -508,7 +511,6 @@ function putBack(p: string, was: File): void {
   if (readDisk(p).mode !== was.mode) chmodSync(p, was.mode);
 }
 
-/** The report is written through a link, like the lock, so it comes back by its bytes. */
 function putReport(p: string, was: string): void {
   if (!lexists(was)) return rmSync(p, { force: true });
   const data = readFileSync(was);

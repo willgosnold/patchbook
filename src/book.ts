@@ -7,7 +7,7 @@ import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import {
   exists, type File, GITLINK, isDir, isMode, isSymlink, lexists, LINK, mkdirs, type Mode, normMode, parseGitMode, pjoin, readDisk, readText, relative, resolve,
-  type Seen, writeText,
+  rglob, type Seen, writeText,
 } from "./lib/fs.ts";
 import { dumps, loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
@@ -290,6 +290,16 @@ function refuseBuiltGit(u: Upstream, staged: string): void {
   refuseGit(u.name, [u.mount ? staged.slice(u.mount.length + 1) : staged], "so a build would put a git repo of its own in your tree.");
 }
 
+/** patchbook reads and writes through whatever sits at these paths, so a link takes that out of the repo, or to another part of
+ * the patchbook, while a review of the patchbook shows only the link. */
+function refuseLinked(root: string, links: string[], hint = ""): void {
+  if (links.length) {
+    throw new Fail(links.map((p) => `${relative(root, p)} is a link`).join(", ")
+      + `. patchbook reads and writes the patchbook through it, so replace the link with a copy of what it points to${hint}.`);
+  }
+}
+
+
 /** `**` matches any number of folders, `*` and `?` stay within one. */
 export function globRe(pattern: string): RegExp {
   const chars = Array.from(pattern);
@@ -330,6 +340,7 @@ export class Book {
   readonly placeholders = new Map<string, Placeholder>();
   hooks: Hooks = {};
   private fileMode: boolean | undefined;
+  private linksRefused = false;
 
   private constructor(readonly root: string, config: string) {
     this.dir = join(root, PB);
@@ -358,6 +369,7 @@ export class Book {
   }
 
   static async fromText(root: string, config: string): Promise<Book> {
+    refuseLinked(root, [join(root, PB)].filter(isSymlink));
     const book = new Book(root, config);
     book.hooks = await loadHooks(book.dir);
     return book;
@@ -379,6 +391,43 @@ export class Book {
     const root = Book.root(start);
     if (root === null) throw new NoBook(`no ${PB}/config.toml here or above. Start one with \`patchbook clone\` or \`patchbook init\`.`);
     return Book.open(root);
+  }
+
+  /** A path in what patchbook records: `blocks/`, `changes/`, `series` and `build.lock`. The first call refuses links there, and every call
+   * refuses a link in a folder above the path, so a name from a journal can't lead out of the repo. The last part may be a link, since
+   * writing it replaces it. */
+  data(...parts: string[]): string {
+    if (!this.linksRefused) this.refuseLinks();
+    const path = join(this.dir, ...parts);
+    const above = relative(this.dir, dirname(path)).split("/").filter(Boolean);
+    refuseLinked(this.root, above.map((_, i) => join(this.dir, ...above.slice(0, i + 1))).filter(isSymlink));
+    return path;
+  }
+
+  /** Before the first path in them is read or written, since a record writes paths no read reached, such as a new change. A recorded
+   * symlink is the one link allowed: a `.pb` copy in a change's `base` or `ours`, which the record replaces, and which no copy sits under
+   * (`Change.content`). */
+  refuseLinks(hint = ""): void {
+    const at = (name: string) => join(this.dir, name);
+    const inside = (dir: string) => (isSymlink(dir) ? [] : rglob(dir, "").map((p) => join(dir, p)));
+    const recorded = (p: string) => {
+      const [, side, ...path] = relative(at("changes"), p).split("/");
+      return (side === "base" || side === "ours") && path.length > 0 && p.endsWith(".pb");
+    };
+    const linked = [
+      ...["blocks", "changes", "series", "build.lock"].map(at),
+      ...inside(at("blocks")),
+      ...inside(at("changes")).filter((p) => !recorded(p)),
+    ].filter(isSymlink);
+    refuseLinked(this.root, linked, hint);
+    this.linksRefused = true;
+  }
+
+  /** `init`, `sync`, `track` and `config --project` write these through a link, so they call this before they write anything. */
+  refuseLinkedTop(): void {
+    const journals = isDir(this.dir) ? readdirSync(this.dir).filter((name) => name.startsWith("sync-")) : [];
+    const top = ["config.toml", "upstream.lock", "last-sync.json", "retired.md", ...journals];
+    refuseLinked(this.root, top.map((name) => join(this.dir, name)).filter(isSymlink));
   }
 
   private checkMounts(): void {
@@ -516,6 +565,9 @@ export class Book {
     for (const [kind, spec] of Object.entries(sources)) {
       if (!isTable(spec)) throw new Fail(`config.toml: [placeholders.${kind}] is a table`);
       const file = Object.hasOwn(spec, "file") ? text(spec, "file", "", `[placeholders.${kind}] file`) : null;
+      if (file !== null && under(relative(resolve(this.root), resolve(pjoin(this.root, file))), "..")) {
+        throw new Fail(`[placeholders.${kind}] file ${strRepr(file)} is outside the repo. Name a file inside it.`);
+      }
       this.placeholders.set(kind, { file, format: text(spec, "format", "json", `[placeholders.${kind}] format`) });
     }
   }

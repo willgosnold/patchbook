@@ -124,7 +124,7 @@ export function applyStructure(
 }
 
 export function blockFiles(book: Book): string[] {
-  return rglob(join(book.dir, "blocks"), ".entries").map((p) => p.slice(0, -".entries".length));
+  return rglob(book.data("blocks"), ".entries").map((p) => p.slice(0, -".entries".length));
 }
 
 export function assemble(book: Book): Assembly {
@@ -248,7 +248,7 @@ export function assemble(book: Book): Assembly {
 
 // Build
 
-export const buildLockPath = (book: Book) => join(book.dir, "build.lock");
+export const buildLockPath = (book: Book) => book.data("build.lock");
 
 export type Stamp = { oid: string; mode: Mode | null };
 

@@ -121,6 +121,8 @@ async function cmdInit(args: {
     const text = configText("folder", upstreamToml(name, args.upstream, args.path, args.branch, "", args.vendor), [args.outputFrom, args.outputTo]);
     const book = await Book.fromText(root, text);
     for (const u of book.upstreams) if (u.vendor) refuseNestedGit(root, u.name, u.vendor);
+    book.refuseLinks();
+    book.refuseLinkedTop();
     notThisRepo(root, args.upstream);
     await allOrNothing(book, async (undo) => {
       book.dropPin(name);
@@ -138,6 +140,8 @@ async function cmdInit(args: {
   }
   const text = configText("fork", upstreamToml(name, args.upstream, args.path, args.branch, ""));
   const book = await Book.fromText(root, text);
+  book.refuseLinks();
+  book.refuseLinkedTop();
   notThisRepo(root, args.upstream);
   const hasRemote = split(git(["remote"], { cwd: root })).includes("upstream");
   if (hasRemote) checkUpstreamRemote(root, args.upstream, args.branch);
@@ -162,6 +166,7 @@ async function cmdInit(args: {
 async function cmdTrack(args: { name: string; url: string; branch: string; path: string; mount: string | null; vendor: string | null }) {
   refuseCredentials(args.url);
   const book = await Book.find();
+  book.refuseLinkedTop();
   installHookOrWarn(book);
   if (book.upstreams.some((u) => u.name === args.name)) throw new Fail(`already following an upstream called ${args.name}`);
   const config = join(book.dir, "config.toml");
