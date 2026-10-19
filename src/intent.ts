@@ -25,11 +25,16 @@ export class ModelFailed extends Fail {
 type Provider = { model: string; effort: string; command(model: string, effort: string, tmp: string): string[] };
 
 export const PROVIDERS = new Map<string, Provider>([
-  ["claude", { model: "claude-haiku-5-5", effort: "medium", command: (m, e) => ["claude", "-p", "--model", m, "--effort", e] }],
+  // Not --bare or --setting-sources: a login or a Bedrock or Vertex setup can live in the user's settings.
+  ["claude", {
+    model: "claude-haiku-5-5",
+    effort: "medium",
+    command: (m, e) => ["claude", "-p", "--model", m, "--effort", e, "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"],
+  }],
   ["codex", {
     model: "gpt-6-luna",
     effort: "high",
-    command: (m, e, tmp) => ["codex", "exec", "-m", m, "-c", `model_reasoning_effort=${e}`, "--skip-git-repo-check", "-s", "read-only", "-C", tmp, "-"],
+    command: (m, e, tmp) => ["codex", "exec", "-m", m, "-c", `model_reasoning_effort=${e}`, "--skip-git-repo-check", "-s", "read-only", "--ephemeral", "-C", tmp, "-"],
   }],
 ]);
 
@@ -162,6 +167,20 @@ export function nameFromIntent(intent: string, roster: Roster): string {
   return roster.free(base || "change");
 }
 
+const FENCE = /^```(?:json)?[ \t]*\r?\n([\s\S]*)\r?\n[ \t]*```$/;
+
+/** The JSON object a reply is, bare or in one code fence. A reply with anything else around the object has no fields. */
+function replyFields(reply: string): ReadonlyMap<string, PyValue> {
+  const text = strip(reply);
+  try {
+    const answer = loads(FENCE.exec(text)?.[1] ?? text);
+    if (answer instanceof Map) return answer;
+  } catch (e) {
+    if (!(e instanceof JsonError)) throw e;
+  }
+  return new Map();
+}
+
 /** Ask the chosen model for the change's name and intent. Returns the name and the intent; the name means nothing when `named` is false. */
 export function writeIntent(
   book: Book, changes: ReadonlyMap<string, Change>, diff: string, name: string | null, named: boolean, filling = false,
@@ -182,14 +201,7 @@ export function writeIntent(
   }
   const [seconds] = setting("intent.timeout", book);
   const reply = askModel(provider, PROVIDERS.get(provider)!, model, effort, seconds, intentPrompt(listed, instruction, diff));
-  const m = /\{.*\}/s.exec(reply);
-  let answer: PyValue = new Map();
-  try {
-    if (m) answer = loads(m[0]);
-  } catch (e) {
-    if (!(e instanceof JsonError)) throw e;
-  }
-  const fields = answer instanceof Map ? answer : new Map<string, PyValue>();
+  const fields = replyFields(reply);
   const given = fields.get("change") ?? "";
   let chosen = typeof given === "string" ? given : "";
   const said = fields.get("intent");
