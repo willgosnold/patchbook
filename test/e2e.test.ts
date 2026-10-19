@@ -10634,13 +10634,18 @@ exec '${Bun.which("git")}' "$@"
   });
 
   vendorTest("test_an_upstream_that_holds_a_dot_git_is_refused_when_a_sync_would_only_rewrite_the_copy", (t) => {
-    const gentry = upstreamWithDotGit(t, "gentry");
+    const gentry = extraAt(t);
     t.pb(["track", "gentry", gentry.path], { cwd: t.repo.path });
+    withBlobAt(gentry, ".git");
+    t.pb(["check"], { cwd: t.repo.path, code: 1 }); // fetches the commit; no patchbook can pin it now, so the lock is the one an older patchbook wrote
+    const [commit, treeId] = sh(["git", "rev-parse", "HEAD", "HEAD^{tree}"], { cwd: gentry.path }).stdout.split("\n");
+    const lock = join(t.repo.path, ".patchbook/upstream.lock");
+    writeFileSync(lock, JSON.stringify({ ...JSON.parse(read(lock)), gentry: { commit, tree: treeId } }, null, 2) + "\n");
     const config = join(t.repo.path, ".patchbook/config.toml");
     writeFileSync(config, replace(read(config), 'name = "gentry"', 'name = "gentry"\nvendor = "vendor/gentry"'));
     const before = tree(t.repo.path);
     const out = t.pb(["sync", "gentry"], { cwd: t.repo.path, code: 1 });
-    expect(out.stderr).toContain("upstream gentry holds .git");
+    expect(out.stderr).toContain("upstream gentry holds .git, which git reads as .git, so it can't be vendored");
     expect(tree(t.repo.path)).toEqual(before);
   });
 
