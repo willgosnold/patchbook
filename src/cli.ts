@@ -264,7 +264,7 @@ const COMMANDS = new Map<string, Command>([
   ["intent", {
     help: "fill the empty intents that record left when the model failed",
     positionals: [{ dest: "change", nargs: "?", help: "only this change (default: every change and block entry with an empty intent)" }],
-    options: [{ flag: "--intent", takes: "value", help: "the intent to write (default: the model writes it)" }],
+    options: [{ flag: "--intent", takes: "value", help: "the intent to write, for the change you name (default: the model writes it)" }],
     run: (a) => cmdIntent({ change: a.maybe("change"), intent: a.maybe("intent") }),
   }],
   ["hook", {

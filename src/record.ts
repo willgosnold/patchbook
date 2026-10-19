@@ -326,6 +326,7 @@ export function fill(book: Book, change: string | null, intent: string | null): 
   if (change !== null && !target) throw new Fail(`no change called ${change}`);
   if (target?.intent) throw new Fail(`${change} already has an intent; to change it, edit ${PB}/changes/${change}/CHANGE.md`);
   const given = intent === null ? null : oneLine(intent) || null;
+  if (given && change === null) throw new Fail("--intent needs a change name: patchbook intent <change> --intent ...");
 
   const empty = target ? [target] : Array.from(changes.values()).filter((c) => !c.intent);
   const filled = empty.map((c): [Change, string] => [c, given ?? writeIntent(book, changes, changeDiff(c), c.name, true, true)[1]]);
@@ -368,6 +369,7 @@ export function record(book: Book, change: string | null, intent: string | null,
   const ask = asked(edits);
   const naming = nameAndIntent(ask, change, given, roster, (n, named) => writeIntent(book, changes, modelDiff(a, current, ask), n, named));
   const target = naming.name ? changes.get(naming.name) ?? new Change(naming.name, join(book.dir, "changes", naming.name), naming.intent) : null;
+  if (target && naming.name !== null && !target.intent) target.intent = naming.intent;
   if (target && given) target.intent = given;
 
   const touched = new Map<string, Change>();

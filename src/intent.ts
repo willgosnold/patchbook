@@ -132,6 +132,9 @@ function askModel(provider: string, spec: Provider, model: string, effort: strin
   let result;
   try {
     result = spawn(spec.command(model, effort, tmp), { cwd: tmp, input: encode(prompt), timeout: Math.ceil(seconds * 1000) });
+  } catch (e) {
+    const reason = `the ${provider} CLI can't start: ${String(e instanceof Error ? e.message : e).split("\n")[0]}`;
+    throw new ModelFailed(reason, `${reason}. Pass --intent instead.`);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -199,6 +202,6 @@ export function writeIntent(
   }
   if (name && chosen !== name) chosen = name;
   const known = changes.get(chosen);
-  if (known && named && !filling) intent = known.intent;
+  if (known?.intent && named && !filling) intent = known.intent;
   return [chosen, intent];
 }

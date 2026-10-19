@@ -18,8 +18,14 @@ export function spawn(args: readonly string[], { cwd, input, env, capture = true
     stderr: capture ? "pipe" : "inherit",
     ...(cwd === undefined ? {} : { cwd }),
     ...(env === undefined ? {} : { env }),
-    ...(timeout === undefined ? {} : { timeout, killSignal: "SIGKILL" as const }),
+    ...(timeout === undefined ? {} : { timeout, killSignal: "SIGKILL" as const, detached: true }),
   });
+  // The kill reaches only the child. Its own group, which `detached` made, takes the rest with it.
+  if (timeout !== undefined && result.exitedDueToTimeout === true) {
+    try {
+      process.kill(-result.pid, "SIGKILL");
+    } catch {}
+  }
   const empty = new Uint8Array();
   return { code: result.exitCode, stdout: result.stdout ?? empty, stderr: result.stderr ?? empty, timedOut: result.exitedDueToTimeout === true };
 }
