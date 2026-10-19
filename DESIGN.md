@@ -174,7 +174,7 @@ Printed on stdout. Exit 0 if no upstream moved, 10 if any did.
 | `moved` | boolean | Any upstream moved. |
 | `upstreams.<name>.pinned` | string or null | The pinned commit, null when nothing is pinned. |
 | `upstreams.<name>.head` | string | The commit at the head of the upstream's branch. |
-| `upstreams.<name>.moved` | boolean | The head's files differ from the pin's. A new commit with the same files is not a move. |
+| `upstreams.<name>.moved` | boolean | The head's files differ from the pin's. A new commit with the same files is not a move, and in a fork neither is one that changes only upstream's own `.patchbook/`. |
 | `upstreams.<name>.files` | string list | Empty unless `moved`. Otherwise `added <path>`, `changed <path>` or `deleted <path>` for each file that differs, sorted by path. Paths include the upstream's mount. Files the build leaves out aren't listed. |
 
 ### `patchbook status --json`
