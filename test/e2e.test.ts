@@ -10990,30 +10990,201 @@ exec '${Bun.which("git")}' "$@"
     }, TIMEOUT);
   });
 
-  describe("upstream --export", () => {
-    const exportCase = (path: string | null): { t: Case; repo: Repo } => {
-      const t = new Case();
-      const base = new Repo(join(t.tmp, "base"));
-      base.write("README.md", "base\n");
-      base.commit("start");
-      const repo = new Repo(join(t.tmp, "mine"));
-      repo.write("README.md", "mine\n");
-      repo.commit("start");
-      t.pb(["init", "--upstream", base.path, "--output-to", "out"], { cwd: repo.path });
-      repo.commit("init");
-      const evil = new Repo(join(t.tmp, "evil"));
-      evil.write("a.md", "a\n");
-      evil.commit("a");
-      t.pb(["track", "evil", evil.path], { cwd: repo.path });
-      if (path !== null) {
-        withBlobAt(t, evil, path);
-        t.pb(["check"], { cwd: repo.path, code: null });
-        const [commit, treeId] = sh(["git", "rev-parse", "HEAD", "HEAD^{tree}"], { cwd: evil.path }).stdout.split("\n");
-        const lock = join(repo.path, ".patchbook/upstream.lock");
-        writeFileSync(lock, JSON.stringify({ ...JSON.parse(read(lock)), evil: { commit, tree: treeId } }, null, 2) + "\n");
+  const exportCase = (path: string | null): { t: Case; repo: Repo } => {
+    const t = new Case();
+    const base = new Repo(join(t.tmp, "base"));
+    base.write("README.md", "base\n");
+    base.commit("start");
+    const repo = new Repo(join(t.tmp, "mine"));
+    repo.write("README.md", "mine\n");
+    repo.commit("start");
+    t.pb(["init", "--upstream", base.path, "--output-to", "out"], { cwd: repo.path });
+    repo.commit("init");
+    const evil = new Repo(join(t.tmp, "evil"));
+    evil.write("a.md", "a\n");
+    evil.commit("a");
+    t.pb(["track", "evil", evil.path], { cwd: repo.path });
+    if (path !== null) {
+      withBlobAt(t, evil, path);
+      t.pb(["check"], { cwd: repo.path, code: null });
+      const [commit, treeId] = sh(["git", "rev-parse", "HEAD", "HEAD^{tree}"], { cwd: evil.path }).stdout.split("\n");
+      const lock = join(repo.path, ".patchbook/upstream.lock");
+      writeFileSync(lock, JSON.stringify({ ...JSON.parse(read(lock)), evil: { commit, tree: treeId } }, null, 2) + "\n");
+    }
+    return { t, repo };
+  };
+
+  describe("an upstream tree path with a part of .., . or nothing", () => {
+    const refusedPath = (path: string, part: string, name = "evil"): string =>
+      `upstream ${name} holds ${path}, which has a part named ${JSON.stringify(part)}, so a write could land outside the folder it belongs in. Nothing was changed.`;
+    const climbs: [string, string][] = [["../escape.txt", ".."], ["../../../escape.txt", ".."], ["sub/../x.txt", ".."], ["./x.txt", "."]];
+
+    const outside = (t: Case): string => join(t.tmp, "escape.txt");
+
+    for (const [path, part] of climbs) {
+      test(`test_export_refuses_an_upstream_that_holds_${path}_and_writes_nothing_outside`, () => {
+        const { t, repo } = exportCase(path);
+        try {
+          repo.write("d1/d2/d3/escape.txt", "mine\n");
+          repo.write("d1/d2/d3/x.txt", "mine\n");
+          const before = tree(repo.path);
+          const dest = join(repo.path, "d1/d2/d3/exp");
+          const out = t.pb(["upstream", "evil", "--export", dest], { cwd: repo.path, code: 1 });
+          expect(out.stderr).toContain(refusedPath(path, part));
+          expect(out.stdout).toBe("");
+          expect(existsSync(dest)).toBe(false);
+          expect(tree(repo.path)).toEqual(before);
+          expect(existsSync(outside(t))).toBe(false);
+        } finally {
+          t.cleanup();
+        }
+      }, TIMEOUT);
+
+      test(`test_track_refuses_an_upstream_that_holds_${path}_before_it_pins`, () => {
+        const { t, repo } = exportCase(null);
+        try {
+          const bad = new Repo(join(t.tmp, "bad"));
+          bad.write("a.md", "a\n");
+          bad.commit("a");
+          withBlobAt(t, bad, path);
+          const before = tree(repo.path);
+          const out = t.pb(["track", "evil2", bad.path], { cwd: repo.path, code: 1 });
+          expect(out.stderr).toContain(refusedPath(path, part, "evil2"));
+          expect(tree(repo.path)).toEqual(before);
+          expect(existsSync(outside(t))).toBe(false);
+        } finally {
+          t.cleanup();
+        }
+      }, TIMEOUT);
+
+      test(`test_track_vendor_refuses_an_upstream_that_holds_${path}_and_writes_nothing_outside`, () => {
+        const { t, repo } = exportCase(null);
+        try {
+          const bad = new Repo(join(t.tmp, "bad"));
+          bad.write("a.md", "a\n");
+          bad.commit("a");
+          withBlobAt(t, bad, path);
+          const before = tree(repo.path);
+          const out = t.pb(["track", "evil2", bad.path, "--vendor", "vendor/evil2"], { cwd: repo.path, code: 1 });
+          expect(out.stderr).toContain(refusedPath(path, part, "evil2"));
+          expect(tree(repo.path)).toEqual(before);
+          expect(existsSync(outside(t))).toBe(false);
+        } finally {
+          t.cleanup();
+        }
+      }, TIMEOUT);
+    }
+
+    const [path, part] = ["../escape.txt", ".."] as const;
+
+    test("test_build_refuses_a_pin_that_holds_a_path_climbing_out_of_its_mount", () => {
+      const { t, repo } = exportCase(path);
+      try {
+        const before = tree(repo.path);
+        const out = t.pb(["build"], { cwd: repo.path, code: 1 });
+        expect(out.stderr).toContain(refusedPath(path, part));
+        expect(tree(repo.path)).toEqual(before);
+        expect(existsSync(join(repo.path, "out/escape.txt"))).toBe(false);
+      } finally {
+        t.cleanup();
       }
-      return { t, repo };
-    };
+    }, TIMEOUT);
+
+    test("test_the_hook_refuses_a_commit_while_the_pin_holds_a_path_climbing_out_of_its_mount", () => {
+      const { t, repo } = exportCase(path);
+      try {
+        sh(["git", "add", ".patchbook"], { cwd: repo.path });
+        const hooked = sh(["git", "commit", "-q", "--allow-empty", "-m", "hook"], { cwd: repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1" }, check: false });
+        expect(hooked.code).not.toBe(0);
+        expect(hooked.stderr).toContain(refusedPath(path, part));
+        expect(existsSync(join(repo.path, "out/escape.txt"))).toBe(false);
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+
+    test("test_check_and_sync_refuse_a_new_commit_that_holds_a_path_climbing_out_of_its_mount", () => {
+      const { t, repo } = exportCase(null);
+      try {
+        const evil = new Repo(join(t.tmp, "evil"));
+        withBlobAt(t, evil, path);
+        const lock = read(join(repo.path, ".patchbook/upstream.lock"));
+        const before = tree(repo.path);
+        expect(t.pb(["check"], { cwd: repo.path, code: 1 }).stderr).toContain(refusedPath(path, part));
+        expect(t.pb(["sync", "evil"], { cwd: repo.path, code: 1 }).stderr).toContain(refusedPath(path, part));
+        expect(read(join(repo.path, ".patchbook/upstream.lock"))).toBe(lock);
+        expect(tree(repo.path)).toEqual(before);
+        expect(existsSync(join(repo.path, "out/escape.txt"))).toBe(false);
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+
+    test("test_sync_refuses_a_new_commit_that_holds_a_climbing_path_and_leaves_the_vendored_copy", () => {
+      const { t, repo } = exportCase(null);
+      try {
+        const vendored = new Repo(join(t.tmp, "vendored"));
+        vendored.write("v.md", "v\n");
+        vendored.commit("v");
+        t.pb(["track", "vend", vendored.path, "--vendor", "vendor/vend"], { cwd: repo.path });
+        withBlobAt(t, vendored, path);
+        const lock = read(join(repo.path, ".patchbook/upstream.lock"));
+        const before = tree(repo.path);
+        const out = t.pb(["sync", "vend"], { cwd: repo.path, code: 1 });
+        expect(out.stderr).toContain(refusedPath(path, part, "vend"));
+        expect(read(join(repo.path, ".patchbook/upstream.lock"))).toBe(lock);
+        expect(tree(repo.path)).toEqual(before);
+        expect(existsSync(join(repo.path, "vendor/escape.txt"))).toBe(false);
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+
+    test("test_a_fork_init_refuses_a_merge_base_that_holds_a_climbing_path_and_writes_nothing", () => {
+      const t = new Case();
+      try {
+        const up = new Repo(join(t.tmp, "upstream"));
+        up.write("a.md", "a\n");
+        up.commit("a");
+        withBlobAt(t, up, path);
+        const mine = new Repo(join(t.tmp, "mine"));
+        mine.write("README.md", "mine\n");
+        mine.commit("mine");
+        sh(["git", "fetch", "-q", up.path, "main"], { cwd: mine.path });
+        const bad = sh(["git", "rev-parse", "FETCH_HEAD"], { cwd: mine.path }).stdout.trim();
+        const onBad = sh(["git", "commit-tree", "HEAD^{tree}", "-p", bad, "-m", "mine on upstream"], { cwd: mine.path }).stdout.trim();
+        sh(["git", "update-ref", "refs/heads/main", onBad], { cwd: mine.path });
+        const before = tree(mine.path);
+        const out = t.pb(["init", "--upstream", up.path], { cwd: mine.path, code: 1 });
+        expect(out.stderr).toContain(refusedPath(path, part, "upstream"));
+        expect(existsSync(join(mine.path, ".patchbook"))).toBe(false);
+        expect(tree(mine.path)).toEqual(before);
+        expect(sh(["git", "remote"], { cwd: mine.path }).stdout).not.toContain("upstream");
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+
+    test("test_an_upstream_with_dots_in_its_names_still_tracks_builds_and_exports", () => {
+      const { t, repo } = exportCase(null);
+      try {
+        const dots = new Repo(join(t.tmp, "dots"));
+        for (const p of ["..a/b.md", ".hidden/x.md", "a..b", "...", "dir/.../y.md"]) dots.write(p, "d\n");
+        dots.commit("dots");
+        t.pb(["track", "dots", dots.path], { cwd: repo.path });
+        t.pb(["build"], { cwd: repo.path });
+        expect(repo.read("out/dots/..a/b.md")).toBe("d\n");
+        expect(repo.read("out/dots/dir/.../y.md")).toBe("d\n");
+        t.pb(["upstream", "dots", "--export", join(repo.path, "exp")], { cwd: repo.path });
+        expect(repo.read("exp/.hidden/x.md")).toBe("d\n");
+        expect(repo.read("exp/a..b")).toBe("d\n");
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+  });
+
+  describe("upstream --export", () => {
 
     for (const path of [".git/config", "GIT~1/config"]) {
       test(`test_export_refuses_an_upstream_that_holds_${path}_and_writes_nothing`, () => {

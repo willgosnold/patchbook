@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
-import { Book, PB, refuseExportedGit } from "./book.ts";
+import { Book, PB, refuseClimbingPaths, refuseExportedGit } from "./book.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, isDir, isSymlink, lexists, mkdirs, normMode, pjoin, readDisk, readText, relative, resolve, writeDisk } from "./lib/fs.ts";
 import { sha1 } from "./lib/hash.ts";
@@ -236,7 +236,9 @@ export class Upstream {
   /** Upstream's files at a commit, relative to the upstream path. */
   files(commit: string): Files {
     this.have(commit);
-    return treeFiles(this.gitDir(), commit, this.path);
+    const files = treeFiles(this.gitDir(), commit, this.path);
+    refuseClimbingPaths(this.name, files.keys());
+    return files;
   }
 
   /** Hash the vendored copy as git would commit it, and read its files. */
