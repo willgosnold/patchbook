@@ -82,12 +82,19 @@ const snapshot = (dir: string): Record<string, string> =>
     (readdirSync(dir, { recursive: true }) as string[]).filter((p) => statSync(join(dir, p)).isFile()).sort().map((p) => [p, read(join(dir, p))]),
   );
 
-const forkOf = (t: Case, up: Repo): Repo => {
-  sh(["git", "clone", "-q", up.path, "fork"], { cwd: t.tmp });
-  const fork = new Repo(join(t.tmp, "fork"));
+const forkOf = (t: Case, up: Repo, root = t.tmp): Repo => {
+  sh(["git", "clone", "-q", up.path, "fork"], { cwd: root });
+  const fork = new Repo(join(root, "fork"));
   fork.write("mine.txt", "mine\n");
   fork.commit("mine");
   return fork;
+};
+
+/** A folder reached through a symlink, the way macOS reaches its temp folder through `/var`, which links to `/private/var`. */
+const linkedRoot = (t: Case): string => {
+  mkdirSync(join(t.tmp, "real"));
+  symlinkSync("real", join(t.tmp, "linked"));
+  return join(t.tmp, "linked");
 };
 
 class ForkCase extends Case {
@@ -765,11 +772,10 @@ test("skill install refuses when the change is missing from the series", () => {
     t.pb(["record"], { cwd: fork.path });
     writeFileSync(join(fork.path, ".patchbook/series"), "");
     fork.commit("an older skill, and an empty series");
-    rmSync(join(t.tmp, "prompt.txt"), { force: true });
     const before = tree(fork.path);
     const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
-    expect(out.stderr).toContain("patchbook-update-skill is not in the series");
-    expect(modelWasAsked(t)).toBe(false);
+    expect(out.stdout).toBe("");
+    expect(out.stderr).toBe("invalid   series: change patchbook-update-skill is not in the series\npatchbook: 1 problems; nothing installed. `patchbook status` lists them.\n");
     expect(tree(fork.path)).toEqual(before);
   } finally {
     t.cleanup();
@@ -1986,7 +1992,10 @@ test("build leaves a vendored copy alone when upstream ships the folder", () => 
     const fork = new Repo(join(t.tmp, "fork"));
     t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: fork.path });
     fork.commit("track");
-    t.pb(["build"], { cwd: fork.path });
+    const built = t.pb(["build"], { cwd: fork.path });
+    expect(built.stderr).toBe("patchbook: left 1 upstream files out of the build because they would land in a vendored copy: vendor/extra (1).\n");
+    expect(fork.read(".patchbook/build.lock").split("\n").filter(Boolean).map((line) => line.split(" ")[1])).toEqual(["app.txt", "extra/a.md"]);
+    expect(fork.read("extra/a.md")).toBe("extra\n");
     expect(existsSync(join(fork.path, "vendor/extra/stale.md"))).toBe(false);
     expect(fork.read("vendor/extra/a.md")).toBe("extra\n");
     expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
@@ -2327,11 +2336,12 @@ for (const [how, remote, given] of [
   test(`a fork init accepts an upstream remote spelled with ${how}`, () => {
     const t = new Case();
     try {
-      const up = new Repo(join(t.tmp, "upstream"));
+      const root = linkedRoot(t);
+      const up = new Repo(join(root, "upstream"));
       up.write("app.txt", "one\n");
       const base = up.commit("start");
-      const fork = forkOf(t, up);
-      sh(["git", "config", `url.${t.tmp}/.insteadOf`, "alias:"], { cwd: fork.path });
+      const fork = forkOf(t, up, root);
+      sh(["git", "config", `url.${root}/.insteadOf`, "alias:"], { cwd: fork.path });
       sh(["git", "remote", "add", "upstream", remote(up.path)], { cwd: fork.path });
       const init = t.pb(["init", "--upstream", given(up.path)], { cwd: fork.path });
       expect(init.stdout).toContain(`pinned upstream at ${base.slice(0, 7)}`);
@@ -2470,10 +2480,11 @@ test("a fork init from a subfolder takes a relative upstream from where it ran",
   for (const hasRemote of [true, false]) {
     const t = new Case();
     try {
-      const up = new Repo(join(t.tmp, "upstream"));
+      const root = linkedRoot(t);
+      const up = new Repo(join(root, "upstream"));
       up.write("app.txt", "one\n");
       const base = up.commit("start");
-      const fork = forkOf(t, up);
+      const fork = forkOf(t, up, root);
       if (hasRemote) sh(["git", "remote", "add", "upstream", up.path], { cwd: fork.path });
       mkdirSync(join(fork.path, "sub"));
       const init = t.pb(["init", "--upstream", "../../upstream"], { cwd: join(fork.path, "sub") });
@@ -2489,13 +2500,14 @@ test("a fork init from a subfolder takes a relative upstream from where it ran",
 test("a fork init from a subfolder prints a fix that names the folder meant", () => {
   const t = new Case();
   try {
-    const up = new Repo(join(t.tmp, "upstream"));
+    const root = linkedRoot(t);
+    const up = new Repo(join(root, "upstream"));
     up.write("app.txt", "one\n");
     up.commit("start");
-    const fork = forkOf(t, up);
+    const fork = forkOf(t, up, root);
     sh(["git", "remote", "add", "upstream", up.path], { cwd: fork.path });
-    sh(["git", "clone", "-q", up.path, "moved"], { cwd: t.tmp });
-    const moved = new Repo(join(t.tmp, "moved"));
+    sh(["git", "clone", "-q", up.path, "moved"], { cwd: root });
+    const moved = new Repo(join(root, "moved"));
     moved.write("app.txt", "two\n");
     const head = moved.commit("two");
     mkdirSync(join(fork.path, "sub"));
@@ -3655,8 +3667,8 @@ test("clone does not write through a linked hook folder", () => {
     const fork = new Repo(join(t.tmp, "fork"));
     expect(fork.read("tools/husky/pre-commit")).toBe("echo lint\n");
     expect(clone.stderr).toContain("patchbook hook run || exit 1");
-    const recorded = Object.keys(tree(fork.path)).filter((p) => p.startsWith(".patchbook/changes/patchbook-update-skill/"));
-    expect(recorded.filter((p) => p.includes("husky"))).toEqual([]);
+    expect(fork.read(".patchbook/series")).toBe("");
+    expect(existsSync(join(fork.path, ".patchbook/changes/patchbook-hook"))).toBe(false);
   } finally {
     t.cleanup();
   }
@@ -3733,10 +3745,13 @@ test("status is quiet once a linked husky folder runs patchbook", () => {
     const clone = t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
     const fork = new Repo(join(t.tmp, "fork"));
     installManager(fork, ".husky");
-    fork.write("tools/husky/pre-commit", clone.stderr.match(/^# patchbook:[\s\S]*?^fi$/m)![0] + "\necho lint\n");
+    const lines = clone.stderr.match(/^# patchbook:[\s\S]*?^fi$/m)![0];
+    fork.write("tools/husky/pre-commit", lines + "\necho lint\n");
     Object.assign(t.env, { PATCHBOOK_HOOK: "1" });
-    expect(t.pb(["status"], { cwd: fork.path }).stderr).not.toContain("doesn't run");
-    expect(t.pb(["hook", "install"], { cwd: fork.path }).stderr).not.toContain("_/pre-commit");
+    expect(t.pb(["status"], { cwd: fork.path }).stderr).toBe("");
+    expect(t.pb(["hook", "install"], { cwd: fork.path }).stderr).toBe(
+      `patchbook: tools/husky/pre-commit is another tool's hook; add \`patchbook hook run\` to it to record on commit. Put these lines at the top:\n\n${lines}\n`,
+    );
   } finally {
     t.cleanup();
   }
@@ -3788,8 +3803,8 @@ test("read-only commands do not install the hook", () => {
   const t = new Case();
   try {
     const fork = forkWithoutAHook(t);
-    for (const args of [["status"], ["check"], ["upstream", "upstream"], ["show", "nothing"], ["config"], ["hook", "status"]]) {
-      t.pb(args, { cwd: fork.path, code: null });
+    for (const [args, code] of [[["status"], 0], [["check"], 0], [["upstream", "upstream"], 0], [["show", "nothing"], 1], [["config"], 0], [["hook", "status"], 0]] as const) {
+      t.pb([...args], { cwd: fork.path, code });
       expect(existsSync(hookFile(fork))).toBe(false);
     }
   } finally {
@@ -3806,7 +3821,7 @@ test("commands that change things install the hook", () => {
     const fork = forkWith(t, {});
     for (const args of [["build"], ["sync"], ["record"], ["track", "extra", extra.path]]) {
       rmSync(hookFile(fork), { force: true });
-      t.pb(args, { cwd: fork.path, code: null });
+      t.pb(args, { cwd: fork.path });
       expect(existsSync(hookFile(fork))).toBe(true);
     }
   } finally {
@@ -3820,7 +3835,7 @@ test("no command installs the hook while hook.enabled is false", () => {
     const fork = forkWithoutAHook(t);
     t.pb(["config", "--project", "hook.enabled", "false"], { cwd: fork.path });
     for (const args of [["build"], ["sync"], ["record"], ["hook", "install"]]) {
-      t.pb(args, { cwd: fork.path, code: null });
+      t.pb(args, { cwd: fork.path });
       expect(existsSync(hookFile(fork))).toBe(false);
     }
     t.pb(["config", "--project", "--unset", "hook.enabled"], { cwd: fork.path });
@@ -4096,7 +4111,7 @@ test("commands that install skip a patchbook in the repo around the one you are 
     const inner = new Repo(join(t.tmp, "fork/vendor/inner"));
     inner.write("a.txt", "a\n");
     inner.commit("inner");
-    t.pb(["build"], { cwd: inner.path, code: null });
+    t.pb(["build"], { cwd: inner.path });
     expect(existsSync(hookFile(fork))).toBe(false);
     expect(existsSync(join(inner.path, ".git/hooks/pre-commit"))).toBe(false);
   } finally {
@@ -5821,7 +5836,8 @@ describe("ForkTest", () => {
     writeFileSync(ours, read(ours).replaceAll("TWO", "Two"));
     sh(["git", "add", ours], { cwd: t.fork.path });
     hookCommit(t, ["-m", "soften"]);
-    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("Two");
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toBe("one\nTwo\nthree\nfour\nfive\nsix\nseven\n");
+    expect(porcelain(t)).toBe("");
   });
 
   const renameToIgnoredLocalCfg = (t: ForkCase) => {
@@ -5921,9 +5937,10 @@ describe("ForkTest", () => {
     stageAnOlderBuild(t);
     stopsOnAnOlderBuild(t, "app.txt");
     sh("git --literal-pathspecs add -- app.txt".split(" "), { cwd: t.fork.path });
-    expect(hookCommit(t, ["-m", "take upstream"]).stderr).not.toContain("app.txt");
-    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("two v2");
-    expect(t.fork.read("app.txt")).toContain("two v2");
+    expect(hookCommit(t, ["-m", "take upstream"]).stderr).toBe("");
+    const v2 = "one\ntwo v2\nthree\nfour\nfive\nsix\nseven\n";
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toBe(v2);
+    expect(t.fork.read("app.txt")).toBe(v2);
     expect(porcelain(t)).toBe("");
   });
 
@@ -5931,9 +5948,10 @@ describe("ForkTest", () => {
     stageAnOlderBuild(t);
     stopsOnAnOlderBuild(t, "app.txt");
     sh("git --literal-pathspecs checkout -- app.txt".split(" "), { cwd: t.fork.path });
-    expect(hookCommit(t, ["-m", "take upstream"]).stderr).toContain("file     app.txt");
-    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("two v1");
-    expect(t.fork.read("app.txt")).toContain("two v1");
+    expect(hookCommit(t, ["-m", "take upstream"]).stderr).toBe("shout: Shout the second line.\nfile     app.txt\n");
+    const v1 = "one\ntwo v1\nthree\nfour\nfive\nsix\nseven\n";
+    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toBe(v1);
+    expect(t.fork.read("app.txt")).toBe(v1);
     expect(porcelain(t)).toBe("");
   });
 
@@ -7970,15 +7988,16 @@ exec '${Bun.which("git")}' "$@"
     expect(words(t.pb(["upstream", "plugin"], { cwd: t.repo.path }).stdout)).toEqual(["README.md", "agents/helper.md", "skills/hello/SKILL.md"]);
   });
 
-  vendorTest("check leaves the heads it fetches to gc", (t) => {
-    const store = join(t.tmp, "store/upstreams", readdirSync(join(t.tmp, "store/upstreams"))[0]!);
-    const pin = lockPin(read(join(t.repo.path, ".patchbook/upstream.lock")), "plugin").commit;
+  vendorTest("check keeps the pin it compares with and leaves the head it fetches to gc", (t) => {
+    const store = storeOf(t);
+    const pin = pinOf(t);
+    dropRefs(store);
     t.up.write("plugin/README.md", "For everyone.\n");
     const head = t.up.commit("readme");
     t.pb(["check"], { cwd: t.repo.path, code: 10 });
-    sh(["git", "gc", "-q", "--prune=now"], { cwd: store });
-    expect(sh(["git", "cat-file", "-e", `${pin}^{commit}`], { cwd: store, check: false }).code).toBe(0);
-    expect(sh(["git", "cat-file", "-e", `${head}^{commit}`], { cwd: store, check: false }).code).not.toBe(0);
+    gc(store);
+    expect(inStore(store, pin)).toBe(true);
+    expect(inStore(store, head)).toBe(false);
     rmSync(t.up.path, { recursive: true });
     expect(words(t.pb(["upstream", "plugin"], { cwd: t.repo.path }).stdout)).toEqual(["README.md", "agents/helper.md", "skills/hello/SKILL.md"]);
   });
@@ -7990,17 +8009,6 @@ exec '${Bun.which("git")}' "$@"
     t.up.write("other/ignored.md", "Still not followed.\n");
     t.up.commit("outside the path");
     t.pb(["check"], { cwd: t.repo.path });
-    gc(store);
-    expect(inStore(store, pin)).toBe(true);
-  });
-
-  vendorTest("check keeps the pin it compares with", (t) => {
-    const store = storeOf(t);
-    const pin = pinOf(t);
-    dropRefs(store);
-    t.up.write("plugin/README.md", "For everyone.\n");
-    t.up.commit("readme");
-    t.pb(["check"], { cwd: t.repo.path, code: 10 });
     gc(store);
     expect(inStore(store, pin)).toBe(true);
   });
