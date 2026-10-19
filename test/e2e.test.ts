@@ -12341,8 +12341,6 @@ exec '${Bun.which("git")}' "$@"
       const repo = new Repo(join(t.tmp, "mine"));
       repo.write("README.md", "mine\n");
       repo.commit("start");
-      repo.write(".patchbook/series", "my-change\n");
-      repo.write(".patchbook/retired.md", "my retired notes\n");
       repo.write(".patchbook/notes.txt", "keep me\n");
       const before = tree(repo.path);
       const out = t.pb(["init", "--upstream", evil.path, "--output-to", "out"], { cwd: repo.path, code: 1 });
