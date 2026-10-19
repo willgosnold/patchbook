@@ -189,6 +189,33 @@ The similarity of two texts is twice the pairs in the matching of their code poi
 
 Matching takes time in proportion to the two lengths multiplied together, after the shared start and end, divided by 32. Similarity keeps one row of bits. Pairing lines keeps a row for each old line, n × m / 8 bytes for n old and m new lines between the shared start and end, so 1 MB for 3000 lines each and 50 MB for 20,000. A 3000-line file rewritten end to end pairs in about 5 ms, and 300 paragraphs of 3000 code points each take about 0.6 s to score against one.
 
+## Command line
+
+Patchbook reads its command line with its own parser, `parseArgv` in `src/lib/args.ts`, which has no dependency. Each command declares its arguments and options once, in `PROGRAM` in `src/cli.ts`, and that declaration is also its help.
+
+- A command line is `patchbook <command>`, then the command's arguments and options in any order. Before the command, patchbook takes only `-h`, `--help` and `--version`.
+- An option is matched by its whole name, such as `--branch`. A prefix such as `--bra` is an unknown option. `-h` is the only short form.
+- An option that takes a value reads it from `--name=value`, or from the next argument when that argument does not start with `-`. A value that starts with `-` needs the `=` form, as in `--upstream=-x`.
+- After `--`, every argument is an argument, so `patchbook blocks -- -notes.md` names a file that starts with `-`. A lone `-` is always an argument.
+- `-h` or `--help` anywhere before `--` prints help and exits 0, whatever else is on the line. It is the command's help when the first argument is a command, and the list of commands otherwise.
+
+Patchbook refuses an unknown command or option, an option without its value, a value given to an option that takes none (`--force=yes`), an option given twice, an argument the command does not take, a missing argument or required option, and a word outside an argument's choices. It reports the first problem it finds, reading from the left, on stderr, and exits 2:
+
+```
+patchbook sync: unknown option "--forse"
+Run `patchbook sync --help` for its arguments and options.
+```
+
+Help text does not wrap to the terminal. A test keeps every help line within 80 columns.
+
+## Messages
+
+- A command that fails prints `patchbook: ` and the reason on stderr, and exits 1. A usage error starts with `patchbook <command>: ` instead and exits 2.
+- A name, path or value that a message quotes from the command line, a file or another program is in double quotes, as `JSON.stringify` writes it. The quotes show a space at either end, and a quote, a backslash or a control character inside is escaped: `layout must be folder or fork, not "folders"`. Many messages still print such a value bare, as in `no change called shout`; #247 tracks quoting them.
+- Patchbook's own names are bare: its commands, options, settings and problem kinds, and the choices of an argument. A command, an identifier or syntax to type is in backticks: ``Run `patchbook status` ``, ``did you mean `blockTerms`?``.
+- A change or a block entry with no intent shows as `(no intent yet)` in `show`, in the `orphan` lines of `status` and in the list of changes the model gets. Patchbook never prints `None` for it.
+- A file patchbook writes leaves a missing intent empty. `CHANGE.md` gets the line `intent:` with nothing after it, and a block entry gets an empty `intent:` field. The readers take an empty intent as none, and `status` reports the change or the entry as `invalid`, `it has no intent`.
+
 ## JSON files and output
 
 Patchbook writes four JSON documents. `.patchbook/upstream.lock` is committed with the repo. `.patchbook/last-sync.json` is a report that `patchbook sync` writes and nobody commits. `patchbook check` and `patchbook status --json` print the other two. `UpstreamLock`, `LastSync`, `CheckJson` and `StatusJson` in `src/api.ts` are their types, and the code that writes each document is typed against its type. With patchbook installed from npm, `import type { CheckJson } from "patchbook"` gets the same types. Patchbook also reads two JSON texts that it doesn't write: a placeholder file with `format = "json"`, and the reply of the model that writes an intent.
