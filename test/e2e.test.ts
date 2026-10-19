@@ -4214,6 +4214,65 @@ describe("ForkTest", () => {
     expect(t.pb(["sync", "upstream"], { cwd: t.fork.path }).stderr).toBe(notice);
   });
 
+  const withOwnPatchbook = (t: ForkCase): void => {
+    t.up.write(".patchbook/series", "theirs\n");
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.commit("upstream adopts patchbook");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.fork.commit("sync");
+  };
+
+  forkTest("test_check_ignores_a_change_to_upstreams_own_patchbook", (t) => {
+    withOwnPatchbook(t);
+    t.up.write(".patchbook/series", "theirs\nmore\n");
+    t.up.write(".patchbook/notes.md", "notes\n");
+    t.up.commit("only their patchbook");
+    const checked = t.pb(["check"], { cwd: t.fork.path });
+    const out = JSON.parse(checked.stdout);
+    expect(out.moved).toBe(false);
+    expect(out.upstreams.upstream.moved).toBe(false);
+    expect(out.upstreams.upstream.files).toEqual([]);
+  });
+
+  forkTest("test_check_reports_the_real_change_beside_one_to_upstreams_own_patchbook", (t) => {
+    withOwnPatchbook(t);
+    t.up.write(".patchbook/series", "theirs\nmore\n");
+    t.up.write("docs/guide.md", "a new guide\n");
+    t.up.commit("both");
+    const out = JSON.parse(t.pb(["check"], { cwd: t.fork.path, code: 10 }).stdout);
+    expect(out.upstreams.upstream.moved).toBe(true);
+    expect(out.upstreams.upstream.files).toEqual(["changed docs/guide.md"]);
+  });
+
+  forkTest("test_sync_still_pins_a_commit_that_changes_only_upstreams_own_patchbook", (t) => {
+    withOwnPatchbook(t);
+    t.up.write(".patchbook/series", "theirs\nmore\n");
+    const head = t.up.commit("only their patchbook");
+    t.pb(["check"], { cwd: t.fork.path });
+    const synced = t.pb(["sync"], { cwd: t.fork.path });
+    expect(synced.stdout).toContain(`upstream: pinned ${head.slice(0, 7)}. 0 upstream files changed`);
+    expect(JSON.parse(t.fork.read(".patchbook/upstream.lock")).upstream.commit).toBe(head);
+    expect(t.pb(["check"], { cwd: t.fork.path }).code).toBe(0);
+  });
+
+  forkTest("test_check_reports_a_vendored_upstreams_patchbook_as_a_change", (t) => {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "extra\n");
+    extra.write(".patchbook/series", "theirs\n");
+    extra.commit("extra");
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.fork.path });
+    t.fork.commit("track");
+    extra.write(".patchbook/series", "theirs\nmore\n");
+    extra.commit("only its patchbook");
+    const out = JSON.parse(t.pb(["check"], { cwd: t.fork.path, code: 10 }).stdout);
+    expect(out.upstreams.extra.moved).toBe(true);
+    expect(out.upstreams.extra.files).toEqual(["changed extra/.patchbook/series"]);
+    expect(out.upstreams.upstream.moved).toBe(false);
+    t.pb(["sync", "extra"], { cwd: t.fork.path });
+    expect(t.fork.read("vendor/extra/.patchbook/series")).toBe("theirs\nmore\n");
+    expect(t.pb(["check"], { cwd: t.fork.path }).code).toBe(0);
+  });
+
   for (const folder of [".patchbook/pbx", ".git/x", ".patchbook", ".git"]) {
     forkTest(`test_a_mount_at_${folder.replace(/\W/g, "_")}_is_rejected`, (t) => {
       const lib = new Repo(join(t.tmp, "lib"));
@@ -9224,6 +9283,14 @@ exec '${Bun.which("git")}' "$@"
     t.up.commit("elsewhere");
     const out = JSON.parse(t.pb(["check"], { cwd: t.repo.path }).stdout);
     expect(out.moved).toBeFalsy();
+  });
+
+  vendorTest("test_a_patchbook_folder_in_upstream_still_moves_the_pin_in_the_folder_layout", (t) => {
+    t.up.write("plugin/.patchbook/notes.md", "notes\n");
+    t.up.commit("a folder named .patchbook");
+    const out = JSON.parse(t.pb(["check"], { cwd: t.repo.path, code: 10 }).stdout);
+    expect(out.upstreams.plugin.moved).toBe(true);
+    expect(out.upstreams.plugin.files).toEqual(["added .patchbook/notes.md"]);
   });
 
   vendorTest("test_two_upstreams", (t) => {

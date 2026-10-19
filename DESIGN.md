@@ -141,7 +141,7 @@ Patchbook does not check for links inside `.patchbook/`. A link in `blocks/` is 
 
 ## Sync
 
-- `patchbook check` compares each upstream's head with its pin. It exits 0 when all are up to date and 10 when any has moved, and prints JSON.
+- `patchbook check` compares each upstream's head with its pin. It exits 0 when all are up to date and 10 when any has moved, and prints JSON. A fork's upstream moved only if a file outside upstream's own `.patchbook/` changed, so a commit that touches nothing else exits 0. `sync` still pins such a commit when asked, since the pin is the raw commit and tree, and it reports no changed files for it.
 - `patchbook sync [name] [ref]` fetches each upstream (or the named one, at a ref) into the store, and updates its pin and its vendored copy, if it keeps one. Then it carries every change on that upstream's files forward:
   - **file edits**: `git merge-file` with base, ours, and the new upstream file. A clean merge updates ours and sets base to the new upstream file. A conflict leaves markers in ours and reports **conflict**. A file upstream deleted or moved reports **gone**, with likely new paths.
   - **block entries**: an entry whose paragraph changed reports **orphan**, with the nearest new paragraphs.
@@ -174,7 +174,7 @@ Printed on stdout. Exit 0 if no upstream moved, 10 if any did.
 | `moved` | boolean | Any upstream moved. |
 | `upstreams.<name>.pinned` | string or null | The pinned commit, null when nothing is pinned. |
 | `upstreams.<name>.head` | string | The commit at the head of the upstream's branch. |
-| `upstreams.<name>.moved` | boolean | The head's files differ from the pin's. A new commit with the same files is not a move. |
+| `upstreams.<name>.moved` | boolean | The head's files differ from the pin's. A new commit with the same files is not a move, and in a fork neither is one that changes only upstream's own `.patchbook/`. |
 | `upstreams.<name>.files` | string list | Empty unless `moved`. Otherwise `added <path>`, `changed <path>` or `deleted <path>` for each file that differs, sorted by path. Paths include the upstream's mount. Files the build leaves out aren't listed. |
 
 ### `patchbook status --json`
