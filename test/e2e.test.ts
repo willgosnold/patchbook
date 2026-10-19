@@ -6121,6 +6121,41 @@ describe("ForkTest", () => {
     expect(statSync(copy).mode & 0o777).toBe(0o600);
   });
 
+  for (const [where, target] of [["into the patchbook", ".patchbook"], ["to a folder beside it", "docs.bak"]] as const) {
+    forkTest(`test_commit_refuses_an_output_folder_replaced_by_a_link_${where.replaceAll(" ", "_")}`, (t) => {
+      renameSync(join(t.fork.path, "docs"), join(t.fork.path, "docs.bak"));
+      symlinkSync(target, join(t.fork.path, "docs"));
+      sh(["git", "add", "-A"], { cwd: t.fork.path });
+      const before = { files: tree(t.fork.path), staged: porcelain(t) };
+      const commit = hookCommit(t, ["--allow-empty", "-m", "link docs"], false);
+      expect(commit.code).not.toBe(0);
+      expect(commit.stderr).toContain("docs is a link");
+      expect(commit.stderr).toContain("docs/guide.md");
+      expect(commit.stderr).not.toContain("fatal");
+      expect(tree(t.fork.path)).toEqual(before.files);
+      expect(porcelain(t)).toBe(before.staged);
+    });
+  }
+
+  forkTest("test_commit_all_refuses_an_output_folder_replaced_by_a_link", (t) => {
+    renameSync(join(t.fork.path, "docs"), join(t.fork.path, "docs.bak"));
+    symlinkSync("docs.bak", join(t.fork.path, "docs"));
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "one", "ONE"));
+    const before = tree(t.fork.path);
+    const commit = hookCommit(t, ["-am", "link docs"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("docs is a link");
+    expect(commit.stderr).not.toContain("fatal");
+    expect(tree(t.fork.path)).toEqual(before);
+  });
+
+  forkTest("test_commit_ignores_an_output_folder_replaced_by_a_link_that_is_not_staged", (t) => {
+    renameSync(join(t.fork.path, "docs"), join(t.fork.path, "docs.bak"));
+    symlinkSync("docs.bak", join(t.fork.path, "docs"));
+    hookCommit(t, ["--allow-empty", "-m", "nothing staged"]);
+    expect(inHead(t, "docs")).toBe("docs/guide.md\n");
+  });
+
   readOnlyTest("test_failed_commit_reports_nothing_stuck_after_putting_back_nested_new_folders", (t) => {
     t.up.write("deep/er/one.txt", "one\n");
     t.up.write("deep/other/two.txt", "two\n");
@@ -8670,6 +8705,37 @@ exec '${Bun.which("git")}' "$@"
     expect(commit.stderr).toContain("is really inside .patchbook");
     expect(commit.stderr).not.toContain("fatal");
     expect(tree(t.repo.path)).toEqual(before);
+  });
+
+  vendorTest("test_commit_refuses_an_output_folder_replaced_by_a_link", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.repo.commit("built");
+    renameSync(join(t.repo.path, "skills/hello"), join(t.repo.path, "skills/hello.bak"));
+    symlinkSync("../.patchbook", join(t.repo.path, "skills/hello"));
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+    const before = { files: tree(t.repo.path), staged: sh(["git", "status", "--porcelain"], { cwd: t.repo.path }).stdout };
+    const commit = sh(["git", "commit", "-q", "--allow-empty", "-m", "link hello"], { cwd: t.repo.path, check: false, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("skills/hello is a link");
+    expect(commit.stderr).toContain("skills/hello/SKILL.md");
+    expect(commit.stderr).not.toContain("fatal");
+    expect(tree(t.repo.path)).toEqual(before.files);
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.repo.path }).stdout).toBe(before.staged);
+  });
+
+  vendorTest("test_commit_refuses_an_output_folder_replaced_by_a_link_before_any_build", (t) => {
+    t.repo.write("skills/hello/SKILL.md", "tracked before the first build\n");
+    t.repo.commit("existing output");
+    rmSync(join(t.repo.path, "skills/hello"), { recursive: true });
+    symlinkSync("../.patchbook", join(t.repo.path, "skills/hello"));
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+    const before = { files: tree(t.repo.path), staged: sh(["git", "status", "--porcelain"], { cwd: t.repo.path }).stdout };
+    const commit = sh(["git", "commit", "-q", "--allow-empty", "-m", "link hello"], { cwd: t.repo.path, check: false, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("skills/hello is a link");
+    expect(commit.stderr).toContain("skills/hello/SKILL.md");
+    expect(tree(t.repo.path)).toEqual(before.files);
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.repo.path }).stdout).toBe(before.staged);
   });
 
   vendorTest("test_record_in_a_refused_state_records_nothing", (t) => {

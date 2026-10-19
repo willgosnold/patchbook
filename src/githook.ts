@@ -408,9 +408,23 @@ function ignoredInPatchbook(root: string): Map<string, string> {
 
 const inRepo = (book: Book, p: string) => relative(book.root, join(book.outputRoot(), p));
 
+function refuseBehindLinks(book: Book, paths: string[]): void {
+  const behind = new Map<string, string[]>();
+  for (const p of paths) {
+    const parts = p.split("/");
+    const link = parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join("/")).find((folder) => isSymlink(join(book.outputRoot(), folder)));
+    if (link !== undefined) behind.set(link, [...(behind.get(link) ?? []), inRepo(book, p)]);
+  }
+  if (!behind.size) return;
+  throw new Fail(Array.from(behind, ([link, files]) => `${inRepo(book, link)} is a link. Git can't stage these paths behind it:\n  ${files.join("\n  ")}`).join("\n")
+    + "\nPatchbook can't record a folder turned into a link. Put the folder back, or skip the hook once with PATCHBOOK_HOOK=0.");
+}
+
 function committable(book: Book, staged: ReadonlyMap<string, File>, paths: string[]): string[] {
-  const absent = paths.filter((p) => !staged.has(p)).map((p) => inRepo(book, p));
-  if (!absent.length) return paths;
+  const missing = paths.filter((p) => !staged.has(p));
+  if (!missing.length) return paths;
+  refuseBehindLinks(book, missing);
+  const absent = missing.map((p) => inRepo(book, p));
   const found = spawn(["git", "check-ignore", "-z", "--stdin"], { cwd: book.root, input: encode(absent.join("\0")) });
   if (found.code !== 0 && found.code !== 1) throw new Fail(`git check-ignore failed:\n${strip(decodeReplace(found.stderr))}`);
   const ignored = new Set(decode(found.stdout).split("\0"));
@@ -544,8 +558,11 @@ async function runHook(undo: Undo) {
   const committed = committedBuildLock(book);
   const sinceHead = book.stagedChanges();
   const removedFromIndex = (out: ReadonlyMap<string, File>) => Array.from(sinceHead).filter(([p, c]) => c.staged === null && out.has(p)).map(([p]) => p);
-  const stagedEdits = (out: ReadonlyMap<string, File>) =>
-    sorted(new Set([...committable(book, staged, handEdits(book, out, staged, [lock, committed])), ...removedFromIndex(out)]));
+  const stagedEdits = (out: ReadonlyMap<string, File>) => {
+    const removed = removedFromIndex(out);
+    refuseBehindLinks(book, removed);
+    return sorted(new Set([...committable(book, staged, handEdits(book, out, staged, [lock, committed])), ...removed]));
+  };
   const modeOnly = (out: ReadonlyMap<string, File>, p: string) => {
     const [now, next] = [staged.get(p), out.get(p)];
     return now !== undefined && next !== undefined && bytesEqual(now.data, next.data);
