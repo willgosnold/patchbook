@@ -6,7 +6,7 @@ import { Book } from "./book.ts";
 import { unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, foldersWith, isSymlink, LINK, lexists, mkdirs, type Mode, readDisk, readText, writeDisk, writeText } from "./lib/fs.ts";
-import { decodeReplace, lines } from "./lib/text.ts";
+import { decode, decodeReplace, encode, lines } from "./lib/text.ts";
 
 export const EDIT_KINDS = ["file", "add", "replace", "delete", "move", "copy"] as const;
 type EditKind = (typeof EDIT_KINDS)[number];
@@ -20,8 +20,52 @@ export const CHANGE_NAME = /^[a-z0-9][a-z0-9-]*$/;
 export const notAChangeName = (name: string) =>
   `${JSON.stringify(name)} isn't a valid change name; use lowercase letters, digits and hyphens, starting with a letter or digit`;
 
+const NEEDS_QUOTES = /^\s|\s$|\p{Cc}|"|\\| -> /u;
+const ESCAPES: Record<string, number> = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, '"': 34, "\\": 92 };
+
+/** A path as an edit line holds it: bare, or in double quotes with git's C-style escapes when it starts or ends with whitespace or holds ` -> `, a quote, a backslash or a control character. */
+function quotePath(path: string): string {
+  if (!NEEDS_QUOTES.test(path)) return path;
+  let out = '"';
+  for (const ch of path) {
+    if (ch === '"' || ch === "\\") out += "\\" + ch;
+    else if (ch === "\t") out += "\\t";
+    else if (ch === "\n") out += "\\n";
+    else if (/\p{Cc}/u.test(ch)) for (const byte of encode(ch)) out += "\\" + byte.toString(8).padStart(3, "0");
+    else out += ch;
+  }
+  return out + '"';
+}
+
+/** The quoted path that starts at `start` in `text`, and where its closing quote ends; null if it is not closed, holds an escape git does not write, or is not UTF-8 without a NUL. */
+function readQuoted(text: string, start: number): { path: string; end: number } | null {
+  const bytes: number[] = [];
+  for (let i = start + 1; i < text.length; ) {
+    const ch = String.fromCodePoint(text.codePointAt(i)!);
+    i += ch.length;
+    if (ch === '"') {
+      try {
+        const path = decode(Uint8Array.from(bytes));
+        return path.includes("\0") ? null : { path, end: i };
+      } catch {
+        return null;
+      }
+    }
+    if (ch !== "\\") bytes.push(...encode(ch));
+    else {
+      const octal = /^[0-3][0-7]{2}/.exec(text.slice(i, i + 3))?.[0];
+      const named = ESCAPES[text[i] ?? ""];
+      if (octal !== undefined) bytes.push(parseInt(octal, 8));
+      else if (named !== undefined) bytes.push(named);
+      else return null;
+      i += octal === undefined ? 1 : 3;
+    }
+  }
+  return null;
+}
+
 export function editText(e: Edit): string {
-  return `${e.kind} ${e.path}` + ("dest" in e && e.dest ? ` -> ${e.dest}` : "");
+  return `${e.kind} ${quotePath(e.path)}` + ("dest" in e && e.dest ? ` -> ${quotePath(e.dest)}` : "");
 }
 
 export type Side = "base" | "ours";
@@ -62,7 +106,8 @@ export class Change {
   }
 }
 
-const EDIT_LINE = /^- ([\p{L}\p{N}_]+) (.+?)(?: -> (.+))?$/su;
+const EDIT_START = /^- ([\p{L}\p{N}_]+) /u;
+const ARROW = " -> ";
 const OUTER_SLASHES = /^\/+|\/+$/g;
 
 function unsafePath(raw: string): string | null {
@@ -72,6 +117,24 @@ function unsafePath(raw: string): string | null {
 
 function isEditKind(kind: string): kind is EditKind {
   return EDIT_KINDS.some((k) => k === kind);
+}
+
+const malformed = (where: string) =>
+  new Fail(`${where}: a quoted path is malformed; close it with a quote, put nothing after it, and write only \\" \\\\ \\t \\n and \\ooo (three octal digits of a UTF-8 byte) after a backslash`);
+
+/** The path of an edit line that starts at `from` in `rest`: quoted if it starts with a quote, otherwise bare, which runs to the first ` -> ` or, for a destination, to the end. Nothing is trimmed, so a bare path with whitespace at either end is refused. */
+function readPath(rest: string, from: number, where: string, isDest = false): { path: string; end: number } {
+  if (rest[from] === '"') {
+    const quoted = readQuoted(rest, from);
+    if (!quoted) throw malformed(where);
+    return quoted;
+  }
+  const stop = isDest ? -1 : rest.indexOf(ARROW, from + 1);
+  const end = stop < 0 ? rest.length : stop;
+  const path = rest.slice(from, end);
+  if (path === "") throw new Fail(`${where}: expected \`- <${EDIT_KINDS.join("|")}> <path>\``);
+  if (/^\s|\s$/.test(path)) throw new Fail(`${where}: the path ${JSON.stringify(path)} starts or ends with whitespace; write it in double quotes: ${quotePath(path)}`);
+  return { path, end };
 }
 
 /** Read a CHANGE.md. An edit whose path is not a clean path inside the tree is left out of `edits`, kept as written in `held`, and given to `reject`. */
@@ -87,18 +150,24 @@ export function parseChange(path: string, reject: (edit: string, detail: string)
     } else if (line.trim() === "edits:") section = "edits";
     else if (section === "intent" && line.trim()) change.intent += " " + line.trim();
     else if (section === "edits" && line.trim()) {
-      const m = EDIT_LINE.exec(line);
+      const where = `${path}:${n}`;
+      const m = EDIT_START.exec(line);
       const kind = m?.[1];
-      if (!m || kind === undefined || !isEditKind(kind)) throw new Fail(`${path}:${n}: expected \`- <${EDIT_KINDS.join("|")}> <path>\``);
-      const [, , src = "", dest] = m;
-      if ((kind === "move" || kind === "copy") !== Boolean(dest)) throw new Fail(`${path}:${n}: only move and copy take \`-> <path>\``);
-      const unsafe = unsafePath(src) ?? (dest === undefined ? null : unsafePath(dest));
+      if (!m || kind === undefined || !isEditKind(kind)) throw new Fail(`${where}: expected \`- <${EDIT_KINDS.join("|")}> <path>\``);
+      const rest = line.slice(m[0].length);
+      const src = readPath(rest, 0, where);
+      const arrow = rest.startsWith(ARROW, src.end) ? src.end + ARROW.length : null;
+      if (arrow === null && src.end !== rest.length) throw malformed(where);
+      const dest = arrow === null ? undefined : readPath(rest, arrow, where, true);
+      if (dest && dest.end !== rest.length) throw malformed(where);
+      if ((kind === "move" || kind === "copy") !== (dest !== undefined)) throw new Fail(`${where}: only move and copy take \`-> <path>\``);
+      const unsafe = unsafePath(src.path) ?? (dest === undefined ? null : unsafePath(dest.path));
       if (unsafe) {
         change.held.push(line);
         reject(line.slice(2), unsafe);
       } else {
         change.edits.push(
-          kind === "move" || kind === "copy" ? { kind, path: src.replace(OUTER_SLASHES, ""), dest: (dest ?? "").replace(OUTER_SLASHES, "") } : { kind, path: src.replace(OUTER_SLASHES, "") },
+          kind === "move" || kind === "copy" ? { kind, path: src.path.replace(OUTER_SLASHES, ""), dest: (dest?.path ?? "").replace(OUTER_SLASHES, "") } : { kind, path: src.path.replace(OUTER_SLASHES, "") },
         );
       }
     }
