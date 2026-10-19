@@ -4812,6 +4812,284 @@ describe("ForkTest", () => {
     expect(porcelain(t)).toBe("");
   });
 
+  // Root ignores file modes, so a read-only build.lock cannot make the hook fail.
+  const readOnlyTest = process.getuid?.() === 0 ? (name: string, _: unknown) => test.skip(name, () => {}) : forkTest;
+  const lockOf = (t: ForkCase) => join(t.fork.path, ".patchbook/build.lock");
+
+  readOnlyTest("test_failed_commit_leaves_the_patchbook_as_it_found_it", (t) => {
+    const series = read(join(t.fork.path, ".patchbook/series"));
+    const lock = read(lockOf(t));
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    chmodSync(lockOf(t), 0o444);
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+    const commit = hookCommit(t, ["-m", "shout"], false);
+    expect(commit.code).not.toBe(0);
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
+    expect(existsSync(join(t.fork.path, ".patchbook/changes/shout"))).toBe(false);
+    expect(read(join(t.fork.path, ".patchbook/series"))).toBe(series);
+    expect(read(lockOf(t))).toBe(lock);
+    expect(porcelain(t)).toBe("M  app.txt\n");
+  });
+
+  readOnlyTest("test_commit_retried_after_a_failed_record_holds_the_output_and_its_record", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    chmodSync(lockOf(t), 0o444);
+    expect(hookCommit(t, ["-m", "shout"], false).code).not.toBe(0);
+    chmodSync(lockOf(t), 0o644);
+    hookCommit(t, ["-m", "shout, retried"]);
+    const files = committed(t);
+    expect(files).toContain("app.txt");
+    expect(files).toContain(".patchbook/series");
+    expect(files).toContain(".patchbook/changes/shout/CHANGE.md");
+    expect(files).toContain(".patchbook/build.lock");
+    expect(porcelain(t)).toBe("");
+  });
+
+  readOnlyTest("test_failed_commit_leaves_the_output_as_it_found_it", (t) => {
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
+    t.up.commit("shout five");
+    t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+    const app = t.fork.read("app.txt");
+    const before = porcelain(t);
+    chmodSync(lockOf(t), 0o444);
+    expect(hookCommit(t, ["-m", "take upstream"], false).code).not.toBe(0);
+    expect(t.fork.read("app.txt")).toBe(app);
+    expect(porcelain(t)).toBe(before);
+    chmodSync(lockOf(t), 0o644);
+    hookCommit(t, ["-m", "take upstream"]);
+    expect(committed(t)).toContain("app.txt");
+    expect(t.fork.read("app.txt")).toContain("FIVE");
+    expect(porcelain(t)).toBe("");
+  });
+
+  /** Replaces `.patchbook/<name>` with a committed link to a copy outside the repo, and returns what the copy holds. */
+  const linkPatchbook = (t: ForkCase, name: string) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "one", "ONE"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "shout one"]);
+    const [inside, outside] = [join(t.fork.path, ".patchbook", name), join(t.tmp, `outside-${name.replaceAll("/", "-")}`)];
+    if (!existsSync(inside)) t.fork.write(`.patchbook/${name}/keep`, "kept\n");
+    renameSync(inside, outside);
+    symlinkSync(outside, inside);
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    sh(["git", "commit", "-q", "-m", `${name} is a link`], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "0" } });
+    const held = () => sh(["find", outside, "-type", "f", "-exec", "cat", "{}", "+"], { cwd: t.tmp }).stdout;
+    return { held, before: held() };
+  };
+
+  const shoutTwo = (t: ForkCase) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    return hookCommit(t, ["-m", "shout"], false);
+  };
+
+  for (const name of ["blocks", "changes", "series", "build.lock"]) {
+    forkTest(`test_commit_refuses_a_patchbook_${name}_that_is_a_link`, (t) => {
+      const { held, before } = linkPatchbook(t, name);
+      const commit = shoutTwo(t);
+      expect(commit.code).not.toBe(0);
+      expect(commit.stderr).toContain(`.patchbook/${name} is a link`);
+      expect(commit.stderr).toContain("PATCHBOOK_HOOK=0");
+      expect(held()).toBe(before);
+      expect(porcelain(t)).toBe("M  app.txt\n");
+    });
+  }
+
+  for (const [what, path] of [["change_folder", "changes/shout"], ["CHANGE_md", "changes/shout/CHANGE.md"], ["side_folder", "changes/shout/ours"]] as const) {
+    forkTest(`test_commit_refuses_a_${what}_that_is_a_link`, (t) => {
+      const { held, before } = linkPatchbook(t, path);
+      const commit = shoutTwo(t);
+      expect(commit.code).not.toBe(0);
+      expect(commit.stderr).toContain(`.patchbook/${path} is a link`);
+      expect(commit.stderr).toContain("a copy of what it points to");
+      expect(held()).toBe(before);
+      expect(porcelain(t)).toBe("M  app.txt\n");
+    });
+  }
+
+  for (const name of ["config.toml", "upstream.lock"]) {
+    forkTest(`test_commit_goes_through_a_patchbook_${name.replace(".", "_")}_that_is_a_link`, (t) => {
+      const { held, before } = linkPatchbook(t, name);
+      expect(shoutTwo(t).code).toBe(0);
+      expect(committed(t)).toContain("app.txt");
+      expect(held()).toBe(before);
+      expect(porcelain(t)).toBe("");
+    });
+  }
+
+  /** Commits the `shout` change, then plants `link` in its `ours` copy, pointing at `outside` (made here, holding `keep.txt`). */
+  const plantInShout = (t: ForkCase, link: string, file: boolean) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "one", "ONE"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "shout one"]);
+    const outside = join(t.tmp, "outside");
+    if (file) writeFileSync(outside, "keep\n");
+    else t.fork.write("../outside/keep.txt", "keep\n");
+    symlinkSync(outside, join(t.fork.path, ".patchbook/changes/shout/ours", link));
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    sh(["git", "commit", "-q", "-m", "plant a link"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "0" } });
+    return outside;
+  };
+
+  forkTest("test_commit_refuses_a_recorded_folder_link_named_like_a_copy", (t) => {
+    const outside = plantInShout(t, "d.pb", false);
+    t.fork.write("d.pb/x", "payload\n");
+    sh(["git", "add", "d.pb/x"], { cwd: t.fork.path });
+    const commit = hookCommit(t, ["-m", "add d.pb/x"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain(".patchbook/changes/shout/ours/d.pb is a link");
+    expect(readdirSync(outside)).toEqual(["keep.txt"]);
+    expect(porcelain(t)).toBe("A  d.pb/x\n");
+  });
+
+  forkTest("test_commit_refuses_a_folder_link_above_a_copy", (t) => {
+    const outside = plantInShout(t, "sub", false);
+    t.fork.write("sub/x", "payload\n");
+    sh(["git", "add", "sub/x"], { cwd: t.fork.path });
+    const commit = hookCommit(t, ["-m", "add sub/x"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain(".patchbook/changes/shout/ours/sub is a link");
+    expect(readdirSync(outside)).toEqual(["keep.txt"]);
+  });
+
+  forkTest("test_commit_replaces_a_recorded_symlink_without_changing_its_target", (t) => {
+    const outside = plantInShout(t, "note.txt.pb", true);
+    t.fork.write("note.txt", "payload\n");
+    sh(["git", "add", "note.txt"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "add note.txt"]);
+    expect(read(outside)).toBe("keep\n");
+    expect(committed(t)).toContain("note.txt");
+    expect(porcelain(t)).toBe("");
+  });
+
+  forkTest("test_commit_refuses_a_link_inside_blocks", (t) => {
+    const outside = join(t.tmp, "outside.md");
+    writeFileSync(outside, "keep\n");
+    mkdirSync(join(t.fork.path, ".patchbook/blocks"));
+    symlinkSync(outside, join(t.fork.path, ".patchbook/blocks/app.txt.md"));
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    sh(["git", "commit", "-q", "-m", "link a block"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "0" } });
+    const commit = shoutTwo(t);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain(".patchbook/blocks/app.txt.md is a link");
+    expect(read(outside)).toBe("keep\n");
+    expect(porcelain(t)).toBe("M  app.txt\n");
+  });
+
+  readOnlyTest("test_failed_commit_puts_a_private_copy_back_with_its_own_mode_when_its_bytes_did_not_change", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "one", "ONE"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "shout one"]);
+    const copy = join(t.fork.path, ".patchbook/changes/shout/ours/new.md.pb");
+    writeFileSync(copy, "secret\n", { mode: 0o600 });
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    sh(["git", "commit", "-q", "-m", "keep a private copy"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "0" } });
+    t.fork.write("new.md", "secret\n");
+    sh(["git", "add", "new.md"], { cwd: t.fork.path });
+    chmodSync(lockOf(t), 0o444);
+    expect(hookCommit(t, ["-m", "add new.md"], false).code).not.toBe(0);
+    expect(statSync(copy).mode & 0o777).toBe(0o600);
+  });
+
+  readOnlyTest("test_failed_commit_reports_nothing_stuck_after_putting_back_nested_new_folders", (t) => {
+    t.up.write("deep/er/one.txt", "one\n");
+    t.up.write("deep/other/two.txt", "two\n");
+    t.up.commit("add nested folders");
+    t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+    chmodSync(lockOf(t), 0o444);
+    const commit = hookCommit(t, ["-m", "take upstream"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).not.toContain("couldn't put these back");
+    expect(existsSync(join(t.fork.path, "deep"))).toBe(false);
+  });
+
+  readOnlyTest("test_commit_goes_through_when_a_folder_in_the_patchbook_cant_be_read", (t) => {
+    writeFileSync(join(t.fork.path, ".git/info/exclude"), "*.junk\n");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "shout"]);
+    const secret = join(t.fork.path, ".patchbook/changes/shout/secret");
+    mkdirSync(secret);
+    writeFileSync(join(secret, "s.junk"), "x\n");
+    chmodSync(secret, 0o000);
+    try {
+      t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE"));
+      sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+      hookCommit(t, ["-m", "shout again"]);
+      expect(committed(t)).toContain("app.txt");
+    } finally {
+      chmodSync(secret, 0o755);
+    }
+  });
+
+  readOnlyTest("test_failed_commit_puts_a_private_file_back_with_its_own_mode", (t) => {
+    const series = join(t.fork.path, ".patchbook/series");
+    chmodSync(series, 0o600);
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    chmodSync(lockOf(t), 0o444);
+    expect(hookCommit(t, ["-m", "shout"], false).code).not.toBe(0);
+    expect(statSync(series).mode & 0o777).toBe(0o600);
+  });
+
+  readOnlyTest("test_failed_commit_lists_what_it_could_not_put_back", (t) => {
+    const patchbook = join(t.fork.path, ".patchbook");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    mkdirSync(join(patchbook, "changes"));
+    chmodSync(lockOf(t), 0o444);
+    chmodSync(patchbook, 0o555);
+    try {
+      const commit = hookCommit(t, ["-m", "shout"], false);
+      expect(commit.code).not.toBe(0);
+      expect(commit.stderr).toMatch(/couldn't put these back as they were:\n  \S+\/\.patchbook\/series\n/);
+      expect(commit.stderr).toContain("Check that you can write to them");
+    } finally {
+      chmodSync(patchbook, 0o755);
+    }
+  });
+
+  readOnlyTest("test_failed_commit_puts_a_private_folder_back_with_its_own_mode", (t) => {
+    t.fork.write("private/New.md", "new\n");
+    sh(["git", "add", "private/New.md"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "add private"]);
+    const folder = join(t.fork.path, "private");
+    chmodSync(folder, 0o700);
+    const changes = join(t.fork.path, ".patchbook/changes");
+    const change = readdirSync(changes).find((n) => read(join(changes, n, "CHANGE.md")).includes("private/New.md"))!;
+    sh(["git", "rm", "-q", "-r", `.patchbook/changes/${change}`], { cwd: t.fork.path });
+    const series = join(t.fork.path, ".patchbook/series");
+    writeFileSync(series, read(series).split("\n").filter((l) => l.trim() !== change).join("\n"));
+    sh(["git", "add", ".patchbook/series"], { cwd: t.fork.path });
+    chmodSync(lockOf(t), 0o444);
+    expect(hookCommit(t, ["-m", "drop private"], false).code).not.toBe(0);
+    expect(t.fork.read("private/New.md")).toBe("new\n");
+    expect(statSync(folder).mode & 0o777).toBe(0o700);
+  });
+
+  readOnlyTest("test_failed_commit_puts_back_the_lock_it_rebuilt_when_nothing_was_recorded", (t) => {
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
+    t.up.commit("shout five");
+    t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+    const lock = read(lockOf(t));
+    sh(["git", "write-tree"], { cwd: t.fork.path });
+    const objects = join(t.fork.path, ".git/objects");
+    const dirs = () => sh(["find", objects, "-type", "d"], { cwd: t.tmp }).stdout.split("\n").filter(Boolean);
+    for (const d of dirs()) chmodSync(d, 0o555);
+    try {
+      expect(hookCommit(t, ["-m", "take upstream"], false).code).not.toBe(0);
+    } finally {
+      for (const d of dirs()) chmodSync(d, 0o755);
+    }
+    expect(read(lockOf(t))).toBe(lock);
+    expect(t.fork.read("app.txt")).not.toContain("FIVE");
+  });
+
   // What the Python version wrote, with the paths of the interpreter and script that installed it.
   const pythonHook = (extra = "") => `#!/bin/sh
 # Installed by patchbook. On each commit, it records hand edits to the build output in the
