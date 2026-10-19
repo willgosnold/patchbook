@@ -1,19 +1,22 @@
 // src/lib against what CPython gives on the same cases. Regenerate with: python3 test/fixtures/generate.py
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { TomlDocument } from "@decimalturn/toml-patch";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "../src/lib/difflib.ts";
+import { nonFolders, rmFolders } from "../src/lib/fs.ts";
 import { dumps, loads } from "../src/lib/json.ts";
 import {
-  compare, floatRepr, lstrip, quote, replace, round2, rstrip, sorted, split, splitlines, str, strip, strRepr,
+  floatRepr, lstrip, quote, replace, round2, rstrip, split, splitlines, str, strip, strRepr,
 } from "../src/lib/py.ts";
+import { byCodePoint } from "../src/lib/text.ts";
 
 type Fixture = {
   matcher: { a: string | string[]; b: string | string[]; autojunk: boolean; ratio: number; opcodes: Opcode[] }[];
   unified: { a: string; b: string; fromfile: string; tofile: string; diff: string }[];
   splitlines: { s: string; keep: string[]; drop: string[] }[];
   strip: { s: string; strip: string; lstrip: string; rstrip: string; split: string[] }[];
-  sort: { items: string[]; sorted: string[] }[];
   round: { x: number; round: string }[];
   floats: { x: number; repr: string }[];
   json: { text: string; dumps: string; indent: string; str: string }[];
@@ -23,6 +26,46 @@ type Fixture = {
 };
 
 const cases: Fixture = JSON.parse(readFileSync(new URL("fixtures/cpython.json", import.meta.url), "utf8"));
+
+describe("byCodePoint", () => {
+  test("puts a character above U+FFFF after U+E000 to U+FFFF, where sort() alone puts it before them", () => {
+    const names = ["\u{1F600}", "\uFFFD", "\uE000", "a"];
+    expect([...names].sort()).toEqual(["a", "\u{1F600}", "\uE000", "\uFFFD"]);
+    expect([...names].sort(byCodePoint)).toEqual(["a", "\uE000", "\uFFFD", "\u{1F600}"]);
+  });
+
+  test("ignores locale: capitals come before small letters, and é after z", () => {
+    expect(["é", "z", "a", "Z"].sort(byCodePoint)).toEqual(["Z", "a", "z", "é"]);
+  });
+
+  test("a prefix comes first", () => {
+    expect(["ab", "a", ""].sort(byCodePoint)).toEqual(["", "a", "ab"]);
+  });
+
+  test("is the order of the UTF-8 bytes, which git sorts paths in", () => {
+    const paths = ["a/b", "a-b", "a b", "B", "\u{10000}", "\u{1F600}a", "\u{1F600}", "\uFF01", "\uFFFD", "é", "e\u0301", "中", "~", ""];
+    const byBytes = [...paths].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+    expect([...paths].sort(byCodePoint)).toEqual(byBytes);
+  });
+});
+
+describe("listing a folder", () => {
+  test("gives whole paths in code-point order, so a-b and a.c come before a/b as in git", () => {
+    const dir = mkdtempSync(join(tmpdir(), "listing"));
+    try {
+      for (const folder of ["a/b", "a-b", "a.c/d"]) mkdirSync(join(dir, folder), { recursive: true });
+      for (const file of ["a/b/f", "a-b/f", "a.c/d/f"]) writeFileSync(join(dir, file), "");
+      expect(nonFolders(dir)).toEqual(["a-b/f", "a.c/d/f", "a/b/f"]);
+      rmSync(join(dir, "a/b/f"));
+      rmSync(join(dir, "a-b/f"));
+      rmSync(join(dir, "a.c/d/f"));
+      rmFolders(dir);
+      expect(existsSync(dir)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("SequenceMatcher", () => {
   test.each(cases.matcher.map((c, i) => [i, c] as const))("case %d", (_, c) => {
@@ -51,11 +94,6 @@ test.each(cases.strip)("strip and split %#", (c) => {
   expect(lstrip(c.s)).toBe(c.lstrip);
   expect(rstrip(c.s)).toBe(c.rstrip);
   expect(split(c.s)).toEqual(c.split);
-});
-
-test.each(cases.sort)("sorted %#", (c) => {
-  expect(sorted(c.items)).toEqual(c.sorted);
-  expect([...c.items].sort(compare)).toEqual(c.sorted);
 });
 
 test("round(x, 2), ties to even", () => {

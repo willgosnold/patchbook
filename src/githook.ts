@@ -9,8 +9,8 @@ import { Fail } from "./lib/fail.ts";
 import { exists, type File, isDir, isSymlink, lexists, mkdirs, readBytes, readDisk, readTextReplace, relative, resolve, sameFile, writeBytes, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { git, run, spawn } from "./lib/proc.ts";
-import { quote, sorted, strip } from "./lib/py.ts";
-import { bytesEqual, concat, decode, decodeReplace, encode } from "./lib/text.ts";
+import { quote, strip } from "./lib/py.ts";
+import { byCodePoint, bytesEqual, concat, decode, decodeReplace, encode } from "./lib/text.ts";
 import { type Source, setting } from "./settings.ts";
 import { refuseMergedUpstream } from "./store.ts";
 import { linksUnder, Undo } from "./undo.ts";
@@ -444,7 +444,7 @@ function unstaged(root: string, paths: string[]): string[] {
   if (!paths.length) return [];
   git(["update-index", "-q", "--refresh"], { cwd: root });
   const listed = (args: string[]) => decode(run(["git", "--literal-pathspecs", ...args, "--", ...paths], { cwd: root })).split("\0");
-  return sorted(new Set([...listed(["diff-files", "--name-only", "-z"]), ...listed(["ls-files", "-z", "-o", "--exclude-standard"])].filter(Boolean)));
+  return [...new Set([...listed(["diff-files", "--name-only", "-z"]), ...listed(["ls-files", "-z", "-o", "--exclude-standard"])].filter(Boolean))].sort(byCodePoint);
 }
 
 function ignoredInPatchbook(root: string): Map<string, string> {
@@ -510,7 +510,7 @@ function refuseOverwrites(book: Book, clobbered: string[]): void {
 }
 
 function diskWrites(book: Book, lock: BuildLock | null, staged: ReadonlyMap<string, File>, out: ReadonlyMap<string, File>): { writes: Changes; userOnly: string[] } {
-  const differ = sorted(new Set([...out.keys(), ...staged.keys(), ...(lock?.keys() ?? [])]))
+  const differ = [...new Set([...out.keys(), ...staged.keys(), ...(lock?.keys() ?? [])])].sort(byCodePoint)
     .filter((p) => !sameFile(onDisk(book, p), out.get(p), book.tracksExecBit()));
   const loose = new Set(unstaged(book.root, differ.map((p) => inRepo(book, p))));
   const matchesIndex = (p: string) =>
@@ -607,7 +607,7 @@ async function runHook(undo: Undo) {
   const stagedEdits = (out: ReadonlyMap<string, File>) => {
     const removed = removedFromIndex(out);
     refuseBehindLinks(book, removed);
-    return sorted(new Set([...committable(book, staged, handEdits(book, out, staged, [lock, committed])), ...removed]));
+    return [...new Set([...committable(book, staged, handEdits(book, out, staged, [lock, committed])), ...removed])].sort(byCodePoint);
   };
   const modeOnly = (out: ReadonlyMap<string, File>, p: string) => {
     const [now, next] = [staged.get(p), out.get(p)];

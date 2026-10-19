@@ -16,8 +16,8 @@ import {
 import { blobOid } from "./lib/hash.ts";
 import { dumps, type Json, loads } from "./lib/json.ts";
 import { type Env, git, run, spawn } from "./lib/proc.ts";
-import { floatRepr, ljust, rstrip, sorted, sortedBy, strip } from "./lib/py.ts";
-import { bytesEqual, decode, encode, isText } from "./lib/text.ts";
+import { floatRepr, ljust, rstrip, strip } from "./lib/py.ts";
+import { byCodePoint, bytesEqual, decode, encode, isText } from "./lib/text.ts";
 import { pinned, refuseMergedUpstream } from "./store.ts";
 
 export function describe(p: Problem): string {
@@ -190,7 +190,7 @@ export function assemble(book: Book): Assembly {
   const out = new Map<string, File>();
   const used = new Map<string, Set<string>>(Array.from(blocks.keys(), (rel) => [rel, new Set()]));
   const unmatched = new Map<string, Unmatched[]>(Array.from(blocks.keys(), (rel) => [rel, []]));
-  for (const [outPath, src] of sortedBy(selected, ([p]) => p)) {
+  for (const [outPath, src] of [...selected].sort(([a], [b]) => byCodePoint(a, b))) {
     if (src.kind === "up") {
       const rel = src.path;
       const { data, mode } = content.get(rel)!;
@@ -267,7 +267,7 @@ export function parseBuildLock(text: string): Map<string, string> {
 export const oids = (files: ReadonlyMap<string, File>) => new Map(Array.from(files, ([p, f]) => [p, blobOid(f.data)]));
 
 export function writeBuildLines(book: Book, lock: ReadonlyMap<string, string>): void {
-  writeText(buildLockPath(book), sortedBy(lock, ([p]) => p).map(([p, oid]) => `${oid} ${p}\n`).join(""));
+  writeText(buildLockPath(book), [...lock].sort(([a], [b]) => byCodePoint(a, b)).map(([p, oid]) => `${oid} ${p}\n`).join(""));
 }
 
 export const writeBuildLock = (book: Book, out: ReadonlyMap<string, File>) => writeBuildLines(book, oids(out));
@@ -329,9 +329,9 @@ export function handEdits(
   const current = oids(files);
   const next = oids(fresh);
   const last = builds.filter((b) => b !== null);
-  if (!last.length) return sorted(Array.from(current.keys()).filter((p) => current.get(p) !== next.get(p))); // never built here
+  if (!last.length) return Array.from(current.keys()).filter((p) => current.get(p) !== next.get(p)).sort(byCodePoint); // never built here
   const paths = new Set([...current.keys(), ...last.flatMap((b) => [...b.keys()])]);
-  return sorted(Array.from(paths).filter((p) => current.get(p) !== next.get(p) && last.every((b) => current.get(p) !== b.get(p))));
+  return Array.from(paths).filter((p) => current.get(p) !== next.get(p) && last.every((b) => current.get(p) !== b.get(p))).sort(byCodePoint);
 }
 
 /** A folder where the build writes a file goes only if it holds nothing but folders and files this build removes. */
@@ -447,7 +447,7 @@ export async function cmdStatus(args: { json: boolean }) {
     for (const p of a.problems) process.stdout.write(describe(p) + "\n");
     const counts = new Map<string, number>();
     for (const p of a.problems) counts.set(p.problem, (counts.get(p.problem) ?? 0) + 1);
-    const summary = sortedBy(counts, ([k]) => k).map(([k, n]) => `${n} ${k}`).join(", ") || "no problems";
+    const summary = [...counts].sort(([a], [b]) => byCodePoint(a, b)).map(([k, n]) => `${n} ${k}`).join(", ") || "no problems";
     process.stdout.write(`${a.applied} edits apply at ${book.pins()}; ${summary}\n`);
   }
   return a.problems.length ? 1 : 0;

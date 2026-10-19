@@ -9,8 +9,8 @@ import { exists, type File, mkdirs, normMode, pjoin, readDisk, readText, relativ
 import { sha1 } from "./lib/hash.ts";
 import { loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
-import { type PyValue, slice, sorted, split, strip } from "./lib/py.ts";
-import { decode, decodeReplace, encode } from "./lib/text.ts";
+import { type PyValue, slice, split, strip } from "./lib/py.ts";
+import { byCodePoint, decode, decodeReplace, encode } from "./lib/text.ts";
 import { storeDir, type Table } from "./settings.ts";
 
 export type Pin = { commit?: string; tree?: string };
@@ -383,6 +383,6 @@ export async function cmdUpstream(args: { name: string; path: string | null; dif
     process.stdout.write(file.data);
     return 0;
   }
-  process.stdout.write(sorted(files.keys()).join("\n") + "\n");
+  process.stdout.write([...files.keys()].sort(byCodePoint).join("\n") + "\n");
   return 0;
 }

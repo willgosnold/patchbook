@@ -82,39 +82,6 @@ export function slice(s: string, start: number, end?: number): string {
 
 export const ljust = (s: string, width: number) => s + " ".repeat(Math.max(0, width - length(s)));
 
-function rank(unit: number): number {
-  // Lift surrogates above U+E000-U+FFFF so the first differing code unit orders by code point.
-  return unit < 0xd800 ? unit : unit < 0xe000 ? unit + 0x2000 : unit - 0x800;
-}
-
-/** Python's string order: by code point. `Array.prototype.sort` orders by UTF-16 code unit. */
-export function compare(a: string, b: string): number {
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) {
-    const x = a.charCodeAt(i);
-    const y = b.charCodeAt(i);
-    if (x !== y) return rank(x) - rank(y);
-  }
-  return a.length - b.length;
-}
-
-export function compareParts(a: readonly string[], b: readonly string[]): number {
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) {
-    const c = compare(a[i]!, b[i]!);
-    if (c !== 0) return c;
-  }
-  return a.length - b.length;
-}
-
-export function sorted(items: Iterable<string>): string[] {
-  return Array.from(items).sort(compare);
-}
-
-export function sortedBy<T>(items: Iterable<T>, key: (item: T) => string): T[] {
-  return Array.from(items).sort((x, y) => compare(key(x), key(y)));
-}
-
 /** A number that Python holds as a float, so it prints as `1.0` and not `1`. */
 export class PyFloat {
   constructor(readonly value: number) {}

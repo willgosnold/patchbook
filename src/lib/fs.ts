@@ -6,8 +6,7 @@ import {
 import { basename, dirname, join, relative as rel, resolve as absolute } from "node:path";
 import { getSystemErrorMessage } from "node:util";
 import { Fail } from "./fail.ts";
-import { compareParts } from "./py.ts";
-import { bytesEqual, decode, decodeReplace, encode } from "./text.ts";
+import { byCodePoint, bytesEqual, decode, decodeReplace, encode } from "./text.ts";
 
 export const LINK = 0o120000;
 export const GITLINK = 0o160000;
@@ -138,7 +137,7 @@ export function writeDisk(p: string, { data, mode }: File): void {
   });
 }
 
-/** `sorted(Path(dir).rglob("*" + suffix))`, relative to dir, in pathlib's order: by path component. A folder it can't read is skipped, and listed in `unreadable` when given. */
+/** The paths under dir that end in suffix, relative to dir, in code-point order. A folder it can't read is skipped, and listed in `unreadable` when given. */
 export function rglob(dir: string, suffix: string, unreadable?: string[]): string[] {
   const found: string[][] = [];
   const walk = (parts: string[]) => {
@@ -156,10 +155,10 @@ export function rglob(dir: string, suffix: string, unreadable?: string[]): strin
     }
   };
   walk([]);
-  return found.sort(compareParts).map((parts) => parts.join("/"));
+  return found.map((parts) => parts.join("/")).sort(byCodePoint);
 }
 
-/** The folders in dir that hold `name`, as `sorted(Path(dir).glob("*" + "/" + name))` orders them. */
+/** The folders in dir that hold `name`, in code-point order. */
 export function foldersWith(dir: string, name: string): string[] {
   let names: string[];
   try {
@@ -167,7 +166,7 @@ export function foldersWith(dir: string, name: string): string[] {
   } catch {
     return [];
   }
-  return names.filter((n) => lexists(join(dir, n, name))).sort((a, b) => compareParts([a], [b]));
+  return names.filter((n) => lexists(join(dir, n, name))).sort(byCodePoint);
 }
 
 export const isEmptyDir = (p: string) => readdirSync(p).length === 0;

@@ -7,8 +7,8 @@ import { Fail } from "./lib/fail.ts";
 import { exists, type File, GITLINK, isDir, isMode, isSymlink, lexists, mkdirs, type Mode, normMode, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
 import { dumps, loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
-import { length, type PyValue, sortedBy, strRepr } from "./lib/py.ts";
-import { decode } from "./lib/text.ts";
+import { length, type PyValue, strRepr } from "./lib/py.ts";
+import { byCodePoint, decode } from "./lib/text.ts";
 import { isTable, parseToml, type Table } from "./settings.ts";
 import { stagedFolder, treeFiles, Upstream } from "./store.ts";
 
@@ -55,7 +55,7 @@ const leftOut = new Map<string, Set<string>>();
 export function noticeLeftOut(): void {
   if (leftOut.size === 0) return;
   const total = Array.from(leftOut.values()).reduce((n, paths) => n + paths.size, 0);
-  const folders = sortedBy(leftOut, ([folder]) => folder).map(([folder, paths]) => `${folder} (${paths.size})`).join(", ");
+  const folders = [...leftOut].sort(([a], [b]) => byCodePoint(a, b)).map(([folder, paths]) => `${folder} (${paths.size})`).join(", ");
   leftOut.clear();
   process.stderr.write(`patchbook: left ${total} upstream files out of the build because they would land in a vendored copy: ${folders}.\n`);
 }
@@ -452,11 +452,11 @@ export class Book {
 
   private saveLock(data: Map<string, PyValue>): void {
     mkdirs(this.dir);
-    writeText(join(this.dir, "upstream.lock"), dumps(new Map(sortedBy(data, ([k]) => k)), 2) + "\n");
+    writeText(join(this.dir, "upstream.lock"), dumps(new Map([...data].sort(([a], [b]) => byCodePoint(a, b))), 2) + "\n");
   }
 
   pins(): string {
-    return sortedBy(this.lock(), ([k]) => k)
+    return [...this.lock()].sort(([a], [b]) => byCodePoint(a, b))
       .map(([name, pin]) => {
         const commit = pin instanceof Map ? pin.get("commit") : undefined;
         if (typeof commit !== "string") throw new Fail(`upstream.lock: ${name} has no commit`);
