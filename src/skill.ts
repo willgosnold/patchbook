@@ -1,7 +1,5 @@
 // The patchbook-update skill, embedded in the binary and written into the repo for its agents.
-import {
-  chmodSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync,
-} from "node:fs";
+import { readlinkSync, realpathSync, symlinkSync, unlinkSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import skill from "../skills/patchbook-update/SKILL.md" with { type: "text" };
 import { assemble, describe, handEdits } from "./assemble.ts";
@@ -14,6 +12,7 @@ import { strip } from "./lib/py.ts";
 import { bytesEqual, decode, encode } from "./lib/text.ts";
 import { cmdRecord } from "./record.ts";
 import { setting } from "./settings.ts";
+import { Undo } from "./undo.ts";
 
 const NAME = "patchbook-update";
 const CHANGE = "patchbook-update-skill";
@@ -58,29 +57,18 @@ const linkNote = (p: string) => `patchbook: ${p} is a symlink, and install won't
 
 /**
  * Point `at` to `target`, unless a real folder is already there.
- * Returns null when it left a folder alone. Pushes onto `undo` what puts things back.
+ * Returns null when it left a folder alone.
  */
-function link(root: string, at: string, target: string, undo: (() => void)[]): boolean | null {
+function link(root: string, at: string, target: string, hold: (p: string) => void): boolean | null {
   if (pointsAt(at, target)) return false;
-  if (isSymlink(at)) {
-    const was = readlinkSync(at);
-    unlinkSync(at);
-    undo.push(() => symlinkSync(was, at));
-  } else if (lexists(at) && !isDir(at)) {
-    const was = readBytes(at);
-    const mode = statSync(at).mode;
-    unlinkSync(at);
-    undo.push(() => {
-      writeFileSync(at, was, { mode });
-      chmodSync(at, mode & 0o7777);
-    });
-  } else if (lexists(at)) {
+  if (!isSymlink(at) && isDir(at)) {
     process.stderr.write(folderNote(root, at));
     return null;
   }
+  hold(at);
+  if (lexists(at)) unlinkSync(at);
   mkdirs(dirname(at));
   symlinkSync(relative(dirname(at), target), at);
-  undo.push(() => rmSync(at, { force: true }));
   return true;
 }
 
@@ -88,7 +76,7 @@ function link(root: string, at: string, target: string, undo: (() => void)[]): b
  * Install the update skill for agents in the repo. Returns the paths it changed, or null if it installed nothing.
  * It writes nothing, at any skill path, when one holds a copy that HEAD doesn't, which would be lost.
  */
-export function installSkill(book: Book): { changed: string[] } | null {
+export function installSkill(book: Book, outer?: Undo): { changed: string[] } | null {
   if (!setting("start.install_skill", book)[0]) return null;
   const agents = setting("start.agents", book)[0];
   const unknown = agents.filter((a) => !AGENTS.has(a));
@@ -106,7 +94,11 @@ export function installSkill(book: Book): { changed: string[] } | null {
   const dir = join(book.root, ".agents", "skills", NAME);
   const file = join(book.root, FILE);
   const changed: string[] = [];
-  const undo: (() => void)[] = [];
+  const undo = new Undo();
+  const hold = (p: string) => {
+    undo.hold(p);
+    outer?.hold(p);
+  };
   try {
     const { lost } = replacements(book);
     if (lost.length) {
@@ -114,11 +106,12 @@ export function installSkill(book: Book): { changed: string[] } | null {
         + "Commit them, or move them away, then run `patchbook skill install`.\n");
       return null;
     }
+    hold(dir);
     mkdirs(dir);
     for (const { link: folder } of known) {
       if (!folder || sharesSkills(book.root, `${folder}/${NAME}`)) continue;
       const at = join(book.root, folder, NAME);
-      if (link(book.root, at, dir, undo)) changed.push(at);
+      if (link(book.root, at, dir, hold)) changed.push(at);
     }
     if (!exists(file) || !bytesEqual(readBytes(file), SKILL_BYTES)) {
       writeText(file, skill);
@@ -127,7 +120,7 @@ export function installSkill(book: Book): { changed: string[] } | null {
   } catch (e) {
     // A file where a folder should go, or a read-only repo, shouldn't stop `clone` or `init` from finishing.
     if (!(e instanceof Error && "errno" in e)) throw e;
-    for (const put of undo.reverse()) put();
+    undo.restore();
     process.stderr.write(`patchbook: couldn't install the update skill: ${e.message}\n`);
     return null;
   }

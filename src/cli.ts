@@ -20,6 +20,7 @@ import { cmdConfig } from "./settings.ts";
 import { cmdSkill, installSkill, recordSkill, SCHEDULE, leftBehindSkill } from "./skill.ts";
 import { absoluteRemote, defaultName, cmdUpstream } from "./store.ts";
 import { cmdCheck, cmdSync, syncUpstream } from "./sync.ts";
+import { Undo } from "./undo.ts";
 
 // The release build replaces process.env.PATCHBOOK_VERSION at compile time with --define.
 const VERSION = process.env.PATCHBOOK_VERSION ?? pkg.version;
@@ -81,12 +82,27 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   return 0;
 }
 
-/** A link that points nowhere, where init writes, would take the write out of the repo. */
 function refuseDanglingLinks(root: string): void {
   for (const p of [PB, ...["config.toml", "series", "retired.md", "upstream.lock"].map((f) => `${PB}/${f}`)]) {
     if (isSymlink(join(root, p)) && !exists(join(root, p))) {
       throw new Fail(`${p} is a symlink to a missing ${p === PB ? "folder" : "file"}. Remove the link, or put back what it points to.`);
     }
+  }
+}
+
+async function allOrNothing(book: Book, write: (undo: Undo) => Promise<void>): Promise<void> {
+  const undo = new Undo();
+  const gitFiles = git(["rev-parse", "--path-format=absolute", "--git-path", "config", "--git-path", "index"], { cwd: book.root }).split("\n");
+  for (const p of [resolve(book.dir), ...gitFiles, ...book.upstreams.flatMap((u) => (u.vendor ? [u.vendor] : []))]) undo.hold(p);
+  try {
+    await write(undo);
+  } catch (e) {
+    const stuck = undo.restore();
+    if (stuck.length) {
+      process.stderr.write("patchbook: init couldn't put these back as they were:\n  " + stuck.join("\n  ")
+        + "\nCheck that you can write to them, and put them back yourself before you run init again.\n");
+    }
+    throw e;
   }
 }
 
@@ -102,12 +118,14 @@ async function cmdInit(args: {
     const book = await Book.fromText(root, text);
     for (const u of book.upstreams) if (u.vendor) refuseNestedGit(root, u.name, u.vendor);
     notThisRepo(root, args.upstream);
-    book.dropPin(name);
-    syncUpstream(book, book.upstreams[0]!, args.branch, []);
-    installSkill(book);
-    writeConfig(root, text);
-    installHookOrWarn(book);
-    await installHook(book);
+    await allOrNothing(book, async (undo) => {
+      book.dropPin(name);
+      syncUpstream(book, book.upstreams[0]!, args.branch, []);
+      installSkill(book, undo);
+      writeConfig(root, text);
+      installHookOrWarn(book, undo);
+      await installHook(book, undo);
+    });
     process.stdout.write(`Next: patchbook build, then stage and commit.\n${SCHEDULE}\n`);
     return 0;
   }
@@ -123,13 +141,15 @@ async function cmdInit(args: {
   git(["fetch", "--quiet", "--end-of-options", args.upstream, args.branch], { cwd: root });
   const base = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: root });
   book.upstreams[0]!.files(base);
-  book.writeLock(name, base, book.upstreams[0]!.treeOf(base));
-  if (!hasRemote) git(["remote", "add", "--end-of-options", "upstream", args.upstream], { cwd: root });
-  const installed = installSkill(book);
-  writeConfig(root, text);
-  installHookOrWarn(book);
-  await installHook(book);
-  if (installed && (installed.changed.length || leftBehindSkill(book).length)) await recordSkill(book);
+  await allOrNothing(book, async (undo) => {
+    book.writeLock(name, base, book.upstreams[0]!.treeOf(base));
+    if (!hasRemote) git(["remote", "add", "--end-of-options", "upstream", args.upstream], { cwd: root });
+    const installed = installSkill(book, undo);
+    writeConfig(root, text);
+    installHookOrWarn(book, undo);
+    await installHook(book, undo);
+    if (installed && (installed.changed.length || leftBehindSkill(book).length)) await recordSkill(book);
+  });
   process.stdout.write(`pinned upstream at ${base.slice(0, 7)}, where this repo branched from ${follows}.\n`
     + "Capture your existing changes with `patchbook record`, then `patchbook build`, stage, and commit.\n" + SCHEDULE + "\n");
   return 0;
