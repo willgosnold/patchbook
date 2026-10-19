@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import pkg from "../package.json" with { type: "json" };
 import { cmdBuild, cmdScaffold, cmdStatus, writeBuildLock } from "./assemble.ts";
 import { cmdBlocks } from "./blocks.ts";
-import { Book, noticeLeftOut, PB, refuseNestedGit } from "./book.ts";
+import { Book, noticeLeftOut, PB, refuseFoldedUpstream, refuseNestedGit } from "./book.ts";
 import { cmdShow } from "./changes.ts";
 import { cmdHook, commitAdvice, installHook, installHookOrWarn, keepGitHook } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
@@ -59,6 +59,12 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   git([...clone, "--end-of-options", args.url, dest], { cwd: dirname(dest) });
   const branch = git(["branch", "--show-current"], { cwd: dest });
   const commit = git(["rev-parse", "HEAD"], { cwd: dest });
+  try {
+    refuseFoldedUpstream(git(["ls-tree", "-r", "-z", "--name-only", "HEAD"], { cwd: dest }).split("\0"));
+  } catch (e) {
+    rmSync(dest, { recursive: true, force: true });
+    throw e;
+  }
   const inherited = lexists(join(dest, PB));
   if (inherited) rmSync(join(dest, PB), { recursive: true, force: true });
   const name = defaultName(args.url, "");
@@ -147,9 +153,10 @@ async function cmdInit(args: {
   if (hasRemote) checkUpstreamRemote(root, args.upstream, args.branch);
   git(["fetch", "--quiet", "--end-of-options", args.upstream, args.branch], { cwd: root });
   const base = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: root });
-  book.upstreams[0]!.files(base);
+  const first = book.upstreams[0]!;
+  refuseFoldedUpstream(first.mounted(first.files(base)).keys());
   await allOrNothing(book, async (undo) => {
-    book.writeLock(name, base, book.upstreams[0]!.treeOf(base));
+    book.writeLock(name, base, first.treeOf(base));
     if (!hasRemote) git(["remote", "add", "--end-of-options", "upstream", args.upstream], { cwd: root });
     const installed = installSkill(book, undo);
     writeConfig(root, text);

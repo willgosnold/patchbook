@@ -1965,6 +1965,100 @@ test("test_clone_of_a_patchbook_repo_starts_a_patchbook_of_its_own", () => {
   }
 }, TIMEOUT);
 
+const foldedUpstream = [
+  ["dot_PATCHBOOK", ".PATCHBOOK/config.toml"],
+  ["dot_patchbook_dot", ".patchbook./z.txt"],
+  ["dot_patchbook_space", ".patchbook /w.txt"],
+] as const;
+const cantFork = "patchbook can't fork an upstream with a folder that is .patchbook on macOS and Windows";
+
+for (const [what, path] of foldedUpstream) {
+  test(`test_clone_refuses_an_upstream_with_a_${what}_folder_and_writes_nothing`, () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\n");
+      up.write(path, "upstream = true\n");
+      up.commit("start");
+      const refused = t.pb(["clone", up.path, "fork"], { cwd: t.tmp, code: 1 });
+      expect(refused.stderr).toContain(path);
+      expect(refused.stderr).toContain(cantFork);
+      expect(existsSync(join(t.tmp, "fork"))).toBe(false);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+
+  test(`test_init_refuses_an_upstream_with_a_${what}_folder_and_writes_nothing`, () => {
+    const t = new Case();
+    try {
+      const leaf = path.replace("config.toml", "notes.md");
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\n");
+      up.write(leaf, "upstream = true\n");
+      up.commit("start");
+      const mine = forkOf(t, up);
+      const before = tree(mine.path);
+      const refused = t.pb(["init", "--upstream", up.path], { cwd: mine.path, code: 1 });
+      expect(refused.stderr).toContain(leaf);
+      expect(refused.stderr).toContain(cantFork);
+      expect(tree(mine.path)).toEqual(before);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+
+  forkTest(`test_sync_and_check_refuse_an_upstream_that_gains_a_${what}_folder_and_write_nothing`, (t) => {
+    t.up.write(path, "upstream = true\n");
+    t.up.commit("upstream gains a folded folder");
+    const before = tree(t.fork.path);
+    for (const args of [["sync"], ["check"]]) {
+      const refused = t.pb(args, { cwd: t.fork.path, code: 1 });
+      expect(refused.stderr).toContain(path);
+      expect(refused.stderr).toContain(cantFork);
+      expect(tree(t.fork.path)).toEqual(before);
+    }
+  });
+}
+
+describe("a fork that already holds a folder read as .patchbook", () => {
+  const folded = ".PATCHBOOK/config.toml";
+
+  const refusedEverywhere = (t: ForkCase, hand: () => void) => {
+    hand();
+    const files = tree(t.fork.path);
+    const recorded = t.pb(["record", "--intent", "Edit."], { cwd: t.fork.path, code: 1 });
+    expect(recorded.stderr).toContain(folded);
+    expect(tree(t.fork.path)).toEqual(files);
+    expect(existsSync(join(t.fork.path, ".patchbook/changes"))).toBe(false);
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    const state = ["rev-parse HEAD", "diff --cached"].map((a) => sh(["git", ...a.split(" ")], { cwd: t.fork.path }).stdout).join("\n--\n");
+    const committed = sh(["git", "commit", "-qm", "edit"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Edit." }, check: false });
+    expect(committed.code).toBe(1);
+    expect(committed.stderr).toContain(folded);
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(state.split("\n--\n")[0]!);
+    expect(existsSync(join(t.fork.path, ".patchbook/changes"))).toBe(false);
+  };
+
+  forkTestOnCaseSensitiveFs("test_record_and_the_hook_refuse_a_hand_edit_to_a_folded_file_the_pin_carries", (t) => {
+    t.up.write(folded, "upstream = true\n");
+    const commit = t.up.commit("a fork made before folded folders were refused");
+    const lock = join(t.fork.path, ".patchbook/upstream.lock");
+    const pin = JSON.parse(read(lock));
+    pin.upstream = { commit, tree: sh(["git", "rev-parse", `${commit}^{tree}`], { cwd: t.up.path }).stdout.trim() };
+    writeFileSync(lock, JSON.stringify(pin));
+    t.fork.write(folded, "upstream = true\n");
+    t.fork.commit("carry it");
+    refusedEverywhere(t, () => t.fork.write(folded, "edited\n"));
+  });
+
+  forkTestOnCaseSensitiveFs("test_record_and_the_hook_refuse_a_hand_edit_to_a_tracked_folded_file", (t) => {
+    t.fork.write(folded, "kept by hand\n");
+    t.fork.commit("carry it");
+    refusedEverywhere(t, () => t.fork.write(folded, "edited\n"));
+  });
+});
+
 test("test_build_leaves_a_vendored_copy_alone_when_upstream_ships_the_folder", () => {
   const t = new Case();
   try {
@@ -4861,6 +4955,11 @@ describe("ForkTest", () => {
     ["move_into_the_patchbook", "move docs/guide.md -> .patchbook/guide.md", ".patchbook/guide.md", ".patchbook"],
     ["copy_into_dot_PATCHBOOK_config", "copy app.txt -> .PATCHBOOK/config.toml", ".PATCHBOOK/config.toml", ".patchbook"],
     ["add_into_dot_PatchBook", "add .PatchBook/new.md", ".PatchBook/new.md", ".patchbook"],
+    ["copy_into_dot_patchbook_dot_config", "copy app.txt -> .patchbook./config.toml", ".patchbook./config.toml", ".patchbook"],
+    ["copy_into_dot_patchbook_with_a_kelvin_sign", "copy app.txt -> .patchboo\u212A/config.toml", ".patchboo\u212A/config.toml", ".patchbook"],
+    ["copy_into_dot_patchbook_space_config", "copy app.txt -> .patchbook /config.toml", ".patchbook /config.toml", ".patchbook"],
+    ["add_into_dot_PatchBook_dot_space", "add .PatchBook. ./new.md", ".PatchBook. ./new.md", ".patchbook"],
+    ["move_into_dot_patchbook_dots", "move docs/guide.md -> .patchbook../guide.md", ".patchbook../guide.md", ".patchbook"],
     ["copy_into_git", "copy app.txt -> .git/x", ".git/x", ".git"],
     ["add_into_git", "add .git/new.md", ".git/new.md", ".git"],
     ["move_into_git", "move docs/guide.md -> .git/guide.md", ".git/guide.md", ".git"],
@@ -4907,6 +5006,8 @@ describe("ForkTest", () => {
     ["copy_into_the_patchbook", "copy app.txt -> .patchbook/config.toml", ".patchbook/config.toml", ".patchbook"],
     ["add_into_the_patchbook", "add .patchbook/new.md", ".patchbook/new.md", ".patchbook"],
     ["move_into_dot_PATCHBOOK", "move docs/guide.md -> .PATCHBOOK/guide.md", ".PATCHBOOK/guide.md", ".patchbook"],
+    ["copy_into_dot_patchbook_dot", "copy app.txt -> .patchbook./config.toml", ".patchbook./config.toml", ".patchbook"],
+    ["add_into_dot_patchbook_space", "add .patchbook /new.md", ".patchbook /new.md", ".patchbook"],
     ["copy_into_git", "copy app.txt -> .git/x", ".git/x", ".git"],
     ["copy_into_dot_GIT", "copy app.txt -> .GIT/x", ".GIT/x", ".git"],
   ] as const;
@@ -4939,20 +5040,26 @@ describe("ForkTest", () => {
     }
   }
 
-  forkTestOnCaseSensitiveFs("test_hook_refuses_a_staged_file_under_dot_PATCHBOOK_before_recording_it", (t) => {
-    const [path, place] = [".PATCHBOOK/x.md", ".patchbook"];
-    t.fork.write(path, "ours\n");
-    sh(["git", "add", "--", path], { cwd: t.fork.path });
-    const files = tree(t.fork.path);
-    const state = gitState(t);
-    const refused = intoKeptCommit(t, "--allow-empty");
-    expect(refused.code).toBe(1);
-    expect(refused.stderr).toContain(`patchbook: refusing this commit: ${path} is new, but a change can't write into ${place}.`);
-    expect(refused.stderr).toContain(`Move ${path} out of there, or skip the hook once with PATCHBOOK_HOOK=0.`);
-    expect(tree(t.fork.path)).toEqual(files);
-    expect(gitState(t)).toBe(state);
-    expect(existsSync(join(t.fork.path, ".patchbook/changes"))).toBe(false);
-  });
+  for (const [what, path, test] of [
+    ["dot_PATCHBOOK", ".PATCHBOOK/x.md", forkTestOnCaseSensitiveFs],
+    ["dot_patchbook_dot", ".patchbook./x.md", forkTest],
+    ["dot_patchbook_space", ".patchbook /x.md", forkTest],
+  ] as const) {
+    test(`test_hook_refuses_a_staged_file_under_${what}_before_recording_it`, (t) => {
+      const place = ".patchbook";
+      t.fork.write(path, "ours\n");
+      sh(["git", "add", "--", path], { cwd: t.fork.path });
+      const files = tree(t.fork.path);
+      const state = gitState(t);
+      const refused = intoKeptCommit(t, "--allow-empty");
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain(`patchbook: refusing this commit: ${path} is new, but a change can't write into ${place}.`);
+      expect(refused.stderr).toContain(`Move ${path} out of there, or skip the hook once with PATCHBOOK_HOOK=0.`);
+      expect(tree(t.fork.path)).toEqual(files);
+      expect(gitState(t)).toBe(state);
+      expect(existsSync(join(t.fork.path, ".patchbook/changes"))).toBe(false);
+    });
+  }
 
   forkTestOnCaseSensitiveFs("test_hook_leaves_an_untracked_file_under_dot_GIT_out_of_the_commit", (t) => {
     t.fork.write("a/.GIT/y", "ours\n");
@@ -4973,6 +5080,8 @@ describe("ForkTest", () => {
     ["copy_dest_dot_slash_patchbook_config", "copy app.txt -> ./.patchbook/config.toml"],
     ["copy_dest_double_slash_patchbook_config", "copy app.txt -> .//.patchbook/config.toml"],
     ["file_climbing_out", "file ../app.txt"],
+    ["add_backslash_climbing_out", "add ..\\outside.txt"],
+    ["copy_dest_backslash_patchbook_config", "copy app.txt -> .patchbook\\config.toml"],
   ] as const;
   for (const [name, edit] of hookRefusesUnsafe) {
     for (const pending of [false, true]) {
@@ -5001,6 +5110,65 @@ describe("ForkTest", () => {
       });
     }
   }
+
+  for (const pending of [false, true]) {
+    forkTest(`test_hook_refuses_a_new_file_with_a_backslash_in_its_name${pending ? "_with_a_hand_edit_pending" : ""}_and_leaves_everything_as_it_was`, (t) => {
+      if (pending) t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+      t.fork.write("odd\\name.txt", "ours\n");
+      sh(["git", "add", "-A"], { cwd: t.fork.path });
+      const files = tree(t.fork.path);
+      const state = gitState(t);
+      const refused = intoKeptCommit(t);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("refusing to record: odd\\name.txt has a backslash in its name");
+      expect(tree(t.fork.path)).toEqual(files);
+      expect(gitState(t)).toBe(state);
+      expect(existsSync(join(t.fork.path, ".patchbook/changes"))).toBe(false);
+      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    });
+  }
+
+  forkTest("test_hook_commits_an_ordinary_edit_beside_an_intent_to_add_file_under_dot_PATCHBOOK", (t) => {
+    t.fork.write(".PATCHBOOK/x.md", "ours\n");
+    sh(["git", "add", "-N", "--", ".PATCHBOOK/x.md"], { cwd: t.fork.path });
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    const committed = intoKeptCommit(t);
+    expect(committed.code).toBe(0);
+    expect(committed.stderr).not.toContain("refusing this commit");
+    expect(sh(["git", "show", "--stat", "--format=", "HEAD"], { cwd: t.fork.path }).stdout).not.toContain(".PATCHBOOK");
+  });
+
+  test("test_record_refuses_a_hand_edit_under_an_output_from_folder_with_a_backslash_in_its_name", () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("odd\\dir/x.txt", "one\n");
+      up.commit("start");
+      const repo = new Repo(join(t.tmp, "adapted"));
+      repo.write("README.md", "mine\n");
+      repo.commit("start");
+      t.pb(["init", "--upstream", up.path, "--output-from", "odd\\dir", "--output-to", "out"], { cwd: repo.path });
+      t.pb(["build"], { cwd: repo.path });
+      repo.write("out/x.txt", "edited\n");
+      const files = tree(repo.path);
+      const refused = t.pb(["record", "--intent", "Edit."], { cwd: repo.path, code: 1 });
+      expect(refused.stderr).toContain("refusing to record: odd\\dir/x.txt has a backslash in its name");
+      expect(tree(repo.path)).toEqual(files);
+      expect(existsSync(join(repo.path, ".patchbook/changes"))).toBe(false);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+
+  forkTest("test_record_refuses_a_hand_edit_to_a_file_with_a_backslash_in_its_name", (t) => {
+    t.fork.write("odd\\name.txt", "ours\n");
+    const files = tree(t.fork.path);
+    const refused = t.pb(["record", "--intent", "Odd."], { cwd: t.fork.path, code: 1 });
+    expect(refused.stderr).toContain("refusing to record: odd\\name.txt has a backslash in its name");
+    expect(tree(t.fork.path)).toEqual(files);
+    expect(existsSync(join(t.fork.path, ".patchbook/changes"))).toBe(false);
+  });
 
   forkTest("test_hook_still_warns_and_commits_for_another_problem", (t) => {
     const change = join(t.fork.path, ".patchbook/changes/gone");
@@ -5037,6 +5205,15 @@ describe("ForkTest", () => {
     ["delete_double_slash", "delete docs//guide.md"],
     ["delete_dot", "delete ."],
     ["move_source_dot_slash", "move ./docs/guide.md -> guide.md"],
+    ["add_backslash_climbing_out", "add ..\\outside.txt"],
+    ["add_backslash_in_a_name", "add docs\\new.md"],
+    ["replace_backslash", "replace docs\\guide.md"],
+    ["delete_backslash", "delete docs\\guide.md"],
+    ["file_backslash", "file docs\\guide.md"],
+    ["copy_source_backslash", "copy docs\\guide.md -> copied.md"],
+    ["copy_dest_backslash", "copy app.txt -> docs\\copied.md"],
+    ["copy_dest_backslash_patchbook_config", "copy app.txt -> .patchbook\\config.toml"],
+    ["move_dest_leading_backslash", "move docs/guide.md -> \\guide.md"],
   ] as const;
   for (const [name, edit] of escaping) {
     forkTest(`test_${name}_is_invalid_and_nothing_is_read_or_written_outside`, (t) => {
@@ -11397,6 +11574,39 @@ exec '${Bun.which("git")}' "$@"
     });
   }
 
+  const readsAsDotPatchbook = [
+    ["dot_PATCHBOOK", ".PATCHBOOK"],
+    ["dot_Patchbook_x", ".Patchbook/x"],
+    ["dot_patchbook_dot", ".patchbook."],
+    ["dot_patchbook_space", ".patchbook /x"],
+    ["dot_PATCHBOOK_dots_and_spaces", "./.PATCHBOOK. . /y"],
+    ["dot_patchbook_backslash", ".patchbook\\x"],
+    ["dot_patchbook_colon", ".patchbook:x"],
+  ] as const;
+
+  for (const [what, to] of readsAsDotPatchbook) {
+    vendorTest(`test_output_folder_${what}_is_a_name_windows_or_a_mac_reads_as_dot_patchbook_and_is_rejected`, (t) => {
+      t.missingScaffoldPatchBuild();
+      setOutputFolder(t, to);
+      const before = tree(t.repo.path);
+      for (const args of [["build", "--force"], ["status"]]) {
+        const out = t.pb(args, { cwd: t.repo.path, code: 1 });
+        expect(out.stderr).toContain(`[output] to ${JSON.stringify(to).replaceAll('"', "'")} is inside .patchbook`);
+        expect(tree(t.repo.path)).toEqual(before);
+      }
+    });
+  }
+
+  vendorTest("test_output_folder_named_like_dot_patchbook_but_not_read_as_it_builds_and_stages", (t) => {
+    t.missingScaffoldPatchBuild();
+    for (const to of [".patchbookx", "x.patchbook", ".patchbook.x", "out/.PATCHBOOK", "out/.patchbook."]) {
+      setOutputFolder(t, to);
+      t.pb(["build", "--force"], { cwd: t.repo.path });
+      expect(t.repo.read(`${to}/hello/SKILL.md`)).toContain("Say hello in T3.");
+    }
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+  });
+
   const gitReadsAsDotGit = [
     ["dot_git_dot", ".git."],
     ["dot_git_space", ".git "],
@@ -11461,6 +11671,38 @@ exec '${Bun.which("git")}' "$@"
           expect(read(config)).toBe(before.config);
           expect(tree(cwd)).toEqual(before.tree);
         }
+      }
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+
+  test("test_init_and_track_reject_names_windows_or_a_mac_reads_as_dot_patchbook", () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("a.md", "a\n");
+      up.commit("start");
+      const more = new Repo(join(t.tmp, "more"));
+      more.write("d/m.md", "m\n");
+      more.commit("start");
+      const folder = new Repo(join(t.tmp, "adapted"));
+      folder.write("README.md", "mine\n");
+      folder.commit("start");
+      for (const to of [".PATCHBOOK", ".patchbook.", ".patchbook /x", "./.Patchbook. /y"]) {
+        const out = t.pb(["init", "--upstream", up.path, "--output-to", to], { cwd: folder.path, code: 1 });
+        expect(out.stderr).toContain("inside .patchbook");
+        expect(existsSync(join(folder.path, ".patchbook"))).toBe(false);
+      }
+      t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+      const fork = join(t.tmp, "fork");
+      const config = join(fork, ".patchbook/config.toml");
+      const before = { config: read(config), tree: tree(fork) };
+      for (const mount of [".PATCHBOOK", ".patchbook.", ".patchbook /x", "./.Patchbook. /y"]) {
+        const tracked = t.pb(["track", "m", more.path, "--mount", mount], { cwd: fork, code: 1 });
+        expect(tracked.stderr).toContain("inside .patchbook");
+        expect(read(config)).toBe(before.config);
+        expect(tree(fork)).toEqual(before.tree);
       }
     } finally {
       t.cleanup();

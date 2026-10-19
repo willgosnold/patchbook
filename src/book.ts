@@ -49,8 +49,20 @@ const shown = (folder: string) => folder || "the repo root";
 const HFS_IGNORED = /[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g;
 /** git's `is_hfs_dotgit`, which stops reading at U+FFFE or U+FFFF. */
 const hfsDotGit = (segment: string) => /^\.git(?:$|[\ufffe\uffff])/i.test(segment.replace(HFS_IGNORED, ""));
+/** What Windows ignores after a name: trailing dots and spaces, then an alternate stream. */
+const NTFS_TAIL = "[. ]*(?::|$)";
 /** git's `is_ntfs_dotgit`, applied after each backslash as fsck does. */
-const ntfsDotGit = (segment: string) => segment.split("\\").some((part) => /^(?:\.git|git~1)[. ]*(?::|$)/i.test(part));
+const NTFS_DOT_GIT = new RegExp(`^(?:\\.git|git~1)${NTFS_TAIL}`, "i");
+const ntfsDotGit = (segment: string) => segment.split("\\").some((part) => NTFS_DOT_GIT.test(part));
+const NTFS_DOT_PATCHBOOK = new RegExp(`^\\.patchbook${NTFS_TAIL}`, "iu");
+/** Whether `path` is `.patchbook` or under it, in a spelling Windows or a Mac reads as the same folder. */
+const inPatchbook = (path: string) => NTFS_DOT_PATCHBOOK.test(path.split("/")[0]!.split("\\")[0]!);
+export function refuseFoldedUpstream(paths: Iterable<string>): void {
+  const folded = Array.from(paths).find((p) => inPatchbook(p) && !under(p, PB));
+  if (folded !== undefined) {
+    throw new Fail(`upstream has ${folded}, which is ${PB} on macOS and Windows. patchbook can't fork an upstream with a folder that is ${PB} on macOS and Windows.`);
+  }
+}
 /** Whether a part of path is a name git reads as `.git`. git's fsck warns `hasDotgit` on each one on every platform, and git refuses to stage most of them. */
 const namesGit = (path: string) => path.split("/").some((segment) => hfsDotGit(segment) || ntfsDotGit(segment));
 
@@ -177,7 +189,7 @@ function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly str
   const shown = strRepr(to);
   if (rel === ".") throw new Fail(`[output] to ${shown} is the repo root. Name a folder inside the repo.`);
   if (under(rel, "..")) throw new Fail(`[output] to ${shown} is outside the repo. Name a folder inside it.`);
-  if (under(rel, PB)) throw new Fail(`[output] to ${shown} is inside ${PB}. patchbook never builds into ${PB}, so those files would never land. Change [output] to.`);
+  if (inPatchbook(rel)) throw new Fail(`[output] to ${shown} is inside ${PB}. patchbook never builds into ${PB}, so those files would never land. Change [output] to.`);
   if (lexists(dir) && !exists(dir)) throw new Fail(`[output] to ${shown} is a link to nothing. Name a folder inside the repo.`);
   if (isSymlink(dir)) throw new Fail(`[output] to ${shown} is a link, and a build would replace it with a folder. Name the folder it points to.`);
   if (exists(dir) && !isDir(dir)) throw new Fail(`[output] to ${shown} is not a folder. Name a folder inside the repo.`);
@@ -443,7 +455,7 @@ export class Book {
     }
     for (const u of this.upstreams) {
       const out = this.outputFolder(u);
-      const own = out === null ? undefined : under(out, PB) ? PB : namesGit(out) ? GIT : undefined;
+      const own = out === null ? undefined : inPatchbook(out) ? PB : namesGit(out) ? GIT : undefined;
       if (own) {
         const where = this.layout.kind === "fork" ? `mounts at ${shown(u.mount)}` : `builds into ${shown(out ?? "")}`;
         throw new Fail(`${u.name} ${where}, inside ${own}. patchbook never builds into ${own}, so those files would never land. Change ${this.outputKnob(u)}.`);
@@ -531,7 +543,7 @@ export class Book {
     const vendored = this.heldBy(output);
     if (vendored !== null) return { place: `the vendored copy ${vendored}`, refuse: false };
     const inRepo = this.inRepo(output);
-    return under(inRepo.toLowerCase(), PB) ? { place: PB, refuse: true } : namesGit(inRepo) ? { place: GIT, refuse: true } : null;
+    return inPatchbook(inRepo) ? { place: PB, refuse: true } : namesGit(inRepo) ? { place: GIT, refuse: true } : null;
   }
 
   reservedHolding(staged: string): Reserved | null {
@@ -632,8 +644,9 @@ export class Book {
     return staged;
   }
 
-  /** Pass `noted = false` for a tree the build will not use, so the notice counts only what it leaves out and a path git reads as `.git` is not refused. */
+  /** Pass `noted = false` for a tree the build will not use, so the notice counts only what it leaves out and neither a path git reads as `.git` nor a folder that reads as `.patchbook` is refused. */
   buildable(u: Upstream, files: ReadonlyMap<string, File>, noted = true): Map<string, File> {
+    if (noted && this.layout.kind === "fork") refuseFoldedUpstream(files.keys());
     const kept = new Map<string, File>();
     for (const [p, f] of files) {
       const vendored = this.vendorHolding(p);

@@ -78,8 +78,8 @@ export class Change {
 const EDIT_LINE = new RegExp(`^- ([${W}]+) (.+?)(?: -> (.+))?$`, "su");
 
 function unsafePath(raw: string): string | null {
-  if (!raw.startsWith("/") && !strip(raw, "/").split("/").some((part) => part === "" || part === "." || part === "..")) return null;
-  return `${JSON.stringify(raw)} must be a path inside the tree: not absolute, with no empty, . or .. segment`;
+  if (!raw.startsWith("/") && !raw.includes("\\") && !strip(raw, "/").split("/").some((part) => part === "" || part === "." || part === "..")) return null;
+  return `${JSON.stringify(raw)} must be a path inside the tree: not absolute, with no empty, . or .. segment, and no backslash`;
 }
 
 function isEditKind(kind: string): kind is EditKind {

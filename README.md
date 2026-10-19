@@ -39,6 +39,8 @@ Patchbook runs git, and the `claude` or `codex` CLI to write intents, so you nee
 patchbook clone https://github.com/pingdotgg/t3code
 ```
 
+A fork can't follow an upstream that has a folder named `.PATCHBOOK`, `.patchbook.` or `.patchbook ` (case and trailing dots and spaces aside), because that is `.patchbook` on macOS and Windows. `clone`, `init` and `sync` refuse it and name the path.
+
 Or, to build something from a repo into a folder of your own repo, as wstack does with pstack:
 
 ```sh
@@ -71,7 +73,7 @@ patchbook sync && patchbook status && patchbook build
 
 - Edits to the build output are kept only once they're recorded. The hook does that on commit; `patchbook build --force` drops them instead.
 - Every change has an intent.
-- A change name is lowercase letters, digits and dashes, starting with a letter or digit. If a change has any other name, an edit path that isn't a clean path inside the tree (`../x`, `/x`, `./x`, `a//b`), or an edit that writes into `.patchbook` or `.git`, the hook refuses the commit and leaves everything as it was. Any other problem that `status` reports only skips the build, with a warning. The build's own safety checks still stop a commit.
+- A change name is lowercase letters, digits and dashes, starting with a letter or digit. If a change has any other name, an edit path that isn't a clean path inside the tree (`../x`, `/x`, `./x`, `a//b`, `a\b`), or an edit that writes into `.patchbook` or `.git`, the hook refuses the commit and leaves everything as it was. Any other problem that `status` reports only skips the build, with a warning. The build's own safety checks still stop a commit.
 - `patchbook status` lists what's broken, and `patchbook build` won't run until it's fixed.
 - In a fork, take upstream's updates with `patchbook sync`, never by merging or pulling the `upstream` remote (`git merge upstream/main`, `git pull upstream`, or a bare `git pull` on a branch `clone` made). A git merge brings in upstream's files without moving the pin, so the next commit records upstream's changes as your own edits. The hook and `patchbook build` stop when commits of `upstream/<branch>` (`upstream/main` by default) newer than the pin are already in your history. Undo the merge, or run `patchbook sync`, stage what it changes and commit again (or run `patchbook build` if you have nothing to commit; if that refuses over unrecorded edits to the output, `patchbook build --force` drops them). Squash merges and cherry-picks aren't detected.
 - After merging branches that each recorded changes, `.patchbook/series` and `.patchbook/build.lock` can conflict. Resolve `series` by keeping both lines, take either side of `build.lock`, then run `patchbook build` to regenerate the lock. Two changes that edit the same file can't be merged by rebuilding.
