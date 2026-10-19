@@ -5536,8 +5536,7 @@ describe("ForkTest", () => {
     expect(read(join(t.fork.path, ".patchbook/changes/unnamed/CHANGE.md"))).not.toContain("second line too");
   });
 
-  /** `shout` owns app.txt, with the first intent. A second edit to app.txt then goes to it. */
-  const ownedByShout = (t: ForkCase): void => {
+  const shoutOwnsAppWithEditPending = (t: ForkCase): void => {
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
     t.pb(["record", "shout", "--intent", "Shout the second line."], { cwd: t.fork.path });
     sh(["git", "add", "-A"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "0" } });
@@ -5548,7 +5547,7 @@ describe("ForkTest", () => {
   const NOT_USED = "intent   not used: the edits went to shout\n";
 
   forkTest("test_record_with_an_intent_and_no_name_says_the_intent_was_not_used_when_the_edits_go_to_an_owner", (t) => {
-    ownedByShout(t);
+    shoutOwnsAppWithEditPending(t);
     const out = t.pb(["record", "--intent", "Make it louder still."], { cwd: t.fork.path });
     expect(out.stdout).toBe(`file     app.txt (in shout)\n${NOT_USED}`);
     expect(changeText(t, "shout")).toBe(SHOUT_KEPT);
@@ -5559,7 +5558,7 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_record_with_an_intent_and_a_name_that_is_not_a_change_says_the_intent_was_not_used_when_the_edits_go_to_an_owner", (t) => {
-    ownedByShout(t);
+    shoutOwnsAppWithEditPending(t);
     const out = t.pb(["record", "new", "--intent", "Make it louder still."], { cwd: t.fork.path });
     expect(out.stdout).toBe(`file     app.txt (in shout)\n${NOT_USED}`);
     expect(changeText(t, "shout")).toBe(SHOUT_KEPT);
@@ -5568,7 +5567,7 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_commit_with_an_intent_says_the_intent_was_not_used_when_the_edits_go_to_an_owner", (t) => {
-    ownedByShout(t);
+    shoutOwnsAppWithEditPending(t);
     const commit = sh(["git", "commit", "-qam", "louder"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Make it louder still." } });
     expect(commit.stdout + commit.stderr).toContain(`file     app.txt (in shout)\n${NOT_USED}`);
     expect(changeText(t, "shout")).toBe(SHOUT_KEPT);
@@ -5577,7 +5576,7 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_record_with_an_intent_names_every_owner_the_edits_went_to", (t) => {
-    ownedByShout(t);
+    shoutOwnsAppWithEditPending(t);
     t.fork.write("docs/guide.md", "a louder guide\n");
     t.pb(["record", "guide", "--intent", "Reword the guide."], { cwd: t.fork.path });
     sh(["git", "add", "-A"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "0" } });
@@ -5589,7 +5588,7 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_record_with_an_intent_uses_it_for_a_new_file_beside_an_owned_edit", (t) => {
-    ownedByShout(t);
+    shoutOwnsAppWithEditPending(t);
     t.fork.write("extra.txt", "ours\n");
     const out = t.pb(["record", "--intent", "Make it louder still."], { cwd: t.fork.path });
     expect(out.stdout).toBe("make-it-louder-still: Make it louder still.\nfile     app.txt (in shout)\nadd      extra.txt\n");
@@ -5600,10 +5599,26 @@ describe("ForkTest", () => {
   forkTest("test_record_with_an_intent_and_the_name_of_an_existing_change_sets_its_intent_and_says_nothing_more", (t) => {
     t.fork.write("extra.txt", "ours\n");
     t.pb(["record", "ch", "--intent", "Add extra."], { cwd: t.fork.path });
-    ownedByShout(t);
+    shoutOwnsAppWithEditPending(t);
     const out = t.pb(["record", "ch", "--intent", "Make it louder still."], { cwd: t.fork.path });
     expect(out.stdout).toBe("file     app.txt (in shout)\n");
     expect(changeText(t, "ch")).toBe("# ch\n\nintent: Make it louder still.\n\nedits:\n- add extra.txt\n");
+    expect(changeText(t, "shout")).toBe(SHOUT_KEPT);
+  });
+
+  forkTest("test_record_with_an_intent_and_the_name_of_an_emptied_change_sets_its_intent", (t) => {
+    t.fork.write("extra.txt", "ours\n");
+    t.pb(["record", "ch", "--intent", "Add extra."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.rm("extra.txt");
+    t.pb(["record", "ch"], { cwd: t.fork.path });
+    expect(changeText(t, "ch")).toBe("# ch\n\nintent: Add extra.\n\nedits:\n");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "shout", "--intent", "Shout the second line."], { cwd: t.fork.path });
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "one", "ONE"));
+    const out = t.pb(["record", "ch", "--intent", "Make it louder still."], { cwd: t.fork.path });
+    expect(out.stdout).toBe("file     app.txt (in shout)\n");
+    expect(changeText(t, "ch")).toBe("# ch\n\nintent: Make it louder still.\n\nedits:\n");
     expect(changeText(t, "shout")).toBe(SHOUT_KEPT);
   });
 

@@ -252,7 +252,6 @@ function asked(edits: readonly Edited[]): Asked {
   return ask;
 }
 
-/** `unused` is set when a given intent reaches no change and no block entry, so `record` can say so. */
 type Naming = { name: string; intent: string; said: string | null; unused: boolean } | { name: null; intent: string | null; said: string | null; unused: boolean };
 
 function nameAndIntent(
@@ -268,8 +267,8 @@ function nameAndIntent(
   if (stray) throw new Fail(`${PB}/changes/${name} is not a change folder: move it out of ${PB}/changes`);
   const named = ask.named.length > 0;
   if (given) {
-    // Naming a change that exists sets its intent, even when no edit goes to it.
-    const unused = !named && !ask.drafts.length && !(name && changes.has(name));
+    const setsExisting = name !== null && changes.has(name);
+    const unused = !named && !ask.drafts.length && !setsExisting;
     if (name) return { name, intent: given, said: null, unused };
     if (!named) return { name: null, intent: given, said: null, unused };
     const derived = nameFromIntent(given, roster);
@@ -333,7 +332,7 @@ export function record(book: Book, change: string | null, intent: string | null,
       for (const c of done.touched) touched.set(c.name, c);
       for (const text of done.notes) notes.push({ text, waits: done.waitsForSave ? done.touched : [], after: done.afterSave ?? null });
     }
-    if (target?.edits.length) touched.set(target.name, target);
+    if (target && (target.edits.length || (given && changes.has(target.name)))) touched.set(target.name, target);
     for (const c of touched.values()) {
       saveChange(c);
       saved.add(c);
