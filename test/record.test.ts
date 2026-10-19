@@ -67,6 +67,7 @@ const world: Snapshot = {
   blocks: new Set(["skills/dropped.md", "skills/gone-para.md", "skills/para.md", "skills/para-new.md", "skills/unplanned.md"]),
   entriesAt: (rel) => `blocks/${rel}.entries`,
   prefix: "skills/",
+  tracksExecBit: true,
   uses: (copy) => copy !== null && new TextDecoder().decode(copy).includes("{{snippet:"),
   plan: (rel) => plans.get(rel) ?? "no plan",
 };

@@ -151,6 +151,7 @@ export type Snapshot = {
   blocks: ReadonlySet<string>;
   entriesAt(rel: string): string;
   prefix: string;
+  tracksExecBit: boolean;
   /** Whether a change's copy is text with a placeholder of a configured kind. The build expands only text. */
   uses(copy: Uint8Array | null): boolean;
   plan(rel: string, path: string, built: File, now: File): Plan | string;
@@ -210,7 +211,7 @@ function classifyOne(s: Snapshot, path: string): Edited {
   if (s.blocks.has(src.path)) {
     const plan = s.plan(src.path, path, built, now);
     if (typeof plan === "string") return { kind: "skip", path, reason: plan };
-    if (now.mode === built.mode || now.mode === LINK || built.mode === LINK) return { kind: "paragraph-edit", path, plan, modeNotRecorded: null };
+    if (sameMode(now.mode, built.mode, s.tracksExecBit) || now.mode === LINK || built.mode === LINK) return { kind: "paragraph-edit", path, plan, modeNotRecorded: null };
     const modeNotRecorded = `block entries hold no mode, so the mode change was not recorded; to set it, make your finish hook in ${PB}/hooks.ts run `
       + `out.get(${JSON.stringify(path)})!.mode = 0o${now.mode.toString(8)};`;
     return bytesEqual(built.data, now.data) ? { kind: "skip", path, reason: modeNotRecorded } : { kind: "paragraph-edit", path, plan, modeNotRecorded };
@@ -233,6 +234,7 @@ function snapshot(book: Book, a: Assembly, current: ReadonlyMap<string, File>, c
     blocks: new Set(blockFiles(book)),
     entriesAt: (rel) => entriesPath(book, rel),
     prefix: book.layout.kind === "folder" && book.layout.from ? book.layout.from + "/" : "",
+    tracksExecBit: book.tracksExecBit(),
     uses: (copy) => copy !== null && isText(copy) && rules.uses(decode(copy)),
     plan: (rel, path, built, now) => planParagraphs(book, rules, rel, path, decode(a.upstream.get(rel)!.data), built.data, now.data),
   };

@@ -12528,6 +12528,18 @@ describe("ModeTest", () => {
     expect(t.repo.read("skills/hello/SKILL.md")).toContain("Then wave twice.");
   });
 
+  vendorTest("test_record_without_file_modes_of_an_edit_and_a_chmod_to_a_file_with_block_entries_has_no_mode_note", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    sh(["git", "config", "core.fileMode", "false"], { cwd: t.repo.path });
+    const skill = join(t.repo.path, "skills/hello/SKILL.md");
+    t.repo.write("skills/hello/SKILL.md", replace(t.repo.read("skills/hello/SKILL.md"), "Then wave.", "Then wave twice."));
+    chmodSync(skill, 0o755);
+    const out = t.pb(["record", "--intent", "Wave twice."], { cwd: t.repo.path }).stdout;
+    expect(out).toMatch(/^entry {4}hello\/SKILL\.md \[[0-9a-f]{12}\] added\n$/);
+    expect(out).not.toContain("mode change was not recorded");
+    expect(read(entries)).toContain("Then wave twice.");
+  });
+
   forkTest("test_build_lock_holds_the_mode_of_each_built_file", (t) => {
     symlinkSync("app.txt", join(t.fork.path, "link"));
     t.pb(["record", "link", "--intent", "Link to the app."], { cwd: t.fork.path });
