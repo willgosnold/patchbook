@@ -6,7 +6,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import skill from "../skills/patchbook-update/SKILL.md" with { type: "text" };
 import { assemble, describe, handEdits } from "./assemble.ts";
 import { Book } from "./book.ts";
-import { readChanges } from "./changes.ts";
+import { appendSeries, readChanges, Roster } from "./changes.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, isDir, isSymlink, lexists, mkdirs, readBytes, writeText } from "./lib/fs.ts";
 import { spawn } from "./lib/proc.ts";
@@ -154,13 +154,12 @@ export const leftBehindSkill = (book: Book): string[] =>
 /** Record the skill files as the `patchbook-update-skill` change, and leave every other edit waiting. */
 export async function recordSkill(book: Book): Promise<number> {
   process.chdir(book.root);
-  return cmdRecord({
-    change: CHANGE,
-    intent: recorded(book)
-      ? null
-      : "Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.",
-    only: ownsSkill,
-  });
+  const intent = recorded(book)
+    ? null
+    : "Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.";
+  // An `init` that stopped early can leave this folder out of the series, and patchbook owns the name, so it adopts the folder.
+  if (Roster.read(book).stray(CHANGE) === "folder") appendSeries(book, CHANGE);
+  return cmdRecord({ change: CHANGE, intent, only: ownsSkill });
 }
 
 /** The skill paths an install would write, for the agents the settings name. */

@@ -5376,6 +5376,16 @@ describe("ForkTest", () => {
     expect(t.pb(["record", "--intent", "New intent."], { cwd: t.fork.path }).stdout).toContain("new-intent: New intent.");
   });
 
+  forkTest("test_record_refuses_the_skill_change_name_by_hand_when_its_folder_is_not_in_the_series", (t) => {
+    const path = unlisted(t, "patchbook-update-skill");
+    const before = readFileSync(path);
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    const out = t.pb(["record", "patchbook-update-skill", "--intent", "New intent."], { cwd: t.fork.path, code: 1 });
+    expect(out.stderr).toContain("change patchbook-update-skill is not in the series");
+    expect(readFileSync(path).equals(before)).toBe(true);
+    expect(existsSync(join(t.fork.path, ".patchbook/series")) ? read(join(t.fork.path, ".patchbook/series")) : "").not.toContain("patchbook-update-skill");
+  });
+
   forkTest("test_record_refuses_a_name_whose_folder_has_no_change_file", (t) => {
     mkdirSync(join(t.fork.path, ".patchbook/changes/ghost"), { recursive: true });
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
