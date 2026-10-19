@@ -32,12 +32,6 @@ export function concat(...parts: Uint8Array[]): Uint8Array {
   return joined;
 }
 
-/** The lines of text as git counts them. Each ends after a `\n` and keeps it, and the last may have none.
- * Nothing else ends a line, so a `\r`, `\f` or U+2028 stays inside one. */
-export function lines(text: string): string[] {
-  return text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
-}
-
 /** text without the one `\n` that ends it, if it has one. A path may start or end with whitespace, so nothing else comes off. */
 export const withoutFinalNewline = (text: string): string => (text.endsWith("\n") ? text.slice(0, -1) : text);
 

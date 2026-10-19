@@ -6,9 +6,9 @@ import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
 import { Book, GIT, PB, refuseNestedGit, refuseUpstreamGit, segmentNamesGit, under, unsafeVendor } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
-import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, isSymlink, lexists, LINK, mkdirs, type Mode, nonFolders, pjoin, readDisk, readText, readTextReplace, resolve, sameFile, setsMode, writeDisk, writeText } from "./lib/fs.ts";
+import { similarity } from "./lib/match.ts";
 import { spawn } from "./lib/proc.ts";
 import { boolean, count, jsonText, list, named, nullable, object, oid, readJson, type Shape, string, table, versioned } from "./lib/shape.ts";
 import { say, verbatim, warn } from "./lib/term.ts";
@@ -194,8 +194,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
       const ours = c.read("ours", e.path);
       const theirs = fresh.get(e.path)?.data;
       if (theirs === undefined) {
-        const ratio = (p: string) => new SequenceMatcher<string>(p, e.path).ratio();
-        const maybe = added.map((p) => [-ratio(p), p] as const).sort((x, y) => x[0] - y[0]).slice(0, 3).map(([, p]) => p);
+        const maybe = added.map((p) => [similarity(p, e.path), p] as const).sort((x, y) => y[0] - x[0]).slice(0, 3).map(([, p]) => p);
         report.gone.push({ change: c.name, path: e.path, maybe });
         continue;
       }
