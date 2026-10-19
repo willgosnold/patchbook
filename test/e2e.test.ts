@@ -13020,6 +13020,19 @@ describe("ExecBitTest", () => {
     expect(existsSync(join(t.fork.path, ".patchbook/changes"))).toBe(false);
   });
 
+  forkTest("test_commit_with_file_modes_false_puts_back_an_upstream_program_committed_at_644_and_leaves_its_unstaged_work", (t) => {
+    upstreamProgram(t);
+    sh(["git", "commit", "-q", "-m", "take upstream"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "0" } });
+    expect(headMode(t, "new.sh")).toBe("100644");
+    appendFileSync(join(t.fork.path, "new.sh"), "echo wip\n");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    git(t, "add", "app.txt");
+    commit(t, "shout", "Shout the second line.");
+    expect(headMode(t, "new.sh")).toBe("100755");
+    expect(git(t, "show", "HEAD:new.sh")).toBe("echo up\n");
+    expect(porcelain(t)).toBe(" M new.sh\n");
+  });
+
   forkTest("test_commit_of_named_paths_with_file_modes_false_commits_a_program_from_upstream_at_755", (t) => {
     upstreamProgram(t);
     commit(t, "take upstream", "Take upstream.", ["--", "new.sh", ".patchbook"]);
@@ -13069,6 +13082,34 @@ describe("ExecBitTest", () => {
     expect(headCopy(t, "app.txt").mode).toBe("100755");
     expect(bitOf(join(freshBuild(t), "app.txt"))).toBe(0o755);
   });
+
+  forkTest("test_hook_install_that_cannot_record_keeps_a_hook_script_that_is_only_staged", (t) => {
+    installManager(t.fork, ".husky");
+    t.fork.write(".husky/pre-commit", "echo mine\n", 0o755);
+    git(t, "add", ".husky/pre-commit");
+    rmSync(join(t.fork.path, ".husky/pre-commit"));
+    mkdirSync(join(t.fork.path, ".patchbook/changes/patchbook-hook"), { recursive: true });
+    t.pb(["hook", "install"], { cwd: t.fork.path, code: 1 });
+    expect(git(t, "show", ":.husky/pre-commit")).toBe("echo mine\n");
+  });
+
+  for (const [file, own, bitName] of [["app.txt", 0o755, "a_program_bit"], ["bin/run.sh", 0o644, "a_plain_bit"]] as const) {
+    forkTest(`test_commit_after_a_manual_record_with_file_modes_false_puts_${bitName}_back_to_upstreams`, (t) => {
+      const up: Bit = own === 0o755 ? 0o644 : 0o755;
+      chmodSync(join(t.fork.path, file), own);
+      git(t, "add", file);
+      commit(t, "own the bit", "Own the bit.");
+      expect(headCopy(t, file).mode).toBe(gitMode(own));
+      setFileMode(t, "false");
+      git(t, "update-index", `--chmod=${up === 0o755 ? "+" : "-"}x`, file);
+      t.pb(["record", "--intent", "Take upstream's bit."], { cwd: t.fork.path });
+      git(t, "add", "-A");
+      commit(t, "take upstream's bit", "Take upstream's bit.");
+      expect(headMode(t, file)).toBe(gitMode(up));
+      expect(headCopy(t, file).mode).toBe(gitMode(up));
+      expect(bitOf(join(freshBuild(t), file))).toBe(up);
+    });
+  }
 });
 
 describe("PendingIntentTest", () => {
