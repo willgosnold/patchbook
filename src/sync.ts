@@ -388,6 +388,9 @@ function recover(book: Book, u: Upstream): void {
     const vendor = path ? pjoin(book.root, path) : null;
     const unsafe = vendor && unsafeVendor(book.root, vendor);
     if (unsafe) throw stuck(book, u, `its record names the vendor folder ${JSON.stringify(path)}, which ${unsafe}`);
+    if (vendor && vendor !== u.vendor) {
+      throw stuck(book, u, `its record names the vendor folder ${JSON.stringify(path)}, and config.toml ${u.vendor ? `sets ${JSON.stringify(relative(book.root, u.vendor))}` : "sets no vendor folder"} for ${u.name}`);
+    }
     const old = join(j, "old");
     const newCopy = lexists(old) || !copy;
     if (vendor && newCopy) refuseNestedGit(book.root, u.name, vendor, relative(book.root, j));
