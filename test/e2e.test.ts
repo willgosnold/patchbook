@@ -5089,6 +5089,16 @@ describe("ForkTest", () => {
     expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("gone");
   });
 
+  forkTest("test_a_gone_file_suggests_the_three_added_paths_with_the_most_similar_names_in_found_order_on_a_tie", (t) => {
+    t.recordFeature();
+    t.up.rm("app.txt");
+    for (const p of ["app.md", "app.txt.bak", "readme", "src/app.txt", "zzz.bin"]) t.up.write(p, "new\n");
+    t.up.commit("move");
+    t.pb(["sync"], { cwd: t.fork.path });
+    // Against app.txt, app.txt.bak and src/app.txt score 2 * 7 / 18 = 0.78, app.md 2 * 4 / 13 = 0.62, readme 2 / 13 and zzz.bin 2 / 14.
+    expect(reportOf(t.fork.path).gone).toEqual([{ change: "feature", path: "app.txt", maybe: ["app.txt.bak", "src/app.txt", "app.md"] }]);
+  });
+
   forkTest("test_a_lock_from_before_it_had_a_version_is_refused_by_every_command_that_reads_it", (t) => {
     const path = join(t.fork.path, ".patchbook/upstream.lock");
     const old = `{\n  "upstream": {\n    "commit": "${"a".repeat(40)}",\n    "tree": "${"b".repeat(40)}"\n  }\n}\n`;
