@@ -448,6 +448,14 @@ function unstaged(root: string, paths: string[]): string[] {
   return sorted(new Set([...listed(["diff-files", "--name-only", "-z"]), ...listed(["ls-files", "-z", "-o", "--exclude-standard"])].filter(Boolean)));
 }
 
+/** Git sees a staged link as unchanged when only its target changed, so the in-repo file each build input links to is checked too.
+ * A target outside the repo has no index entry and is read from disk. */
+function linkTargets(book: Book, inputs: string[]): string[] {
+  const root = resolve(book.root);
+  return inputs.filter((p) => isSymlink(join(book.root, p))).map((p) => relative(root, resolve(join(book.root, p))))
+    .filter((p) => p !== "." && p !== ".." && !p.startsWith("../") && p !== ".git" && !p.startsWith(".git/"));
+}
+
 function ignoredInPatchbook(root: string): Map<string, string> {
   const listed = decode(run(["git", "ls-files", "-z", "-o", "-i", "--exclude-standard", "--", PB], { cwd: root })).split("\0");
   return new Map(listed.filter(Boolean).map((p) => [p, blobOid(readDisk(join(root, p)).data)]));
@@ -676,7 +684,8 @@ async function runHook(undo: Undo) {
   refuseMergedUpstream(book, "hook");
   const lock = readBuildLock(book);
   const readEdits = placeholderOutputs(book).filter((p) => !leftByLastBuild(book, lock, p)).map((p) => inRepo(book, p));
-  const loose = unstaged(book.root, [...buildInputs(book), ...readEdits]);
+  const inputs = buildInputs(book);
+  const loose = unstaged(book.root, [...inputs, ...linkTargets(book, inputs), ...readEdits]);
   if (loose.length) throw new Fail("the patchbook has changes that aren't in this commit:\n  " + loose.join("\n  ") + "\nThe build reads them, so stage them (or name them in `git commit <path>`) or stash them, or skip the hook once with PATCHBOOK_HOOK=0.");
   const ignored = ignoredInPatchbook(book.root);
   const staged = book.stagedOutput();

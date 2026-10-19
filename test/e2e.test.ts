@@ -8075,6 +8075,36 @@ describe("VendorTest", () => {
     expect(gitIn(t, ["status", "--short"]).trim()).toBe("");
   });
 
+  folderTest("test_an_unstaged_sync_through_an_upstream_lock_that_is_a_link_to_a_file_in_the_repo_is_refused_like_a_plain_lock", (t) => {
+    trackExtra(t, "vendor/extra");
+    const [link, target] = [join(t.repo.path, ".patchbook/upstream.lock"), join(t.repo.path, "pins/upstream.lock")];
+    mkdirSync(dirname(target));
+    renameSync(link, target);
+    symlinkSync("../pins/upstream.lock", link);
+    gitIn(t, ["add", "-A"]);
+    gitIn(t, ["commit", "-qm", "setup"]);
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "two\n");
+    extra.commit("bump");
+    t.pb(["sync", "extra"], { cwd: t.repo.path });
+    t.repo.write("note.txt", "a note\n");
+    gitIn(t, ["add", "note.txt"]);
+    const head = gitIn(t, ["rev-parse", "HEAD"]);
+    const commit = hookedCommit(t, ["-qm", "an unrelated note"]);
+    expect(commit.code).toBe(1);
+    expect(commit.stderr).toContain("aren't in this commit:\n  pins/upstream.lock");
+    expect(commit.stderr).not.toContain("pinned copy");
+    expect(gitIn(t, ["rev-parse", "HEAD"])).toBe(head);
+    expect(gitIn(t, ["diff", "--cached", "--name-only"]).trim()).toBe("note.txt");
+
+    gitIn(t, ["add", "-A"]);
+    expect(hookedCommit(t, ["-qm", "sync and a note"]).code).toBe(0);
+    expect(gitIn(t, ["show", "HEAD:vendor/extra/a.md"])).toBe("two\n");
+    expect(gitIn(t, ["show", "HEAD:out/extra/a.md"])).toBe("two\n");
+    gitIn(t, ["clone", "-q", ".", "../clone"]);
+    expect(t.pb(["status"], { cwd: join(t.tmp, "clone") }).stdout).toContain("no problems");
+  });
+
   folderTest("test_a_commit_that_changes_nothing_in_the_copy_says_nothing_about_it", (t) => {
     trackExtra(t, "vendor/extra");
     gitIn(t, ["add", "-A"]);
