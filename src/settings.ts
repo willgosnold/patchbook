@@ -196,7 +196,12 @@ export async function cmdConfig(args: { name: string | null; value: string | nul
     }
   } else {
     const root = Book.root();
-    if (root !== null) installHookOrWarn(root);
+    try {
+      if (root !== null) installHookOrWarn(root);
+    } catch (e) {
+      if (!(e instanceof Fail)) throw e;
+      process.stderr.write(`patchbook: couldn't install the pre-commit hook: ${e.message}\n`);
+    }
   }
   const name = args.name || null;
   if (name !== null && !isName(name)) throw new Fail(`no setting ${name}. Settings: ${NAMES.join(", ")}`);

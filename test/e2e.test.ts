@@ -2522,6 +2522,16 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(existsSync(join(teammate.path, ".patchbook/changes/shout/CHANGE.md"))).toBe(true);
   });
 
+  forkTest("test_config_writes_the_user_config_in_a_book_outside_a_git_repo", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    const loose = join(t.tmp, "loose");
+    mkdirSync(join(loose, ".patchbook"), { recursive: true });
+    writeFileSync(join(loose, ".patchbook/config.toml"), read(join(t.fork.path, ".patchbook/config.toml")));
+    const out = t.pb(["config", "intent.model", "fake-x"], { cwd: loose });
+    expect(out.stderr).toContain("couldn't install the pre-commit hook");
+    expect((Bun.TOML.parse(read(user)) as { intent: { model: string } }).intent.model).toBe("fake-x");
+  });
+
   forkTest("test_a_user_config_that_is_not_toml_is_named_in_the_error", (t) => {
     const user = join(t.tmp, "config/patchbook/config.toml");
     mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
