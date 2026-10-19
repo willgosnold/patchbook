@@ -2,6 +2,8 @@
 
 Thanks for wanting to help with patchbook. One person maintains it, so this guide is mostly about saving your time and mine. Read it before you open an issue or a pull request.
 
+Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
+
 ## Ask before you build
 
 A pull request can go straight in for:
