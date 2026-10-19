@@ -5349,6 +5349,40 @@ describe("ForkTest", () => {
     expect(read(join(t.tmp, "prompt.txt"))).toContain(`+++ disk/lines.txt\n${hunk}`);
   });
 
+  forkTest("test_show_and_the_model_prompt_mark_a_last_line_with_no_newline_as_git_diff_does", (t) => {
+    const gitHunks = (before: string | null, after: string): string => {
+      writeFileSync(join(t.tmp, "after.txt"), after);
+      if (before !== null) writeFileSync(join(t.tmp, "before.txt"), before);
+      const from = before === null ? "/dev/null" : join(t.tmp, "before.txt");
+      const out = sh(["git", "diff", "--no-index", "--no-color", "-U3", from, join(t.tmp, "after.txt")], { cwd: t.fork.path, check: false }).stdout;
+      return out.slice(out.indexOf("@@"));
+    };
+    const tail = "one\ntwo\nthree\nfour\nlast line, no newline";
+    const middle = "one\ntwo\nthree\nfour\nfive\nlast";
+    writeFileSync(join(t.up.path, "tail.txt"), tail);
+    writeFileSync(join(t.up.path, "middle.txt"), middle);
+    t.up.commit("add files with no final newline");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    const edits = { tail: tail.replace("no newline", "edited, no newline"), middle: middle.replace("four", "FOUR"), added: "new\nfile" };
+    writeFileSync(join(t.fork.path, "tail.txt"), edits.tail);
+    writeFileSync(join(t.fork.path, "middle.txt"), edits.middle);
+    writeFileSync(join(t.fork.path, "added.txt"), edits.added);
+    t.pb(["record"], { cwd: t.fork.path });
+
+    const hunks = { tail: gitHunks(tail, edits.tail), middle: gitHunks(middle, edits.middle), added: gitHunks(null, edits.added) };
+    expect(hunks.tail).toBe("@@ -2,4 +2,4 @@ one\n two\n three\n four\n-last line, no newline\n\\ No newline at end of file\n+last line, edited, no newline\n\\ No newline at end of file\n");
+    expect(hunks.middle).toBe("@@ -1,6 +1,6 @@\n one\n two\n three\n-four\n+FOUR\n five\n last\n\\ No newline at end of file\n");
+    expect(hunks.added).toBe("@@ -0,0 +1,2 @@\n+new\n+file\n\\ No newline at end of file\n");
+    const shown = t.pb(["show", "shout"], { cwd: t.fork.path }).stdout;
+    expect(shown).toContain(`--- upstream/tail.txt\n+++ ours/tail.txt\n${hunks.tail}`);
+    expect(shown).toContain(`--- upstream/middle.txt\n+++ ours/middle.txt\n${hunks.middle}`);
+    const prompt = read(join(t.tmp, "prompt.txt"));
+    expect(prompt).toContain(`--- built/tail.txt\n+++ disk/tail.txt\n${hunks.tail}`);
+    expect(prompt).toContain(`--- built/middle.txt\n+++ disk/middle.txt\n${hunks.middle}`);
+    expect(prompt).toContain(`--- /dev/null\n+++ disk/added.txt\n${hunks.added}`);
+  });
+
   forkTest("test_record_keeps_a_given_intent_when_no_name_is_given", (t) => {
     const prompt = join(t.tmp, "prompt.txt");
     const intent = "Make the second line loud so it stands out.";
