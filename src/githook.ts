@@ -8,8 +8,8 @@ import { cmdRecord } from "./record.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, isDir, isSymlink, lexists, mkdirs, readBytes, readDisk, readTextReplace, relative, resolve, sameFile, writeBytes, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
-import { git, run, spawn } from "./lib/proc.ts";
-import { quote, strip } from "./lib/py.ts";
+import { git, run, shellQuote, spawn } from "./lib/proc.ts";
+import { strip } from "./lib/py.ts";
 import { byCodePoint, bytesEqual, concat, decode, decodeReplace, encode } from "./lib/text.ts";
 import { type Source, setting } from "./settings.ts";
 import { refuseMergedUpstream } from "./store.ts";
@@ -504,8 +504,8 @@ function refuseOverwrites(book: Book, clobbered: string[]): void {
   throw new Fail("the build changes these files, which have changes you haven't staged:\n  " + clobbered.join("\n  ")
     + "\nStaging them would record them over the build's change. "
     + (intentToAdd.length ? "git can't stash while the index holds `git add -N` entries, so first run "
-      + `\`git --literal-pathspecs rm -q --cached -- ${intentToAdd.map(quote).join(" ")}\`, which keeps the files on disk. Then stash` : "Stash")
-    + ` them with \`git --literal-pathspecs stash push -a -- ${clobbered.map((p) => quote(inRepo(book, p))).join(" ")}\`, commit, `
+      + `\`git --literal-pathspecs rm -q --cached -- ${intentToAdd.map(shellQuote).join(" ")}\`, which keeps the files on disk. Then stash` : "Stash")
+    + ` them with \`git --literal-pathspecs stash push -a -- ${clobbered.map((p) => shellQuote(inRepo(book, p))).join(" ")}\`, commit, `
     + "then `git stash pop` puts them back on the new build. Or skip the hook once with PATCHBOOK_HOOK=0.");
 }
 
@@ -640,12 +640,12 @@ async function runHook(undo: Undo) {
   if (kept.length) {
     throw new Fail("these files are out of the index but still on disk:\n  " + kept.join("\n  ")
       + "\n`git rm --cached` keeps a file on disk, where the next build takes it for a hand edit. Delete it with `git rm`, "
-      + `or keep it with \`git --literal-pathspecs reset -q -- ${kept.map((p) => quote(inRepo(book, p))).join(" ")}\`.`);
+      + `or keep it with \`git --literal-pathspecs reset -q -- ${kept.map((p) => shellQuote(inRepo(book, p))).join(" ")}\`.`);
   }
   const olderBuild = edited.filter((p) => staged.has(p) && leftByLastBuild(book, lock, p));
   const buildReads = [...buildInputs(book), ...placeholderOutputs(book).map((p) => inRepo(book, p))];
   if (olderBuild.length && git(["--literal-pathspecs", "diff", "--cached", "--name-only", "--", ...buildReads], { cwd: book.root })) {
-    const paths = olderBuild.map((p) => quote(inRepo(book, p))).join(" ");
+    const paths = olderBuild.map((p) => shellQuote(inRepo(book, p))).join(" ");
     throw new Fail("these staged files match no build, but their working copies match the last build:\n  " + olderBuild.join("\n  ")
       + "\nThe index may hold an older build, or edits you undid in the working copy. "
       + `To commit the last build, run \`git --literal-pathspecs add -- ${paths}\`. `
@@ -705,7 +705,7 @@ async function runHook(undo: Undo) {
     if (partial?.lock) for (const add of adds) git(add, { cwd: book.root, env: { ...process.env, GIT_INDEX_FILE: partial.lock } });
     else if (partial) {
       process.stderr.write("patchbook: your index won't have what the hook staged. After the commit, run "
-        + `\`git --literal-pathspecs reset -q -- ${[...wrote, ...recordedIgnored].map(quote).join(" ")}\`\n`);
+        + `\`git --literal-pathspecs reset -q -- ${[...wrote, ...recordedIgnored].map(shellQuote).join(" ")}\`\n`);
     }
   }
   return 0;

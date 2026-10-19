@@ -45,5 +45,13 @@ export function git(args: readonly string[], options: SpawnOptions & { check?: b
   return strip(decode(run(["git", ...args], { ...options, env })));
 }
 
+/** text as one word for POSIX sh, in a command patchbook prints for the user to run. A word of only letters,
+ * digits and `@%+:,./_-` stays bare, and anything else goes in single quotes. That includes `=`, which zsh
+ * expands at the start of a word. */
+export function shellQuote(text: string): string {
+  if (/^[\w@%+:,./-]+$/.test(text)) return text;
+  return `'${text.replaceAll("'", `'"'"'`)}'`;
+}
+
 /** `shutil.which`. */
 export const which = (name: string): string | null => Bun.which(name);

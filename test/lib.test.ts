@@ -8,8 +8,9 @@ import { TomlDocument } from "@decimalturn/toml-patch";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "../src/lib/difflib.ts";
 import { nonFolders, rmFolders } from "../src/lib/fs.ts";
 import { dumps, loads } from "../src/lib/json.ts";
+import { shellQuote } from "../src/lib/proc.ts";
 import {
-  floatRepr, lstrip, quote, replace, round2, rstrip, split, str, strip, strRepr,
+  floatRepr, lstrip, replace, round2, rstrip, split, str, strip, strRepr,
 } from "../src/lib/py.ts";
 import { byCodePoint, lines } from "../src/lib/text.ts";
 
@@ -22,7 +23,6 @@ type Fixture = {
   json: { text: string; dumps: string; indent: string; str: string }[];
   repr: { s: string; repr: string }[];
   replace: { s: string; old: string; new: string; out: string }[];
-  quote: { s: string; out: string }[];
 };
 
 const cases: Fixture = JSON.parse(readFileSync(new URL("fixtures/cpython.json", import.meta.url), "utf8"));
@@ -108,6 +108,26 @@ describe("listing a folder", () => {
   });
 });
 
+describe("shellQuote", () => {
+  test("sh reads each quoted word back as it was", () => {
+    const words = ["", "plain", "two words", "it's", 'say "hi"', "$HOME", "`id`", "$(id)", "a\nb", "back\\slash", "*", "~", "=x", "-n", "é", "tab\there", "!", ";|&"];
+    const r = Bun.spawnSync(["sh", "-c", `printf '%s\\0' ${words.map(shellQuote).join(" ")}`]);
+    expect(r.stdout.toString().split("\0").slice(0, -1)).toEqual(words);
+  });
+
+  test("leaves a word of only letters, digits and @%+:,./_- bare", () => {
+    expect(shellQuote("a/b.c-d_e@f%g+h:i,j")).toBe("a/b.c-d_e@f%g+h:i,j");
+  });
+
+  test("quotes =, which zsh expands at the start of a word", () => {
+    expect(shellQuote("=x")).toBe("'=x'");
+  });
+
+  test("quotes an empty word, so sh still passes an argument", () => {
+    expect(shellQuote("")).toBe("''");
+  });
+});
+
 describe("SequenceMatcher", () => {
   test.each(cases.matcher.map((c, i) => [i, c] as const))("case %d", (_, c) => {
     const m = new SequenceMatcher<string>(c.a, c.b, c.autojunk);
@@ -157,10 +177,6 @@ test("repr(str)", () => {
 
 test("str.replace", () => {
   for (const c of cases.replace) expect(replace(c.s, c.old, c.new)).toBe(c.out);
-});
-
-test("shlex.quote", () => {
-  for (const c of cases.quote) expect(quote(c.s)).toBe(c.out);
 });
 
 describe("the TOML library's syntax tree", () => {

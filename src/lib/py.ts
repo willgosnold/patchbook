@@ -136,10 +136,3 @@ export function str(v: PyValue): string {
   if (Array.isArray(v)) return `[${v.map(repr).join(", ")}]`;
   return `{${Array.from(v, ([k, x]) => `${strRepr(k)}: ${repr(x)}`).join(", ")}}`;
 }
-
-/** `shlex.quote`. */
-export function quote(s: string): string {
-  if (s === "") return "''";
-  if (/^[\w@%+=:,./-]+$/.test(s)) return s;
-  return "'" + s.replaceAll("'", `'"'"'`) + "'";
-}

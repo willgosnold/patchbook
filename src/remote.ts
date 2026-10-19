@@ -2,8 +2,8 @@
 import { isAbsolute } from "node:path";
 import { Fail } from "./lib/fail.ts";
 import { resolve } from "./lib/fs.ts";
-import { redact, run, spawn } from "./lib/proc.ts";
-import { quote, split } from "./lib/py.ts";
+import { redact, run, shellQuote, spawn } from "./lib/proc.ts";
+import { split } from "./lib/py.ts";
 import { decode, decodeReplace } from "./lib/text.ts";
 
 const NETWORK = /^([a-z][a-z0-9+.-]*:\/\/|[^/]*:)/i;
@@ -56,7 +56,7 @@ function tipOf(root: string, label: string, repo: string, branch: string, shown 
 export function checkUpstreamRemote(root: string, upstream: string, branch: string): void {
   const shown = redact(upstream);
   const fillIn = shown === upstream ? "" : ", add the credentials from --upstream to the URL in this command, since patchbook does not print them";
-  const fix = `To follow ${shown}${fillIn}: git config --replace-all remote.upstream.url ${quote(shown)}`;
+  const fix = `To follow ${shown}${fillIn}: git config --replace-all remote.upstream.url ${shellQuote(shown)}`;
   const urls = decode(run(["git", "config", "-z", "--get-all", "remote.upstream.url"], { cwd: root, check: false })).split("\0").slice(0, -1);
   const url = urls[urls.lastIndexOf("") + 1] ?? "";
   if (url === "") throw new Fail(`the upstream remote has no url. ${fix}`);
