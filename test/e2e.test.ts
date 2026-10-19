@@ -7168,6 +7168,64 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(Object.keys(lastSync(t))).toEqual(["upstream"]);
   });
 
+  describe("the report stays out of git", () => {
+    const untracked = (t: ForkCase): string[] => sh(["git", "status", "--porcelain", "--untracked-files=all"], { cwd: t.fork.path }).stdout.split("\n").filter((l) => l.startsWith("??"));
+    const moveUpstream = (t: ForkCase, old: string, repl: string): void => {
+      t.up.write("app.txt", replace(t.up.read("app.txt"), old, repl));
+      t.up.commit(`${old} to ${repl}`);
+    };
+
+    forkTest("test_sync_leaves_the_report_untracked_and_ignored", (t) => {
+      t.recordFeature();
+      moveUpstream(t, "six", "SIX");
+      t.pb(["sync"], { cwd: t.fork.path });
+      expect(lastSync(t).upstream.to).toBeString();
+      expect(untracked(t)).toEqual([]);
+      sh(["git", "add", "-A"], { cwd: t.fork.path });
+      expect(sh(["git", "diff", "--cached", "--name-only"], { cwd: t.fork.path }).stdout).not.toContain("last-sync.json");
+    });
+
+    forkTest("test_sync_ignores_the_report_of_a_repo_made_before_the_ignore_existed", (t) => {
+      t.recordFeature();
+      moveUpstream(t, "six", "SIX");
+      t.pb(["sync"], { cwd: t.fork.path });
+      rmSync(join(t.fork.path, ".patchbook/.gitignore"), { force: true });
+      expect(untracked(t)).toContain("?? .patchbook/last-sync.json");
+      expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("Nothing to do");
+      expect(untracked(t)).toEqual([]);
+      rmSync(join(t.fork.path, ".patchbook/.gitignore"));
+      moveUpstream(t, "five", "FIVE");
+      t.pb(["sync"], { cwd: t.fork.path });
+      expect(untracked(t)).toEqual([]);
+      expect(Object.keys(lastSync(t))).toEqual(["upstream"]);
+    });
+
+    forkTest("test_sync_keeps_the_rules_a_user_put_in_the_patchbook_gitignore", (t) => {
+      const rules = join(t.fork.path, ".patchbook/.gitignore");
+      writeFileSync(rules, "scratch/\n");
+      for (const [old, repl] of [["six", "SIX"], ["five", "FIVE"]] as const) {
+        moveUpstream(t, old, repl);
+        t.pb(["sync"], { cwd: t.fork.path });
+      }
+      const lines = read(rules).split("\n");
+      expect(lines[0]).toBe("scratch/");
+      expect(lines.filter((l) => l === "last-sync.json")).toHaveLength(1);
+      expect(untracked(t)).toEqual([]);
+    });
+
+    forkTest("test_status_and_upstream_diff_work_without_the_report_in_a_fresh_clone", (t) => {
+      t.recordFeature();
+      moveUpstream(t, "six", "SIX");
+      t.pb(["sync"], { cwd: t.fork.path });
+      t.pb(["build", "--commit"], { cwd: t.fork.path });
+      const clone = join(t.tmp, "clone");
+      sh(["git", "clone", "-q", t.fork.path, clone], { cwd: t.tmp });
+      expect(existsSync(join(clone, ".patchbook/last-sync.json"))).toBe(false);
+      expect(JSON.parse(t.pb(["status", "--json"], { cwd: clone }).stdout).last_sync).toBeNull();
+      expect(t.pb(["upstream", "upstream", "--diff"], { cwd: t.fork.path }).stdout).toContain("+SIX");
+    });
+  });
+
   forkTest("test_sync_drops_the_report_of_a_removed_upstream_when_nothing_moved", (t) => {
     twoMovedUpstreams(t);
     t.pb(["sync"], { cwd: t.fork.path });
