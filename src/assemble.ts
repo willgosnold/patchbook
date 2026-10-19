@@ -453,7 +453,7 @@ function commitBuild(book: Book, a: Assembly): void {
   const own = book.upstreams.find((u) => u.inRepo);
   if (own) {
     const commit = pinned(own, own.pin());
-    const ancestor = spawn(["git", "merge-base", "--is-ancestor", commit, "HEAD"], { cwd: root, capture: false }).code === 0;
+    const ancestor = spawn(["git", "merge-base", "--is-ancestor", commit, "HEAD"], { cwd: root }).code === 0;
     if (!ancestor) parents.push("-p", commit);
   }
   if (git(["rev-parse", "HEAD^{tree}"], { cwd: root }) === tree && parents.length === 2) {
