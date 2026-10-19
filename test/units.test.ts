@@ -6,14 +6,13 @@ import type { LastSync, Problem, SyncReport } from "../src/api.ts";
 import type { Assembly } from "../src/assemble.ts";
 import type { Reserved } from "../src/book.ts";
 import type { Edit } from "../src/changes.ts";
-import { SequenceMatcher } from "../src/lib/difflib.ts";
 
 const sandbox = mkdtempSync(join(tmpdir(), "units"));
 const ambientConfigHome = process.env["XDG_CONFIG_HOME"];
 process.env["XDG_CONFIG_HOME"] = join(sandbox, "config");
 
 const { applyStructure } = await import("../src/assemble.ts");
-const { blockSpans, formatEntry, nearest, parsePlaceholders, readEntries, similarity } = await import("../src/blocks.ts");
+const { blockSpans, formatEntry, nearest, parsePlaceholders, readEntries } = await import("../src/blocks.ts");
 const { Book, globRe, lockText, parseLock } = await import("../src/book.ts");
 const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
 const { intentSettings, pendingDiff, PROVIDERS, writeIntent } = await import("../src/intent.ts");
@@ -319,39 +318,6 @@ describe("entries", () => {
   });
 });
 
-describe("similarity", () => {
-  test("is twice the matching code points over both lengths, to two places, a half up", () => {
-    expect(new SequenceMatcher<string>("abcdefgh", "abcdeXYZ").ratio()).toBe(0.625);
-    expect(similarity("abcdefgh", "abcdeXYZ")).toBe(0.63);
-  });
-
-  test("rounds a decimal half up where rounding the float rounds it down", () => {
-    const halves = [
-      { shared: 23, onlyA: 17, onlyB: 17, ratio: 0.575, float: 0.57, rounded: 0.58 },
-      { shared: 113, onlyA: 88, onlyB: 86, ratio: 0.565, float: 0.56, rounded: 0.57 },
-      { shared: 57, onlyA: 144, onlyB: 142, ratio: 0.285, float: 0.28, rounded: 0.29 },
-    ];
-    for (const { shared, onlyA, onlyB, ratio, float, rounded } of halves) {
-      const a = "x".repeat(shared) + "a".repeat(onlyA);
-      const b = "x".repeat(shared) + "b".repeat(onlyB);
-      const r = new SequenceMatcher<string>(a, b).ratio();
-      expect(r).toBe(ratio);
-      expect(Math.round(r * 100) / 100).toBe(float);
-      expect(similarity(a, b)).toBe(rounded);
-    }
-  });
-
-  test("counts a code point once, as SequenceMatcher does", () => {
-    expect(similarity("😀😀", "😀😁")).toBe(0.5);
-  });
-
-  test("is 1 for two empty texts and for equal ones, and 0 when nothing matches", () => {
-    expect(similarity("", "")).toBe(1);
-    expect(similarity("same", "same")).toBe(1);
-    expect(similarity("abc", "xyz")).toBe(0);
-  });
-});
-
 describe("nearest", () => {
   test("gives the similarity as similarity rounds it", () => {
     expect(nearest("abcdefgh", [{ line: 3, hash: "h", upstream: "abcdeXYZ" }])).toEqual([{ line: 3, hash: "h", similarity: 0.63 }]);
@@ -366,6 +332,14 @@ describe("nearest", () => {
     ];
     expect(nearest("abcdefgh", candidates).map((n) => [n.hash, n.similarity])).toEqual([["close", 0.88], ["tie-a", 0.5]]);
     expect(nearest("abcdefgh", candidates, 3).map((n) => n.hash)).toEqual(["close", "tie-a", "tie-b"]);
+  });
+
+  test("keeps a candidate at exactly 0.4 and drops one that rounds to 0.39", () => {
+    const candidates = [
+      { line: 1, hash: "below", upstream: "abcdef" + "X".repeat(17) },
+      { line: 2, hash: "at", upstream: "ab" },
+    ];
+    expect(nearest("abcdefgh", candidates)).toEqual([{ line: 2, hash: "at", similarity: 0.4 }]);
   });
 });
 

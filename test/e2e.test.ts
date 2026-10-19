@@ -8578,6 +8578,14 @@ exec '${Bun.which("git")}' "$@"
     expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout).toContain("needs an entry (a, b)");
   });
 
+  vendorTest("test_a_mistyped_hook_gets_did_you_mean_from_similarity_0_6_and_the_list_of_hooks_below_it", (t) => {
+    const hooks = join(t.repo.path, ".patchbook/hooks.ts");
+    writeFileSync(hooks, "export function chexy() {}\n");
+    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stderr).toContain("`chexy` isn't a hook; did you mean `check`?\n");
+    writeFileSync(hooks, "export function cqhqeqcqkqqq() {}\n");
+    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stderr).toContain("`cqhqeqcqkqqq` isn't a hook. The hooks are placeholder, blockTerms, finish, check.\n");
+  });
+
   vendorTest("test_check_may_return_any_kind_of_problem", (t) => {
     writeFileSync(join(t.repo.path, ".patchbook/hooks.ts"), dedent(`
       export function check() {

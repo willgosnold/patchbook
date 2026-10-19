@@ -9,10 +9,10 @@ import { appendSeries, CHANGE_NAME, Change, notAChangeName, readChanges, readSer
 import { installHookOrWarn } from "./githook.ts";
 import { nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
 import { unifiedDiff } from "./lib/diff.ts";
-import { type Opcode, SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, LINK, type Mode, rglob, sameFile, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
+import { type Changed, lineChanges } from "./lib/match.ts";
 import { bytesEqual, decode, decodeReplace, encode, isText } from "./lib/text.ts";
 
 /** An entry a recording makes. A null intent means it still needs one. */
@@ -194,12 +194,11 @@ function planParagraphs(
   if (!bytesEqual(encode(text), built)) return "a hook changes it after its block entries apply; edit the entries directly";
   const old = text.split("\n");
   const fresh = decode(now).split("\n");
-  const every = new SequenceMatcher(old, fresh, false).getOpcodes();
+  const changed = lineChanges(old, fresh);
 
   // Each edit belongs to the blocks whose lines it touches, or, between blocks, to the block before it.
   const blame: { inside: Set<number>; i1: number; i2: number; j1: number; j2: number }[] = [];
-  for (const [tag, i1, i2, j1, j2] of every) {
-    if (tag === "equal") continue;
+  for (const [i1, i2, j1, j2] of changed) {
     const inside = new Set(owners.slice(i1, i2).filter((o) => o !== null));
     if (!inside.size) {
       const before = owners.slice(0, i1).findLast((o) => o !== null) ?? null;
@@ -227,8 +226,8 @@ function planParagraphs(
     const own = owners.flatMap((o, n) => (o !== null && group.includes(o) ? [n] : []));
     const bs = Math.min(own[0]!, ...mine.map((b) => b.i1));
     const be = Math.max(own.at(-1)! + 1, ...mine.map((b) => b.i2));
-    const js = Math.min(mapLine(every, bs, fresh.length), ...mine.map((b) => b.j1));
-    const je = Math.max(mapLine(every, be, fresh.length), ...mine.map((b) => b.j2));
+    const js = Math.min(mapLine(changed, bs), ...mine.map((b) => b.j1));
+    const je = Math.max(mapLine(changed, be), ...mine.map((b) => b.j2));
     const chunk = fresh.slice(js, je);
     while (chunk.length && !chunk[0]!.trim()) chunk.shift();
     while (chunk.length && !chunk.at(-1)!.trim()) chunk.pop();
@@ -269,11 +268,14 @@ function planParagraphs(
 }
 
 /** The line of the new text that line i of the old text lines up with. */
-function mapLine(ops: readonly Opcode[], i: number, end: number): number {
-  for (const [tag, i1, i2, j1] of ops) {
-    if (i1 <= i && i < i2) return tag === "equal" ? j1 + (i - i1) : j1;
+function mapLine(changed: readonly Changed[], i: number): number {
+  let shift = 0;
+  for (const [i1, i2, j1, j2] of changed) {
+    if (i < i1) break;
+    if (i < i2) return j1;
+    shift = j2 - i2;
   }
-  return end;
+  return i + shift;
 }
 
 function saveParagraphs(plan: Plan): void {

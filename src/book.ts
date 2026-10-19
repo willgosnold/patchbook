@@ -2,9 +2,9 @@
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Hooks, Problem, UpstreamLock, UpstreamPin } from "./api.ts";
-import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, GITLINK, isDir, isMode, isSymlink, lexists, mkdirs, type Mode, normMode, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
+import { similarity } from "./lib/match.ts";
 import { git, run, spawn } from "./lib/proc.ts";
 import { strRepr } from "./lib/repr.ts";
 import { jsonText, named, object, oid, readJson, type Shape, string, versioned } from "./lib/shape.ts";
@@ -72,9 +72,9 @@ function hookFail(path: string, what: string): Fail {
 }
 
 function suggest(name: string): string {
-  const scored = HOOKS.map((h) => [new SequenceMatcher(name, h).ratio(), h] as const).sort((x, y) => y[0] - x[0]);
-  const [ratio, best] = scored[0]!;
-  return ratio >= 0.6 ? `; did you mean \`${best}\`?` : `. The hooks are ${HOOKS.join(", ")}.`;
+  const scored = HOOKS.map((h) => [similarity(name, h), h] as const).sort((x, y) => y[0] - x[0]);
+  const [score, best] = scored[0]!;
+  return score >= 0.6 ? `; did you mean \`${best}\`?` : `. The hooks are ${HOOKS.join(", ")}.`;
 }
 
 /** Load hooks.ts, checking each export is a hook, and what each hook returns. */
