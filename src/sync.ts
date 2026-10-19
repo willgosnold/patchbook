@@ -11,9 +11,8 @@ import { Fail } from "./lib/fail.ts";
 import { exists, type File, isSymlink, lexists, LINK, mkdirs, type Mode, nonFolders, pjoin, readDisk, readText, readTextReplace, resolve, sameFile, setsMode, writeDisk, writeText } from "./lib/fs.ts";
 import { dumps, JsonError, loads } from "./lib/json.ts";
 import { spawn } from "./lib/proc.ts";
-import { sorted } from "./lib/py.ts";
 import { say, verbatim, warn } from "./lib/term.ts";
-import { bytesEqual, decodeReplace, isText } from "./lib/text.ts";
+import { byCodePoint, bytesEqual, decodeReplace, isText } from "./lib/text.ts";
 import { type Pin, pinned, type Upstream } from "./store.ts";
 
 export const EXIT_MOVED = 10;
@@ -51,7 +50,7 @@ export async function cmdCheck() {
 
 export function upstreamDelta(old: ReadonlyMap<string, File>, now: ReadonlyMap<string, File>): string[] {
   const out: string[] = [];
-  for (const p of sorted(new Set([...old.keys(), ...now.keys()]))) {
+  for (const p of [...new Set([...old.keys(), ...now.keys()])].sort(byCodePoint)) {
     if (!now.has(p)) out.push(`deleted ${p}`);
     else if (!old.has(p)) out.push(`added ${p}`);
     else if (!sameFile(old.get(p), now.get(p))) out.push(`changed ${p}`);
@@ -267,7 +266,7 @@ function userFiles(vendor: string, mirrored: ReadonlyMap<string, File>, unpinned
       else if (!mirrored.has(p) || (unpinned && !sameFile(readDisk(join(vendor, p)), mirrored.get(p)))) found.push(p);
     }
   }
-  return sorted(found);
+  return found.sort(byCodePoint);
 }
 
 function namedFiles(folder: string, found: string[]): string {

@@ -15,10 +15,9 @@ import {
 } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { JsonError, loads } from "./lib/json.ts";
-import { type Env, git, run, spawn } from "./lib/proc.ts";
-import { quote, sorted, strip } from "./lib/py.ts";
+import { type Env, git, run, shellQuote, spawn } from "./lib/proc.ts";
 import { say, warn } from "./lib/term.ts";
-import { bytesEqual, concat, decode, decodeReplace, encode } from "./lib/text.ts";
+import { byCodePoint, bytesEqual, concat, decode, decodeReplace, encode } from "./lib/text.ts";
 import { type Source, setting } from "./settings.ts";
 import { readBlobsOf, refuseMergedUpstream, stagedTree } from "./store.ts";
 import { Undo } from "./undo.ts";
@@ -516,7 +515,7 @@ function unstaged(root: string, paths: string[]): string[] {
   if (!paths.length) return [];
   git(["update-index", "-q", "--refresh"], { cwd: root });
   const listed = (args: string[]) => decode(run(["git", "--literal-pathspecs", ...args, "--", ...paths], { cwd: root })).split("\0");
-  return sorted(new Set([...listed(["diff-files", "--name-only", "-z"]), ...listed(["ls-files", "-z", "-o", "--exclude-standard"])].filter(Boolean)));
+  return [...new Set([...listed(["diff-files", "--name-only", "-z"]), ...listed(["ls-files", "-z", "-o", "--exclude-standard"])].filter(Boolean))].sort(byCodePoint);
 }
 
 /** Git sees a staged link as unchanged when only its target changed, so the in-repo file each build input links to is checked too.
@@ -550,7 +549,7 @@ function committable(book: Book, staged: ReadonlyMap<string, File>, paths: strin
   refuseBehindLinks(book, missing);
   const absent = missing.map((p) => inRepo(book, p));
   const found = spawn(["git", "check-ignore", "-z", "--stdin"], { cwd: book.root, input: encode(absent.join("\0")) });
-  if (found.code !== 0 && found.code !== 1) throw new Fail(`git check-ignore failed:\n${strip(decodeReplace(found.stderr))}`);
+  if (found.code !== 0 && found.code !== 1) throw new Fail(`git check-ignore failed:\n${decodeReplace(found.stderr).trim()}`);
   const ignored = new Set(decode(found.stdout).split("\0"));
   return paths.filter((p) => !ignored.has(inRepo(book, p)));
 }
@@ -582,13 +581,13 @@ function refuseOverwrites(book: Book, clobbered: string[]): void {
   throw new Fail("the build changes these files, which have changes you haven't staged:\n  " + clobbered.join("\n  ")
     + "\nStaging them would record them over the build's change. "
     + (intentToAdd.length ? "git can't stash while the index holds `git add -N` entries, so first run "
-      + `\`git --literal-pathspecs rm -q --cached -- ${intentToAdd.map(quote).join(" ")}\`, which keeps the files on disk. Then stash` : "Stash")
-    + ` them with \`git --literal-pathspecs stash push -a -- ${clobbered.map((p) => quote(inRepo(book, p))).join(" ")}\`, commit, `
+      + `\`git --literal-pathspecs rm -q --cached -- ${intentToAdd.map(shellQuote).join(" ")}\`, which keeps the files on disk. Then stash` : "Stash")
+    + ` them with \`git --literal-pathspecs stash push -a -- ${clobbered.map((p) => shellQuote(inRepo(book, p))).join(" ")}\`, commit, `
     + "then `git stash pop` puts them back on the new build. Or skip the hook once with PATCHBOOK_HOOK=0.");
 }
 
 function diskWrites(book: Book, lock: BuildLock | null, staged: ReadonlyMap<string, File>, out: ReadonlyMap<string, File>): { writes: Changes; userOnly: string[] } {
-  const differ = sorted(new Set([...out.keys(), ...staged.keys(), ...(lock?.keys() ?? [])]))
+  const differ = [...new Set([...out.keys(), ...staged.keys(), ...(lock?.keys() ?? [])])].sort(byCodePoint)
     .filter((p) => !sameFile(onDisk(book, p), out.get(p), book.tracksExecBit()));
   const loose = new Set(unstaged(book.root, differ.map((p) => inRepo(book, p))));
   const matchesIndex = (p: string) =>
@@ -647,13 +646,13 @@ function stagedPins(book: Book): Map<string, string> | null {
 /** The tree git would commit from the index, or null when it can't write one, as with unmerged paths. */
 function indexTree(root: string): string | null {
   const out = spawn(["git", "write-tree"], { cwd: root });
-  return out.code === 0 ? strip(decode(out.stdout)) : null;
+  return out.code === 0 ? decode(out.stdout).trim() : null;
 }
 
 function headTree(root: string): string {
   const head = spawn(["git", "rev-parse", "--verify", "--quiet", "HEAD^{tree}"], { cwd: root });
-  if (head.code === 0) return strip(decode(head.stdout));
-  return strip(decode(run(["git", "hash-object", "-t", "tree", "--stdin"], { cwd: root, input: new Uint8Array() })));
+  if (head.code === 0) return decode(head.stdout).trim();
+  return decode(run(["git", "hash-object", "-t", "tree", "--stdin"], { cwd: root, input: new Uint8Array() })).trim();
 }
 
 /**
@@ -745,7 +744,7 @@ async function runHook(undo: Undo) {
     refuseBehindLinks(book, removed);
     const hand = handEdits(book, out, staged, [lock, committed]);
     refuseFolderToFile(book, out, staged, hand, ", or skip the hook once with PATCHBOOK_HOOK=0");
-    return sorted(new Set([...committable(book, staged, hand), ...removed]));
+    return [...new Set([...committable(book, staged, hand), ...removed])].sort(byCodePoint);
   };
   const plan = (out: ReadonlyMap<string, File>) => {
     const { stale, changed } = changesOf(staged, out, book.tracksExecBit());
@@ -770,12 +769,12 @@ async function runHook(undo: Undo) {
   if (kept.length) {
     throw new Fail("these files are out of the index but still on disk:\n  " + kept.join("\n  ")
       + "\n`git rm --cached` keeps a file on disk, where the next build takes it for a hand edit. Delete it with `git rm`, "
-      + `or keep it with \`git --literal-pathspecs reset -q -- ${kept.map((p) => quote(inRepo(book, p))).join(" ")}\`.`);
+      + `or keep it with \`git --literal-pathspecs reset -q -- ${kept.map((p) => shellQuote(inRepo(book, p))).join(" ")}\`.`);
   }
   const olderBuild = edited.filter((p) => staged.has(p) && leftByLastBuild(book, lock, p, a.out));
   const buildReads = [...buildInputs(book), ...placeholderOutputs(book).map((p) => inRepo(book, p))];
   if (olderBuild.length && git(["--literal-pathspecs", "diff", "--cached", "--name-only", "--", ...buildReads], { cwd: book.root })) {
-    const paths = olderBuild.map((p) => quote(inRepo(book, p))).join(" ");
+    const paths = olderBuild.map((p) => shellQuote(inRepo(book, p))).join(" ");
     throw new Fail("these staged files match no build, but their working copies match the last build:\n  " + olderBuild.join("\n  ")
       + "\nThe index may hold an older build, or edits you undid in the working copy. "
       + `To commit the last build, run \`git --literal-pathspecs add -- ${paths}\`. `
@@ -843,7 +842,7 @@ async function runHook(undo: Undo) {
     stageModes(book.root, modes, env);
   } else if (partial && (adds.length || moded.length)) {
     warn("patchbook: your index won't have what the hook staged. After the commit, run "
-      + `\`git --literal-pathspecs reset -q -- ${sorted(new Set([...wrote, ...recordedIgnored, ...moded])).map(quote).join(" ")}\`\n`);
+      + `\`git --literal-pathspecs reset -q -- ${[...new Set([...wrote, ...recordedIgnored, ...moded])].sort(byCodePoint).map(shellQuote).join(" ")}\`\n`);
   }
   stageVendors(book);
   return 0;

@@ -11,9 +11,10 @@ import {
 } from "./lib/fs.ts";
 import { dumps, loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
-import { length, type PyValue, sortedBy, strRepr } from "./lib/py.ts";
+import type { JsonValue } from "./lib/json.ts";
+import { strRepr } from "./lib/repr.ts";
 import { warn } from "./lib/term.ts";
-import { decode } from "./lib/text.ts";
+import { byCodePoint, decode } from "./lib/text.ts";
 import { isTable, parseToml, type Table } from "./settings.ts";
 import { stagedFolder, treeBlobs, Upstream } from "./store.ts";
 
@@ -72,7 +73,7 @@ const leftOut = new Map<string, Set<string>>();
 export function noticeLeftOut(): void {
   if (leftOut.size === 0) return;
   const total = Array.from(leftOut.values()).reduce((n, paths) => n + paths.size, 0);
-  const folders = sortedBy(leftOut, ([folder]) => folder).map(([folder, paths]) => `${folder} (${paths.size})`).join(", ");
+  const folders = [...leftOut].sort(([a], [b]) => byCodePoint(a, b)).map(([folder, paths]) => `${folder} (${paths.size})`).join(", ");
   leftOut.clear();
   warn(`patchbook: left ${total} upstream files out of the build because they would land in a vendored copy: ${folders}.\n`);
 }
@@ -595,12 +596,12 @@ export class Book {
   upstreamFor(path: string): Upstream | null {
     let best: Upstream | null = null;
     for (const u of this.upstreams) {
-      if ((!u.mount || under(path, u.mount)) && (best === null || length(u.mount) > length(best.mount))) best = u;
+      if ((!u.mount || under(path, u.mount)) && (best === null || u.mount.length > best.mount.length)) best = u;
     }
     return best;
   }
 
-  lock(): Map<string, PyValue> {
+  lock(): Map<string, JsonValue> {
     const path = join(this.dir, "upstream.lock");
     if (!exists(path)) return new Map();
     const data = loads(readText(path));
@@ -619,13 +620,13 @@ export class Book {
     if (data.delete(name)) this.saveLock(data);
   }
 
-  private saveLock(data: Map<string, PyValue>): void {
+  private saveLock(data: Map<string, JsonValue>): void {
     mkdirs(this.dir);
-    writeText(join(this.dir, "upstream.lock"), dumps(new Map(sortedBy(data, ([k]) => k)), 2) + "\n");
+    writeText(join(this.dir, "upstream.lock"), dumps(new Map([...data].sort(([a], [b]) => byCodePoint(a, b))), 2) + "\n");
   }
 
   pins(): string {
-    return sortedBy(this.lock(), ([k]) => k)
+    return [...this.lock()].sort(([a], [b]) => byCodePoint(a, b))
       .map(([name, pin]) => {
         const commit = pin instanceof Map ? pin.get("commit") : undefined;
         if (typeof commit !== "string") throw new Fail(`upstream.lock: ${name} has no commit`);

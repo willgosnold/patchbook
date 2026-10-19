@@ -7,11 +7,10 @@ import { Book, PB, refuseClimbingPaths, refuseExportedGit } from "./book.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, isDir, isSymlink, lexists, mkdirs, type Mode, normMode, pjoin, readDisk, readText, relative, resolve, writeDisk } from "./lib/fs.ts";
 import { sha1 } from "./lib/hash.ts";
-import { loads } from "./lib/json.ts";
+import { type JsonValue, loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
-import { type PyValue, slice, sorted, split, strip } from "./lib/py.ts";
 import { say, verbatim, warn } from "./lib/term.ts";
-import { decode, decodeReplace, encode } from "./lib/text.ts";
+import { byCodePoint, decode, decodeReplace, encode } from "./lib/text.ts";
 import { storeDir, type Table } from "./settings.ts";
 
 export type Pin = { commit?: string; tree?: string };
@@ -48,7 +47,7 @@ export function stagedFolder(raw: string, what: string): string {
   if (raw.startsWith("/") || folder === ".." || folder.startsWith("../")) {
     throw new Fail(`${what} ${JSON.stringify(raw)} must be a folder inside the staged tree, not an absolute path or one that climbs out with ..`);
   }
-  return folder === "." || folder === "./" ? "" : strip(folder, "/");
+  return folder === "." || folder === "./" ? "" : folder.replace(/^\/+|\/+$/g, "");
 }
 
 /** One upstream repo, or a folder of one, mounted at a folder of the staged tree. */
@@ -63,7 +62,7 @@ export class Upstream {
   constructor(readonly book: Book, spec: Table) {
     this.remote = field(spec, "remote", "");
     if (!this.remote) throw new Fail("an [[upstream]] needs a remote");
-    this.path = strip(field(spec, "path", ""), "/");
+    this.path = field(spec, "path", "").replace(/^\/+|\/+$/g, "");
     this.branch = field(spec, "branch", "main");
     this.name = field(spec, "name", "") || defaultName(this.remote, this.path);
     if (this.remote.startsWith("-")) {
@@ -114,7 +113,7 @@ export class Upstream {
   gitDir(): string {
     if (this.inRepo) return this.book.root;
     const bare = this.remote.replace(/^[\p{L}\p{N}_]+:\/\/|\.git$/gu, "");
-    const readable = slice(strip(bare.replace(/[^A-Za-z0-9]+/g, "-"), "-"), -60);
+    const readable = bare.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(-60);
     const d = pjoin(storeDir(), `${readable}-${sha1(encode(this.remote)).slice(0, 8)}`);
     if (!exists(d)) {
       mkdirs(dirname(d));
@@ -196,7 +195,7 @@ export class Upstream {
     const walk = [`refs/remotes/upstream/${this.branch}`, `^${pin.commit}`, ...this.pastPins().map((c) => `^${c}`)];
     const upstream = spawn(["git", "rev-list", "--stdin", "--ignore-missing"], { cwd: root, input: encode(walk.join("\n") + "\n") });
     if (upstream.code !== 0) return [];
-    const newer = new Set(split(decode(upstream.stdout)));
+    const newer = new Set(decode(upstream.stdout).split("\n").filter(Boolean));
     const merging = spawn(["git", "rev-parse", "--quiet", "--verify", "MERGE_HEAD"], { cwd: root }).code === 0 ? ["MERGE_HEAD"] : [];
     const held = spawn(["git", "log", "--topo-order", "--format=%H%x09%s", "HEAD", ...merging, `^${pin.commit}`], { cwd: root });
     if (held.code !== 0) return [];
@@ -216,7 +215,7 @@ export class Upstream {
     const ref = `refs/heads/${this.branch}`;
     const out = this.onRemote(["ls-remote", "--end-of-options", this.source(), ref], `git ls-remote ${JSON.stringify(this.source())} ${ref}`, this.gitDir());
     if (!out) throw new Fail(`upstream ${this.name} has no branch ${this.branch}`);
-    return split(out)[0]!;
+    return out.split("\t", 1)[0]!;
   }
 
   /**
@@ -228,8 +227,8 @@ export class Upstream {
     const done = namesNoHelper(this.source())
       ? spawn(["git", ...args], { cwd })
       : spawn(["git", "-c", "protocol.ext.allow=never", ...args], { cwd, env: { ...process.env, GIT_PROTOCOL_FROM_USER: "0" } });
-    if (done.code !== 0) throw new Fail(`${asTyped} failed:\n${strip(decodeReplace(done.stderr))}`);
-    return strip(decode(done.stdout));
+    if (done.code !== 0) throw new Fail(`${asTyped} failed:\n${decodeReplace(done.stderr).trim()}`);
+    return decode(done.stdout).trim();
   }
 
   /** Upstream's files at a commit, relative to the upstream path. */
@@ -322,7 +321,7 @@ function treeEntries(gd: string, tree: string, path: string): { rel: string; mod
   for (const item of decode(run(["git", "--literal-pathspecs", ...args], { cwd: gd })).split("\0")) {
     if (!item) continue;
     const tab = item.indexOf("\t");
-    const [mode = "", kind, oid = ""] = split(item.slice(0, tab));
+    const [mode = "", kind, oid = ""] = item.slice(0, tab).split(" ");
     const found = item.slice(tab + 1);
     if (kind !== "blob") continue; // submodules are not copied
     entries.push({ rel: path ? found.slice(path.length + 1) : found, mode: normMode(parseInt(mode, 8)), oid });
@@ -371,7 +370,7 @@ export function readBlobs(gd: string, oids: string[]): Map<string, Uint8Array> {
   for (const oid of oids) {
     const nl = out.indexOf(10, i);
     const header = decode(out.subarray(i, nl));
-    const size = Number(split(header)[2]);
+    const size = Number(header.split(" ")[2]);
     if (nl === -1 || !Number.isInteger(size)) throw new Error(`git cat-file --batch said: ${header}`);
     blobs.set(oid, out.subarray(nl + 1, nl + 1 + size));
     i = nl + 1 + size + 1;
@@ -398,7 +397,7 @@ export function indexFiles(root: string, rel: string): { files: Files; tree: str
     if (!item) continue;
     const tab = item.indexOf("\t");
     const path = item.slice(tab + 1);
-    const mode = parseInt(split(item.slice(0, tab))[0] ?? "", 8);
+    const mode = parseInt(item.slice(0, item.indexOf(" ")), 8);
     files.set(path, { data: readDisk(join(root, path)).data, mode: normMode(mode) });
   }
   return { files, tree };
@@ -435,7 +434,7 @@ export function stagedTree(root: string, rel: string): string | null {
   }
 }
 
-function get(value: PyValue | undefined, key: string): PyValue | undefined {
+function get(value: JsonValue | undefined, key: string): JsonValue | undefined {
   if (value === undefined) return undefined;
   if (!(value instanceof Map)) throw new Fail(`last-sync.json: expected an object holding ${key}`);
   return value.get(key);
@@ -476,6 +475,6 @@ export async function cmdUpstream(args: { name: string; path: string | null; dif
     verbatim(file.data);
     return 0;
   }
-  say(sorted(files.keys()).join("\n") + "\n");
+  say([...files.keys()].sort(byCodePoint).join("\n") + "\n");
   return 0;
 }

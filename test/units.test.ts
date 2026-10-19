@@ -3,17 +3,20 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Problem } from "../src/api.ts";
+import type { Assembly } from "../src/assemble.ts";
 import type { Reserved } from "../src/book.ts";
+import type { Edit } from "../src/changes.ts";
+import { SequenceMatcher } from "../src/lib/difflib.ts";
 
 const sandbox = mkdtempSync(join(tmpdir(), "units"));
 const ambientConfigHome = process.env["XDG_CONFIG_HOME"];
 process.env["XDG_CONFIG_HOME"] = join(sandbox, "config");
 
 const { applyStructure } = await import("../src/assemble.ts");
-const { blockSpans, formatEntry, readEntries } = await import("../src/blocks.ts");
+const { blockSpans, formatEntry, nearest, readEntries } = await import("../src/blocks.ts");
 const { Book, globRe } = await import("../src/book.ts");
-const { Change } = await import("../src/changes.ts");
-const { intentSettings, PROVIDERS } = await import("../src/intent.ts");
+const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
+const { intentSettings, pendingDiff, PROVIDERS, writeIntent } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
 const { meantMode, outputMode, recordedModes } = await import("../src/lib/fs.ts");
 const { redact, refuseCredentials } = await import("../src/lib/proc.ts");
@@ -61,6 +64,11 @@ describe("blockSpans", () => {
 
   test("lines of only whitespace separate blocks", () => {
     expect(spans("a\n \t \nb")).toEqual([[0, 1], [2, 3]]);
+  });
+
+  test("whitespace is what JavaScript's \\s matches, so a no-break space or a BOM is blank and \\x1c or U+0085 is not", () => {
+    expect(spans("a\n\u00a0\ufeff\u3000\nb")).toEqual([[0, 1], [2, 3]]);
+    expect(spans("a\n\x1c\x85\nb")).toEqual([[0, 3]]);
   });
 
   test("frontmatter is its own block, closed by the next ---", () => {
@@ -381,6 +389,22 @@ describe("entries", () => {
   });
 });
 
+describe("nearest", () => {
+  test("rounds the similarity to two places, and a half up", () => {
+    expect(new SequenceMatcher<string>("abcdefgh", "abcdeXYZ").ratio()).toBe(0.625);
+    expect(nearest("abcdefgh", [{ line: 3, hash: "h", upstream: "abcdeXYZ" }])).toEqual([{ line: 3, hash: "h", similarity: 0.63 }]);
+  });
+});
+
+describe("pendingDiff", () => {
+  test("cuts a diff past 40000 characters without splitting one", () => {
+    const current = new Map([["ab", { data: new TextEncoder().encode("😀".repeat(50000) + "\n"), mode: 0o644 as const }]]);
+    const diff = pendingDiff({ out: new Map() } as unknown as Assembly, current, ["ab"]);
+    expect(diff.endsWith("😀\n[diff truncated]\n")).toBe(true);
+    expect(Array.from(diff).length).toBe(40000 + "\n[diff truncated]\n".length);
+  });
+});
+
 describe("applyStructure", () => {
   const bytes = (s: string) => new TextEncoder().encode(s);
   const upstream = (...paths: string[]) => new Map(paths.map((p) => [p, { data: bytes(p), mode: 0o644 as const }]));
@@ -687,5 +711,276 @@ describe("recordedModes", () => {
       const left: { ours: Mode | null; base: Mode | null } = recordedModes(w.now, w.built, w.up, w.had);
       expect({ ...w, left }).toEqual({ ...w, left: w.had });
     }
+  });
+});
+
+describe.skipIf(!inSandbox)("writeIntent", () => {
+  const ambient = process.env["PATCHBOOK_PROVIDER"];
+
+  afterEach(() => {
+    PROVIDERS.delete("sh");
+    if (ambient === undefined) delete process.env["PATCHBOOK_PROVIDER"];
+    else process.env["PATCHBOOK_PROVIDER"] = ambient;
+  });
+
+  const answering = async (script: string): Promise<Opened> => {
+    PROVIDERS.set("sh", { model: "m", effort: "e", command: () => ["sh", "-c", `cat >/dev/null; ${script}`] });
+    process.env["PATCHBOOK_PROVIDER"] = "sh";
+    rmSync(USER_CONFIG, { force: true });
+    const root = scratch();
+    put(join(root, ".patchbook", "config.toml"), '[[upstream]]\nremote = "https://example.com/x.git"\nmount = ""\n');
+    return Book.open(root);
+  };
+
+  test("shows the last 500 characters of a failed model's errors without splitting one", async () => {
+    const book = await answering(`printf '${"😀".repeat(600)}!' >&2; exit 1`);
+    expect(() => writeIntent(book, new Map(), "", "x", true)).toThrow(`sh failed: ${"😀".repeat(499)}!. Pass --intent instead.`);
+  });
+
+  test("shows the first 500 characters of an unusable reply without splitting one", async () => {
+    const book = await answering(`printf '!${"😀".repeat(600)}'`);
+    expect(() => writeIntent(book, new Map(), "", "x", true)).toThrow(`:\n!${"😀".repeat(499)}\nPass a name and --intent instead.`);
+  });
+});
+
+describe("parseChange", () => {
+  const parse = (edits: string[]) => {
+    const dir = scratch();
+    const path = put(join(dir, "edits", "CHANGE.md"), `# edits\n\nintent: Try paths.\n\nedits:\n${edits.join("\n")}\n`);
+    const refused: [string, string][] = [];
+    const change = parseChange(path, (edit, detail) => refused.push([edit, detail]));
+    return { edits: change.edits, held: change.held, refused };
+  };
+
+  const KINDS = ["file", "add", "replace", "delete"] as const;
+
+  const AWKWARD = (() => {
+    const tokens = [" ", "\t", "\n", "\r", '"', "\\", "-", ">", " -> ", " ->", " ", "﻿", "\u0085", " ", "\0", "\x01", "\x1b", "\x1f", "\x7f", "😀", "é", "/", ".", "a", "b"];
+    let seed = 155;
+    const random = () => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let r = Math.imul(seed ^ (seed >>> 15), seed | 1);
+      r ^= r + Math.imul(r ^ (r >>> 7), r | 61);
+      return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+    };
+    const names = ["a ->", "a -> b", "-> b", '"a', '"a"', "a\rb", "a\nb", " a", "a ", "﻿a", "a\tb", 'a"b', "a\\b", "/a", "a/", "a//b", ".", "a/../b", "", "a\0b"];
+    for (let i = 0; i < 1000; i++) names.push(Array.from({ length: 1 + Math.floor(random() * 6) }, () => tokens[Math.floor(random() * tokens.length)]).join(""));
+    return names;
+  })();
+  const clean = (path: string) => !path.includes("\0") && !path.includes("\\") && path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+  const fuzz = join(scratch(), "fuzz", "CHANGE.md");
+  const readLine = (line: string): Edit[] | "held" | "failed" => {
+    put(fuzz, `# fuzz\n\nintent: Try paths.\n\nedits:\n${line}\n`);
+    try {
+      const change = parseChange(fuzz, () => {});
+      return change.held.length ? "held" : change.edits;
+    } catch (e) {
+      if (!(e instanceof Fail)) throw e;
+      return "failed";
+    }
+  };
+
+  test("reads a quoted path with nothing cut at either end", () => {
+    const edits = [
+      '- file " lead"', '- file "trail "', '- add "\uFEFFbom-lead"', '- delete "bom-trail\uFEFF"',
+      '- replace "a/ b /c"', '- move " from\uFEFF " -> " to "', '- copy "from -> x" -> "\uFEFFto\uFEFF"',
+    ];
+    expect(parse(edits).edits).toEqual([
+      { kind: "file", path: " lead" },
+      { kind: "file", path: "trail " },
+      { kind: "add", path: "\uFEFFbom-lead" },
+      { kind: "delete", path: "bom-trail\uFEFF" },
+      { kind: "replace", path: "a/ b /c" },
+      { kind: "move", path: " from\uFEFF ", dest: " to " },
+      { kind: "copy", path: "from -> x", dest: "\uFEFFto\uFEFF" },
+    ]);
+  });
+
+  test("reads a bare path as written, so a space inside it or a quote or backslash that does not start it is part of it", () => {
+    const got = parse(["- add a b/c d", '- add a"b', "- delete a\\b", "- move a -> b -> c"]);
+    expect(got.edits).toEqual([
+      { kind: "add", path: "a b/c d" },
+      { kind: "add", path: 'a"b' },
+      { kind: "move", path: "a", dest: "b -> c" },
+    ]);
+    expect(got.held).toEqual(["- delete a\\b"]);
+    expect(got.refused[0]![1]).toStartWith(`${JSON.stringify("a\\b")} must be a path inside the tree`);
+  });
+
+  test("refuses a bare path that starts or ends with whitespace, for every kind, naming the file, the line and the quoted form", () => {
+    for (const ws of [" ", "\t", "\uFEFF", "\u00A0", "\u3000"]) {
+      for (const kind of KINDS) {
+        const quoted = editText({ kind: "add", path: `a${ws}` }).slice("add ".length);
+        expect(() => parse([`- ${kind} a${ws}`])).toThrow(`CHANGE.md:6: the path ${JSON.stringify(`a${ws}`)} starts or ends with whitespace; write it in double quotes: ${quoted}`);
+        expect(() => parse([`- ${kind} ${ws}a`])).toThrow("CHANGE.md:6: the path ");
+      }
+      for (const kind of ["move", "copy"] as const) {
+        expect(() => parse([`- ${kind} a${ws} -> b`])).toThrow("starts or ends with whitespace");
+        expect(() => parse([`- ${kind} a -> b${ws}`])).toThrow("starts or ends with whitespace");
+        expect(() => parse([`- ${kind} a -> ${ws}b`])).toThrow("starts or ends with whitespace");
+      }
+    }
+  });
+
+  test("a move destination with a trailing space is refused, not built under the name with the space", () => {
+    expect(() => parse(["- move a.txt -> moved.txt "])).toThrow('CHANGE.md:6: the path "moved.txt " starts or ends with whitespace; write it in double quotes: "moved.txt "');
+    expect(() => parse(["- copy a.txt -> copied.txt "])).toThrow("CHANGE.md:6: the path");
+  });
+
+  test("a line number counts from the top of the file", () => {
+    expect(() => parse(["- file a", "- add b ", "- file c"])).toThrow("CHANGE.md:7: ");
+  });
+
+  test.each([
+    ["is not closed", '- add "a'],
+    ["has text after the closing quote", '- add "a" b'],
+    ["has an escape that is not one", '- add "a\\qb"'],
+    ["has an octal escape of fewer than three digits", '- add "a\\39b"'],
+    ["has an octal escape above 377", '- add "a\\400b"'],
+    ["has octal escapes that are not UTF-8", '- add "\\377"'],
+    ["has a NUL", '- add "a\\000b"'],
+    ["has a destination that is not closed", '- move a -> "b'],
+    ["has text after the destination", '- move a -> "b" c'],
+    ["has a source with text after it", '- move "a" b -> c'],
+  ])("refuses a quoted path that %s", (_why, line) => {
+    expect(() => parse([line])).toThrow(/CHANGE\.md:6: .*quoted path.*malformed.*\\" \\\\ \\t \\n/);
+  });
+
+  test("only move and copy take an arrow, quoted or not", () => {
+    expect(() => parse(['- add "a" -> b'])).toThrow("only move and copy take");
+    expect(() => parse(["- add a -> b"])).toThrow("only move and copy take");
+    expect(() => parse(['- move "a"'])).toThrow("only move and copy take");
+  });
+
+  test("writes a path bare when the bare text reads back as that path", () => {
+    for (const path of ["a.txt", "a b/c d", "a-b", "dir/sub dir/file.txt", "é/日本", "a>b", "a->b", "a ->b", "a- >b", "a'b", 'a"b', "a\\b", "a ->", "a b"]) {
+      expect(editText({ kind: "add", path })).toBe(`add ${path}`);
+    }
+    for (const kind of ["move", "copy"] as const) expect(editText({ kind, path: "a", dest: "b -> c" })).toBe(`${kind} a -> b -> c`);
+  });
+
+  test.each([
+    [" lead", '" lead"'],
+    ["trail ", '"trail "'],
+    ["﻿x", '"﻿x"'],
+    ["x﻿", '"x﻿"'],
+    [" x", '" x"'],
+    ["a -> b", '"a -> b"'],
+    ['"a', '"\\"a"'],
+    ['"a"', '"\\"a\\""'],
+    ["a\tb", '"a\\tb"'],
+    ["a\nb", '"a\\nb"'],
+    ["a\rb", '"a\\015b"'],
+    ["a\x01b", '"a\\001b"'],
+    ["a\x1bb", '"a\\033b"'],
+    ["a\x7fb", '"a\\177b"'],
+    ["a\u0085b", '"a\\302\\205b"'],
+    ['"', '"\\""'],
+  ])("writes %j in double quotes", (path, written) => {
+    expect(editText({ kind: "add", path })).toBe(`add ${written}`);
+    expect(parse([`- add ${written}`]).edits).toEqual([{ kind: "add", path }]);
+  });
+
+  test("refuses a bare path that holds a control character, and shows it only in quotes", () => {
+    for (const ch of ["\t", "\x01", "\x1b", "\x7f", "\u0085"]) {
+      const quoted = editText({ kind: "add", path: `a${ch}b` }).slice("add ".length);
+      for (const line of [`- add a${ch}b`, `- move a${ch}b -> c`, `- copy c -> a${ch}b`]) {
+        expect(() => parse([line])).toThrow(`CHANGE.md:6: a bare path can't hold a control character; write it in double quotes: ${quoted}`);
+      }
+    }
+  });
+
+  test("a move or copy writes each side by itself and reads it back", () => {
+    for (const kind of ["move", "copy"] as const) {
+      const edit = { kind, path: " from -> x", dest: 'to"\t\n ' };
+      expect(editText(edit)).toBe(`${kind} " from -> x" -> "to\\"\\t\\n "`);
+      expect(parse([`- ${editText(edit)}`]).edits).toEqual([edit]);
+      expect(editText({ kind, path: "a", dest: "b c" })).toBe(`${kind} a -> b c`);
+    }
+  });
+
+  test("reads the escapes git writes for a path", () => {
+    const escapes = '- add "\\a\\b\\f\\n\\r\\t\\v\\" \\357\\273\\277 \\303\\251"';
+    expect(parse([escapes]).edits).toEqual([{ kind: "add", path: '\x07\b\f\n\r\t\v" \uFEFF é' }]);
+    expect(parse(['- add "a\\\\b"']).refused[0]![1]).toStartWith(`${JSON.stringify("a\\b")} must be a path inside the tree`);
+  });
+
+  test("what formatChange writes for any path parses back to the same edits", () => {
+    const paths = [" lead", "trail ", "\uFEFFx", "x\uFEFF", "a -> b", 'q"q', "t\tab", "new\nline", "ctl\x01\x1f\x7f", "plain", "in side"];
+    const dir = scratch();
+    const change = new Change("edits", join(dir, "edits"), "Try paths.");
+    change.edits = paths.flatMap((path) => [
+      { kind: "add" as const, path },
+      { kind: "move" as const, path, dest: `${path}2` },
+      { kind: "copy" as const, path: `1${path}`, dest: path },
+    ]);
+    const file = put(join(dir, "edits", "CHANGE.md"), formatChange(change));
+    expect(parseChange(file, () => {}).edits).toEqual(change.edits);
+  });
+
+  test("holds an unsafe path as written", () => {
+    const got = parse(['- file "../up "', "- add ../x"]);
+    expect(got.edits).toEqual([]);
+    expect(got.held).toEqual(['- file "../up "', "- add ../x"]);
+    expect(got.refused.map(([edit]) => edit)).toEqual(['file "../up "', "add ../x"]);
+  });
+
+  test("a move or copy source that ends in an arrow reads back as itself, and so does the line record writes for it", () => {
+    for (const kind of ["move", "copy"] as const) {
+      const edit = { kind, path: "a ->", dest: "b.txt" };
+      expect(parse([`- ${editText(edit)}`]).edits).toEqual([edit]);
+      const dir = scratch();
+      const file = put(join(dir, "mv", "CHANGE.md"), `# mv\n\nintent: Move a file.\n\nedits:\n- ${kind} "a ->" -> b.txt\n`);
+      const change = parseChange(file, () => {});
+      writeFileSync(file, formatChange(change));
+      expect(parseChange(file, () => {}).edits).toEqual([edit]);
+    }
+  });
+
+  test("a path with a slash at either end is refused, bare or quoted, and never read without the slash", () => {
+    const lines = ["- move a.txt -> moved /", "- copy a.txt -> b/", "- move /a -> b", "- file a/", "- add /a", "- delete a /", '- add "a/"', '- replace "/a"', '- move "a" -> "b /"'];
+    const got = parse(lines);
+    expect(got.edits).toEqual([]);
+    expect(got.held).toEqual(lines);
+    for (const [, detail] of got.refused) expect(detail).toContain("no slash at the end");
+  });
+
+  test("every path the writer writes, as a single path, a source or a destination, reads back as itself, or is refused when it is not a clean path inside the tree, and is in quotes only when its bare text would not read back", () => {
+    for (const [i, name] of AWKWARD.entries()) {
+      const other = AWKWARD[(i + 1) % AWKWARD.length]!;
+      const pair = i % 2 ? "copy" : "move";
+      const single: Edit = { kind: KINDS[i % 4]!, path: name };
+      for (const edit of [single, { kind: pair, path: name, dest: other }, { kind: pair, path: other, dest: name }] satisfies Edit[]) {
+        const paths = "dest" in edit ? [edit.path, edit.dest] : [edit.path];
+        const line = `- ${editText(edit)}`;
+        expect({ line, got: readLine(line) }).toEqual({ line, got: paths.some((p) => p.includes("\0")) ? "failed" : paths.every(clean) ? [edit] : "held" });
+      }
+      const bare = `- ${single.kind} ${name}`;
+      if (`- ${editText(single)}` !== bare) expect({ bare, got: readLine(bare) }).not.toEqual({ bare, got: [single] });
+    }
+  });
+
+  test("a hand-written bare line is read exactly as written, with clean paths and no whitespace at an end or control character, or it is refused", () => {
+    for (const [i, name] of AWKWARD.entries()) {
+      const other = AWKWARD[(i + 1) % AWKWARD.length]!;
+      for (const paths of [[name], [name, other]]) {
+        const text = `${paths.length === 2 ? "move" : KINDS[i % 4]} ${paths.join(" -> ")}`;
+        if (/[\r\n]/.test(text) || paths.some((p) => p.startsWith('"'))) continue;
+        const got = readLine(`- ${text}`);
+        if (typeof got === "string") continue;
+        const read = "dest" in got[0]! ? [got[0].path, got[0].dest] : [got[0]!.path];
+        expect({ text, read: `${got[0]!.kind} ${read.join(" -> ")}` }).toEqual({ text, read: text });
+        for (const p of read) expect({ p, ok: clean(p) && !/^\s|\s$|\p{Cc}/u.test(p) }).toEqual({ p, ok: true });
+      }
+    }
+  });
+
+  test("an edit line starts in the first column, so an indented one is refused", () => {
+    expect(() => parse(["  - file a"])).toThrow("expected `- <file|add|replace|delete|move|copy> <path>`");
+    expect(() => parse(["\uFEFF- file a"])).toThrow("expected `- <file|add|replace|delete|move|copy> <path>`");
+  });
+
+  test("a line of only whitespace or a BOM between edits is blank", () => {
+    expect(parse(["- file a", " \t\uFEFF", "- file b"]).edits.map((e) => e.path)).toEqual(["a", "b"]);
   });
 });

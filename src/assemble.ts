@@ -17,9 +17,8 @@ import {
 import { forgetBlobOids } from "./lib/hash.ts";
 import { dumps, type Json, loads } from "./lib/json.ts";
 import { type Env, git, run, spawn } from "./lib/proc.ts";
-import { floatRepr, ljust, rstrip, sorted, sortedBy, strip } from "./lib/py.ts";
 import { say, verbatim, warn } from "./lib/term.ts";
-import { bytesEqual, decode, encode, isText } from "./lib/text.ts";
+import { byCodePoint, bytesEqual, decode, encode, isText } from "./lib/text.ts";
 import { pinned, refuseMergedUpstream } from "./store.ts";
 
 export function describe(p: Problem): string {
@@ -31,7 +30,7 @@ export function describe(p: Problem): string {
     case "leak":
       return `leak      ${at} still says ${p.terms.join(", ")}`;
     case "orphan": {
-      const near = p.nearest.map((n) => `line ${n.line} [${n.hash}] ${floatRepr(n.similarity)}`).join(", ") || "none";
+      const near = p.nearest.map((n) => `line ${n.line} [${n.hash}] ${n.similarity}`).join(", ") || "none";
       return `orphan    ${p.file} [${p.hash}] intent: ${p.intent}\n          nearest new blocks: ${near}`;
     }
     case "invalid":
@@ -41,7 +40,7 @@ export function describe(p: Problem): string {
     case "placeholder":
     case "check": {
       const extra = "edit" in p && p.edit ? ` ${p.edit}` : "";
-      return `${ljust(p.problem, 9)} ${at}${extra}: ${p.detail}`;
+      return `${p.problem.padEnd(9)} ${at}${extra}: ${p.detail}`;
     }
     default: {
       const _exhaustive: never = p;
@@ -196,7 +195,7 @@ export function assemble(book: Book): Assembly {
   const out = new Map<string, File>();
   const used = new Map<string, Set<string>>(Array.from(blocks.keys(), (rel) => [rel, new Set()]));
   const unmatched = new Map<string, Unmatched[]>(Array.from(blocks.keys(), (rel) => [rel, []]));
-  for (const [outPath, src] of sortedBy(selected, ([p]) => p)) {
+  for (const [outPath, src] of [...selected].sort(([a], [b]) => byCodePoint(a, b))) {
     if (src.kind === "up") {
       const rel = src.path;
       const { data, mode } = content.get(rel)!;
@@ -270,7 +269,7 @@ export function readBuildLock(book: Book): Map<string, Stamp> | null {
 export function parseBuildLock(text: string): Map<string, Stamp> {
   const entries = new Map<string, Stamp>();
   for (const line of text.split("\n")) {
-    if (!strip(line)) continue;
+    if (!line.trim()) continue;
     const [, name, oid, at] = LOCK_LINE.exec(line) ?? [];
     const mode = name === undefined ? undefined : parseGitMode(name);
     if (mode !== undefined) {
@@ -286,7 +285,7 @@ export function parseBuildLock(text: string): Map<string, Stamp> {
 
 export function writeBuildLines(book: Book, lock: ReadonlyMap<string, Stamp>): void {
   const line = (p: string, { oid, mode }: Stamp) => (mode === null ? `${oid} ${p}\n` : `${gitMode(mode)} ${oid} ${p}\n`);
-  writeText(buildLockPath(book), sortedBy(lock, ([p]) => p).map(([p, stamp]) => line(p, stamp)).join(""));
+  writeText(buildLockPath(book), [...lock].sort(([a], [b]) => byCodePoint(a, b)).map(([p, stamp]) => line(p, stamp)).join(""));
 }
 
 export const writeBuildLock = (book: Book, out: ReadonlyMap<string, File>) =>
@@ -355,9 +354,9 @@ export function handEdits(
   refuseIfUncontained(book, changesOf(files, fresh));
   const chosen = (p: string) => files.get(p)?.chosen ?? true;
   const last = builds.filter((b) => b !== null);
-  if (!last.length) return sorted(Array.from(files.keys()).filter((p) => !sameFile(files.get(p), fresh.get(p), chosen(p)))); // never built here
+  if (!last.length) return Array.from(files.keys()).filter((p) => !sameFile(files.get(p), fresh.get(p), chosen(p))).sort(byCodePoint); // never built here
   const paths = new Set([...files.keys(), ...last.flatMap((b) => [...b.keys()])]);
-  return sorted(Array.from(paths).filter((p) => !sameFile(files.get(p), fresh.get(p), chosen(p)) && last.every((b) => !builtAs(files.get(p), b.get(p), fresh.get(p)?.mode, chosen(p)))));
+  return Array.from(paths).filter((p) => !sameFile(files.get(p), fresh.get(p), chosen(p)) && last.every((b) => !builtAs(files.get(p), b.get(p), fresh.get(p)?.mode, chosen(p)))).sort(byCodePoint);
 }
 
 export const inRepo = (book: Book, p: string) => relative(book.root, join(book.outputRoot(), p));
@@ -493,7 +492,7 @@ export async function cmdStatus(args: { json: boolean }) {
     for (const p of a.problems) say(describe(p) + "\n");
     const counts = new Map<string, number>();
     for (const p of a.problems) counts.set(p.problem, (counts.get(p.problem) ?? 0) + 1);
-    const summary = sortedBy(counts, ([k]) => k).map(([k, n]) => `${n} ${k}`).join(", ") || "no problems";
+    const summary = [...counts].sort(([a], [b]) => byCodePoint(a, b)).map(([k, n]) => `${n} ${k}`).join(", ") || "no problems";
     say(`${a.applied} edits apply at ${book.pins()}; ${summary}\n`);
   }
   return a.problems.length ? 1 : 0;
@@ -513,7 +512,7 @@ export async function cmdScaffold(args: { file: string[] }) {
   for (const [rel, found] of byFile) {
     const path = entriesPath(book, rel);
     mkdirs(dirname(path));
-    const existing = exists(path) ? rstrip(readText(path), "\n") + "\n\n" : "";
+    const existing = exists(path) ? readText(path).replace(/\n+$/, "") + "\n\n" : "";
     const skeletons = found.map((p) => formatEntry({ hash: p.hash, kind: "translation", rules: "", intent: "", upstream: p.upstream, patched: p.upstream }));
     writeText(path, existing + skeletons.join("\n"));
   }
