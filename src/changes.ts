@@ -7,7 +7,7 @@ import { unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, foldersWith, isDir, isSymlink, LINK, lexists, mkdirs, type Mode, readDisk, readText, relative, writeDisk, writeText } from "./lib/fs.ts";
 import { splitlines, strip, W } from "./lib/py.ts";
-import { say, verbatim } from "./lib/term.ts";
+import { escaped, say, verbatim } from "./lib/term.ts";
 import { decodeReplace } from "./lib/text.ts";
 
 export const EDIT_KINDS = ["file", "add", "replace", "delete", "move", "copy"] as const;
@@ -210,7 +210,7 @@ export async function cmdShow(args: { change: string }) {
     if (e.kind === "file") {
       const base = splitlines(decodeReplace(c.read("base", e.path) ?? new Uint8Array()), true);
       const ours = splitlines(decodeReplace(c.read("ours", e.path) ?? new Uint8Array()), true);
-      verbatim(unifiedDiff(base, ours, `upstream/${e.path}`, `ours/${e.path}`));
+      verbatim(unifiedDiff(base, ours, escaped(`upstream/${e.path}`), escaped(`ours/${e.path}`)));
     } else if (e.kind === "add" || e.kind === "replace") {
       say(`${editText(e)} (${(c.read("ours", e.path) ?? new Uint8Array()).length} bytes)\n`);
     } else say(editText(e) + "\n");

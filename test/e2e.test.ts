@@ -5826,6 +5826,17 @@ describe("ForkTest", () => {
     expect(listed).not.toMatch(CONTROL);
   });
 
+  forkTest("test_show_prints_a_changed_path_with_control_characters_escaped", (t) => {
+    t.up.write("evil\u001b]0;TITLE\u0007.txt", "one\n");
+    t.up.commit("a file with control characters in its name");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.fork.write("evil\u001b]0;TITLE\u0007.txt", "ONE\n");
+    t.pb(["record", "shout", "--intent", "Shout."], { cwd: t.fork.path });
+    const shown = t.pb(["show", "shout"], { cwd: t.fork.path }).stdout;
+    expect(shown).toContain("--- upstream/evil\\u001b]0;TITLE\\u0007.txt\n+++ ours/evil\\u001b]0;TITLE\\u0007.txt\n");
+    expect(shown).not.toMatch(CONTROL);
+  });
+
   forkTest("test_check_and_status_json_keep_control_characters_as_json_escapes", (t) => {
     renameUpstream(t, "up\\u001b]0;NAME\\u0007\\u007f\\u009b");
     for (const args of [["check"], ["status", "--json"]]) {
