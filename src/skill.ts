@@ -83,7 +83,10 @@ function link(root: string, at: string, target: string, undo: (() => void)[]): b
   return true;
 }
 
-/** Install the update skill for agents in the repo. Returns the paths it changed, or null if it installed nothing. */
+/**
+ * Install the update skill for agents in the repo. Returns the paths it changed, or null if it installed nothing.
+ * It writes nothing, at any skill path, when one holds uncommitted changes, which would be lost.
+ */
 export function installSkill(book: Book): { changed: string[] } | null {
   if (!setting("start.install_skill", book)[0]) return null;
   const agents = setting("start.agents", book)[0];
@@ -104,6 +107,12 @@ export function installSkill(book: Book): { changed: string[] } | null {
   const changed: string[] = [];
   const undo: (() => void)[] = [];
   try {
+    const { uncommitted } = unkept(book);
+    if (uncommitted.length) {
+      process.stderr.write(`patchbook: the update skill was not installed, since these skill files differ from the shipped copy and are not in a commit:\n  ${uncommitted.join("\n  ")}\n`
+        + "Commit them, then run `patchbook skill install`.\n");
+      return null;
+    }
     mkdirs(dir);
     for (const { link: folder } of known) {
       if (!folder || sharesSkills(book.root, `${folder}/${NAME}`)) continue;
@@ -182,8 +191,9 @@ const folders = (book: Book) => wanted(book).filter((p) =>
 function unkept(book: Book): { uncommitted: string[]; ignored: string[] } {
   const uncommitted: string[] = [];
   const ignored: string[] = [];
+  const blocked = folders(book);
   for (const p of wanted(book)) {
-    if (!lexists(join(book.root, p)) || installed(book, p)) continue;
+    if (!lexists(join(book.root, p)) || blocked.includes(p) || installed(book, p)) continue;
     const status = git(["status", "--porcelain", "--ignored", "--untracked-files=all", "--", p],
       { cwd: book.root, check: false });
     if (status.startsWith("!!")) ignored.push(p);

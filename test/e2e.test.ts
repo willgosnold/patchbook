@@ -542,6 +542,110 @@ test("test_init_in_a_fork_with_edits_of_its_own_records_the_skill_apart_from_the
   }
 }, TIMEOUT);
 
+const SKILL_REFUSED = "Commit them, then run `patchbook skill install`";
+
+test("test_init_in_a_fork_keeps_an_uncommitted_edit_to_the_skill_and_records_nothing", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\ntwo\n");
+    up.commit("start");
+    sh(["git", "clone", "-q", up.path, join(t.tmp, "mine")], { cwd: t.tmp });
+    const mine = new Repo(join(t.tmp, "mine"));
+    mine.write(SKILL_FILE, STALE_SKILL + "My own line.\n");
+    const out = t.pb(["init", "--upstream", up.path], { cwd: mine.path });
+    expect(mine.read(SKILL_FILE)).toBe(STALE_SKILL + "My own line.\n");
+    expect(out.stderr).toContain(SKILL_FILE);
+    expect(out.stderr).toContain(SKILL_REFUSED);
+    expect(isSymlink(join(mine.path, SKILL_LINK)) || existsSync(join(mine.path, SKILL_LINK))).toBe(false);
+    expect(mine.read(".patchbook/series")).toBe("");
+    expect(existsSync(join(mine.path, ".patchbook/changes"))).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_init_in_the_folder_layout_keeps_an_uncommitted_edit_to_the_skill", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("a.md", "a\n");
+    up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    repo.write("README.md", "mine\n");
+    repo.commit("start");
+    repo.write(SKILL_FILE, STALE_SKILL + "My own line.\n");
+    const out = t.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: repo.path });
+    expect(repo.read(SKILL_FILE)).toBe(STALE_SKILL + "My own line.\n");
+    expect(out.stderr).toContain(SKILL_FILE);
+    expect(out.stderr).toContain(SKILL_REFUSED);
+    expect(isSymlink(join(repo.path, SKILL_LINK)) || existsSync(join(repo.path, SKILL_LINK))).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_init_keeps_an_uncommitted_file_at_the_skill_link_and_writes_no_skill", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\ntwo\n");
+    up.commit("start");
+    sh(["git", "clone", "-q", up.path, join(t.tmp, "mine")], { cwd: t.tmp });
+    const mine = new Repo(join(t.tmp, "mine"));
+    mine.write(SKILL_LINK, "my own notes\n");
+    const out = t.pb(["init", "--upstream", up.path], { cwd: mine.path });
+    expect(mine.read(SKILL_LINK)).toBe("my own notes\n");
+    expect(isSymlink(join(mine.path, SKILL_LINK))).toBe(false);
+    expect(out.stderr).toContain(SKILL_LINK);
+    expect(out.stderr).toContain(SKILL_REFUSED);
+    expect(existsSync(join(mine.path, ".agents"))).toBe(false);
+    expect(mine.read(".patchbook/series")).toBe("");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test.skipIf(process.getuid?.() === 0)("test_init_finishes_with_a_note_when_the_skill_file_cannot_be_read", () => {
+  for (const folder of [false, true]) {
+    const t = new Case();
+    let file = "";
+    try {
+      Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\ntwo\n");
+      up.commit("start");
+      let repo: Repo;
+      if (folder) {
+        repo = new Repo(join(t.tmp, "adapted"));
+        repo.write("README.md", "mine\n");
+        repo.commit("start");
+      } else {
+        sh(["git", "clone", "-q", up.path, join(t.tmp, "mine")], { cwd: t.tmp });
+        repo = new Repo(join(t.tmp, "mine"));
+      }
+      repo.write(SKILL_FILE, STALE_SKILL);
+      repo.commit("skill");
+      file = join(repo.path, SKILL_FILE);
+      const mode = statSync(file).mode & 0o777;
+      chmodSync(file, 0o000);
+      const out = t.pb(["init", "--upstream", up.path, ...(folder ? ["--output-to", "out"] : [])], { cwd: repo.path });
+      expect(out.stderr).toContain("couldn't install the update skill");
+      expect(statSync(file).mode & 0o777).toBe(0);
+      chmodSync(file, mode);
+      expect(repo.read(SKILL_FILE)).toBe(STALE_SKILL);
+      expect(statSync(file).mode & 0o777).toBe(mode);
+      if (!folder) expect(repo.read(".patchbook/series")).toBe("");
+    } finally {
+      if (file && existsSync(file)) chmodSync(file, 0o644);
+      t.cleanup();
+    }
+  }
+}, TIMEOUT);
+
 test("test_init_in_a_fork_records_nothing_for_a_skill_it_did_not_write", () => {
   const t = new Case();
   try {
@@ -1381,6 +1485,7 @@ test("test_init_replaces_a_skill_file_that_is_not_utf8", () => {
     sh(["git", "clone", "-q", up.path, join(t.tmp, "mine")], { cwd: t.tmp });
     const mine = new Repo(join(t.tmp, "mine"));
     writeBytes(mine, SKILL_FILE, NOT_UTF8);
+    mine.commit("a skill that is not text");
     Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
     const out = t.pb(["init", "--upstream", up.path], { cwd: mine.path });
     expect(out.stderr).not.toContain("TypeError");
