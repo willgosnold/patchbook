@@ -17,7 +17,7 @@ import { quoteToml } from "./lib/toml.ts";
 import { cmdIntent, cmdRecord } from "./record.ts";
 import { checkUpstreamRemote, notThisRepo } from "./remote.ts";
 import { cmdConfig } from "./settings.ts";
-import { cmdSkill, installSkill, recordSkill, SCHEDULE, leftBehindSkill } from "./skill.ts";
+import { cmdSkill, folderFail, installSkill, recordSkill, SCHEDULE, leftBehindSkill } from "./skill.ts";
 import { absoluteRemote, defaultName, cmdUpstream } from "./store.ts";
 import { cmdCheck, cmdSync, syncUpstream } from "./sync.ts";
 import { Undo } from "./undo.ts";
@@ -77,7 +77,8 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   process.chdir(dest);
   keepGitHook(book);
   await installHook(book);
-  if (installSkill(book)) await recordSkill(book);
+  const skill = installSkill(book);
+  if (skill && !skill.blocked.length) await recordSkill(book);
   git(["add", "-A"], { cwd: dest });
   git(["commit", "--quiet", "-m", `Start a patchbook at upstream ${commit.slice(0, 7)}`], { cwd: dest, env: noHook() });
   process.stdout.write(`cloned ${args.url} into ${dest}, pinned at ${commit.slice(0, 7)}.\n`
@@ -85,6 +86,7 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
     + `${commitAdvice(book)}\n`
     + `${SCHEDULE}\n`
     + `To publish it: gh repo create <name> --private --source ${dest} --push\n`);
+  if (skill?.blocked.length) throw folderFail(skill.blocked);
   return 0;
 }
 
@@ -96,12 +98,12 @@ function refuseDanglingLinks(root: string): void {
   }
 }
 
-async function allOrNothing(book: Book, write: (undo: Undo) => Promise<void>): Promise<void> {
+async function allOrNothing<T>(book: Book, write: (undo: Undo) => Promise<T>): Promise<T> {
   const undo = new Undo();
   const gitFiles = git(["rev-parse", "--path-format=absolute", "--git-path", "config", "--git-path", "index"], { cwd: book.root }).split("\n");
   for (const p of [resolve(book.dir), ...gitFiles, ...book.upstreams.flatMap((u) => (u.vendor ? [u.vendor] : []))]) undo.hold(p);
   try {
-    await write(undo);
+    return await write(undo);
   } catch (e) {
     const stuck = undo.restore();
     if (stuck.length) {
@@ -130,15 +132,17 @@ async function cmdInit(args: {
     book.refuseLinks();
     book.refuseLinkedTop();
     notThisRepo(root, args.upstream);
-    await allOrNothing(book, async (undo) => {
+    const skill = await allOrNothing(book, async (undo) => {
       book.dropPin(name);
       syncUpstream(book, book.upstreams[0]!, args.branch, []);
-      installSkill(book, undo);
+      const skill = installSkill(book, undo);
       writeConfig(root, text);
       installHookOrWarn(book, undo);
       await installHook(book, undo);
+      return skill;
     });
     process.stdout.write(`Next: patchbook build, then stage and commit.\n${SCHEDULE}\n`);
+    if (skill?.blocked.length) throw folderFail(skill.blocked);
     return 0;
   }
   if (args.vendor !== null) {
@@ -155,7 +159,7 @@ async function cmdInit(args: {
   const base = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: root });
   const first = book.upstreams[0]!;
   refuseFoldedUpstream(first.mounted(first.files(base)).keys());
-  await allOrNothing(book, async (undo) => {
+  const installed = await allOrNothing(book, async (undo) => {
     book.writeLock(name, base, first.treeOf(base));
     if (!hasRemote) git(["remote", "add", "--end-of-options", "upstream", args.upstream], { cwd: root });
     const installed = installSkill(book, undo);
@@ -163,9 +167,11 @@ async function cmdInit(args: {
     installHookOrWarn(book, undo);
     await installHook(book, undo);
     if (installed && (installed.changed.length || leftBehindSkill(book).length)) await recordSkill(book);
+    return installed;
   });
   process.stdout.write(`pinned upstream at ${base.slice(0, 7)}, where this repo branched from ${args.upstream}.\n`
     + "Capture your existing changes with `patchbook record`, then `patchbook build`, stage, and commit.\n" + SCHEDULE + "\n");
+  if (installed?.blocked.length) throw folderFail(installed.blocked);
   return 0;
 }
 

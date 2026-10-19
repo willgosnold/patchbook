@@ -145,6 +145,19 @@ type FsError = Error & { errno: number; syscall: string; path: string; dest?: st
 const isFsError = (e: unknown): e is FsError =>
   e instanceof Error && "errno" in e && typeof e.errno === "number" && "syscall" in e && typeof e.syscall === "string" && "path" in e && typeof e.path === "string";
 
+const DID: ReadonlyMap<string, string> = new Map([
+  ["mkdir", "create"], ["rmdir", "remove"], ["unlink", "remove"], ["rm", "remove"], ["symlink", "link"], ["rename", "move"],
+  ["readlink", "read"], ["scandir", "list"], ["chmod", "change the mode of"],
+]);
+
+/** What a failed filesystem call says to the user: the operation, the path and the system's reason, with no errno code. Null for any other error. */
+export function fsMessage(e: unknown): string | null {
+  if (e instanceof WriteFail) return e.message;
+  if (!(e instanceof Error && "errno" in e && typeof e.errno === "number" && "syscall" in e && typeof e.syscall === "string")) return null;
+  const at = [(e as Partial<FsError>).dest, (e as Partial<FsError>).path].find((p) => typeof p === "string");
+  return `couldn't ${DID.get(e.syscall) ?? e.syscall}${at ? ` ${at}` : ""}: ${getSystemErrorMessage(e.errno)}`;
+}
+
 function writing<T>(write: () => T): T {
   try {
     return write();
