@@ -7,7 +7,8 @@ import { Fail } from "./lib/fail.ts";
 import { exists, type File, GITLINK, isDir, isMode, isSymlink, lexists, mkdirs, type Mode, normMode, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
 import { dumps, loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
-import { length, type PyValue, strRepr } from "./lib/py.ts";
+import type { JsonValue } from "./lib/json.ts";
+import { length, strRepr } from "./lib/py.ts";
 import { byCodePoint, decode } from "./lib/text.ts";
 import { isTable, parseToml, type Table } from "./settings.ts";
 import { stagedFolder, treeFiles, Upstream } from "./store.ts";
@@ -431,7 +432,7 @@ export class Book {
     return best;
   }
 
-  lock(): Map<string, PyValue> {
+  lock(): Map<string, JsonValue> {
     const path = join(this.dir, "upstream.lock");
     if (!exists(path)) return new Map();
     const data = loads(readText(path));
@@ -450,7 +451,7 @@ export class Book {
     if (data.delete(name)) this.saveLock(data);
   }
 
-  private saveLock(data: Map<string, PyValue>): void {
+  private saveLock(data: Map<string, JsonValue>): void {
     mkdirs(this.dir);
     writeText(join(this.dir, "upstream.lock"), dumps(new Map([...data].sort(([a], [b]) => byCodePoint(a, b))), 2) + "\n");
   }

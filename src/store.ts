@@ -7,9 +7,8 @@ import { Book, PB } from "./book.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, mkdirs, normMode, pjoin, readDisk, readText, relative, resolve, writeDisk } from "./lib/fs.ts";
 import { sha1 } from "./lib/hash.ts";
-import { loads } from "./lib/json.ts";
+import { type JsonValue, loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
-import { type PyValue } from "./lib/py.ts";
 import { byCodePoint, decode, decodeReplace, encode } from "./lib/text.ts";
 import { storeDir, type Table } from "./settings.ts";
 
@@ -344,7 +343,7 @@ export function indexFiles(root: string, rel: string): { files: Files; tree: str
   return { files, tree };
 }
 
-function get(value: PyValue | undefined, key: string): PyValue | undefined {
+function get(value: JsonValue | undefined, key: string): JsonValue | undefined {
   if (value === undefined) return undefined;
   if (!(value instanceof Map)) throw new Fail(`last-sync.json: expected an object holding ${key}`);
   return value.get(key);

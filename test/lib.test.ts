@@ -10,15 +10,13 @@ import { nonFolders, rmFolders } from "../src/lib/fs.ts";
 import { dumps, loads } from "../src/lib/json.ts";
 import { shellQuote } from "../src/lib/proc.ts";
 import {
-  floatRepr, round2, str, strRepr,
+  str, strRepr,
 } from "../src/lib/py.ts";
 import { byCodePoint, lines } from "../src/lib/text.ts";
 
 type Fixture = {
   matcher: { a: string | string[]; b: string | string[]; autojunk: boolean; ratio: number; opcodes: Opcode[] }[];
   unified: { a: string; b: string; fromfile: string; tofile: string; diff: string }[];
-  round: { x: number; round: string }[];
-  floats: { x: number; repr: string }[];
   json: { text: string; dumps: string; indent: string; str: string }[];
   repr: { s: string; repr: string }[];
 };
@@ -147,19 +145,17 @@ test.each(cases.unified)("unified_diff %#", (c) => {
   expect(unifiedDiff(pythonLines(c.a), pythonLines(c.b), c.fromfile, c.tofile)).toBe(c.diff);
 });
 
-test("round(x, 2), ties to even", () => {
-  for (const c of cases.round) expect([c.x, floatRepr(round2(c.x).value)]).toEqual([c.x, c.round]);
-});
-
-test("repr(float)", () => {
-  for (const c of cases.floats) expect(floatRepr(c.x)).toBe(c.repr);
-});
-
-test.each(cases.json)("json loads, dumps and str %#", (c) => {
+// Python keeps a float's form, as in 1.0, and patchbook reads every JSON number as a plain number.
+test.each(cases.json.filter((c) => !/\d[.eE]|NaN|Infinity/.test(c.text)))("json loads, dumps and str %#", (c) => {
   const value = loads(c.text);
   expect(dumps(value)).toBe(c.dumps);
   expect(dumps(value, 2)).toBe(c.indent);
   expect(str(value)).toBe(c.str);
+});
+
+test("json reads every number as a plain number, so 1.0 is written back as 1", () => {
+  expect(dumps(loads("[1.0, -0.0, 1e5, 1e-05, 0.5, 2]"))).toBe("[1, 0, 100000, 0.00001, 0.5, 2]");
+  expect(str(loads("2.0"))).toBe("2");
 });
 
 test("repr(str)", () => {

@@ -8,9 +8,9 @@ import { CHANGE_NAME, type Change } from "./changes.ts";
 import { unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import type { File } from "./lib/fs.ts";
-import { JsonError, loads } from "./lib/json.ts";
+import { JsonError, type JsonValue, loads } from "./lib/json.ts";
 import { spawn, which } from "./lib/proc.ts";
-import { length, type PyValue, slice, str, strRepr } from "./lib/py.ts";
+import { length, slice, str, strRepr } from "./lib/py.ts";
 import { decode, decodeReplace, encode, isText, lines } from "./lib/text.ts";
 import { configured, readToml, type Source, setting, SETTINGS, type Table, USER_CONFIG } from "./settings.ts";
 
@@ -149,13 +149,13 @@ export function writeIntent(
   }
   const reply = askModel(provider, PROVIDERS.get(provider)!, model, effort, intentPrompt(listed, instruction, diff));
   const m = /\{.*\}/s.exec(reply);
-  let answer: PyValue = new Map();
+  let answer: JsonValue = new Map();
   try {
     if (m) answer = loads(m[0]);
   } catch (e) {
     if (!(e instanceof JsonError)) throw e;
   }
-  const fields = answer instanceof Map ? answer : new Map<string, PyValue>();
+  const fields = answer instanceof Map ? answer : new Map<string, JsonValue>();
   const given = fields.get("change") ?? "";
   let chosen = typeof given === "string" ? given : "";
   let intent: string | null = oneLine(str(fields.has("intent") ? fields.get("intent")! : ""));

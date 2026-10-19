@@ -10,7 +10,7 @@ const ambientConfigHome = process.env["XDG_CONFIG_HOME"];
 process.env["XDG_CONFIG_HOME"] = join(sandbox, "config");
 
 const { applyStructure } = await import("../src/assemble.ts");
-const { blockSpans, formatEntry, readEntries } = await import("../src/blocks.ts");
+const { blockSpans, formatEntry, nearest, readEntries } = await import("../src/blocks.ts");
 const { Book, globRe } = await import("../src/book.ts");
 const { Change } = await import("../src/changes.ts");
 const { intentSettings, PROVIDERS } = await import("../src/intent.ts");
@@ -312,6 +312,13 @@ describe("entries", () => {
   test("a head that is not 12 hex digits is not an entry", () => {
     const path = put(join(scratch(), "x.entries"), "=== entry XYZ\n");
     expect(() => readEntries(path)).toThrow("text before the first entry");
+  });
+});
+
+describe("nearest", () => {
+  test("rounds the similarity to two places, and a half up", () => {
+    // The two share 5 of their 16 characters, so the ratio is 2 * 5 / 16 = 0.625.
+    expect(nearest("abcdefgh", [{ line: 3, hash: "h", upstream: "abcdeXYZ" }])).toEqual([{ line: 3, hash: "h", similarity: 0.63 }]);
   });
 });
 

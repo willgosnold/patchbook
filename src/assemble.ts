@@ -16,7 +16,7 @@ import {
 import { blobOid } from "./lib/hash.ts";
 import { dumps, type Json, loads } from "./lib/json.ts";
 import { type Env, git, run, spawn } from "./lib/proc.ts";
-import { floatRepr, ljust } from "./lib/py.ts";
+import { ljust } from "./lib/py.ts";
 import { byCodePoint, bytesEqual, decode, encode, isText } from "./lib/text.ts";
 import { pinned, refuseMergedUpstream } from "./store.ts";
 
@@ -29,7 +29,7 @@ export function describe(p: Problem): string {
     case "leak":
       return `leak      ${at} still says ${p.terms.join(", ")}`;
     case "orphan": {
-      const near = p.nearest.map((n) => `line ${n.line} [${n.hash}] ${floatRepr(n.similarity)}`).join(", ") || "none";
+      const near = p.nearest.map((n) => `line ${n.line} [${n.hash}] ${n.similarity}`).join(", ") || "none";
       return `orphan    ${p.file} [${p.hash}] intent: ${p.intent}\n          nearest new blocks: ${near}`;
     }
     case "invalid":

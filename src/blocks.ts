@@ -8,7 +8,7 @@ import { Fail } from "./lib/fail.ts";
 import { pjoin, readText } from "./lib/fs.ts";
 import { sha256 } from "./lib/hash.ts";
 import { loads } from "./lib/json.ts";
-import { length, round2, str, strRepr } from "./lib/py.ts";
+import { length, str, strRepr } from "./lib/py.ts";
 import { byCodePoint, decode } from "./lib/text.ts";
 
 export const ENTRY_FIELDS = ["kind", "rules", "intent"] as const;
@@ -114,7 +114,7 @@ export function nearest(text: string, candidates: readonly Unmatched[], limit = 
   const scored = candidates
     .map((c) => [new SequenceMatcher<string>(text, c.upstream).ratio(), c] as const)
     .sort((x, y) => y[0] - x[0]);
-  return scored.slice(0, limit).filter(([r]) => r >= 0.4).map(([r, c]) => ({ line: c.line, hash: c.hash, similarity: round2(r).value }));
+  return scored.slice(0, limit).filter(([r]) => r >= 0.4).map(([r, c]) => ({ line: c.line, hash: c.hash, similarity: Math.round(r * 100) / 100 }));
 }
 
 export function orphan(rel: string, entry: Entry, candidates: readonly Unmatched[]): Problem {

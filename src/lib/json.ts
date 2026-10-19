@@ -1,12 +1,13 @@
-// Python's json.loads and json.dumps. JSON.parse loses the difference between 1 and 1.0 and puts
-// integer-like keys first, and JSON.stringify doesn't escape non-ASCII or write 1.0.
-import { floatRepr, PyFloat, type PyValue } from "./py.ts";
+// Python's json.loads and json.dumps, with every number a plain number. JSON.parse puts integer-like
+// keys first, and JSON.stringify doesn't escape non-ASCII.
+
+/** A value `loads` reads: objects as maps, in the order of their keys. */
+export type JsonValue = null | boolean | number | string | JsonValue[] | Map<string, JsonValue>;
 
 export type Json =
   | null
   | boolean
   | number
-  | PyFloat
   | string
   | readonly Json[]
   | ReadonlyMap<string, Json>
@@ -35,7 +36,6 @@ export function dumps(value: Json, indent?: number): string {
     if (typeof v === "boolean") return v ? "true" : "false";
     if (typeof v === "number") return number(v);
     if (typeof v === "string") return quoteString(v);
-    if (v instanceof PyFloat) return Number.isFinite(v.value) ? floatRepr(v.value) : number(v.value);
     const items: string[] = isList(v)
       ? v.map((x) => write(x, depth + 1))
       : Array.from(isMap(v) ? v : Object.entries(v), ([k, x]) => `${quoteString(k)}: ${write(x, depth + 1)}`);
@@ -56,15 +56,14 @@ function isMap(v: Json): v is ReadonlyMap<string, Json> {
   return v instanceof Map;
 }
 
-const NUMBER = /-?(?:0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?/y;
-const CONSTANTS: [string, PyValue][] = [
-  ["null", null], ["true", true], ["false", false],
-  ["NaN", new PyFloat(NaN)], ["Infinity", new PyFloat(Infinity)], ["-Infinity", new PyFloat(-Infinity)],
+const NUMBER = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?/y;
+const CONSTANTS: [string, JsonValue][] = [
+  ["null", null], ["true", true], ["false", false], ["NaN", NaN], ["Infinity", Infinity], ["-Infinity", -Infinity],
 ];
 const UNESCAPE = new Map([['"', '"'], ["\\", "\\"], ["/", "/"], ["b", "\b"], ["f", "\f"], ["n", "\n"], ["r", "\r"], ["t", "\t"]]);
 
-/** `json.loads`: Python's types, key order, NaN and Infinity, and its strictness about control characters. */
-export function loads(text: string): PyValue {
+/** `json.loads`: Python's key order, NaN and Infinity, and its strictness about control characters. */
+export function loads(text: string): JsonValue {
   let i = 0;
   const fail = (what: string): never => {
     throw new JsonError(`${what} at char ${i}`);
@@ -101,13 +100,13 @@ export function loads(text: string): PyValue {
     i++;
     return out;
   };
-  const value = (): PyValue => {
+  const value = (): JsonValue => {
     space();
     const ch = text[i];
     if (ch === '"') return string();
     if (ch === "[") {
       i++;
-      const list: PyValue[] = [];
+      const list: JsonValue[] = [];
       space();
       if (text[i] === "]") return i++, list;
       for (;;) {
@@ -120,7 +119,7 @@ export function loads(text: string): PyValue {
     }
     if (ch === "{") {
       i++;
-      const map = new Map<string, PyValue>();
+      const map = new Map<string, JsonValue>();
       space();
       if (text[i] === "}") return i++, map;
       for (;;) {
@@ -141,7 +140,7 @@ export function loads(text: string): PyValue {
     const m = NUMBER.exec(text);
     if (m) {
       i += m[0].length;
-      return m[1] !== undefined || m[2] !== undefined ? new PyFloat(Number(m[0])) : Number(m[0]);
+      return Number(m[0]);
     }
     for (const [word, v] of CONSTANTS) {
       if (text.startsWith(word, i)) {
