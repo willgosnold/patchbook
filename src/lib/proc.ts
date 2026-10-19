@@ -30,11 +30,61 @@ export function spawn(args: readonly string[], { cwd, input, env, capture = true
   return { code: result.exitCode, stdout: result.stdout ?? empty, stderr: result.stderr ?? empty, timedOut: result.exitedDueToTimeout === true };
 }
 
-const WEB_SCHEMES = /^(https?|ftps?)$/i;
+const WEB_SCHEMES = /(^|\+)(https?|ftps?)$/i;
+const AUTHORITY = /\b([a-z][a-z0-9+.-]*):\/\/(?=([^/]*))/gi;
 
+type Chars = { from: number; char: string }[];
+
+// Git percent-decodes a non-web url once before it splits it. A `%` without two hex digits stays literal.
+function decodeOnce(raw: string): Chars {
+  const out: Chars = [];
+  for (let i = 0; i < raw.length; i++) {
+    const hex = raw[i] === "%" ? raw.slice(i + 1, i + 3) : "";
+    if (/^[0-9a-f]{2}$/i.test(hex)) {
+      out.push({ from: i, char: String.fromCharCode(parseInt(hex, 16)) });
+      i += 2;
+    } else out.push({ from: i, char: raw[i]! });
+  }
+  return out;
+}
+
+/** The raw span to hide when the url holds a password, or null when patchbook keeps it. */
+function secret(scheme: string, authority: string): [number, number] | null {
+  const at = authority.lastIndexOf("@");
+  if (WEB_SCHEMES.test(scheme)) return at > 0 ? [0, at + 1] : null;
+  const chars = decodeOnce(authority);
+  const end = chars.findIndex(({ char }) => char === "/");
+  const decoded = end < 0 ? chars : chars.slice(0, end);
+  const lastAt = decoded.findLastIndex(({ char }) => char === "@");
+  const colon = decoded.findIndex(({ char }, i) => char === ":" && i < lastAt);
+  return colon < 0 ? null : [decoded[colon]!.from, decoded[lastAt]!.from];
+}
+
+/** Each `scheme://` in the text, with the absolute span of its password, or null when patchbook keeps it. */
+function* authorities(text: string): Generator<[number, number] | null> {
+  for (const m of text.matchAll(AUTHORITY)) {
+    const cut = secret(m[1]!, m[2]!);
+    const start = m.index + m[0].length;
+    yield cut === null ? null : [start + cut[0], start + cut[1]];
+  }
+}
+
+/** User info runs to the last `@` before the first `/`, so a password may hold spaces, `#` or `?`. */
 export function redact(text: string): string {
-  return text.replace(/\b([a-z][a-z0-9+.-]*):\/\/([^\s/]*)@/gi, (_, scheme: string, userinfo: string) =>
-    WEB_SCHEMES.test(scheme) ? `${scheme}://` : `${scheme}://${userinfo.split(":")[0]}@`);
+  let out = "";
+  let at = 0;
+  for (const cut of authorities(text)) {
+    if (cut === null) continue;
+    out += text.slice(at, cut[0]);
+    at = Math.max(at, cut[1]);
+  }
+  return out + text.slice(at);
+}
+
+export function refuseCredentials(url: string): void {
+  if (authorities(url).next().value != null) {
+    throw new Fail(`${redact(url)} has credentials that patchbook would not keep. Give git the password through a credential helper instead. See: git help credential`);
+  }
 }
 
 /** Run a command and return its stdout, failing if it exits non-zero. */

@@ -2585,7 +2585,7 @@ test("test_a_refused_fork_init_does_not_print_the_password_in_a_remote", () => {
     const moved = new Repo(join(t.tmp, "moved"));
     moved.write("app.txt", "two\n");
     moved.commit("two");
-    const refused = t.pb(["init", "--upstream", `ssh://user:s3cretpw@fake${moved.path}`], { cwd: fork.path, code: 1 });
+    const refused = t.pb(["init", "--upstream", `ssh://user@fake${moved.path}`], { cwd: fork.path, code: 1 });
     expect(refused.stderr).toContain("the upstream remote and --upstream serve different commits for main");
     expect(refused.stderr).toContain(`The remote fetches ssh://user@fake${up.path}, --upstream is ssh://user@fake${moved.path}`);
     expect(refused.stderr).not.toContain("s3cretpw");
@@ -2615,27 +2615,24 @@ for (const [how, hasRemote] of [["unreachable_remote", true], ["unreachable_give
   }, TIMEOUT);
 }
 
-for (const hasRemote of [true, false]) {
-  test(`test_a_fork_init_names_the_repo_it_follows_without_the_password${hasRemote ? "_of_its_upstream_remote" : ""}`, () => {
-    const t = new Case();
-    try {
-      fakeSsh(t);
-      const up = new Repo(join(t.tmp, "upstream"));
-      up.write("app.txt", "one\n");
-      up.commit("start");
-      const fork = forkOf(t, up);
-      const secret = `ssh://user:s3cretpw@fake${up.path}`;
-      if (hasRemote) sh(["git", "remote", "add", "upstream", secret], { cwd: fork.path });
-      const init = t.pb(["init", "--upstream", hasRemote ? `ssh://user@fake${up.path}` : secret], { cwd: fork.path });
-      expect(init.stdout).toContain(`branched from ssh://user@fake${up.path}.`);
-      expect(init.stdout).not.toContain("s3cretpw");
-      expect(fork.read(".patchbook/config.toml")).toContain(`remote = "ssh://user@fake${up.path}"`);
-    } finally {
-      delete process.env["GIT_SSH_COMMAND"];
-      t.cleanup();
-    }
-  }, TIMEOUT);
-}
+test("test_a_fork_init_names_the_repo_it_follows_without_the_password_of_its_upstream_remote", () => {
+  const t = new Case();
+  try {
+    fakeSsh(t);
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    up.commit("start");
+    const fork = forkOf(t, up);
+    sh(["git", "remote", "add", "upstream", `ssh://user:s3cretpw@fake${up.path}`], { cwd: fork.path });
+    const init = t.pb(["init", "--upstream", `ssh://user@fake${up.path}`], { cwd: fork.path });
+    expect(init.stdout).toContain(`branched from ssh://user@fake${up.path}.`);
+    expect(init.stdout).not.toContain("s3cretpw");
+    expect(fork.read(".patchbook/config.toml")).toContain(`remote = "ssh://user@fake${up.path}"`);
+  } finally {
+    delete process.env["GIT_SSH_COMMAND"];
+    t.cleanup();
+  }
+}, TIMEOUT);
 
 for (const [how, branch] of [["a_stale_mirror", "main"], ["a_branch_only_the_given_url_has", "feature"]] as const) {
   test(`test_a_fork_init_says_the_remote_serves_different_commits_for_${how}`, () => {
@@ -2660,38 +2657,19 @@ for (const [how, branch] of [["a_stale_mirror", "main"], ["a_branch_only_the_giv
   }, TIMEOUT);
 }
 
-test("test_clone_does_not_print_or_commit_the_password_in_the_url", () => {
-  const t = new Case();
-  try {
-    fakeSsh(t);
-    const up = new Repo(join(t.tmp, "upstream"));
-    up.write("app.txt", "one\n");
-    up.commit("start");
-    const clone = t.pb(["clone", `ssh://user:s3cretpw@fake${up.path}`, "fork"], { cwd: t.tmp });
-    expect(clone.stdout).toContain(`cloned ssh://user@fake${up.path} into`);
-    expect(clone.stdout).not.toContain("s3cretpw");
-    expect(read(join(t.tmp, "fork/.patchbook/config.toml"))).toContain(`remote = "ssh://user@fake${up.path}"`);
-  } finally {
-    delete process.env["GIT_SSH_COMMAND"];
-    t.cleanup();
-  }
-}, TIMEOUT);
-
-test("test_clone_and_init_do_not_name_the_upstream_after_the_password_of_a_url_with_no_path", () => {
+test("test_clone_and_init_name_the_upstream_after_the_host_of_a_url_with_no_path", () => {
   const t = new Case();
   try {
     const up = new Repo(join(t.tmp, "upstream"));
     up.write("app.txt", "one\n");
     up.commit("start");
-    const secret = "https://user:s3cretpw@host.invalid/";
-    Object.assign(t.env, { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: `url.${up.path}.insteadOf`, GIT_CONFIG_VALUE_0: secret });
-    const clone = t.pb(["clone", secret], { cwd: t.tmp });
+    const url = "https://host.invalid/";
+    Object.assign(t.env, { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: `url.${up.path}.insteadOf`, GIT_CONFIG_VALUE_0: url });
+    t.pb(["clone", url], { cwd: t.tmp });
     const fork = forkOf(t, up);
-    const init = t.pb(["init", "--upstream", secret], { cwd: fork.path });
-    for (const [out, dir] of [[clone.stdout, join(t.tmp, "host.invalid")], [init.stdout, fork.path]] as const) {
-      expect(out).not.toContain("s3cretpw");
+    t.pb(["init", "--upstream", url], { cwd: fork.path });
+    for (const dir of [join(t.tmp, "host.invalid"), fork.path]) {
       expect(read(join(dir, ".patchbook/config.toml"))).toContain('name = "host.invalid"');
-      expect(read(join(dir, ".patchbook/upstream.lock"))).not.toContain("s3cretpw");
       expect(t.pb(["status"], { cwd: dir }).stdout).toContain("at host.invalid ");
     }
   } finally {
@@ -2720,33 +2698,6 @@ for (const [how, hasRemote] of [["remote", true], ["given_url", false]] as const
     }
   }, TIMEOUT);
 }
-
-test("test_a_refused_fork_init_says_to_add_back_the_password_it_does_not_print", () => {
-  const t = new Case();
-  try {
-    fakeSsh(t);
-    const up = new Repo(join(t.tmp, "upstream"));
-    up.write("app.txt", "one\n");
-    up.commit("start");
-    const fork = forkOf(t, up);
-    sh(["git", "remote", "add", "upstream", up.path], { cwd: fork.path });
-    sh(["git", "clone", "-q", up.path, "moved"], { cwd: t.tmp });
-    const moved = new Repo(join(t.tmp, "moved"));
-    moved.write("app.txt", "two\n");
-    moved.commit("two");
-    const given = `ssh://user:s3cretpw@fake${moved.path}`;
-    const refused = t.pb(["init", "--upstream", given], { cwd: fork.path, code: 1 });
-    expect(refused.stderr).toContain("add the credentials from --upstream to the URL in this command");
-    const fix = /^.*To follow .*?: (git config --replace-all remote\.upstream\.url .*)$/m.exec(refused.stderr)?.[1];
-    expect(fix).toBe(`git config --replace-all remote.upstream.url ssh://user@fake${moved.path}`);
-    sh(["sh", "-c", fix!.replace("ssh://user@", "ssh://user:s3cretpw@")], { cwd: fork.path });
-    t.pb(["init", "--upstream", given], { cwd: fork.path });
-    expect(existsSync(join(fork.path, ".patchbook/config.toml"))).toBe(true);
-  } finally {
-    delete process.env["GIT_SSH_COMMAND"];
-    t.cleanup();
-  }
-}, TIMEOUT);
 
 for (const [how, dir, given] of [
   ["dot_dot_from_a_subfolder", "sub", () => ".."],
@@ -3051,6 +3002,134 @@ for (const layout of ["fork", "folder"]) {
     }
   }, TIMEOUT);
 }
+
+const CREDENTIAL_URLS: readonly (readonly [string, string, string, string])[] = [
+  ["a_password", "https://user:s3cretpw@host.invalid/team/up", "https://host.invalid/team/up", "s3cretpw"],
+  ["a_token_as_the_user_name", "https://s3cretpw@host.invalid/team/up", "https://host.invalid/team/up", "s3cretpw"],
+  ["an_ssh_password", "ssh://git:s3cretpw@host.invalid/team/up", "ssh://git@host.invalid/team/up", "s3cretpw"],
+  ["a_token_as_the_user_name_of_a_git_plus_https_url", "git+https://s3cretpw@host.invalid/team/up", "git+https://host.invalid/team/up", "s3cretpw"],
+  ["an_ssh_password_with_an_encoded_colon", "ssh://u%3ASEKRIT@127.0.0.1:1/team/up", "ssh://u@127.0.0.1:1/team/up", "SEKRIT"],
+  ["an_ssh_password_with_a_lower_case_encoded_colon", "ssh://u%3aSEKRIT@127.0.0.1:1/team/up", "ssh://u@127.0.0.1:1/team/up", "SEKRIT"],
+  ["a_git_plus_ssh_password_with_an_encoded_colon", "git+ssh://u%3ASEKRIT@127.0.0.1:1/team/up", "git+ssh://u@127.0.0.1:1/team/up", "SEKRIT"],
+  ["an_ssh_password_with_an_encoded_colon_and_an_encoded_at_sign_in_the_host", "ssh://u@127.0.0.1%3ASEKRIT%40x/team/up", "ssh://u@127.0.0.1%40x/team/up", "SEKRIT"],
+  ...([["a_no_break_space", "\u00a0"], ["a_space", " "], ["a_tab", "\t"], ["a_newline", "\n"]] as const).map(
+    ([name, blank]) => [`a_password_with_${name}`, `https://user:SEKRITa${blank}SEKRITb@host.invalid/team/up`, "https://host.invalid/team/up", "SEKRIT"] as const,
+  ),
+];
+
+const storeState = (t: Case): Record<string, string> | null => (existsSync(join(t.tmp, "store")) ? tree(join(t.tmp, "store")) : null);
+
+const reachableAs = (t: Case, url: string, repo: Repo): void =>
+  void Object.assign(t.env, {
+    GIT_CONFIG_COUNT: "2",
+    GIT_CONFIG_KEY_0: `url.${repo.path}.insteadOf`, GIT_CONFIG_VALUE_0: url,
+    GIT_CONFIG_KEY_1: "protocol.file.allow", GIT_CONFIG_VALUE_1: "always",
+  });
+
+const expectCredentialRefusal = ({ stdout, stderr }: { stdout: string; stderr: string }, shown: string, secret: string): void => {
+  expect(stderr).toContain(`patchbook: ${shown} has credentials that patchbook would not keep.`);
+  expect(stderr).toContain("Give git the password through a credential helper instead. See: git help credential");
+  expect(stdout).not.toContain(secret);
+  expect(stderr).not.toContain(secret);
+};
+
+for (const [how, url, shown, secret] of CREDENTIAL_URLS) {
+  test(`test_clone_refuses_a_url_with_${how}_and_creates_nothing`, () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "upstream"));
+      up.write("app.txt", "one\n");
+      up.commit("start");
+      reachableAs(t, url, up);
+      const before = readdirSync(t.tmp).sort();
+      const refused = t.pb(["clone", url, "fork"], { cwd: t.tmp, code: 1 });
+      expectCredentialRefusal(refused, shown, secret);
+      expect(readdirSync(t.tmp).sort()).toEqual(before);
+      expect(storeState(t)).toBeNull();
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+
+  for (const layout of ["fork", "folder"]) {
+    test(`test_a_${layout}_init_refuses_a_url_with_${how}_and_writes_nothing`, () => {
+      const t = new Case();
+      try {
+        const { up, repo, output } = startingRepo(t, layout);
+        reachableAs(t, url, up);
+        const before = repoState(repo.path);
+        const refused = t.pb(["init", "--upstream", url, ...output], { cwd: repo.path, code: 1 });
+        expectCredentialRefusal(refused, shown, secret);
+        expect(repoState(repo.path)).toEqual(before);
+        expect(storeState(t)).toBeNull();
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+  }
+
+  test(`test_track_refuses_a_url_with_${how}_and_writes_nothing`, () => {
+    const t = new Case();
+    try {
+      const { up, repo } = startingRepo(t, "fork");
+      t.pb(["init", "--upstream", up.path], { cwd: repo.path });
+      repo.commit("start a patchbook");
+      const extra = new Repo(join(t.tmp, "extra"));
+      extra.write("lib.txt", "lib\n");
+      extra.commit("start");
+      reachableAs(t, url, extra);
+      const before = repoState(repo.path);
+      const store = storeState(t);
+      const refused = t.pb(["track", "extra", url], { cwd: repo.path, code: 1 });
+      expectCredentialRefusal(refused, shown, secret);
+      expect(repoState(repo.path)).toEqual(before);
+      expect(storeState(t)).toEqual(store);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
+test("test_init_and_track_still_take_an_ssh_url_with_only_a_user_name", () => {
+  const t = new Case();
+  try {
+    fakeSsh(t);
+    const { up, repo } = startingRepo(t, "fork");
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("lib.txt", "lib\n");
+    extra.commit("start");
+    const given = `ssh://git@fake${up.path}`;
+    t.pb(["init", "--upstream", given], { cwd: repo.path });
+    expect(repo.read(".patchbook/config.toml")).toContain(`remote = "${given}"`);
+    expect(sh(["git", "remote", "get-url", "upstream"], { cwd: repo.path }).stdout.trim()).toBe(given);
+    repo.commit("start a patchbook");
+    t.pb(["track", "extra", `ssh://git@fake${extra.path}`], { cwd: repo.path });
+    expect(repo.read(".patchbook/config.toml")).toContain(`remote = "ssh://git@fake${extra.path}"`);
+  } finally {
+    delete process.env["GIT_SSH_COMMAND"];
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_init_and_track_still_take_an_ssh_url_whose_user_name_has_an_encoded_character_and_no_colon", () => {
+  const t = new Case();
+  try {
+    fakeSsh(t);
+    const { up, repo } = startingRepo(t, "fork");
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("lib.txt", "lib\n");
+    extra.commit("start");
+    const given = `ssh://g%69t@fake${up.path}`;
+    t.pb(["init", "--upstream", given], { cwd: repo.path });
+    expect(repo.read(".patchbook/config.toml")).toContain(`remote = "${given}"`);
+    repo.commit("start a patchbook");
+    t.pb(["track", "extra", `ssh://g%69t@fake${extra.path}`], { cwd: repo.path });
+    expect(repo.read(".patchbook/config.toml")).toContain(`remote = "ssh://g%69t@fake${extra.path}"`);
+  } finally {
+    delete process.env["GIT_SSH_COMMAND"];
+    t.cleanup();
+  }
+}, TIMEOUT);
 
 const INIT_STEPS: [string, string[], string, (repo: Repo) => string[]][] = [
   ["its_pin", ["fork", "folder"], ".patchbook/upstream.lock: permission denied", (repo) => (repo.write(".patchbook/upstream.lock", "{}\n", 0o444), [])],

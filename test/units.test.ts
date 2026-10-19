@@ -16,6 +16,7 @@ const { Change } = await import("../src/changes.ts");
 const { intentSettings, PROVIDERS } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
 const { meantMode, outputMode, recordedModes } = await import("../src/lib/fs.ts");
+const { redact, refuseCredentials } = await import("../src/lib/proc.ts");
 const { setToml, USER_CONFIG } = await import("../src/settings.ts");
 
 type Entry = ReturnType<typeof readEntries> extends Map<string, infer E> ? E : never;
@@ -237,6 +238,64 @@ describe("setToml", () => {
     setToml(path, "hook.enabled", false);
     expect(Bun.TOML.parse(read(path))).toEqual({ intent: { provider: "codex", model: "m" }, hook: { enabled: false } });
   });
+});
+
+describe("refuseCredentials and redact", () => {
+  // [url, what redact shows when git would hand ssh a login with a colon, null when the url is kept, the password to hide]
+  const spellings: readonly (readonly [string, string | null, string | null])[] = [
+    ["ssh://u%3ASEKRIT@h/p", "ssh://u@h/p", "SEKRIT"],
+    ["ssh://u%3aSEKRIT@h/p", "ssh://u@h/p", "SEKRIT"],
+    ["ssh://u%3AsEKRIT@h/p", "ssh://u@h/p", "sEKRIT"],
+    ["ssh://u%%3ASEKRIT@h/p", "ssh://u%@h/p", "SEKRIT"],
+    ["ssh://%3ASEKRIT@h/p", "ssh://@h/p", "SEKRIT"],
+    ["ssh://uSEKRIT%3A@h/p", "ssh://uSEKRIT@h/p", null],
+    ["ssh://u:SEKRIT@h/p", "ssh://u@h/p", "SEKRIT"],
+    ["git+ssh://u%3ASEKRIT@h/p", "git+ssh://u@h/p", "SEKRIT"],
+    ["ssh+git://u%3ASEKRIT@h/p", "ssh+git://u@h/p", "SEKRIT"],
+    ["ssh://u@h%3ASEKRIT%40x/p", "ssh://u@h%40x/p", "SEKRIT"],
+    ["git+ssh://u@h%3ASEKRIT%40x/p", "git+ssh://u@h%40x/p", "SEKRIT"],
+    ["ssh+git://u@h%3ASEKRIT%40x/p", "ssh+git://u@h%40x/p", "SEKRIT"],
+    ["ssh://u%40h%3ASEKRIT%40x/p", "ssh://u%40h%40x/p", "SEKRIT"],
+    ["ssh://u%253ASEKRIT@h/p", null, null],
+    ["ssh://uSEKRIT%3@h/p", null, null],
+    ["ssh://uSEKRIT%G1@h/p", null, null],
+    ["ssh://uSEKRIT%@h/p", null, null],
+    ["ssh://u%2540SEKRIT@h/p", null, null],
+    ["ssh://u%40SEKRIT@h/p", null, null],
+    ["ssh://u%5CSEKRIT@h/p", null, null],
+    ["ssh://u%2FSEKRIT@h/p", null, null],
+    ["ssh://u@h%40x%3ASEKRIT/p", null, null],
+    ["ssh://u@h%3ASEKRIT/p", null, null],
+    ["ssh://u@h:SEKRIT/p", null, null],
+    ["ssh://git@h/p", null, null],
+    ["ssh://g%69t@h/p", null, null],
+    ["ssh://u%3ASEKRIT/p", null, null],
+    ["https://user:SEKRIT@h/p", "https://h/p", "SEKRIT"],
+    ["https://SEKRIT@h/p", "https://h/p", "SEKRIT"],
+    ["git+https://SEKRIT@h/p", "git+https://h/p", "SEKRIT"],
+    ["https://h/p", null, null],
+    ["file:///tmp/u%3ASEKRIT@h/p", null, null],
+  ];
+
+  for (const [url, shown, secret] of spellings) {
+    test(`${shown === null ? "keeps" : "refuses"} ${url}`, () => {
+      if (shown === null) {
+        expect(() => refuseCredentials(url)).not.toThrow();
+        expect(redact(url)).toBe(url);
+        return;
+      }
+      expect(() => refuseCredentials(url)).toThrow(Fail);
+      expect(redact(url)).toBe(shown);
+      if (secret !== null) {
+        expect(redact(url)).not.toContain(secret);
+        try {
+          refuseCredentials(url);
+        } catch (error) {
+          expect((error as Error).message).not.toContain(secret);
+        }
+      }
+    });
+  }
 });
 
 describe("entries", () => {
