@@ -112,6 +112,7 @@ async function cmdInit(args: {
   if (hasRemote) checkUpstreamRemote(root, args.upstream, args.branch);
   git(["fetch", "--quiet", "--end-of-options", args.upstream, args.branch], { cwd: root });
   const base = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: root });
+  book.upstreams[0]!.files(base);
   book.writeLock(name, base, book.upstreams[0]!.treeOf(base));
   if (!hasRemote) git(["remote", "add", "--end-of-options", "upstream", args.upstream], { cwd: root });
   const installed = installSkill(book);
