@@ -318,9 +318,13 @@ describe("entries", () => {
 });
 
 describe("nearest", () => {
-  test("rounds the similarity to two places, and a half up", () => {
+  test("rounds the similarity to two places as Math.round does on the float, so 0.625 gives 0.63 and 0.575, which the float holds just under, gives 0.57", () => {
     expect(new SequenceMatcher<string>("abcdefgh", "abcdeXYZ").ratio()).toBe(0.625);
     expect(nearest("abcdefgh", [{ line: 3, hash: "h", upstream: "abcdeXYZ" }])).toEqual([{ line: 3, hash: "h", similarity: 0.63 }]);
+    const text = "a".repeat(46) + "b".repeat(34);
+    const other = "a".repeat(46) + "c".repeat(34);
+    expect(new SequenceMatcher<string>(text, other).ratio()).toBe(0.575);
+    expect(nearest(text, [{ line: 3, hash: "h", upstream: other }])).toEqual([{ line: 3, hash: "h", similarity: 0.57 }]);
   });
 });
 

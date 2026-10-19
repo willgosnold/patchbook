@@ -212,7 +212,7 @@ A problem always has `problem`, its kind, first. The other fields depend on the 
 | `placeholder` | output or block, `detail` | A `{{kind:name}}` that neither the `placeholder` hook nor the placeholder source gives a value. |
 | `leak` | output with `line`, or block, then `terms` | Text that a `[[check]]` pattern or `blockTerms` flags is still in the output. Without `hash`, `line` is the 1-based line in the output where the paragraph starts. `terms` is a string list. |
 | `missing` | block, `terms`, `upstream` | A paragraph that needs an entry. `upstream` is its text. |
-| `orphan` | `file`, `hash`, `kind`, `rules`, `intent`, `upstream`, `patched`, `nearest` | An entry whose paragraph changed upstream. `kind` is `translation`, `policy` or `keep`. `nearest` is a list of `{line, hash, similarity}`, where `similarity` is a number from 0.4 to 1, rounded to two places with a half rounded up. |
+| `orphan` | `file`, `hash`, `kind`, `rules`, `intent`, `upstream`, `patched`, `nearest` | An entry whose paragraph changed upstream. `kind` is `translation`, `policy` or `keep`. `nearest` is a list of `{line, hash, similarity}`, where `similarity` is a number from 0.4 to 1, rounded to two places by `Math.round(similarity * 100) / 100` on the float, so 0.625 gives 0.63 and 0.575, which the float holds just under, gives 0.57. |
 | `check` | file, `detail` | A problem the repo's `check` hook reports. A hook may return any kind. |
 
 ### `.patchbook/last-sync.json`
