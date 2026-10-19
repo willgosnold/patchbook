@@ -1,11 +1,13 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Problem } from "../src/api.ts";
+import type { LastSync, Problem, SyncReport } from "../src/api.ts";
 import type { Assembly } from "../src/assemble.ts";
 import type { Reserved } from "../src/book.ts";
 import type { Edit } from "../src/changes.ts";
+import type { File, Seen } from "../src/lib/fs.ts";
+import type { Edited, Snapshot } from "../src/record.ts";
 import { SequenceMatcher } from "../src/lib/difflib.ts";
 
 const sandbox = mkdtempSync(join(tmpdir(), "units"));
@@ -13,21 +15,24 @@ const ambientConfigHome = process.env["XDG_CONFIG_HOME"];
 process.env["XDG_CONFIG_HOME"] = join(sandbox, "config");
 
 const { applyStructure } = await import("../src/assemble.ts");
-const { blockSpans, formatEntry, nearest, readEntries } = await import("../src/blocks.ts");
-const { Book, globRe } = await import("../src/book.ts");
+const { blockSpans, formatEntry, nearest, parsePlaceholders, readEntries, similarity } = await import("../src/blocks.ts");
+const { Book, globRe, lockText, parseLock } = await import("../src/book.ts");
 const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
 const { intentSettings, pendingDiff, PROVIDERS, writeIntent } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
 const { meantMode, outputMode, recordedModes } = await import("../src/lib/fs.ts");
 const { redact, refuseCredentials } = await import("../src/lib/proc.ts");
-const { bytesEqual } = await import("../src/lib/text.ts");
+const { classify, needOf } = await import("../src/record.ts");
+const { bytesEqual, encode } = await import("../src/lib/text.ts");
 const { setToml, USER_CONFIG } = await import("../src/settings.ts");
+const { lastSyncText, parseLastSync } = await import("../src/sync.ts");
 
 type Entry = ReturnType<typeof readEntries> extends Map<string, infer E> ? E : never;
 type Source = ReturnType<typeof applyStructure> extends Map<string, infer S> ? S : never;
 type Opened = Awaited<ReturnType<typeof Book.open>>;
 type Layers = NonNullable<Parameters<typeof intentSettings>[2]>;
 type Mode = ReturnType<typeof meantMode>;
+type Change = InstanceType<typeof Change>;
 
 if (ambientConfigHome === undefined) delete process.env["XDG_CONFIG_HOME"];
 else process.env["XDG_CONFIG_HOME"] = ambientConfigHome;
@@ -389,10 +394,53 @@ describe("entries", () => {
   });
 });
 
-describe("nearest", () => {
-  test("rounds the similarity to two places, and a half up", () => {
+describe("similarity", () => {
+  test("is twice the matching code points over both lengths, to two places, a half up", () => {
     expect(new SequenceMatcher<string>("abcdefgh", "abcdeXYZ").ratio()).toBe(0.625);
+    expect(similarity("abcdefgh", "abcdeXYZ")).toBe(0.63);
+  });
+
+  test("rounds a decimal half up where rounding the float rounds it down", () => {
+    const halves = [
+      { shared: 23, onlyA: 17, onlyB: 17, ratio: 0.575, float: 0.57, rounded: 0.58 },
+      { shared: 113, onlyA: 88, onlyB: 86, ratio: 0.565, float: 0.56, rounded: 0.57 },
+      { shared: 57, onlyA: 144, onlyB: 142, ratio: 0.285, float: 0.28, rounded: 0.29 },
+    ];
+    for (const { shared, onlyA, onlyB, ratio, float, rounded } of halves) {
+      const a = "x".repeat(shared) + "a".repeat(onlyA);
+      const b = "x".repeat(shared) + "b".repeat(onlyB);
+      const r = new SequenceMatcher<string>(a, b).ratio();
+      expect(r).toBe(ratio);
+      expect(Math.round(r * 100) / 100).toBe(float);
+      expect(similarity(a, b)).toBe(rounded);
+    }
+  });
+
+  test("counts a code point once, as SequenceMatcher does", () => {
+    expect(similarity("😀😀", "😀😁")).toBe(0.5);
+  });
+
+  test("is 1 for two empty texts and for equal ones, and 0 when nothing matches", () => {
+    expect(similarity("", "")).toBe(1);
+    expect(similarity("same", "same")).toBe(1);
+    expect(similarity("abc", "xyz")).toBe(0);
+  });
+});
+
+describe("nearest", () => {
+  test("gives the similarity as similarity rounds it", () => {
     expect(nearest("abcdefgh", [{ line: 3, hash: "h", upstream: "abcdeXYZ" }])).toEqual([{ line: 3, hash: "h", similarity: 0.63 }]);
+  });
+
+  test("keeps the two most alike from 0.4, ties in the order of the candidates", () => {
+    const candidates = [
+      { line: 1, hash: "far", upstream: "zzzzzzzz" },
+      { line: 2, hash: "tie-a", upstream: "abcdXXXX" },
+      { line: 3, hash: "close", upstream: "abcdefgX" },
+      { line: 4, hash: "tie-b", upstream: "XXXXefgh" },
+    ];
+    expect(nearest("abcdefgh", candidates).map((n) => [n.hash, n.similarity])).toEqual([["close", 0.88], ["tie-a", 0.5]]);
+    expect(nearest("abcdefgh", candidates, 3).map((n) => n.hash)).toEqual(["close", "tie-a", "tie-b"]);
   });
 });
 
@@ -554,11 +602,233 @@ describe("applyStructure", () => {
   });
 });
 
+describe("formats", () => {
+  const refusal = (run: () => unknown): string => {
+    try {
+      run();
+    } catch (e) {
+      if (e instanceof Fail) return e.message;
+      throw e;
+    }
+    throw new Error("expected a refusal");
+  };
+
+  const ID = "a".repeat(40);
+  const OTHER = "b".repeat(40);
+  const pin = (name: string, commit = ID, tree = OTHER) => ({ name, commit, tree });
+
+  describe("upstream.lock", () => {
+    const entry = (name: string) => `    {\n      "name": ${JSON.stringify(name)},\n      "commit": "${ID}",\n      "tree": "${OTHER}"\n    }`;
+
+    test("writes the pins sorted by name by code point, name first, as UTF-8", () => {
+      const text = lockText([pin("lib"), pin("é"), pin("2"), pin("Zed")]);
+      expect(text).toBe(`{\n  "version": 1,\n  "upstreams": [\n${["2", "Zed", "lib", "é"].map(entry).join(",\n")}\n  ]\n}\n`);
+    });
+
+    test("reads back what it writes", () => {
+      const pins = [pin("2"), pin("Zed"), pin("lib", OTHER, ID), pin("é")];
+      expect(parseLock(lockText([...pins].reverse()))).toEqual(pins);
+    });
+
+    test("writes no pins as an empty list", () => {
+      expect(lockText([])).toBe('{\n  "version": 1,\n  "upstreams": []\n}\n');
+    });
+
+    const lock = (upstreams: string, version = '"version": 1, ') => `{${version}"upstreams": [${upstreams}]}`;
+    const lib = `{"name": "lib", "commit": "${ID}", "tree": "${OTHER}"}`;
+
+    test("refuses text that isn't JSON, naming the file", () => {
+      expect(refusal(() => parseLock("<<<<<<< HEAD\n"))).toStartWith(".patchbook/upstream.lock isn't JSON: ");
+    });
+
+    test("refuses NaN as a value", () => {
+      expect(refusal(() => parseLock(lock(`{"name": "lib", "commit": NaN, "tree": "${OTHER}"}`)))).toStartWith(".patchbook/upstream.lock isn't JSON: ");
+    });
+
+    test("refuses a value of the wrong type, naming its path", () => {
+      expect(refusal(() => parseLock(lock(`${lib}, {"name": "x", "commit": 7, "tree": "${OTHER}"}`))))
+        .toStartWith(".patchbook/upstream.lock: upstreams[1].commit must be a full object id (40 or 64 lowercase hex digits), not 7. ");
+    });
+
+    test("refuses an id that isn't a full lowercase hex id", () => {
+      expect(refusal(() => parseLock(lock(`{"name": "lib", "commit": "abc", "tree": "${OTHER}"}`)))).toContain("upstreams[0].commit must be a full object id");
+    });
+
+    test("refuses a missing field", () => {
+      expect(refusal(() => parseLock(lock(`${lib}, {"name": "x", "commit": "${ID}"}`)))).toStartWith(".patchbook/upstream.lock: upstreams[1].tree is missing. ");
+    });
+
+    test("refuses a name twice", () => {
+      expect(refusal(() => parseLock(lock(`${lib}, ${lib}`)))).toStartWith(".patchbook/upstream.lock: upstreams[1] names lib, as upstreams[0] does. ");
+    });
+
+    test("refuses the lock from before it had a version, saying how to fix it", () => {
+      const old = JSON.stringify({ lib: { commit: ID, tree: OTHER } });
+      expect(refusal(() => parseLock(old))).toBe(
+        '.patchbook/upstream.lock has no version, so an older patchbook wrote it. It holds {"version": 1, "upstreams": [{"name": ..., "commit": ..., "tree": ...}]}, one entry per upstream, sorted by name.',
+      );
+    });
+
+    test("refuses another version", () => {
+      expect(refusal(() => parseLock(lock(lib, '"version": 2, ')))).toStartWith(".patchbook/upstream.lock is version 2, from a newer patchbook; this one reads version 1. ");
+    });
+
+    test("ignores a key it doesn't know", () => {
+      expect(parseLock(`{"version": 1, "note": "x", "upstreams": [{"name": "lib", "commit": "${ID}", "tree": "${OTHER}", "extra": 1}]}`)).toEqual([pin("lib")]);
+    });
+  });
+
+  describe("last-sync.json", () => {
+    const report = (name: string, from: string | null): SyncReport => ({
+      name, from, to: ID, upstream: ["changed café/é.txt"], merged: [{ change: "shout", path: "a.txt" }],
+      conflicts: [{ change: "shout", path: "b.txt", count: 2 }, { change: "shout", path: "c.bin", detail: "binary file changed upstream" }],
+      gone: [{ change: "shout", path: "d.txt", maybe: ["e.txt"] }], replacedUpstreamChanged: ["shout: f.txt"],
+    });
+    const doc: LastSync = { version: 2, upstreams: [report("lib", null), report("2", OTHER)] };
+    const entry = (name: string, from: string) => [
+      "    {",
+      `      "name": "${name}",`,
+      `      "from": ${from},`,
+      `      "to": "${ID}",`,
+      '      "upstream": [',
+      '        "changed café/é.txt"',
+      "      ],",
+      '      "merged": [',
+      "        {",
+      '          "change": "shout",',
+      '          "path": "a.txt"',
+      "        }",
+      "      ],",
+      '      "conflicts": [',
+      "        {",
+      '          "change": "shout",',
+      '          "path": "b.txt",',
+      '          "count": 2',
+      "        },",
+      "        {",
+      '          "change": "shout",',
+      '          "path": "c.bin",',
+      '          "detail": "binary file changed upstream"',
+      "        }",
+      "      ],",
+      '      "gone": [',
+      "        {",
+      '          "change": "shout",',
+      '          "path": "d.txt",',
+      '          "maybe": [',
+      '            "e.txt"',
+      "          ]",
+      "        }",
+      "      ],",
+      '      "replacedUpstreamChanged": [',
+      '        "shout: f.txt"',
+      "      ]",
+      "    }",
+    ].join("\n");
+
+    test("writes the reports in the order given, name first, as UTF-8", () => {
+      expect(lastSyncText(doc)).toBe(`{\n  "version": 2,\n  "upstreams": [\n${entry("lib", "null")},\n${entry("2", `"${OTHER}"`)}\n  ]\n}\n`);
+    });
+
+    test("reads back what it writes, both kinds of conflict included", () => {
+      expect(parseLastSync(lastSyncText(doc))).toEqual(doc);
+    });
+
+    const text = (change: (r: Record<string, unknown>) => void, version: unknown = 2): string => {
+      const r: Record<string, unknown> = JSON.parse(lastSyncText(doc)).upstreams[1];
+      change(r);
+      return JSON.stringify({ version, upstreams: [r] });
+    };
+    const what = ".patchbook/last-sync.json";
+    const fix = "It only reports past syncs: delete it, and the next patchbook sync writes a new one.";
+
+    test("refuses text that isn't JSON", () => {
+      expect(refusal(() => parseLastSync("{ not json"))).toStartWith(`${what} isn't JSON: `);
+      expect(refusal(() => parseLastSync('{"version": 2, "upstreams": [{"count": NaN}]}'))).toStartWith(`${what} isn't JSON: `);
+    });
+
+    test("refuses a field of the wrong type, naming its path, and says how to fix the file", () => {
+      expect(refusal(() => parseLastSync(text((r) => (r["merged"] = {}))))).toBe(`${what}: upstreams[0].merged must be a list, not an object. ${fix}`);
+      expect(refusal(() => parseLastSync(text((r) => (r["from"] = 7))))).toStartWith(`${what}: upstreams[0].from must be a full object id`);
+    });
+
+    test("refuses a missing field", () => {
+      expect(refusal(() => parseLastSync(text((r) => delete r["to"])))).toBe(`${what}: upstreams[0].to is missing. ${fix}`);
+    });
+
+    test("refuses a count that isn't a whole number", () => {
+      const bad = text((r) => (r["conflicts"] = [{ change: "x", path: "y", count: 0 }])).replace('"count":0', '"count":1e400');
+      expect(refusal(() => parseLastSync(bad))).toBe(`${what}: upstreams[0].conflicts[0].count must be a whole number from 0, not Infinity. ${fix}`);
+    });
+
+    test("refuses a conflict that is neither kind, naming the field it lacks", () => {
+      expect(refusal(() => parseLastSync(text((r) => (r["conflicts"] = [{ change: "x", path: "y" }]))))).toBe(`${what}: upstreams[0].conflicts[0].detail is missing. ${fix}`);
+    });
+
+    test("refuses a name twice", () => {
+      const twice = JSON.stringify({ version: 2, upstreams: [JSON.parse(lastSyncText(doc)).upstreams[0], JSON.parse(lastSyncText(doc)).upstreams[0]] });
+      expect(refusal(() => parseLastSync(twice))).toBe(`${what}: upstreams[1] names lib, as upstreams[0] does. ${fix}`);
+    });
+
+    test("refuses the first version and the report from before versions", () => {
+      expect(refusal(() => parseLastSync(text(() => {}, 1)))).toBe(`${what} is version 1, and this patchbook reads version 2. ${fix}`);
+      const unversioned = JSON.stringify({ upstreams: { upstream: { from: null, to: ID } } });
+      expect(refusal(() => parseLastSync(unversioned))).toBe(`${what} has no version, so an older patchbook wrote it. ${fix}`);
+    });
+
+    test("refuses the old snake_case key", () => {
+      expect(refusal(() => parseLastSync(text((r) => ((r["replaced_upstream_changed"] = r["replacedUpstreamChanged"]), delete r["replacedUpstreamChanged"])))))
+        .toBe(`${what}: upstreams[0].replacedUpstreamChanged is missing. ${fix}`);
+    });
+  });
+
+  describe("a placeholder file with format = json", () => {
+    test("gives each key a string, or a list of strings joined with a comma and a space", () => {
+      const read = parsePlaceholders('{"greet": "Say hello.", "tools": ["a", "b"], "none": [], "naïve": "é"}', "strings.json");
+      expect([...read]).toEqual([["greet", "Say hello."], ["tools", "a, b"], ["none", ""], ["naïve", "é"]]);
+    });
+
+    test("skips a key that starts with an underscore, whatever it holds", () => {
+      expect([...parsePlaceholders('{"_note": 5, "_list": [1, {}], "a": "x"}', "strings.json")]).toEqual([["a", "x"]]);
+    });
+
+    test("takes constructor as a name like any other, and __proto__ as a comment", () => {
+      expect([...parsePlaceholders('{"__proto__": 1, "constructor": "x"}', "strings.json")]).toEqual([["constructor", "x"]]);
+    });
+
+    test("refuses text that isn't JSON, naming the file", () => {
+      expect(refusal(() => parsePlaceholders("greet: hi", "strings.json"))).toStartWith("strings.json isn't JSON: ");
+      expect(refusal(() => parsePlaceholders('{"a": NaN}', "strings.json"))).toStartWith("strings.json isn't JSON: ");
+    });
+
+    test("refuses a document that isn't an object", () => {
+      expect(refusal(() => parsePlaceholders('["a"]', "strings.json"))).toBe("strings.json must be an object, not a list.");
+    });
+
+    test("refuses a value that is neither, naming the key and what it is", () => {
+      expect(refusal(() => parsePlaceholders('{"enabled": true}', "strings.json"))).toBe('strings.json: "enabled" must be a string or a list of strings, not true.');
+      expect(refusal(() => parsePlaceholders('{"n": 1}', "strings.json"))).toBe('strings.json: "n" must be a string or a list of strings, not 1.');
+      expect(refusal(() => parsePlaceholders('{"n": null}', "strings.json"))).toBe('strings.json: "n" must be a string or a list of strings, not null.');
+      expect(refusal(() => parsePlaceholders('{"n": {"a": "b"}}', "strings.json"))).toBe('strings.json: "n" must be a string or a list of strings, not an object.');
+    });
+
+    test("refuses a list with something other than a string in it, naming the item", () => {
+      expect(refusal(() => parsePlaceholders('{"a": ["x", 1]}', "strings.json"))).toBe('strings.json: "a"[1] must be a string, not 1.');
+    });
+  });
+});
+
 const SANDBOX_CONFIG = join(sandbox, "config", "patchbook", "config.toml");
 const inSandbox = USER_CONFIG === SANDBOX_CONFIG;
 
 test("settings.ts reads the user config from the sandbox", () => {
   expect({ actual: USER_CONFIG, expectedSandbox: SANDBOX_CONFIG }).toEqual({ actual: SANDBOX_CONFIG, expectedSandbox: SANDBOX_CONFIG });
+});
+
+test("no other test file loads a module outside src/lib, which could read settings before this file's sandbox", () => {
+  const others = readdirSync(new URL(".", import.meta.url)).filter((f) => f.endsWith(".ts") && f !== "units.test.ts");
+  const loading = /^import (?!type )[^;]*?from "\.\.\/src\/(?!lib\/)|import\("\.\.\/src\/(?!lib\/)/m;
+  expect(others.filter((f) => loading.test(readFileSync(new URL(f, import.meta.url), "utf8")))).toEqual([]);
 });
 
 describe.skipIf(!inSandbox)("intentSettings", () => {
@@ -739,7 +1009,7 @@ describe.skipIf(!inSandbox)("writeIntent", () => {
 
   test("shows the first 500 characters of an unusable reply without splitting one", async () => {
     const book = await answering(`printf '!${"😀".repeat(600)}'`);
-    expect(() => writeIntent(book, new Map(), "", "x", true)).toThrow(`:\n!${"😀".repeat(499)}\nPass a name and --intent instead.`);
+    expect(() => writeIntent(book, new Map(), "", "x", true)).toThrow(`.\n!${"😀".repeat(499)}\nPass a name and --intent instead.`);
   });
 });
 
@@ -982,5 +1252,137 @@ describe("parseChange", () => {
 
   test("a line of only whitespace or a BOM between edits is blank", () => {
     expect(parse(["- file a", " \t\uFEFF", "- file b"]).edits.map((e) => e.path)).toEqual(["a", "b"]);
+  });
+});
+
+describe("classify", () => {
+  const tmp = scratch();
+  const f = (text: string): File => ({ data: encode(text), mode: 0o644 });
+  const change = (name: string, edits: Edit[], copies: Record<string, string> = {}): Change => {
+    const c = new Change(name, join(tmp, name), `${name}.`, edits);
+    for (const [path, text] of Object.entries(copies)) c.write("ours", path, encode(text));
+    return c;
+  };
+  const added = change("added", [{ kind: "add", path: "skills/new.md" }], { "skills/new.md": "new\n" });
+  const replaced = change("replaced", [{ kind: "replace", path: "skills/rep.md" }], { "skills/rep.md": "rep\n" });
+  const edited = change("edited", [{ kind: "add", path: "skills/copied.md" }], { "skills/copied.md": "new\n" });
+  const moved = change("moved", [{ kind: "add", path: "skills/orig-new.md" }, { kind: "move", path: "skills/orig-new.md", dest: "skills/moved-new.md" }], { "skills/orig-new.md": "new\n" });
+  const templated = change("templated", [{ kind: "add", path: "skills/tpl.md" }], { "skills/tpl.md": "Uses {{snippet:v}}.\n" });
+  const owner = change("owner", [{ kind: "file", path: "skills/owned.md" }]);
+  const ownerTpl = change("ownertpl", [{ kind: "file", path: "skills/owned-tpl.md" }], { "skills/owned-tpl.md": "Uses {{snippet:v}}.\n" });
+  const goish = change("goish", [{ kind: "add", path: "skills/goish.md" }], { "skills/goish.md": "Uses {{go:name}}.\n" });
+  const up = (path: string): Source => ({ kind: "up", path });
+  const ours = (c: Change, path: string): Source => ({ kind: "ours", change: c.name, path });
+
+  const draft = (hash: string, intent: string | null) => ({ hash, kind: "policy", rules: "", intent, upstream: "up", patched: "ours" });
+  const kept = draft("aaaaaaaaaaaa", "Speak T3.");
+  const fresh = draft("bbbbbbbbbbbb", null);
+  const plans = new Map([
+    ["skills/para.md", { path: "", entries: new Map([[kept.hash, kept]]), notes: [] }],
+    ["skills/para-new.md", { path: "", entries: new Map([[kept.hash, kept], [fresh.hash, fresh]]), notes: [] }],
+  ]);
+
+  const cases: [path: string, built: string | null, disk: string | null, source: Source | null, is: Partial<Edited>, needsName: boolean][] = [
+    ["fresh.md", null, "new", null, { kind: "add", staged: "skills/fresh.md" }, true],
+    ["dropped.md", null, "back", up("skills/dropped.md"), { kind: "skip", reason: "a hook leaves it out of the build; change the hook to keep it" }, false],
+    ["gone.md", "up", null, up("skills/gone.md"), { kind: "delete-upstream", staged: "skills/gone.md", entries: null }, true],
+    ["gone-para.md", "up", null, up("skills/gone-para.md"), { kind: "delete-upstream", staged: "skills/gone-para.md", entries: "blocks/skills/gone-para.md.entries" }, true],
+    ["new.md", "new", null, ours(added, "skills/new.md"), { kind: "unadd", change: added, staged: "skills/new.md" }, false],
+    ["rep.md", "rep", null, ours(replaced, "skills/rep.md"), { kind: "unreplace", change: replaced, staged: "skills/rep.md" }, true],
+    ["moved-new.md", "new", null, ours(moved, "skills/orig-new.md"), { kind: "delete-upstream", staged: "skills/moved-new.md", entries: null }, true],
+    ["copied.md", "new", "edited", ours(edited, "skills/copied.md"), { kind: "update-ours", change: edited, staged: "skills/copied.md" }, false],
+    ["tpl.md", "Uses v.", "Uses w.", ours(templated, "skills/tpl.md"),
+      { kind: "skip", reason: "its copy in templated uses placeholders; edit that copy directly" }, false],
+    ["goish.md", "Uses go.", "Uses go!", ours(goish, "skills/goish.md"), { kind: "update-ours", change: goish, staged: "skills/goish.md" }, false],
+    ["owned-tpl.md", "Uses v.", "Uses w.", up("skills/owned-tpl.md"),
+      { kind: "skip", reason: "its copy in ownertpl uses placeholders; edit that copy directly" }, false],
+    ["owned.md", "up", "edited", up("skills/owned.md"), { kind: "file-edit", rel: "skills/owned.md", to: { kind: "owned", change: owner } }, false],
+    ["plain.md", "up", "edited", up("skills/plain.md"), { kind: "file-edit", rel: "skills/plain.md", to: { kind: "recorded", base: f("upstream") } }, true],
+    ["moved.md", "up", "edited", up("skills/orig.md"), { kind: "file-edit", rel: "skills/orig.md", to: { kind: "recorded", base: f("upstream") } }, true],
+    ["para.md", "up", "edited", up("skills/para.md"), { kind: "paragraph-edit", plan: plans.get("skills/para.md")! }, false],
+    ["unplanned.md", "up", "edited", up("skills/unplanned.md"), { kind: "skip", reason: "no plan" }, false],
+  ];
+  const pick = (i: 1 | 2) => new Map(cases.flatMap((c) => (c[i] === null ? [] : [[c[0], f(c[i])] as const])));
+  const seen = (files: Map<string, File>): Map<string, Seen> => new Map(Array.from(files, ([p, file]) => [p, { ...file, chosen: true }]));
+  const world: Snapshot = {
+    out: pick(1),
+    current: seen(pick(2)),
+    sources: new Map(cases.flatMap(([p, , , s]) => (s ? [[p, s] as const] : []))),
+    upstream: new Map(cases.flatMap(([, , , s]) => (s?.kind === "up" ? [[s.path, f("upstream")] as const] : []))),
+    changes: new Map([added, replaced, edited, moved, templated, owner, ownerTpl, goish].map((c) => [c.name, c])),
+    owners: new Map([["skills/owned.md", owner], ["skills/owned-tpl.md", ownerTpl]]),
+    blocks: new Set(["skills/dropped.md", "skills/gone-para.md", "skills/para.md", "skills/para-new.md", "skills/unplanned.md"]),
+    entriesAt: (rel) => `blocks/${rel}.entries`,
+    prefix: "skills/",
+    uses: (copy) => copy !== null && new TextDecoder().decode(copy).includes("{{snippet:"),
+    plan: (rel) => plans.get(rel) ?? "no plan",
+  };
+
+  const one = (w: Snapshot, path: string): Edited => classify(w, [path])[0]!;
+
+  test.each(cases)("%s", (path, _built, _disk, _source, is, needsName) => {
+    const e = one(world, path);
+    expect(e).toMatchObject({ path, ...is });
+    expect(needOf(e).named).toBe(needsName);
+  });
+
+  test("an owned file edit goes to the very change that owns it", () => {
+    const e = one(world, "owned.md");
+    expect(e.kind === "file-edit" && e.to.kind === "owned" && e.to.change).toBe(owner);
+  });
+
+  test("a paragraph edit needs an intent only for its new entries that have none", () => {
+    const w = { ...world, out: new Map([["para-new.md", f("up")]]), current: seen(new Map([["para-new.md", f("edited")]])),
+      sources: new Map([["para-new.md", up("skills/para-new.md")]]) };
+    expect(needOf(one(w, "para-new.md"))).toEqual({ named: false, drafts: [fresh] });
+    expect(needOf(one(world, "para.md"))).toEqual({ named: false, drafts: [] });
+  });
+
+  test("a path built from nothing throws while classifying", () => {
+    const w = { ...world, out: new Map([["ghost.md", f("x")]]), current: seen(new Map([["ghost.md", f("y")]])) };
+    expect(() => one(w, "ghost.md")).toThrow("ghost.md is built from nothing");
+  });
+
+  const twins = (sources: [string, Source][], edits: Record<string, string | null>): Snapshot => ({
+    ...world,
+    out: new Map(sources.map(([p]) => [p, f("built")])),
+    current: seen(new Map(Object.entries(edits).flatMap(([p, t]) => (t === null ? [] : [[p, f(t)] as const])))),
+    sources: new Map(sources),
+  });
+
+  test("outputs built from one ours copy are all skipped when more than one is edited or deleted", () => {
+    const w = twins([["new.md", ours(added, "skills/new.md")], ["new2.md", ours(added, "skills/new.md")], ["new3.md", ours(added, "skills/new.md")]],
+      { "new.md": "a", "new2.md": null, "new3.md": "built" });
+    expect(classify(w, ["new.md", "new2.md"])).toEqual([
+      { kind: "skip", path: "new.md", reason: "its copy in added also builds new2.md, which this record changes too; edit added directly, or to give them different text, remove the copy edit and record the destination again" },
+      { kind: "skip", path: "new2.md", reason: "its copy in added also builds new.md, which this record changes too; edit added directly, or to give them different text, remove the copy edit and record the destination again" },
+    ]);
+    expect(classify(w, ["new.md"])).toMatchObject([{ kind: "update-ours", path: "new.md" }]);
+  });
+
+  test("deleting an output of an ours copy that a copy edit reads deletes it instead of dropping the copy", () => {
+    const copier = change("copier", [{ kind: "copy", path: "skills/new.md", dest: "skills/new2.md" }]);
+    const w = { ...twins([["new.md", ours(added, "skills/new.md")]], { "new.md": null }), changes: new Map([added, copier].map((c) => [c.name, c])) };
+    expect(classify(w, ["new.md"])).toMatchObject([{ kind: "delete-upstream", path: "new.md", staged: "skills/new.md" }]);
+    const alone = twins([["new.md", ours(added, "skills/new.md")]], { "new.md": null });
+    expect(classify(alone, ["new.md"])).toMatchObject([{ kind: "unadd", path: "new.md" }]);
+  });
+
+  test("outputs built from one upstream file are all skipped when more than one is edited, but a delete stands alone", () => {
+    const w = twins([["plain.md", up("skills/plain.md")], ["plain2.md", up("skills/plain.md")], ["plain3.md", up("skills/plain.md")]],
+      { "plain.md": "a", "plain2.md": "b", "plain3.md": null });
+    expect(classify(w, ["plain.md", "plain2.md", "plain3.md"])).toMatchObject([
+      { kind: "skip", path: "plain.md", reason: "upstream's skills/plain.md also builds plain2.md, which this record changes too; edit only one of them, or to give them different text, remove the copy edit and record the destination again" },
+      { kind: "skip", path: "plain2.md", reason: "upstream's skills/plain.md also builds plain.md, which this record changes too; edit only one of them, or to give them different text, remove the copy edit and record the destination again" },
+      { kind: "delete-upstream", path: "plain3.md", staged: "skills/plain3.md" },
+    ]);
+    expect(classify(w, ["plain.md", "plain3.md"])).toMatchObject([{ kind: "file-edit", path: "plain.md" }, { kind: "delete-upstream", path: "plain3.md" }]);
+  });
+
+  test("a mode change to a file with block entries names the file as a string literal", () => {
+    const path = 'para"x.md';
+    const w = { ...world, out: new Map([[path, f("up")]]), current: seen(new Map([[path, { ...f("up"), mode: 0o755 as const }]])),
+      sources: new Map([[path, up("skills/para.md")]]) };
+    expect(one(w, path)).toMatchObject({ kind: "skip", reason: expect.stringContaining('out.get("para\\"x.md")!.mode = 0o755;') });
   });
 });

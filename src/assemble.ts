@@ -15,11 +15,12 @@ import {
   rmFolders, sameFile, sameMode, type Seen, writeDisk, writeText,
 } from "./lib/fs.ts";
 import { forgetBlobOids } from "./lib/hash.ts";
-import { dumps, type Json, loads } from "./lib/json.ts";
+import { jsonText } from "./lib/shape.ts";
 import { type Env, git, run, spawn } from "./lib/proc.ts";
 import { say, verbatim, warn } from "./lib/term.ts";
 import { byCodePoint, bytesEqual, decode, encode, isText } from "./lib/text.ts";
 import { pinned, refuseMergedUpstream } from "./store.ts";
+import { readLastSync } from "./sync.ts";
 
 export function describe(p: Problem): string {
   let at = p.file + ("line" in p && p.line ? `:${p.line}` : "") + ("hash" in p && p.hash ? ` [${p.hash}]` : "");
@@ -30,7 +31,7 @@ export function describe(p: Problem): string {
     case "leak":
       return `leak      ${at} still says ${p.terms.join(", ")}`;
     case "orphan": {
-      const near = p.nearest.map((n) => `line ${n.line} [${n.hash}] ${n.similarity}`).join(", ") || "none";
+      const near = p.nearest.map((n) => `line ${n.line} [${n.hash}] ${Math.round(n.similarity * 100)}%`).join(", ") || "none";
       return `orphan    ${p.file} [${p.hash}] intent: ${p.intent}\n          nearest new blocks: ${near}`;
     }
     case "invalid":
@@ -481,13 +482,9 @@ export async function cmdStatus(args: { json: boolean }) {
   const book = await Book.find();
   warnUnhooked(book);
   const a = assemble(book);
-  const lastSync = join(book.dir, "last-sync.json");
-  const report = exists(lastSync) ? loads(readText(lastSync)) : null;
   if (args.json) {
-    const status: Omit<StatusJson, "upstreams" | "last_sync"> & { upstreams: Json; last_sync: Json } = {
-      version: 1, upstreams: book.lock(), applied: a.applied, problems: a.problems, last_sync: report,
-    };
-    verbatim(dumps(status, 2) + "\n");
+    const status: StatusJson = { version: 2, upstreams: book.lock(), applied: a.applied, problems: a.problems, lastSync: readLastSync(book) };
+    verbatim(jsonText(status));
   } else {
     for (const p of a.problems) say(describe(p) + "\n");
     const counts = new Map<string, number>();

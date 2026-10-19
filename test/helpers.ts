@@ -111,15 +111,6 @@ export function partitionHead(text: string, sep: string): string {
   return i < 0 ? text : text.slice(0, i);
 }
 
-// Python's json.dumps with its default separators and ASCII escaping.
-export function jsonDumps(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(jsonDumps).join(", ")}]`;
-  if (value !== null && typeof value === "object") {
-    return `{${Object.entries(value).map(([k, v]) => `${jsonDumps(k)}: ${jsonDumps(v)}`).join(", ")}}`;
-  }
-  return JSON.stringify(value).replace(/[\u007f-￿]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
-}
-
 // Python's Path.mkdir(parents=True): fails when the directory already exists.
 export function mkdirNew(path: string): void {
   if (existsSync(path)) throw new Error(`File exists: ${path}`);

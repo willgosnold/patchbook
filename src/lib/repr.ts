@@ -1,5 +1,3 @@
-import type { JsonValue } from "./json.ts";
-
 const NOT_PRINTABLE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}]/u;
 
 function hex(c: number, width: number): string {
@@ -23,18 +21,4 @@ export function strRepr(s: string): string {
     else out += "\\U" + hex(c, 8);
   }
   return out + quote;
-}
-
-function repr(v: JsonValue): string {
-  return typeof v === "string" ? strRepr(v) : str(v);
-}
-
-/** `str(value)` for a value parsed from JSON or TOML. */
-export function str(v: JsonValue): string {
-  if (v === null) return "None";
-  if (typeof v === "boolean") return v ? "True" : "False";
-  if (typeof v === "number") return String(v);
-  if (typeof v === "string") return v;
-  if (Array.isArray(v)) return `[${v.map(repr).join(", ")}]`;
-  return `{${Array.from(v, ([k, x]) => `${strRepr(k)}: ${repr(x)}`).join(", ")}}`;
 }

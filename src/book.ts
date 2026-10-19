@@ -2,17 +2,16 @@
 import { readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Hooks, Problem } from "./api.ts";
+import type { Hooks, Problem, UpstreamLock, UpstreamPin } from "./api.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import {
   exists, type File, GITLINK, isDir, isMode, isSymlink, lexists, LINK, mkdirs, type Mode, normMode, parseGitMode, pjoin, readDisk, readText, relative, resolve,
   rglob, type Seen, writeText,
 } from "./lib/fs.ts";
-import { dumps, loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
-import type { JsonValue } from "./lib/json.ts";
 import { strRepr } from "./lib/repr.ts";
+import { jsonText, named, object, oid, readJson, type Shape, string, versioned } from "./lib/shape.ts";
 import { warn } from "./lib/term.ts";
 import { byCodePoint, decode } from "./lib/text.ts";
 import { isTable, parseToml, type Table } from "./settings.ts";
@@ -343,6 +342,17 @@ function text(table: Table, key: string, fallback: string, what: string): string
   return value;
 }
 
+const LOCK: Shape<UpstreamLock> = versioned(1, { upstreams: named(object({ name: string, commit: oid, tree: oid })) });
+const LOCK_FIX = 'It holds {"version": 1, "upstreams": [{"name": ..., "commit": ..., "tree": ...}]}, one entry per upstream, sorted by name.';
+
+export function parseLock(text: string): UpstreamPin[] {
+  return readJson(text, LOCK, `${PB}/upstream.lock`, LOCK_FIX).upstreams;
+}
+
+export function lockText(pins: readonly UpstreamPin[]): string {
+  return jsonText(LOCK({ version: 1, upstreams: pins.toSorted((a, b) => byCodePoint(a.name, b.name)) }, ""));
+}
+
 export class Book {
   readonly dir: string;
   readonly config: Table;
@@ -601,38 +611,30 @@ export class Book {
     return best;
   }
 
-  lock(): Map<string, JsonValue> {
+  lock(): UpstreamPin[] {
     const path = join(this.dir, "upstream.lock");
-    if (!exists(path)) return new Map();
-    const data = loads(readText(path));
-    if (!(data instanceof Map)) throw new Fail(`${path} isn't a JSON object`);
-    return new Map(Array.from(data).filter(([name]) => this.upstreams.some((u) => u.name === name)));
+    if (!exists(path)) return [];
+    return parseLock(readText(path))
+      .filter((p) => this.upstreams.some((u) => u.name === p.name))
+      .toSorted((a, b) => byCodePoint(a.name, b.name));
   }
 
   writeLock(name: string, commit: string, tree: string): void {
-    const data = this.lock();
-    data.set(name, new Map([["commit", commit], ["tree", tree]]));
-    this.saveLock(data);
+    this.saveLock([...this.lock().filter((p) => p.name !== name), { name, commit, tree }]);
   }
 
   dropPin(name: string): void {
-    const data = this.lock();
-    if (data.delete(name)) this.saveLock(data);
+    const pins = this.lock();
+    if (pins.some((p) => p.name === name)) this.saveLock(pins.filter((p) => p.name !== name));
   }
 
-  private saveLock(data: Map<string, JsonValue>): void {
+  private saveLock(pins: readonly UpstreamPin[]): void {
     mkdirs(this.dir);
-    writeText(join(this.dir, "upstream.lock"), dumps(new Map([...data].sort(([a], [b]) => byCodePoint(a, b))), 2) + "\n");
+    writeText(join(this.dir, "upstream.lock"), lockText(pins));
   }
 
   pins(): string {
-    return [...this.lock()].sort(([a], [b]) => byCodePoint(a, b))
-      .map(([name, pin]) => {
-        const commit = pin instanceof Map ? pin.get("commit") : undefined;
-        if (typeof commit !== "string") throw new Fail(`upstream.lock: ${name} has no commit`);
-        return `${name} ${commit.slice(0, 7)}`;
-      })
-      .join(", ");
+    return this.lock().map((p) => `${p.name} ${p.commit.slice(0, 7)}`).join(", ");
   }
 
   stagedUpstream(): Map<string, File> {

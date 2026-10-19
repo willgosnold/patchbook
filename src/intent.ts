@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Assembly } from "./assemble.ts";
 import type { Book } from "./book.ts";
-import { CHANGE_NAME, type Change, editText, type Roster } from "./changes.ts";
+import { CHANGE_NAME, type Change, editText, notAChangeName, type Roster } from "./changes.ts";
 import { unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import type { File } from "./lib/fs.ts";
-import { JsonError, type JsonValue, loads } from "./lib/json.ts";
 import { spawn, which } from "./lib/proc.ts";
 import { strRepr } from "./lib/repr.ts";
+import { object, readJson, string } from "./lib/shape.ts";
 import { decode, decodeReplace, encode, isText, lines } from "./lib/text.ts";
 import { configured, readToml, type Source, setting, SETTINGS, type Table, USER_CONFIG } from "./settings.ts";
 
@@ -153,6 +153,8 @@ function askModel(provider: string, spec: Provider, model: string, effort: strin
 
 const NAME_LENGTH = 40;
 
+const REPLY = object({ change: string, intent: string });
+
 /** An intent on one line, with each run of whitespace a single space. */
 export const oneLine = (text: string): string => text.trim().replace(/\s+/g, " ");
 
@@ -169,16 +171,10 @@ export function nameFromIntent(intent: string, roster: Roster): string {
 
 const FENCE = /^```(?:json)?[ \t]*\r?\n([\s\S]*)\r?\n[ \t]*```$/;
 
-/** The JSON object a reply is, bare or in one code fence. A reply with anything else around the object has no fields. */
-function replyFields(reply: string): ReadonlyMap<string, JsonValue> {
+/** The JSON a reply holds: the whole reply, or the inside of the one code fence it is. */
+function replyText(reply: string): string {
   const text = reply.trim();
-  try {
-    const answer = loads(FENCE.exec(text)?.[1] ?? text);
-    if (answer instanceof Map) return answer;
-  } catch (e) {
-    if (!(e instanceof JsonError || e instanceof RangeError)) throw e;
-  }
-  return new Map();
+  return FENCE.exec(text)?.[1] ?? text;
 }
 
 /** Ask the chosen model for the change's name and intent. Returns the name and the intent; the name means nothing when `named` is false. */
@@ -201,17 +197,20 @@ export function writeIntent(
   }
   const [seconds] = setting("intent.timeout", book);
   const reply = askModel(provider, PROVIDERS.get(provider)!, model, effort, seconds, intentPrompt(listed, instruction, diff));
-  const fields = replyFields(reply);
-  const given = fields.get("change") ?? "";
-  let chosen = typeof given === "string" ? given : "";
-  const said = fields.get("intent");
-  let intent = typeof said === "string" ? oneLine(said) : "";
-  if (!CHANGE_NAME.test(chosen) || !intent) {
-    throw new ModelFailed(
-      `${provider} didn't return a usable name and intent`,
-      `${provider} didn't return a usable name and intent:\n${Array.from(reply.trim()).slice(0, 500).join("")}\nPass a name and --intent instead.`,
-    );
+  const unusable = (why: string) => new ModelFailed(
+    `${provider} didn't return a usable name and intent`,
+    `${provider} didn't return a usable name and intent. ${why}\n${Array.from(reply.trim()).slice(0, 500).join("")}\nPass a name and --intent instead.`,
+  );
+  let answer;
+  try {
+    answer = readJson(replyText(reply), REPLY, `${provider}'s reply`);
+  } catch (e) {
+    throw e instanceof Fail ? unusable(e.message) : e;
   }
+  let chosen = answer.change;
+  let intent = oneLine(answer.intent);
+  if (!CHANGE_NAME.test(chosen)) throw unusable(`${provider}'s reply: ${notAChangeName(chosen)}.`);
+  if (!intent) throw unusable(`${provider}'s reply: intent is blank.`);
   if (name && chosen !== name) chosen = name;
   const known = changes.get(chosen);
   if (known?.intent && named && !filling) intent = known.intent;

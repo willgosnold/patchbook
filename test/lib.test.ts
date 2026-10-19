@@ -5,15 +5,13 @@ import { join } from "node:path";
 import { TomlDocument } from "@decimalturn/toml-patch";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "../src/lib/difflib.ts";
 import { nonFolders, rmFolders } from "../src/lib/fs.ts";
-import { dumps, loads } from "../src/lib/json.ts";
 import { git, shellQuote } from "../src/lib/proc.ts";
-import { str, strRepr } from "../src/lib/repr.ts";
+import { strRepr } from "../src/lib/repr.ts";
 import { byCodePoint, lines, withoutFinalNewline } from "../src/lib/text.ts";
 
 type Fixture = {
   matcher: { a: string | string[]; b: string | string[]; autojunk: boolean; ratio: number; opcodes: Opcode[] }[];
   unified: { a: string; b: string; fromfile: string; tofile: string; diff: string }[];
-  json: { text: string; dumps: string; indent: string; str: string }[];
   repr: { s: string; repr: string }[];
 };
 
@@ -203,20 +201,6 @@ const pythonLines = (s: string): string[] =>
 
 test.each(cases.unified)("unified_diff %#", (c) => {
   expect(unifiedDiff(pythonLines(c.a), pythonLines(c.b), c.fromfile, c.tofile)).toBe(c.diff);
-});
-
-const withoutFloats = (c: Fixture["json"][number]) => !/\d[.eE]|NaN|Infinity/.test(c.text);
-
-test.each(cases.json.filter(withoutFloats))("json loads, dumps and str %#", (c) => {
-  const value = loads(c.text);
-  expect(dumps(value)).toBe(c.dumps);
-  expect(dumps(value, 2)).toBe(c.indent);
-  expect(str(value)).toBe(c.str);
-});
-
-test("json reads every number as a plain number, so 1.0 is written back as 1", () => {
-  expect(dumps(loads("[1.0, -0.0, 1e5, 1e-05, 0.5, 2]"))).toBe("[1, 0, 100000, 0.00001, 0.5, 2]");
-  expect(str(loads("2.0"))).toBe("2");
 });
 
 test("repr(str)", () => {

@@ -6,8 +6,8 @@ import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { pjoin, readText } from "./lib/fs.ts";
 import { sha256 } from "./lib/hash.ts";
-import { loads } from "./lib/json.ts";
-import { str, strRepr } from "./lib/repr.ts";
+import { strRepr } from "./lib/repr.ts";
+import { list, readJson, type Shape, ShapeError, shown, string, table } from "./lib/shape.ts";
 import { verbatim } from "./lib/term.ts";
 import { byCodePoint, decode } from "./lib/text.ts";
 
@@ -110,11 +110,22 @@ export function checkEntry(e: Entry): string | null {
   return null;
 }
 
+/**
+ * Twice the matching code points over the code points of both texts, to hundredths with a half rounded up.
+ * It rounds the counts, not the ratio: as a double, 0.575 * 100 is 57.49999999999999, so Math.round(r * 100) / 100 gives 0.57.
+ */
+export function similarity(a: string, b: string): number {
+  const total = Array.from(a).length + Array.from(b).length;
+  if (total === 0) return 1;
+  const matches = new SequenceMatcher<string>(a, b).getMatchingBlocks().reduce((sum, m) => sum + m[2], 0);
+  return Math.floor((400 * matches + total) / (2 * total)) / 100;
+}
+
 export function nearest(text: string, candidates: readonly Unmatched[], limit = 2): Nearest[] {
   const scored = candidates
-    .map((c) => [new SequenceMatcher<string>(text, c.upstream).ratio(), c] as const)
+    .map((c) => [similarity(text, c.upstream), c] as const)
     .sort((x, y) => y[0] - x[0]);
-  return scored.slice(0, limit).filter(([r]) => r >= 0.4).map(([r, c]) => ({ line: c.line, hash: c.hash, similarity: Math.round(r * 100) / 100 }));
+  return scored.slice(0, limit).filter(([s]) => s >= 0.4).map(([s, c]) => ({ line: c.line, hash: c.hash, similarity: s }));
 }
 
 export function orphan(rel: string, entry: Entry, candidates: readonly Unmatched[]): Problem {
@@ -122,6 +133,19 @@ export function orphan(rel: string, entry: Entry, candidates: readonly Unmatched
     problem: "orphan", file: rel, hash: entry.hash, kind: entry.kind, rules: entry.rules, intent: entry.intent,
     upstream: entry.upstream, patched: entry.patched, nearest: nearest(entry.upstream, candidates),
   };
+}
+
+const VALUE: Shape<string> = (v, at) => {
+  if (Array.isArray(v)) return list(string)(v, at).join(", ");
+  if (typeof v === "string") return v;
+  throw new ShapeError(at, `must be a string or a list of strings, not ${shown(v)}`);
+};
+
+const PLACEHOLDERS: Shape<Map<string, string>> = (v, at) =>
+  new Map(Object.entries(table(v, at)).filter(([k]) => !k.startsWith("_")).map(([k, x]) => [k, VALUE(x, JSON.stringify(k))]));
+
+export function parsePlaceholders(text: string, file: string): Map<string, string> {
+  return readJson(text, PLACEHOLDERS, file);
 }
 
 export class Rules {
@@ -168,11 +192,7 @@ export class Rules {
           } else if (name) lines.get(name)!.push(line);
         }
         for (const [k, v] of lines) values.set(k, v.join("\n").trim());
-      } else {
-        const raw = loads(text);
-        if (!(raw instanceof Map)) throw new Fail(`${spec.file} must hold a JSON object`);
-        for (const [k, v] of raw) if (!k.startsWith("_")) values.set(k, Array.isArray(v) ? v.map(str).join(", ") : str(v));
-      }
+      } else values = parsePlaceholders(text, spec.file);
     }
     this.loaded.set(kind, values);
     return values;
