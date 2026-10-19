@@ -239,6 +239,14 @@ function vendorTest(name: string, body: (t: VendorCase) => void): void {
   }, TIMEOUT);
 }
 
+/** The folder of a change written by hand. It must be new, so a test never writes over a change the fixture already has. */
+function newChange(root: string, name: string): string {
+  mkdirSync(join(root, ".patchbook/changes"), { recursive: true });
+  const change = join(root, ".patchbook/changes", name);
+  mkdirSync(change);
+  return change;
+}
+
 /** What Vite+'s `vp config` and husky's `husky` leave in a repo: core.hooksPath at `<dir>/_`, whose pre-commit runs `<dir>/pre-commit`. */
 function installManager(repo: Repo, dir: string): void {
   repo.write(`${dir}/_/.gitignore`, "*\n");
@@ -4318,7 +4326,7 @@ describe("ForkTest", () => {
     bup.commit("bup");
     t.pb(["track", "lib", lib.path], { cwd: t.fork.path });
     t.pb(["track", "bup", bup.path, "--vendor", "lib/vendored"], { cwd: t.fork.path });
-    const change = join(t.fork.path, ".patchbook/changes/into-vendor");
+    const change = newChange(t.fork.path, "into-vendor");
     mkdirSync(join(change, "ours/lib/vendored"), { recursive: true });
     writeFileSync(join(change, "ours/lib/vendored/n.md.pb"), "ours\n");
     writeFileSync(join(change, "CHANGE.md"), "# into-vendor\n\nintent: Write into the vendored copy.\n\nedits:\n- add lib/vendored/n.md\n");
@@ -4341,7 +4349,7 @@ describe("ForkTest", () => {
       t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.fork.path });
       t.pb(["build"], { cwd: t.fork.path });
       t.fork.commit("track");
-      const change = join(t.fork.path, ".patchbook/changes/into-vendor");
+      const change = newChange(t.fork.path, "into-vendor");
       mkdirSync(join(change, "ours/vendor/extra"), { recursive: true });
       writeFileSync(join(change, "ours/vendor/extra/new.md.pb"), "ours\n");
       writeFileSync(join(change, "CHANGE.md"), `# into-vendor\n\nintent: Write into the vendored copy.\n\nedits:\n- ${edit}\n`);
@@ -4372,8 +4380,7 @@ describe("ForkTest", () => {
   ] as const;
   for (const [name, edit, dest, place] of intoKept) {
     forkTest(`${name} is invalid and nothing is written`, (t) => {
-      const change = join(t.fork.path, ".patchbook/changes/into-kept");
-      mkdirSync(change, { recursive: true });
+      const change = newChange(t.fork.path, "into-kept");
       if (edit.startsWith("add ")) {
         mkdirSync(join(change, "ours", dirname(dest)), { recursive: true });
         writeFileSync(join(change, "ours", `${dest}.pb`), "ours\n");
@@ -4415,8 +4422,7 @@ describe("ForkTest", () => {
   for (const [name, edit, dest, place] of hookRefuses) {
     for (const pending of [false, true]) {
       forkTest(`hook refuses a ${name}${pending ? " with a hand edit pending" : ""} and leaves everything as it was`, (t) => {
-        const change = join(t.fork.path, ".patchbook/changes/into-kept");
-        mkdirSync(change, { recursive: true });
+        const change = newChange(t.fork.path, "into-kept");
         if (edit.startsWith("add ")) {
           mkdirSync(join(change, "ours", dirname(dest)), { recursive: true });
           writeFileSync(join(change, "ours", `${dest}.pb`), "ours\n");
@@ -4479,8 +4485,7 @@ describe("ForkTest", () => {
   for (const [name, edit] of hookRefusesUnsafe) {
     for (const pending of [false, true]) {
       forkTest(`hook refuses an unsafe ${name} edit${pending ? " with a hand edit pending" : ""} and leaves everything as it was`, (t) => {
-        const change = join(t.fork.path, ".patchbook/changes/unsafe");
-        mkdirSync(change, { recursive: true });
+        const change = newChange(t.fork.path, "unsafe");
         writeFileSync(join(change, "CHANGE.md"), `# unsafe\n\nintent: Name a path outside the tree.\n\nedits:\n- ${edit}\n`);
         writeFileSync(join(t.fork.path, ".patchbook/series"), "unsafe\n");
         if (pending) t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
@@ -4505,8 +4510,7 @@ describe("ForkTest", () => {
   }
 
   forkTest("hook still warns and commits for another problem", (t) => {
-    const change = join(t.fork.path, ".patchbook/changes/gone");
-    mkdirSync(change, { recursive: true });
+    const change = newChange(t.fork.path, "gone");
     writeFileSync(join(change, "CHANGE.md"), "# gone\n\nintent: Delete a file upstream lacks.\n\nedits:\n- delete missing.txt\n");
     writeFileSync(join(t.fork.path, ".patchbook/series"), "gone\n");
     sh(["git", "add", "-A"], { cwd: t.fork.path });
@@ -4561,8 +4565,8 @@ describe("ForkTest", () => {
   };
   for (const [name, edit] of escaping) {
     forkTest(`${name} is invalid and nothing is read or written outside`, (t) => {
-      const change = join(t.fork.path, ".patchbook/changes/esc");
-      mkdirSync(join(change, "ours"), { recursive: true });
+      const change = newChange(t.fork.path, "esc");
+      mkdirSync(join(change, "ours"));
       const path = /^add (\S+)$/.exec(edit)?.[1];
       if (path) {
         mkdirSync(dirname(join(change, "ours", path)), { recursive: true });
@@ -4607,7 +4611,7 @@ describe("ForkTest", () => {
   }
 
   forkTest("a series line that is not a change name is invalid and its folder is not read", (t) => {
-    mkdirSync(join(t.fork.path, ".patchbook/elsewhere"), { recursive: true });
+    mkdirSync(join(t.fork.path, ".patchbook/elsewhere"));
     writeFileSync(join(t.fork.path, ".patchbook/elsewhere/CHANGE.md"), "# elsewhere\n\nintent: Not a change.\n\nedits:\n- delete app.txt\n");
     writeFileSync(join(t.fork.path, ".patchbook/series"), "../elsewhere\n..\n.\na/b\n/abs\n");
     const status = t.pb(["status"], { cwd: t.fork.path, code: 1 });
@@ -4626,7 +4630,7 @@ describe("ForkTest", () => {
 
   forkTest("a change folder that is not a change name is invalid and a strict one is just unlisted", (t) => {
     for (const name of ["we\\ird", "Loose_Name", "loose-name"]) {
-      mkdirSync(join(t.fork.path, ".patchbook/changes", name), { recursive: true });
+      newChange(t.fork.path, name);
       writeFileSync(join(t.fork.path, ".patchbook/changes", name, "CHANGE.md"), `# ${name}\n\nintent: Loose.\n\nedits:\n- delete app.txt\n`);
     }
     const status = t.pb(["status"], { cwd: t.fork.path, code: 1 });
@@ -7652,7 +7656,7 @@ describe("VendorTest", () => {
 
   vendorTest("an added file and a move build into a folder-layout output", (t) => {
     t.missingScaffoldPatchBuild();
-    const change = join(t.repo.path, ".patchbook/changes/support");
+    const change = newChange(t.repo.path, "support");
     mkdirSync(join(change, "ours/skills/support"), { recursive: true });
     writeFileSync(join(change, "ours/skills/support/SKILL.md.pb"), "---\nname: support\n---\n");
     writeFileSync(join(change, "CHANGE.md"), dedent(`
@@ -7725,9 +7729,8 @@ describe("VendorTest", () => {
   });
 
   forkTest("a hand-written edit line with whitespace at the end of a path is refused and a quoted one builds", (t) => {
-    const dir = join(t.fork.path, ".patchbook/changes/hand");
+    const dir = newChange(t.fork.path, "hand");
     const file = join(dir, "CHANGE.md");
-    mkdirSync(dir, { recursive: true });
     writeFileSync(join(t.fork.path, ".patchbook/series"), "hand\n");
     writeFileSync(file, "# hand\n\nintent: Move the guide.\n\nedits:\n- move docs/guide.md -> moved.txt \n");
     const refused = t.pb(["build"], { cwd: t.fork.path, code: 1 });
@@ -7740,8 +7743,7 @@ describe("VendorTest", () => {
   });
 
   forkTest("a hand-written edit path that ends in a slash is refused and nothing is built", (t) => {
-    const dir = join(t.fork.path, ".patchbook/changes/hand");
-    mkdirSync(dir, { recursive: true });
+    const dir = newChange(t.fork.path, "hand");
     writeFileSync(join(t.fork.path, ".patchbook/series"), "hand\n");
     writeFileSync(join(dir, "CHANGE.md"), "# hand\n\nintent: Move the guide.\n\nedits:\n- move docs/guide.md -> moved /\n");
     const before = tree(t.fork.path);
@@ -8003,8 +8005,7 @@ exec '${Bun.which("git")}' "$@"
     extra.write("a.md", "one\ntwo\nthree\nfour\nfive\n");
     extra.commit("a");
     t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
-    const change = join(t.repo.path, ".patchbook/changes/tweak");
-    mkdirSync(change, { recursive: true });
+    const change = newChange(t.repo.path, "tweak");
     writeFileSync(join(change, "CHANGE.md"), "# tweak\n\nintent: Shout the first line.\n\nedits:\n- file extra/a.md\n");
     mkdirSync(join(change, "base/extra"), { recursive: true });
     mkdirSync(join(change, "ours/extra"), { recursive: true });
@@ -8049,8 +8050,7 @@ exec '${Bun.which("git")}' "$@"
         extra.write("a.md", "one\ntwo\nthree\nfour\nfive\n");
         extra.commit("a");
         t.pb(["track", "extra", extra.path, ...(layout === "vendored" ? ["--vendor", "vendor/extra"] : [])], { cwd: t.repo.path });
-        const change = join(t.repo.path, ".patchbook/changes/tweak");
-        mkdirSync(change, { recursive: true });
+        const change = newChange(t.repo.path, "tweak");
         writeFileSync(join(change, "CHANGE.md"), "# tweak\n\nintent: Shout the first line.\n\nedits:\n- file extra/a.md\n");
         mkdirSync(join(change, "base/extra"), { recursive: true });
         mkdirSync(join(change, "ours/extra"), { recursive: true });
@@ -8084,8 +8084,7 @@ exec '${Bun.which("git")}' "$@"
     extra.write("a.md", "one\ntwo\nthree\nfour\nfive\n");
     extra.commit("a");
     t.pb(["track", "extra", extra.path, ...(vendored ? ["--vendor", "vendor/extra"] : [])], { cwd: t.repo.path });
-    const change = join(t.repo.path, ".patchbook/changes/tweak");
-    mkdirSync(change, { recursive: true });
+    const change = newChange(t.repo.path, "tweak");
     writeFileSync(join(change, "CHANGE.md"), "# tweak\n\nintent: Shout the first line.\n\nedits:\n- file extra/a.md\n");
     mkdirSync(join(change, "base/extra"), { recursive: true });
     mkdirSync(join(change, "ours/extra"), { recursive: true });
@@ -8585,8 +8584,7 @@ exec '${Bun.which("git")}' "$@"
     extra.commit("extra");
     t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
     expect(existsSync(join(t.repo.path, "vendor/extra/skills/tool/SKILL.md"))).toBe(true);
-    const change = join(t.repo.path, ".patchbook/changes/ship-tool");
-    mkdirSync(change, { recursive: true });
+    const change = newChange(t.repo.path, "ship-tool");
     writeFileSync(join(change, "CHANGE.md"), "# ship-tool\n\nintent: Ship extra's tool skill.\n\nedits:\n- move extra/skills/tool -> skills/tool\n");
     writeFileSync(join(t.repo.path, ".patchbook/series"), "ship-tool\n");
     t.pb(["build"], { cwd: t.repo.path });
@@ -8746,8 +8744,7 @@ exec '${Bun.which("git")}' "$@"
   });
 
   vendorTest("a copy into a git name in the output folder is invalid", (t) => {
-    const change = join(t.repo.path, ".patchbook/changes/into-git");
-    mkdirSync(change, { recursive: true });
+    const change = newChange(t.repo.path, "into-git");
     writeFileSync(join(change, "CHANGE.md"), "# into-git\n\nintent: Write into a git name.\n\nedits:\n- copy skills/hello/SKILL.md -> skills/agents/.git/x\n");
     writeFileSync(join(t.repo.path, ".patchbook/series"), "into-git\n");
     const detail = "skills/agents/.git/x would be written into .git";
@@ -8759,8 +8756,7 @@ exec '${Bun.which("git")}' "$@"
   });
 
   function writeChange(t: VendorCase, name: string, edits: string[]): void {
-    const change = join(t.repo.path, ".patchbook/changes", name);
-    mkdirSync(change, { recursive: true });
+    const change = newChange(t.repo.path, name);
     writeFileSync(join(change, "CHANGE.md"), `# ${name}\n\nintent: Write somewhere new.\n\nedits:\n${edits.map((e) => `- ${e}\n`).join("")}`);
     writeFileSync(join(t.repo.path, ".patchbook/series"), `${name}\n`);
   }
