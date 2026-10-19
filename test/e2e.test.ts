@@ -5115,6 +5115,93 @@ describe("ForkTest", () => {
   const committed = (t: ForkCase): string[] => words(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.fork.path }).stdout);
   const porcelain = (t: ForkCase): string => sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout;
 
+  const mergeUpstream = (t: ForkCase, ...flags: string[]) => {
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "seven", "SEVEN"));
+    t.up.commit("upstream shouts seven");
+    sh(["git", "fetch", "-q", "upstream"], { cwd: t.fork.path });
+    sh(["git", "merge", "-q", "--no-edit", ...flags, "upstream/main"], { cwd: t.fork.path });
+  };
+
+  forkTest("test_commit_stops_when_upstream_was_merged_in_directly", (t) => {
+    mergeUpstream(t);
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    const staged = tree(t.fork.path);
+    const commit = hookCommit(t, ["-m", "shout"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("upstream shouts seven");
+    expect(commit.stderr).toContain("patchbook sync");
+    expect(commit.stderr).toContain("PATCHBOOK_HOOK=0");
+    expect(tree(t.fork.path)).toEqual(staged);
+    expect(existsSync(join(t.tmp, "prompt.txt"))).toBe(false);
+  });
+
+  forkTest("test_commit_stops_on_a_merge_of_upstream_that_is_not_committed_yet", (t) => {
+    mergeUpstream(t, "--no-commit", "--no-ff");
+    const commit = hookCommit(t, ["-m", "merge upstream"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("upstream shouts seven");
+    expect(commit.stderr).toContain("patchbook sync");
+    expect(existsSync(join(t.tmp, "prompt.txt"))).toBe(false);
+  });
+
+  forkTest("test_build_refuses_when_upstream_was_merged_in_directly", (t) => {
+    mergeUpstream(t);
+    const before = tree(t.fork.path);
+    const build = t.pb(["build"], { cwd: t.fork.path, code: 1 });
+    expect(build.stderr).toContain("upstream shouts seven");
+    expect(build.stderr).toContain("patchbook sync");
+    expect(tree(t.fork.path)).toEqual(before);
+    const forced = t.pb(["build", "--force"], { cwd: t.fork.path, code: 1 });
+    expect(forced.stderr).toContain("patchbook sync");
+    expect(tree(t.fork.path)).toEqual(before);
+  });
+
+  forkTest("test_commit_works_again_once_sync_has_moved_the_pin_past_a_merged_upstream", (t) => {
+    mergeUpstream(t);
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    expect(hookCommit(t, ["-m", "shout"], false).code).not.toBe(0);
+    t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "add", ".patchbook/upstream.lock"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "shout"]);
+    expect(committed(t)).toContain(".patchbook/changes/shout/CHANGE.md");
+    expect(t.fork.read("app.txt")).toContain("TWO");
+    expect(t.fork.read("app.txt")).toContain("SEVEN");
+  });
+
+  forkTest("test_build_refuses_without_installing_the_hook", (t) => {
+    mergeUpstream(t);
+    rmSync(join(t.fork.path, ".git/hooks/pre-commit"));
+    t.pb(["build"], { cwd: t.fork.path, code: 1 });
+    expect(existsSync(join(t.fork.path, ".git/hooks/pre-commit"))).toBe(false);
+  });
+
+  forkTest("test_commit_and_build_still_work_after_sync_pins_an_older_upstream_commit", (t) => {
+    const start = sh(["git", "rev-parse", "HEAD"], { cwd: t.up.path }).stdout.trim();
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "seven", "SEVEN"));
+    t.up.commit("upstream shouts seven");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build", "--force", "--commit"], { cwd: t.fork.path });
+    t.pb(["sync", "upstream", start], { cwd: t.fork.path });
+    t.pb(["build", "--force"], { cwd: t.fork.path });
+    expect(t.fork.read("app.txt")).toContain("seven");
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "shout"]);
+    expect(committed(t)).toContain(".patchbook/changes/shout/CHANGE.md");
+  });
+
+  forkTest("test_commit_works_after_a_merged_upstream_commit_that_changes_nothing", (t) => {
+    sh(["git", "commit", "-q", "--allow-empty", "-m", "an empty commit upstream"], { cwd: t.up.path });
+    sh(["git", "fetch", "-q", "upstream"], { cwd: t.fork.path });
+    sh(["git", "merge", "-q", "--no-edit", "upstream/main"], { cwd: t.fork.path });
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "shout"]);
+    expect(committed(t)).toContain(".patchbook/changes/shout/CHANGE.md");
+  });
+
   forkTest("test_commit_leaves_out_an_untracked_file", (t) => {
     t.fork.write("notes.txt", "scratch\n");
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
