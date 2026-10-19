@@ -11,9 +11,9 @@ const grab = (p: string): Held => ({ file: readDisk(p), bits: lstatSync(p).mode 
 
 const modeOf = (dir: string) => lstatSync(dir).mode & 0o7777;
 
-type Found = { files: Map<string, Held>; folders: Map<string, number>; unread: Set<string>; links: Set<string> };
+type Found = { files: Map<string, Held>; folders: Map<string, number>; unread: Set<string> };
 
-const found = (): Found => ({ files: new Map(), folders: new Map(), unread: new Set(), links: new Set() });
+const found = (): Found => ({ files: new Map(), folders: new Map(), unread: new Set() });
 
 /** What it can't read it leaves alone, as `rglob` does, so a restore neither rewrites nor removes it. */
 function walk(dir: string, into: Found): void {
@@ -31,20 +31,12 @@ function walk(dir: string, into: Found): void {
       walk(p, into);
       continue;
     }
-    if (isSymlink(p)) into.links.add(p);
     try {
       into.files.set(p, grab(p));
     } catch {
       into.unread.add(p);
     }
   }
-}
-
-/** The links in a folder tree, which a restore can't undo a write through. A folder that is itself a link has none to report. */
-export function linksUnder(dir: string): string[] {
-  const into = found();
-  if (isFolder(dir)) walk(dir, into);
-  return [...into.links];
 }
 
 export class Undo {

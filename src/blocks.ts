@@ -1,6 +1,5 @@
 // Block entries: a paragraph of an upstream file, keyed by the hash of its text, with its patched text.
 // Also the rules a block is checked against: [[check]] patterns, placeholders and the hooks.
-import { join } from "node:path";
 import type { InBlock, InOutput, Nearest, Problem } from "./api.ts";
 import { Book, escape } from "./book.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
@@ -57,7 +56,7 @@ export function blockSpans(lines: readonly string[]): [number, number][] {
 }
 
 export function entriesPath(book: Book, rel: string): string {
-  return join(book.dir, "blocks", `${rel}.entries`);
+  return book.data("blocks", `${rel}.entries`);
 }
 
 /** Parse an entries file into {hash: entry}. Field problems are left for checkEntry. */

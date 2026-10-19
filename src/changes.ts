@@ -129,13 +129,13 @@ export function saveChange(change: Change): void {
 }
 
 export function readSeries(book: Book): string[] {
-  const path = join(book.dir, "series");
+  const path = book.data("series");
   const names = exists(path) ? readText(path).split("\n").map((l) => strip(l)) : [];
   return names.filter((n) => n && !n.startsWith("#"));
 }
 
 export function appendSeries(book: Book, name: string): void {
-  appendFileSync(join(book.dir, "series"), name + "\n");
+  appendFileSync(book.data("series"), name + "\n");
 }
 
 export function readChanges(book: Book, problems: Problem[], names: readonly string[] = readSeries(book)): Change[] {
@@ -145,7 +145,7 @@ export function readChanges(book: Book, problems: Problem[], names: readonly str
       problems.push({ problem: "invalid", file: "series", detail: notAChangeName(name), refuse: true });
       continue;
     }
-    const path = join(book.dir, "changes", name, "CHANGE.md");
+    const path = book.data("changes", name, "CHANGE.md");
     if (!exists(path)) {
       problems.push({ problem: "invalid", file: "series", detail: `no change called ${name}` });
       continue;
@@ -153,7 +153,7 @@ export function readChanges(book: Book, problems: Problem[], names: readonly str
     changes.push(parseChange(path, (edit, detail) => problems.push({ problem: "invalid", file: `changes/${name}`, edit, detail, refuse: true })));
   }
   const listed = new Set(changes.map((c) => c.name));
-  for (const name of foldersWith(join(book.dir, "changes"), "CHANGE.md")) {
+  for (const name of foldersWith(book.data("changes"), "CHANGE.md")) {
     if (listed.has(name) || names.includes(name)) continue;
     problems.push(
       CHANGE_NAME.test(name)
@@ -199,7 +199,7 @@ export class Roster {
 
 export async function cmdShow(args: { change: string }) {
   const book = await Book.find();
-  const path = join(book.dir, "changes", args.change, "CHANGE.md");
+  const path = book.data("changes", args.change, "CHANGE.md");
   if (!CHANGE_NAME.test(args.change) || !exists(path)) throw new Fail(`no change called ${args.change}`);
   const rejected: string[] = [];
   const c = parseChange(path, (edit, detail) => rejected.push(`invalid ${edit}: ${detail}\n`));

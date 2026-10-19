@@ -18,7 +18,7 @@ import { quote, sorted, strip } from "./lib/py.ts";
 import { bytesEqual, concat, decode, decodeReplace, encode } from "./lib/text.ts";
 import { type Source, setting } from "./settings.ts";
 import { refuseMergedUpstream, stagedTree } from "./store.ts";
-import { linksUnder, Undo } from "./undo.ts";
+import { Undo } from "./undo.ts";
 
 /** Git runs hooks from the top of the checkout. A linked worktree shares the hooks folder of its repo, and may hold a commit with no patchbook. */
 const HAS_PATCHBOOK = "[ -f .patchbook/config.toml ]";
@@ -723,32 +723,10 @@ export async function cmdHook(args: { action: "install" | "run" | "status" }) {
   }
 }
 
-/** A recorded symlink is stored as one, at `changes/<name>/<side>/<path>.pb`, and the record replaces it. No copy is read or
- * written under it (`Change.content` refuses), so it may point to a folder. The walk reaches `p` only through real folders, so
- * none above it is a link. */
-const isRecordedLink = (changes: string, p: string) => {
-  const [, side, ...path] = relative(changes, p).split("/");
-  return (side === "base" || side === "ours") && path.length > 0 && p.endsWith(".pb");
-};
-
-/** The record writes through a link and git can't see what lands behind it, so a failed run couldn't put that back.
- * Only what the hook writes counts: it never writes `config.toml` or `upstream.lock`. */
-function refuseLinkedInputs(book: Book): void {
-  const inPatchbook = (name: string) => join(book.root, PB, name);
-  const linked = [
-    ...["blocks", "changes", "series", "build.lock"].map(inPatchbook).filter(isSymlink),
-    ...linksUnder(inPatchbook("blocks")),
-    ...linksUnder(inPatchbook("changes")).filter((p) => !isRecordedLink(inPatchbook("changes"), p)),
-  ].map((p) => relative(book.root, p));
-  if (linked.length) {
-    throw new Fail(linked.map((p) => `${p} is a link`).join(", ") + ". The hook records into it, so replace the link with a copy of what it points to, or skip the hook once with PATCHBOOK_HOOK=0.");
-  }
-}
-
 async function runHook(undo: Undo) {
   const book = await Book.find();
   if (!setting("hook.enabled", book)[0]) return 0;
-  refuseLinkedInputs(book);
+  book.refuseLinks(", or skip the hook once with PATCHBOOK_HOOK=0");
   refuseMergedUpstream(book, "hook");
   const lock = readBuildLock(book);
   const readEdits = placeholderOutputs(book).filter((p) => !leftByLastBuild(book, lock, p)).map((p) => inRepo(book, p));

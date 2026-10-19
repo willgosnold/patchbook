@@ -366,6 +366,7 @@ export async function cmdConfig(args: { name: string | null; value: string | nul
   if (args.project && book === null) throw new Fail("--project needs a patchbook here or above");
   const path = args.project && book ? pjoin(book.dir, "config.toml") : USER_CONFIG;
   if ((args.unset || args.value !== null) && name === null) throw new Fail("name the setting to change");
+  if (args.project && book && (args.unset || args.value !== null)) book.refuseLinkedTop();
   if (args.unset && name !== null) {
     setToml(path, name, null);
     return 0;

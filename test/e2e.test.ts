@@ -2,6 +2,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { accessSync, appendFileSync, chmodSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import type { Nearest } from "../src/api.ts";
@@ -2940,6 +2941,70 @@ test("test_a_fork_init_that_cannot_write_its_pin_leaves_no_config_and_can_be_ret
     t.cleanup();
   }
 }, TIMEOUT);
+
+test("test_init_refuses_a_patchbook_that_is_a_link", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    up.commit("start");
+    const fork = forkOf(t, up);
+    const outside = join(t.tmp, "outside");
+    mkdirSync(outside);
+    symlinkSync(outside, join(fork.path, ".patchbook"));
+    const out = t.pb(["init", "--upstream", up.path], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain(".patchbook is a link");
+    expect(out.stderr).toContain("replace the link with a copy of what it points to");
+    expect(readdirSync(outside)).toEqual([]);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_init_refuses_a_series_that_is_a_link", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    up.commit("start");
+    const fork = forkOf(t, up);
+    const outside = join(t.tmp, "series");
+    writeFileSync(outside, "mine\n");
+    mkdirSync(join(fork.path, ".patchbook"));
+    symlinkSync(outside, join(fork.path, ".patchbook/series"));
+    const out = t.pb(["init", "--upstream", up.path], { cwd: fork.path, code: 1 });
+    expect(out.stderr).toContain(".patchbook/series already exists");
+    expect(read(outside)).toBe("mine\n");
+    expect(existsSync(join(fork.path, ".patchbook/upstream.lock"))).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+for (const layout of ["fork", "folder"] as const) {
+  for (const name of ["config.toml", "upstream.lock", "retired.md"]) {
+    test(`test_a_${layout}_init_refuses_a_${name}_that_is_a_link`, () => {
+      const t = new Case();
+      try {
+        const up = new Repo(join(t.tmp, "upstream"));
+        up.write("app.txt", "one\n");
+        up.commit("start");
+        const fork = forkOf(t, up);
+        const output = layout === "folder" ? ["--output-from", "", "--output-to", "out"] : [];
+        const outside = join(t.tmp, name);
+        if (name !== "config.toml") writeFileSync(outside, "mine\n");
+        mkdirSync(join(fork.path, ".patchbook"));
+        symlinkSync(outside, join(fork.path, ".patchbook", name));
+        const out = t.pb(["init", "--upstream", up.path, ...output], { cwd: fork.path, code: 1 });
+        const refusal = { "config.toml": "is a symlink to a missing file", "upstream.lock": "is a link", "retired.md": "already exists" }[name];
+        expect(out.stderr).toContain(`.patchbook/${name} ${refusal}`);
+        expect(existsSync(outside) ? read(outside) : null).toBe(name === "config.toml" ? null : "mine\n");
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+  }
+}
 
 test("test_a_folder_init_that_fails_leaves_no_pin_and_can_be_retried_from_another_url", () => {
   const t = new Case();
@@ -7257,6 +7322,143 @@ describe("ForkTest", () => {
     expect(porcelain(t)).toBe("M  app.txt\n");
   });
 
+  const commitWithoutHook = (t: ForkCase, message: string) => {
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    sh(["git", "commit", "-q", "-m", message], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "0" } });
+  };
+
+  const refusesLink = (out: Run, link: string) => {
+    expect(out.stderr).toContain(`${link} is a link`);
+    expect(out.stderr).toContain("replace the link with a copy of what it points to");
+  };
+
+  /** Links `.patchbook/blocks/app.txt.entries` to a file outside the repo, which holds an entry that patches app.txt to OUTSIDE when `patched` is set. */
+  const linkEntries = (t: ForkCase, patched: boolean) => {
+    const block = t.fork.read("app.txt").replace(/\n$/, "");
+    const hash = createHash("sha256").update(block).digest("hex").slice(0, 12);
+    const outside = join(t.tmp, "outside.entries");
+    writeFileSync(outside, patched ? `=== entry ${hash}\nkind: policy\nrules: \nintent: Planted.\n--- upstream\n${block}\n--- patched\nOUTSIDE\n` : "");
+    mkdirSync(join(t.fork.path, ".patchbook/blocks"));
+    symlinkSync(outside, join(t.fork.path, ".patchbook/blocks/app.txt.entries"));
+    commitWithoutHook(t, "link the entries");
+    return outside;
+  };
+
+  forkTest("test_status_refuses_a_linked_entries_file", (t) => {
+    const outside = linkEntries(t, true);
+    const before = read(outside);
+    refusesLink(t.pb(["status"], { cwd: t.fork.path, code: 1 }), ".patchbook/blocks/app.txt.entries");
+    expect(read(outside)).toBe(before);
+  });
+
+  forkTest("test_build_refuses_a_linked_entries_file", (t) => {
+    linkEntries(t, true);
+    refusesLink(t.pb(["build"], { cwd: t.fork.path, code: 1 }), ".patchbook/blocks/app.txt.entries");
+    expect(t.fork.read("app.txt")).not.toContain("OUTSIDE");
+  });
+
+  forkTest("test_record_refuses_a_linked_entries_file", (t) => {
+    const outside = linkEntries(t, true);
+    const before = read(outside);
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    refusesLink(t.pb(["record", "--intent", "Shout two."], { cwd: t.fork.path, code: 1 }), ".patchbook/blocks/app.txt.entries");
+    expect(read(outside)).toBe(before);
+  });
+
+  forkTest("test_scaffold_refuses_a_linked_entries_file", (t) => {
+    const outside = linkEntries(t, false);
+    appendFileSync(join(t.fork.path, ".patchbook/config.toml"), '\n[[check]]\npattern = "two"\n');
+    commitWithoutHook(t, "check two");
+    refusesLink(t.pb(["scaffold"], { cwd: t.fork.path, code: 1 }), ".patchbook/blocks/app.txt.entries");
+    expect(read(outside)).toBe("");
+  });
+
+  for (const [what, path] of [["change_folder", "changes/shout"], ["side_folder", "changes/shout/ours"]] as const) {
+    forkTest(`test_build_refuses_a_${what}_that_is_a_link`, (t) => {
+      linkPatchbook(t, path);
+      writeFileSync(join(readlinkSync(join(t.fork.path, ".patchbook", path)), path.endsWith("ours") ? "" : "ours", "app.txt.pb"), "OUTSIDE\n");
+      refusesLink(t.pb(["build"], { cwd: t.fork.path, code: 1 }), `.patchbook/${path}`);
+      expect(t.fork.read("app.txt")).not.toContain("OUTSIDE");
+    });
+
+    forkTest(`test_record_refuses_a_${what}_that_is_a_link`, (t) => {
+      const { held, before } = linkPatchbook(t, path);
+      t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+      refusesLink(t.pb(["record", "--intent", "Shout two."], { cwd: t.fork.path, code: 1 }), `.patchbook/${path}`);
+      expect(held()).toBe(before);
+    });
+  }
+
+  forkTest("test_record_refuses_a_recorded_folder_named_like_a_copy_that_is_now_a_link", (t) => {
+    t.fork.write("d.pb/X.md", "alpha\n");
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "add d.pb/X.md"]);
+    const outside = join(t.tmp, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "X.md.pb"), "OUTSIDE\n");
+    rmSync(join(t.fork.path, ".patchbook/changes/shout/ours/d.pb"), { recursive: true });
+    symlinkSync(outside, join(t.fork.path, ".patchbook/changes/shout/ours/d.pb"));
+    commitWithoutHook(t, "ours folder is a link");
+    t.fork.write("d.pb/X.md", "alpha, edited\n");
+    refusesLink(t.pb(["record", "--intent", "Edit d."], { cwd: t.fork.path, code: 1 }), ".patchbook/changes/shout/ours/d.pb");
+    expect(read(join(outside, "X.md.pb"))).toBe("OUTSIDE\n");
+  });
+
+  forkTest("test_record_refuses_a_link_where_it_would_start_a_change", (t) => {
+    const outside = join(t.tmp, "outside");
+    mkdirSync(outside);
+    mkdirSync(join(t.fork.path, ".patchbook/changes"), { recursive: true });
+    symlinkSync(outside, join(t.fork.path, ".patchbook/changes/add-new"));
+    commitWithoutHook(t, "plant a change folder");
+    t.fork.write("new.txt", "new\n");
+    refusesLink(t.pb(["record", "add-new", "--intent", "Add new.txt."], { cwd: t.fork.path, code: 1 }), ".patchbook/changes/add-new");
+    expect(readdirSync(outside)).toEqual([]);
+    expect(read(join(t.fork.path, ".patchbook/series"))).not.toContain("add-new");
+  });
+
+  forkTest("test_record_refuses_a_series_that_is_a_link", (t) => {
+    const { held, before } = linkPatchbook(t, "series");
+    t.fork.write("new.txt", "new\n");
+    refusesLink(t.pb(["record", "add-new", "--intent", "Add new.txt."], { cwd: t.fork.path, code: 1 }), ".patchbook/series");
+    expect(held()).toBe(before);
+    expect(existsSync(join(t.fork.path, ".patchbook/changes/add-new"))).toBe(false);
+  });
+
+  forkTest("test_build_refuses_a_build_lock_that_is_a_link", (t) => {
+    const outside = join(t.tmp, "outside.lock");
+    writeFileSync(outside, "kept\n");
+    rmSync(join(t.fork.path, ".patchbook/build.lock"));
+    symlinkSync(outside, join(t.fork.path, ".patchbook/build.lock"));
+    commitWithoutHook(t, "build.lock is a link");
+    refusesLink(t.pb(["build", "--force"], { cwd: t.fork.path, code: 1 }), ".patchbook/build.lock");
+    expect(read(outside)).toBe("kept\n");
+  });
+
+  forkTest("test_record_refuses_a_patchbook_that_is_a_link", (t) => {
+    const outside = join(t.tmp, "outside-patchbook");
+    renameSync(join(t.fork.path, ".patchbook"), outside);
+    symlinkSync(outside, join(t.fork.path, ".patchbook"));
+    commitWithoutHook(t, ".patchbook is a link");
+    const before = tree(outside);
+    t.fork.write("new.txt", "new\n");
+    refusesLink(t.pb(["record", "add-new", "--intent", "Add new.txt."], { cwd: t.fork.path, code: 1 }), ".patchbook");
+    expect(tree(outside)).toEqual(before);
+  });
+
+  for (const [what, file] of [["a_path", "../outside.json"], ["a_link", ".patchbook/terms.json"]] as const) {
+    forkTest(`test_build_refuses_a_placeholder_file_outside_the_repo_through_${what}`, (t) => {
+      writeFileSync(join(t.tmp, "outside.json"), '{"secret": "OUTSIDE"}\n');
+      if (what === "a_link") symlinkSync(join(t.tmp, "outside.json"), join(t.fork.path, file));
+      t.fork.write("note.md", "{{term:secret}}\n");
+      t.pb(["record", "--intent", "Add a note."], { cwd: t.fork.path });
+      appendFileSync(join(t.fork.path, ".patchbook/config.toml"), `\n[placeholders.term]\nfile = "${file}"\n`);
+      commitWithoutHook(t, "a placeholder file outside the repo");
+      const out = t.pb(["build", "--force"], { cwd: t.fork.path, code: 1 });
+      expect(out.stderr).toContain(`[placeholders.term] file '${file}' is outside the repo`);
+      expect(t.fork.read("note.md")).not.toContain("OUTSIDE");
+    });
+  }
+
   readOnlyTest("test_failed_commit_puts_a_private_copy_back_with_its_own_mode_when_its_bytes_did_not_change", (t) => {
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "one", "ONE"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
@@ -8431,27 +8633,79 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
       }
     }
 
-    forkTest("test_a_sync_that_cannot_write_upstream.lock_puts_back_a_last_sync_json_that_is_a_link", (t) => {
+    for (const name of ["config.toml", "upstream.lock", "last-sync.json", "retired.md"]) {
+      forkTest(`test_sync_refuses_a_${name}_that_is_a_link`, (t) => {
+        t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+        t.up.commit("first edit");
+        t.pb(["sync"], { cwd: t.fork.path });
+        const file = join(t.fork.path, ".patchbook", name);
+        const kept = join(t.tmp, name);
+        if (existsSync(file)) renameSync(file, kept);
+        else writeFileSync(kept, "");
+        symlinkSync(kept, file);
+        const was = read(kept);
+        t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
+        t.up.commit("second edit");
+        expect(t.pb(["sync"], { cwd: t.fork.path, code: 1 }).stderr).toContain(`.patchbook/${name} is a link`);
+        expect(read(kept)).toBe(was);
+      });
+    }
+
+    forkTest("test_sync_refuses_a_journal_folder_that_is_a_link", (t) => {
+      const outside = join(t.tmp, "outside-journal");
+      mkdirSync(outside);
+      symlinkSync(outside, join(t.fork.path, ".patchbook/sync-upstream"));
       t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
       t.up.commit("first edit");
-      t.pb(["sync"], { cwd: t.fork.path });
-      const report = join(t.fork.path, ".patchbook/last-sync.json");
-      const kept = join(t.tmp, "last-sync.json");
-      renameSync(report, kept);
-      symlinkSync(kept, report);
-      const reported = read(kept);
-      t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
-      t.up.commit("second edit");
-      const lock = join(t.fork.path, ".patchbook/upstream.lock");
-      chmodSync(lock, 0o444);
-      try {
-        t.pb(["sync"], { cwd: t.fork.path, code: 1 });
-      } finally {
-        chmodSync(lock, 0o644);
-      }
-      expect(readlinkSync(report)).toBe(kept);
-      expect(read(kept)).toBe(reported);
+      expect(t.pb(["sync"], { cwd: t.fork.path, code: 1 }).stderr).toContain(".patchbook/sync-upstream is a link");
+      expect(readdirSync(outside)).toEqual([]);
     });
+
+    for (const [how, link] of [["top", "dirlink"], ["nested", "other/sub"]] as const) {
+      forkTest(`test_sync_refuses_to_put_a_saved_copy_back_through_a_${how}_link_in_the_patchbook`, (t) => {
+        const outside = join(t.tmp, "outside-recover");
+        mkdirSync(outside);
+        mkdirSync(dirname(join(t.fork.path, ".patchbook", link)), { recursive: true });
+        symlinkSync(outside, join(t.fork.path, ".patchbook", link));
+        const [commit, pinTree] = read(join(t.fork.path, ".patchbook/upstream.lock")).match(/[0-9a-f]{40}/g)!;
+        const journal = join(t.fork.path, ".patchbook/sync-upstream");
+        mkdirSync(join(journal, "before", link), { recursive: true });
+        writeFileSync(join(journal, "before", link, "evil.txt"), "PWNED\n");
+        const to = `${"0".repeat(40)} ${"1".repeat(40)}`;
+        writeFileSync(join(journal, "pin"), JSON.stringify({ from: `${commit} ${pinTree}`, to, added: "", vendor: "", copy: false }));
+        const out = t.pb(["sync"], { cwd: t.fork.path, code: 1 });
+        expect(out.stderr).toContain(`its before/${link}/evil.txt is not one a sync saves`);
+        expect(readdirSync(outside)).toEqual([]);
+      });
+    }
+
+    for (const [how, args] of [["set", ["start.install_skill", "false"]], ["unset", ["--unset", "start.install_skill"]]] as const) {
+      forkTest(`test_config_project_${how}_refuses_a_config_toml_that_is_a_link`, (t) => {
+        const file = join(t.fork.path, ".patchbook/config.toml");
+        const kept = join(t.tmp, "config.toml");
+        renameSync(file, kept);
+        symlinkSync(kept, file);
+        const was = read(kept);
+        const out = t.pb(["config", "--project", ...args], { cwd: t.fork.path, code: 1 });
+        expect(out.stderr).toContain(".patchbook/config.toml is a link");
+        expect(read(kept)).toBe(was);
+      });
+    }
+
+    for (const name of ["config.toml", "upstream.lock"]) {
+      forkTest(`test_track_refuses_a_${name}_that_is_a_link`, (t) => {
+        const file = join(t.fork.path, ".patchbook", name);
+        const kept = join(t.tmp, name);
+        renameSync(file, kept);
+        symlinkSync(kept, file);
+        const was = read(kept);
+        const more = new Repo(join(t.tmp, "more"));
+        more.write("b.md", "b\n");
+        more.commit("b");
+        expect(t.pb(["track", "more", more.path], { cwd: t.fork.path, code: 1 }).stderr).toContain(`.patchbook/${name} is a link`);
+        expect(read(kept)).toBe(was);
+      });
+    }
   }
 
   describe.skipIf(!!process.env["PATCHBOOK_CMD"])("killed by a preload, so only from source", () => {
@@ -9284,7 +9538,12 @@ describe("VendorTest", () => {
     const extra = new Repo(join(t.tmp, "extra"));
     extra.write("a.md", "two\n");
     extra.commit("bump");
+    expect(t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 }).stderr).toContain(".patchbook/upstream.lock is a link");
+    rmSync(link);
+    copyFileSync(target, link);
     t.pb(["sync", "extra"], { cwd: t.repo.path });
+    renameSync(link, target);
+    symlinkSync("../pins/upstream.lock", link);
     t.repo.write("note.txt", "a note\n");
     gitIn(t, ["add", "note.txt"]);
     const head = gitIn(t, ["rev-parse", "HEAD"]);
@@ -9990,6 +10249,29 @@ exec '${Bun.which("git")}' "$@"
     .filter((s) => inStore(s, commit) && sh(["git", "rev-parse", "--verify", "--quiet", `refs/pins/${commit}`], { cwd: s, check: false }).code === 0)
     .length;
 
+  vendorTest("test_a_sync_recovers_a_journal_whose_saved_copies_and_old_vendored_copy_hold_symlinks", (t) => {
+    const extra = extraWithAChange(t, true);
+    const repo = t.repo.path;
+    symlinkSync("a.md", join(extra.path, "ln"));
+    extra.commit("ln");
+    t.pb(["sync", "extra"], { cwd: repo });
+    const [commit, tree] = read(join(repo, ".patchbook/upstream.lock")).match(/[0-9a-f]{40}/g)!;
+    const saved = "changes/tweak/ours/extra";
+    const journal = join(repo, ".patchbook/sync-extra");
+    mkdirSync(join(journal, "before", saved), { recursive: true });
+    writeFileSync(join(journal, "before", saved, "a.md.pb"), "SAVED\n");
+    symlinkSync("a.md", join(journal, "before", saved, "ln.pb"));
+    mkdirSync(join(journal, "old"));
+    writeFileSync(join(journal, "old/a.md"), "one\ntwo\nthree\nfour\nFIVE\n");
+    symlinkSync("a.md", join(journal, "old/ln"));
+    writeFileSync(join(journal, "pin"), JSON.stringify({ from: `${commit} ${tree}`, to: "", rewrite: true, added: "", vendor: "vendor/extra", copy: true }));
+    t.pb(["sync", "extra"], { cwd: repo });
+    expect(existsSync(journal)).toBe(false);
+    expect(read(join(repo, ".patchbook", saved, "a.md.pb"))).toBe("SAVED\n");
+    expect(readlinkSync(join(repo, ".patchbook", saved, "ln.pb"))).toBe("a.md");
+    expect(readlinkSync(join(repo, "vendor/extra/ln"))).toBe("a.md");
+  });
+
   const failedSyncs: [string, (t: VendorCase, extra: Repo) => void][] = [
     ["the_repos_gitignore_hides_an_upstream_file", (t, extra) => {
       t.repo.write(".gitignore", "*.log\n");
@@ -10275,6 +10557,24 @@ exec '${Bun.which("git")}' "$@"
       expect(tree(t.repo.path)).toEqual({ ...before, ".gitignore": "*.log\n" });
     });
   }
+
+  vendorTest("test_track_refuses_a_change_folder_that_is_a_link_before_it_puts_back_a_killed_sync", (t) => {
+    const extra = extraWithAChange(t, true);
+    extra.write("c.log", "hidden\n");
+    extra.commit("v2");
+    t.repo.commit("follow extra");
+    killSync(t, "write-tree --prefix=vendor/extra/");
+    t.repo.write(".patchbook/sync-extra/before/changes/tweak/ours/extra/a.md.pb", "PLANTED\n");
+    const outside = join(t.tmp, "outside-tweak");
+    renameSync(join(t.repo.path, ".patchbook/changes/tweak"), outside);
+    symlinkSync(outside, join(t.repo.path, ".patchbook/changes/tweak"));
+    const more = new Repo(join(t.tmp, "more"));
+    more.write("b.md", "b\n");
+    more.commit("b");
+    const out = t.pb(["track", "more", more.path], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain(".patchbook/changes/tweak/ours/extra leads outside the repo");
+    expect(read(join(outside, "ours/extra/a.md.pb"))).toBe("ONE\ntwo\nthree\nfour\nfive\n");
+  });
 
   vendorTest("test_a_failed_sync_leaves_the_vendored_copy_as_it_was_when_its_folder_name_has_a_newline", (t) => {
     t.missingScaffoldPatchBuild();
@@ -11248,7 +11548,7 @@ exec '${Bun.which("git")}' "$@"
     for (const f of ["config.toml", "series", "retired.md"]) {
       expect(existsSync(join(t.repo.path, "skills/.pb", f))).toBe(true);
     }
-    expect(out.stderr).toContain("is really inside .patchbook");
+    expect(out.stderr).toContain(".patchbook is a link");
   });
 
   test("test_a_rejected_init_can_be_retried", () => {
@@ -11497,7 +11797,7 @@ exec '${Bun.which("git")}' "$@"
     const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
     expect(readdirSync(outside)).toEqual([]);
     expect(tree(t.repo.path)).toEqual(before);
-    expect(out.stderr).toContain("before/changes/tweak/ours/a.md.pb");
+    expect(out.stderr).toContain(".patchbook/changes is a link");
   });
 
   vendorTest("test_a_sync_journal_that_puts_last_sync_json_back_through_a_link_out_of_the_repo_is_left_for_the_user", (t) => {
@@ -11511,7 +11811,7 @@ exec '${Bun.which("git")}' "$@"
     const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
     expect(read(outside)).toBe("not patchbook's\n");
     expect(tree(t.repo.path)).toEqual(before);
-    expect(out.stderr).toContain("before/last-sync.json");
+    expect(out.stderr).toContain(".patchbook/last-sync.json is a link");
   });
 
   vendorTest("test_a_sync_journal_whose_before_links_to_a_folder_out_of_the_repo_is_left_for_the_user_and_no_link_is_put_back", (t) => {
@@ -11539,8 +11839,7 @@ exec '${Bun.which("git")}' "$@"
     const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
     expect(read(join(outside, "old/a.md"))).toBe("not patchbook's\n");
     expect(tree(t.repo.path)).toEqual(before);
-    expect(out.stderr).toContain(".patchbook/sync-extra holds a sync of extra");
-    expect(out.stderr).toContain("leads outside the repo");
+    expect(out.stderr).toContain(".patchbook/sync-extra is a link");
   });
 
   vendorTest("test_a_sync_journal_whose_pin_is_a_link_out_of_the_repo_is_left_for_the_user_and_its_target_is_not_read", (t) => {
@@ -11884,19 +12183,19 @@ exec '${Bun.which("git")}' "$@"
       noJournal(t);
     });
 
-    vendorTest("test_a_sync_killed_while_it_wrote_an_upstream_lock_that_links_into_the_repo_is_put_right_by_the_next_sync", (t) => {
+    vendorTest("test_a_killed_sync_is_left_for_the_user_when_upstream_lock_is_now_a_link_into_the_repo", (t) => {
+      killedSync(t);
       const [link, target] = [join(t.repo.path, ".patchbook/upstream.lock"), join(t.repo.path, "pins/upstream.lock")];
       mkdirSync(dirname(target));
+      writeFileSync(join(t.repo.path, ".patchbook/sync-extra/lock"), read(link));
       renameSync(link, target);
       symlinkSync("../pins/upstream.lock", link);
-      const extra = killedSync(t);
-      writeFileSync(join(t.repo.path, ".patchbook/sync-extra/lock"), read(target));
       writeFileSync(target, "");
-      t.pb(["sync", "extra"], { cwd: t.repo.path });
+      const before = tree(t.repo.path);
+      expect(t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 }).stderr).toContain(".patchbook/upstream.lock is a link");
       expect(readlinkSync(link)).toBe("../pins/upstream.lock");
-      expect(JSON.parse(read(target)).extra.commit).toBe(sh(["git", "rev-parse", "HEAD"], { cwd: extra.path }).stdout.trim());
-      expect(t.repo.read("vendor/extra/b.md")).toBe("b\n");
-      noJournal(t);
+      expect(read(target)).toBe("");
+      expect(tree(t.repo.path)).toEqual(before);
     });
   });
 
@@ -12935,7 +13234,7 @@ exec '${Bun.which("git")}' "$@"
   }, TIMEOUT);
 
   vendorTest("test_absolute_placeholder_file_is_used_as_given", (t) => {
-    const snippets = join(t.tmp, "snippets.md");
+    const snippets = join(t.repo.path, "snippets.md");
     writeFileSync(snippets, t.repo.read(".patchbook/snippets.md"));
     const config = join(t.repo.path, ".patchbook/config.toml");
     writeFileSync(config, replace(read(config), 'file = ".patchbook/snippets.md"', `file = "${snippets}"`));
