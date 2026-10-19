@@ -11,8 +11,8 @@ import { type Change, editText, readChanges } from "./changes.ts";
 import { installHookOrWarn, warnUnhooked } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import {
-  exists, type File, gitMode, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, type Mode, nonFolders, parseGitMode, readText, relative, resolve, rglob, rmFolders, sameFile,
-  sameMode, setsMode, writeDisk, writeText,
+  exists, type File, gitMode, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, type Mode, nonFolders, outputMode, parseGitMode, readText, relative, resolve, rglob, rmFolders,
+  sameFile, sameMode, writeDisk, writeText,
 } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { dumps, type Json, loads } from "./lib/json.ts";
@@ -162,7 +162,7 @@ export function assemble(book: Book): Assembly {
         problems.push({ problem: "stale", ...where, detail: "its base differs from upstream at the pin; run sync" });
       }
       if (isText(ours.data) && hasConflictMarker(decode(ours.data))) problems.push({ problem: "conflict", ...where, detail: "ours has conflict markers" });
-      content.set(e.path, { data: ours.data, mode: setsMode(ours, base, book.tracksExecBit()) ? ours.mode : up.mode });
+      content.set(e.path, { data: ours.data, mode: outputMode(ours, base, up, book.tracksExecBit()) });
       applied++;
     }
   }
@@ -220,7 +220,7 @@ export function assemble(book: Book): Assembly {
       const c = byName.get(src.change)!;
       const copy = c.file("ours", src.path)!;
       let data = copy.data;
-      const mode = copy.mode;
+      const mode = outputMode(copy, c.file("base", src.path), upstream.get(src.path), book.tracksExecBit());
       const where: InOutput = { file: `changes/${c.name}`, output: outPath };
       if (isText(data)) {
         const text = rules.expand(decode(data), (detail) => problems.push({ problem: "placeholder", ...where, detail }));
@@ -336,9 +336,10 @@ function refuseIfUncontained(book: Book, { stale, changed }: Changes): void {
 
 export type BuildLock = ReadonlyMap<string, Stamp>;
 
-export function builtAs(file: File | undefined, stamp: Stamp | undefined, tracksExecBit: boolean): boolean {
+/** A lock line with no mode stands for the mode the current build writes for that path. */
+export function builtAs(file: File | undefined, stamp: Stamp | undefined, built: Mode | undefined, tracksExecBit: boolean): boolean {
   if (file === undefined || stamp === undefined) return file === undefined && stamp === undefined;
-  return blobOid(file.data) === stamp.oid && (stamp.mode === null || sameMode(stamp.mode, file.mode, tracksExecBit));
+  return blobOid(file.data) === stamp.oid && sameMode(stamp.mode ?? built ?? file.mode, file.mode, tracksExecBit);
 }
 
 export function handEdits(
@@ -349,7 +350,7 @@ export function handEdits(
   const last = builds.filter((b) => b !== null);
   if (!last.length) return sorted(Array.from(files.keys()).filter((p) => !sameFile(files.get(p), fresh.get(p), execBit))); // never built here
   const paths = new Set([...files.keys(), ...last.flatMap((b) => [...b.keys()])]);
-  return sorted(Array.from(paths).filter((p) => !sameFile(files.get(p), fresh.get(p), execBit) && last.every((b) => !builtAs(files.get(p), b.get(p), execBit))));
+  return sorted(Array.from(paths).filter((p) => !sameFile(files.get(p), fresh.get(p), execBit) && last.every((b) => !builtAs(files.get(p), b.get(p), fresh.get(p)?.mode, execBit))));
 }
 
 /** A folder where the build writes a file goes only if it holds nothing but folders and files this build removes. */

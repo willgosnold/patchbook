@@ -501,10 +501,10 @@ function onDisk(book: Book, p: string): File | undefined {
   return lexists(f) && !isFolder(book, p) ? readDisk(f) : undefined;
 }
 
-function leftByLastBuild(book: Book, lock: BuildLock | null, p: string): boolean {
+function leftByLastBuild(book: Book, lock: BuildLock | null, p: string, out?: ReadonlyMap<string, File>): boolean {
   if (lock === null || isFolder(book, p)) return false;
   const disk = onDisk(book, p);
-  return disk === undefined ? !lock.has(p) : builtAs(disk, lock.get(p), book.tracksExecBit());
+  return disk === undefined ? !lock.has(p) : builtAs(disk, lock.get(p), out?.get(p)?.mode, book.tracksExecBit());
 }
 
 function refuseOverwrites(book: Book, clobbered: string[]): void {
@@ -524,7 +524,7 @@ function diskWrites(book: Book, lock: BuildLock | null, staged: ReadonlyMap<stri
   const loose = new Set(unstaged(book.root, differ.map((p) => inRepo(book, p))));
   const matchesIndex = (p: string) =>
     staged.has(p) ? !loose.has(inRepo(book, p)) || sameFile(onDisk(book, p), staged.get(p), false) : !lexists(join(book.outputRoot(), p));
-  const userOnly = differ.filter((p) => !matchesIndex(p) && !leftByLastBuild(book, lock, p));
+  const userOnly = differ.filter((p) => !matchesIndex(p) && !leftByLastBuild(book, lock, p, out));
   const writes = differ.filter((p) => !userOnly.includes(p));
   return { writes: { stale: writes.filter((p) => !out.has(p)), changed: writes.filter((p) => out.has(p)) }, userOnly };
 }
@@ -730,7 +730,7 @@ async function runHook(undo: Undo) {
       + "\n`git rm --cached` keeps a file on disk, where the next build takes it for a hand edit. Delete it with `git rm`, "
       + `or keep it with \`git --literal-pathspecs reset -q -- ${kept.map((p) => quote(inRepo(book, p))).join(" ")}\`.`);
   }
-  const olderBuild = edited.filter((p) => staged.has(p) && leftByLastBuild(book, lock, p));
+  const olderBuild = edited.filter((p) => staged.has(p) && leftByLastBuild(book, lock, p, a.out));
   const buildReads = [...buildInputs(book), ...placeholderOutputs(book).map((p) => inRepo(book, p))];
   if (olderBuild.length && git(["--literal-pathspecs", "diff", "--cached", "--name-only", "--", ...buildReads], { cwd: book.root })) {
     const paths = olderBuild.map((p) => quote(inRepo(book, p))).join(" ");

@@ -10,7 +10,7 @@ import { installHookOrWarn } from "./githook.ts";
 import { nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
 import { Fail, Partway } from "./lib/fail.ts";
-import { exists, type File, LINK, type Mode, sameFile, writeText } from "./lib/fs.ts";
+import { exists, type File, LINK, type Mode, sameFile, sameMode, writeText } from "./lib/fs.ts";
 import { replace, splitlines, strip } from "./lib/py.ts";
 import { bytesEqual, decode, encode, isText } from "./lib/text.ts";
 
@@ -27,14 +27,14 @@ function recordedMode(now: Mode, built: Mode, tracksExecBit: boolean): Mode | un
 
 type Copy = { change: Change; staged: string };
 
-type Destination = { kind: "owned"; change: Change } | { kind: "recorded"; base: File };
+type Destination = { kind: "owned"; change: Change; up?: File | undefined } | { kind: "recorded"; base: File };
 
 type Data = {
   "add": { staged: string; now: File };
   "delete-upstream": { staged: string; entries: string | null };
   "unadd": Copy;
   "unreplace": Copy;
-  "update-ours": Copy & { now: File; built: File };
+  "update-ours": Copy & { now: File; built: File; up: File | undefined };
   "file-edit": { rel: string; now: File; to: Destination };
   "paragraph-edit": { plan: Plan; modeNotRecorded: string | null };
   "skip": { reason: string };
@@ -76,7 +76,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     needs: () => NOTHING,
     apply: (e) => {
       e.change.edits = e.change.edits.filter((x) => !(x.kind === "add" && x.path === e.staged));
-      const afterSave = () => e.change.drop("ours", e.staged);
+      const afterSave = () => dropCopies(e.change, e.staged);
       return { touched: [e.change], notes: [`unadd    ${e.path} (from ${e.change.name})`], waitsForSave: true, afterSave };
     },
   },
@@ -86,7 +86,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
       const c = r.target!;
       e.change.edits = e.change.edits.filter((x) => !(x.kind === "replace" && x.path === e.staged));
       c.edits.push({ kind: "delete", path: e.staged });
-      const afterSave = () => e.change.drop("ours", e.staged);
+      const afterSave = () => dropCopies(e.change, e.staged);
       return { touched: [e.change, c], notes: [`delete   ${e.path} (replace removed from ${e.change.name})`], waitsForSave: true, afterSave };
     },
   },
@@ -94,6 +94,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     needs: () => NOTHING,
     apply: (e, r) => {
       e.change.write("ours", e.staged, e.now.data, recordedMode(e.now.mode, e.built.mode, r.tracksExecBit));
+      pinMode(e.change, e.staged, e.now, e.up, r.tracksExecBit);
       return { touched: [e.change], notes: [`update   ${e.path} (in ${e.change.name})`] };
     },
   },
@@ -103,6 +104,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
       if (e.to.kind === "owned") {
         const c = e.to.change;
         c.write("ours", e.rel, e.now.data, e.now.mode);
+        pinMode(c, e.rel, e.now, e.to.up, r.tracksExecBit);
         return { touched: [c], notes: [`file     ${e.path}` + (c !== r.target ? ` (in ${c.name})` : "")] };
       }
       const c = r.target!;
@@ -123,6 +125,17 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
   },
   "skip": { needs: () => NOTHING, apply: (e) => ({ touched: [], notes: [`skipped  ${e.path}: ${e.reason}`] }) },
 };
+
+/** A copy whose mode differs from upstream's needs a base copy at upstream's mode, which marks the mode as the change's own. */
+function pinMode(c: Change, path: string, now: File, up: File | undefined, tracksExecBit: boolean): void {
+  if (up === undefined || sameMode(now.mode, up.mode, tracksExecBit) || now.mode === LINK || up.mode === LINK) return;
+  c.write("base", path, c.read("base", path) ?? up.data, up.mode);
+}
+
+function dropCopies(c: Change, path: string): void {
+  c.drop("ours", path);
+  c.drop("base", path);
+}
 
 const row = <K extends Kind>(e: Edited<K>): Row<K> => KINDS[e.kind];
 
@@ -191,7 +204,7 @@ function classifyOne(s: Snapshot, path: string): Edited {
       return { kind: change.edits.some((e) => e.kind === "add" && e.path === src.path) ? "unadd" : "unreplace", ...copy };
     }
     if (s.uses(change.read("ours", src.path))) return skipPlaceholders(path, change);
-    return { kind: "update-ours", ...copy, now, built };
+    return { kind: "update-ours", ...copy, now, built, up: s.upstream.get(src.path) };
   }
   if (now === undefined) return { kind: "delete-upstream", path, staged: s.prefix + path, entries: s.blocks.has(src.path) && !stillBuilt(s, src.path) ? s.entriesAt(src.path) : null };
   if (s.blocks.has(src.path)) {
@@ -204,7 +217,7 @@ function classifyOne(s: Snapshot, path: string): Edited {
   }
   const owner = s.owners.get(src.path);
   if (owner && s.uses(owner.read("ours", src.path))) return skipPlaceholders(path, owner);
-  const to: Destination = owner ? { kind: "owned", change: owner } : { kind: "recorded", base: s.upstream.get(src.path)! };
+  const to: Destination = owner ? { kind: "owned", change: owner, up: s.upstream.get(src.path) } : { kind: "recorded", base: s.upstream.get(src.path)! };
   return { kind: "file-edit", path, rel: src.path, now, to };
 }
 
