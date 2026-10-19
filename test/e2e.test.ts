@@ -11459,6 +11459,34 @@ exec '${Bun.which("git")}' "$@"
     expect(out.stderr).toContain("before/changes/tweak");
   });
 
+  vendorTest("test_a_sync_journal_that_is_a_link_to_a_folder_out_of_the_repo_is_left_for_the_user_and_nothing_in_it_is_moved", (t) => {
+    const journal = plantJournal(t, "vendor/extra", true);
+    const outside = join(t.tmp, "outside");
+    renameSync(journal, outside);
+    mkdirSync(join(outside, "old"));
+    writeFileSync(join(outside, "old/a.md"), "not patchbook's\n");
+    symlinkSync(outside, journal);
+    const before = tree(t.repo.path);
+    const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(read(join(outside, "old/a.md"))).toBe("not patchbook's\n");
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(out.stderr).toContain(".patchbook/sync-extra holds a sync of extra");
+    expect(out.stderr).toContain("leads outside the repo");
+  });
+
+  vendorTest("test_a_sync_journal_whose_pin_is_a_link_out_of_the_repo_is_left_for_the_user_and_its_target_is_not_read", (t) => {
+    const journal = plantJournal(t, "vendor/extra", true);
+    const outside = join(t.tmp, "outside.txt");
+    renameSync(join(journal, "pin"), outside);
+    writeFileSync(outside, read(outside).replace('"vendor/extra"', '"vendor/a-secret"'));
+    symlinkSync(outside, join(journal, "pin"));
+    const before = tree(t.repo.path);
+    const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).not.toContain("a-secret");
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(out.stderr).toContain("its pin ");
+  });
+
   vendorTest("test_track_refuses_a_vendor_folder_that_holds_a_git_repo_before_it_drops_a_pin_an_earlier_track_left", (t) => {
     const extra = new Repo(join(t.tmp, "extra"));
     extra.write("a.md", "a\n");
