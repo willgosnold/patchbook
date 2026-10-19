@@ -9,7 +9,7 @@ import { appendSeries, CHANGE_NAME, Change, notAChangeName, readChanges, readSer
 import { nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, rglob, sameFile, writeText } from "./lib/fs.ts";
+import { exists, type File, rglob, sameFile, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { replace, splitlines, strip } from "./lib/py.ts";
 import { bytesEqual, decode, decodeReplace, encode, isText } from "./lib/text.ts";
@@ -18,7 +18,7 @@ import { bytesEqual, decode, decodeReplace, encode, isText } from "./lib/text.ts
 type Draft = Omit<Entry, "intent"> & { intent: string | null };
 type Plan = { path: string; entries: Map<string, Draft>; notes: [string, string][] };
 
-export async function cmdRecord(args: { change: string | null; intent: string | null; only?: (path: string) => boolean }) {
+export async function cmdRecord(args: { change: string | null; intent: string | null; current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean }) {
   const book = await Book.find();
   const problems: Problem[] = [];
   const changes = new Map(readChanges(book, problems).map((c) => [c.name, c]));
@@ -27,13 +27,13 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
   const badName = problems.find((p) => p.file === "series" && "refuse" in p);
   if (badName) throw new Fail(`refusing to record: ${describe(badName)}\nRename it to lowercase letters, digits and dashes in series and changes/ first.`);
   const a = assemble(book);
-  const current = book.currentOutput();
+  const current = args.current ?? book.currentOutput();
   const fileOwner = new Map<string, Change>();
   for (const c of changes.values()) for (const e of c.edits) if (e.kind === "file") fileOwner.set(e.path, c);
   const hasBlocks = new Set(rglob(join(book.dir, "blocks"), ".entries").map((p) => p.slice(0, -".entries".length)));
   const prefix = book.layout.kind === "folder" && book.layout.from ? book.layout.from + "/" : "";
   // Only files edited by hand since the last build. Others differ because the patchbook changed.
-  const edited = handEdits(book, a.out).filter(args.only ?? (() => true));
+  const edited = (args.edits ?? handEdits(book, a.out, current)).filter(args.only ?? (() => true));
   if (!edited.length) {
     process.stdout.write("no hand edits to the output since the last build; nothing to record\n");
     return 0;
@@ -149,7 +149,7 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
     const after = assemble(book).out;
     for (const p of edited) {
       const built = after.get(p);
-      if (built !== undefined && sameFile(current.get(p), built)) lock.set(p, blobOid(built.data));
+      if (built !== undefined && sameFile(current.get(p), built, book.tracksExecBit())) lock.set(p, blobOid(built.data));
       else if (built === undefined && !current.has(p)) lock.delete(p);
     }
     writeBuildLines(book, lock);

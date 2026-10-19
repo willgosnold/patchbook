@@ -212,19 +212,7 @@ export class Upstream {
   /** Upstream's files at a commit, relative to the upstream path. */
   files(commit: string): Files {
     this.have(commit);
-    const gd = this.gitDir();
-    const args = ["ls-tree", "-r", "-z", "--full-tree", commit, ...(this.path ? ["--", this.path] : [])];
-    const entries: { rel: string; mode: number; oid: string }[] = [];
-    for (const item of decode(run(["git", ...args], { cwd: gd })).split("\0")) {
-      if (!item) continue;
-      const tab = item.indexOf("\t");
-      const [mode = "", kind, oid = ""] = split(item.slice(0, tab));
-      const path = item.slice(tab + 1);
-      if (kind !== "blob") continue; // submodules are not copied
-      entries.push({ rel: this.path ? path.slice(this.path.length + 1) : path, mode: parseInt(mode, 8), oid });
-    }
-    const blobs = readBlobs(gd, entries.map((e) => e.oid));
-    return new Map(entries.map(({ rel, mode, oid }) => [rel, { data: blobs.get(oid)!, mode: normMode(mode) }]));
+    return treeFiles(this.gitDir(), commit, this.path);
   }
 
   /** Hash the vendored copy as git would commit it, and read its files. */
@@ -258,6 +246,21 @@ export class Upstream {
 export function pinned(u: Upstream, pin: Pin): string {
   if (!pin.commit) throw new Fail(`upstream ${u.name}'s pin in upstream.lock has no commit`);
   return pin.commit;
+}
+
+export function treeFiles(gd: string, tree: string, path: string): Files {
+  const args = ["ls-tree", "-r", "-z", "--full-tree", tree, ...(path ? ["--", path] : [])];
+  const entries: { rel: string; mode: number; oid: string }[] = [];
+  for (const item of decode(run(["git", "--literal-pathspecs", ...args], { cwd: gd })).split("\0")) {
+    if (!item) continue;
+    const tab = item.indexOf("\t");
+    const [mode = "", kind, oid = ""] = split(item.slice(0, tab));
+    const found = item.slice(tab + 1);
+    if (kind !== "blob") continue; // submodules are not copied
+    entries.push({ rel: path ? found.slice(path.length + 1) : found, mode: parseInt(mode, 8), oid });
+  }
+  const blobs = readBlobs(gd, entries.map((e) => e.oid));
+  return new Map(entries.map(({ rel, mode, oid }) => [rel, { data: blobs.get(oid)!, mode: normMode(mode) }]));
 }
 
 export function readBlobs(gd: string, oids: string[]): Map<string, Uint8Array> {

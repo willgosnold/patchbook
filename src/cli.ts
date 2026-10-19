@@ -73,7 +73,7 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   git(["commit", "--quiet", "-m", `Start a patchbook at upstream ${commit.slice(0, 7)}`], { cwd: dest, env: noHook() });
   process.stdout.write(`cloned ${shown} into ${dest}, pinned at ${commit.slice(0, 7)}.\n`
     + (inherited ? `Upstream has a ${PB}/ of its own. It is not part of this fork, so patchbook removed it and builds leave it out.\n` : "")
-    + "Make your changes and commit: the hook records them in the patchbook and rebuilds.\n"
+    + "Make your changes, stage them, and commit: the hook records what you staged in the patchbook and rebuilds.\n"
     + `${SCHEDULE}\n`
     + `To publish it: gh repo create <name> --private --source ${dest} --push\n`);
   return 0;
@@ -94,7 +94,7 @@ async function cmdInit(args: {
     installSkill(book);
     writeConfig(root, text);
     installHookOrWarn(root);
-    process.stdout.write(`Next: patchbook build, then commit.\n${SCHEDULE}\n`);
+    process.stdout.write(`Next: patchbook build, then stage and commit.\n${SCHEDULE}\n`);
     return 0;
   }
   const follows = redact(args.upstream);
@@ -112,7 +112,7 @@ async function cmdInit(args: {
   installHookOrWarn(root);
   if (installed && (installed.changed.length || leftBehindSkill(book).length)) await recordSkill(book);
   process.stdout.write(`pinned upstream at ${base.slice(0, 7)}, where this repo branched from ${follows}.\n`
-    + "Capture your existing changes with `patchbook record`, then `patchbook build`, and commit.\n" + SCHEDULE + "\n");
+    + "Capture your existing changes with `patchbook record`, then `patchbook build`, stage, and commit.\n" + SCHEDULE + "\n");
   return 0;
 }
 
@@ -245,7 +245,7 @@ const COMMANDS = new Map<string, Command>([
     run: (a) => cmdBuild({ force: a.flag("force"), commit: a.flag("commit") }),
   }],
   ["record", {
-    help: "move edits made to the output into a change",
+    help: "move edits made to the output in the working tree into a change (the commit hook records only what's staged)",
     positionals: [{ dest: "change", nargs: "?", help: "the change to add them to (default: the model picks or names one)" }],
     options: [{ flag: "--intent", takes: "value", help: "what the change is for (default: the model writes it)" }],
     run: (a) => cmdRecord({ change: a.maybe("change"), intent: a.maybe("intent") }),

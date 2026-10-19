@@ -32,7 +32,7 @@ Preconditions:
 
 ## Gotchas
 
-- In a fork, every file outside `.patchbook/` is build output, so the hook records unstaged and untracked files too. That's open bug #1, so a stray file in the fork changes this journey's commit.
+- In a fork, every file outside `.patchbook/` is build output, but the hook records only what's staged. An edit you don't `git add`, or an untracked file, stays out of the commit and shows in `git status` afterwards. The commit stops while a `.patchbook/` file the build reads has changes that aren't in the commit, so `git add .patchbook` after `patchbook record` or `patchbook build`. The untracked `.patchbook/last-sync.json` that `sync` leaves doesn't count.
 - The hook runs `patchbook` from `PATH`. Commit only from a shell with `$ENV` sourced, or the hook says `patchbook isn't installed` and records nothing.
 - A hook manager that sets `core.hooksPath` (husky, Vite+) stops the hook from running at all (#33). Sandbox repos have none, so this journey can't show that.
 - The hook asks the fake model whenever a commit needs a change name. Set `PB_FAKE_CHANGE`/`PB_FAKE_INTENT` on the `git commit` to get another name.
