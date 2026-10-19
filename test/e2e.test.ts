@@ -4678,6 +4678,14 @@ describe("ForkTest", () => {
     });
   }
 
+  forkTest("test_record_refuses_a_bad_change_name_with_no_hand_edits", (t) => {
+    const before = snapshot(join(t.fork.path, ".patchbook"));
+    const refused = t.pb(["record", "Bad Name", "--intent", "x"], { cwd: t.fork.path, code: 1 });
+    expect(refused.stderr).toContain(`"Bad Name" isn't a valid change name`);
+    expect(refused.stdout).not.toContain("nothing to record");
+    expect(snapshot(join(t.fork.path, ".patchbook"))).toEqual(before);
+  });
+
   forkTest("test_a_series_line_that_is_not_a_change_name_is_invalid_and_its_folder_is_not_read", (t) => {
     mkdirNew(join(t.fork.path, ".patchbook/elsewhere"));
     writeFileSync(join(t.fork.path, ".patchbook/elsewhere/CHANGE.md"), "# elsewhere\n\nintent: Not a change.\n\nedits:\n- delete app.txt\n");

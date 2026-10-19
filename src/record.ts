@@ -258,7 +258,6 @@ function nameAndIntent(
   ask: Asked, name: string | null, given: string | null, roster: Roster,
   model: (name: string | null, named: boolean) => [string, string],
 ): Naming {
-  if (name && !CHANGE_NAME.test(name)) throw new Fail(notAChangeName(name));
   const changes = roster.parsed;
 
   const stray = name ? roster.stray(name) : null;
@@ -298,6 +297,7 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
 }
 
 export function record(book: Book, change: string | null, intent: string | null, opts: { current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean } = {}): RecordResult {
+  if (change && !CHANGE_NAME.test(change)) throw new Fail(notAChangeName(change));
   const problems: Problem[] = [];
   const roster = Roster.read(book, problems);
   const changes = roster.parsed;
