@@ -723,11 +723,12 @@ export async function cmdHook(args: { action: "install" | "run" | "status" }) {
   }
 }
 
-/** A recorded symlink is stored as one, at `changes/<name>/<side>/<path>.pb`, and the record replaces it. A link to a folder is
- * not one, since the record writes into it. The walk reaches `p` only through real folders, so none above it is a link. */
+/** A recorded symlink is stored as one, at `changes/<name>/<side>/<path>.pb`, and the record replaces it. No copy is read or
+ * written under it (`Change.content` refuses), so it may point to a folder. The walk reaches `p` only through real folders, so
+ * none above it is a link. */
 const isRecordedLink = (changes: string, p: string) => {
   const [, side, ...path] = relative(changes, p).split("/");
-  return (side === "base" || side === "ours") && path.length > 0 && p.endsWith(".pb") && !isDir(p);
+  return (side === "base" || side === "ours") && path.length > 0 && p.endsWith(".pb");
 };
 
 /** The record writes through a link and git can't see what lands behind it, so a failed run couldn't put that back.

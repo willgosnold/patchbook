@@ -1912,6 +1912,24 @@ test("test_skill_install_says_why_when_start_agents_is_empty", () => {
   }
 }, TIMEOUT);
 
+test("test_commit_records_a_hand_edit_in_a_fork_cloned_with_the_skill", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+    const fork = skillFork(t);
+    fork.write("app.txt", "one\nTWO\n");
+    sh(["git", "add", "app.txt"], { cwd: fork.path });
+    const commit = sh(["git", "commit", "-q", "-m", "shout"], { cwd: fork.path, check: false, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Shout two." } });
+    expect(commit.stderr).not.toContain("is a link");
+    expect(commit.code).toBe(0);
+    expect(committedFiles(fork)).toContain("app.txt");
+    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+    expect(sh(["git", "status", "--porcelain"], { cwd: fork.path }).stdout).toBe("");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("test_clone_of_a_patchbook_repo_starts_a_patchbook_of_its_own", () => {
   const t = new Case();
   try {
@@ -7152,6 +7170,57 @@ describe("ForkTest", () => {
     expect(commit.stderr).toContain(".patchbook/changes/shout/ours/d.pb is a link");
     expect(readdirSync(outside)).toEqual(["keep.txt"]);
     expect(porcelain(t)).toBe("A  d.pb/x\n");
+  });
+
+  for (const [what, target] of [["a_folder_in_the_repo", "../../../../kept"], ["the_changes_folder", "../.."], ["its_own_side", "."]] as const) {
+    forkTest(`test_commit_refuses_a_recorded_folder_link_to_${what}`, (t) => {
+      plantInShout(t, "d.pb", false);
+      const link = join(t.fork.path, ".patchbook/changes/shout/ours/d.pb");
+      unlinkSync(link);
+      t.fork.write("kept/keep.txt", "keep\n");
+      symlinkSync(target, link);
+      sh(["git", "add", "-A"], { cwd: t.fork.path });
+      sh(["git", "commit", "-q", "-m", "point the link into the repo"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "0" } });
+      const before = readdirSync(link);
+      t.fork.write("d.pb/x", "payload\n");
+      sh(["git", "add", "d.pb/x"], { cwd: t.fork.path });
+      const commit = hookCommit(t, ["-m", "add d.pb/x"], false);
+      expect(commit.code).not.toBe(0);
+      expect(commit.stderr).toContain(".patchbook/changes/shout/ours/d.pb is a link");
+      expect(readdirSync(link)).toEqual(before);
+      expect(porcelain(t)).toBe("A  d.pb/x\n");
+    });
+  }
+
+  forkTest("test_commit_refuses_to_build_a_copy_read_through_a_link_copy", (t) => {
+    const outside = plantInShout(t, "s.pb", false);
+    writeFileSync(join(outside, "key.pb"), "secret\n");
+    t.fork.write(".patchbook/changes/shout/CHANGE.md", t.fork.read(".patchbook/changes/shout/CHANGE.md") + "- add s.pb/key\n");
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    sh(["git", "commit", "-q", "-m", "add a copy under the link"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "0" } });
+    const commit = shoutTwo(t);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain(".patchbook/changes/shout/ours/s.pb is a link, and the copy of s.pb/key sits under it");
+    expect(existsSync(join(t.fork.path, "s.pb"))).toBe(false);
+    expect(porcelain(t)).toBe("M  app.txt\n");
+  });
+
+  forkTest("test_commit_refuses_to_record_under_a_link_copy_it_just_retargeted", (t) => {
+    t.fork.write("kept/keep.txt", "keep\n");
+    symlinkSync("kept", join(t.fork.path, "d"));
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "link d"]);
+    const outside = join(t.tmp, "outside");
+    mkdirSync(outside);
+    unlinkSync(join(t.fork.path, "d"));
+    symlinkSync(outside, join(t.fork.path, "d"));
+    t.fork.write("d.pb/x", "payload\n");
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    const commit = hookCommit(t, ["-m", "retarget d"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain(".patchbook/changes/shout/ours/d.pb is a link");
+    expect(readdirSync(outside)).toEqual([]);
+    expect(readlinkSync(join(t.fork.path, ".patchbook/changes/shout/ours/d.pb"))).toBe("kept");
   });
 
   forkTest("test_commit_refuses_a_folder_link_above_a_copy", (t) => {

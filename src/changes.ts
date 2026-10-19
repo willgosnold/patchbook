@@ -5,7 +5,7 @@ import type { Problem } from "./api.ts";
 import { Book } from "./book.ts";
 import { unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, foldersWith, isDir, isSymlink, LINK, lexists, mkdirs, type Mode, readDisk, readText, writeDisk, writeText } from "./lib/fs.ts";
+import { exists, type File, foldersWith, isDir, isSymlink, LINK, lexists, mkdirs, type Mode, readDisk, readText, relative, writeDisk, writeText } from "./lib/fs.ts";
 import { splitlines, strip, W } from "./lib/py.ts";
 import { decodeReplace } from "./lib/text.ts";
 
@@ -36,7 +36,15 @@ export class Change {
     readonly held: string[] = [],
   ) {}
 
+  /** A link above a copy would take its read or write somewhere else: into another copy, or out of the patchbook. A recorded
+   * symlink stored as `<path>.pb` is one, when an output folder shares its name. */
   content(side: Side, path: string): string {
+    const parts = [side, ...path.split("/").slice(0, -1)];
+    const link = parts.map((_, i) => join(this.dir, ...parts.slice(0, i + 1))).find(isSymlink);
+    if (link) {
+      throw new Fail(`${relative(join(this.dir, "../../.."), link)} is a link, and the copy of ${path} sits under it, so patchbook would read or write it through the link. `
+        + "If an output link and an output folder share its name, rename one of them. Otherwise replace the link with a copy of what it points to.");
+    }
     return join(this.dir, side, `${path}.pb`);
   }
 
