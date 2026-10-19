@@ -53,3 +53,15 @@ jobs:
         env:
           PATCHBOOK_CMD: ${{ github.workspace }}/dist/patchbook
           PATTERN: ${{ matrix.shard.pattern }}
+
+  # main's ruleset requires a check named "test (ubuntu-latest)". This job
+  # gives that name one result for the whole matrix above.
+  required:
+    name: test (ubuntu-latest)
+    if: always()
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "$RESULT" = success
+        env:
+          RESULT: ${{ needs.test.result }}
