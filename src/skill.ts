@@ -50,14 +50,12 @@ const sharesSkills = (root: string, p: string) => {
   return shared !== null && real(parent) === shared;
 };
 
-/** The one error for a folder where the skill goes. A folder there is a broken layout, not a customization to keep. */
 export const folderFail = (blocked: readonly string[]) =>
   new Fail(`the update skill was not installed, since a folder sits where it goes:\n  ${blocked.join("\n  ")}\n`
     + "Move or remove the folder, then run `patchbook skill install`.");
 
 const linkNote = (p: string) => `patchbook: ${p} is a symlink, and install won't write through a link\n`;
 
-/** Point `at` to `target`. */
 function link(at: string, target: string, hold: (p: string) => void): boolean {
   if (pointsAt(at, target)) return false;
   hold(at);
@@ -175,7 +173,6 @@ function symlinked(book: Book): string[] {
   return Array.from(new Set(through)).filter((p) => isSymlink(join(book.root, p)));
 }
 
-/** The paths an install would write that are real folders. `skill install`, `clone` and `init` all refuse them with `folderFail`. */
 const folders = (book: Book) => wanted(book).filter((p) =>
   !isSymlink(join(book.root, p)) && isDir(join(book.root, p)) && !sharesSkills(book.root, p));
 

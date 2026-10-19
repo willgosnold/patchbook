@@ -150,7 +150,6 @@ const DID: ReadonlyMap<string, string> = new Map([
   ["readlink", "read"], ["scandir", "list"], ["chmod", "change the mode of"],
 ]);
 
-/** What a failed filesystem call says to the user: the operation, the path and the system's reason, with no errno code. Null for any other error. */
 export function fsMessage(e: unknown): string | null {
   if (e instanceof WriteFail) return e.message;
   if (!(e instanceof Error && "errno" in e && typeof e.errno === "number" && "syscall" in e && typeof e.syscall === "string")) return null;
