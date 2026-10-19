@@ -543,13 +543,16 @@ function refuseOtherRepo(book: Book): void {
     + `Run \`patchbook hook install\` in ${book.root}, or start a patchbook here with \`patchbook init\`.`);
 }
 
-/** The tree each upstream is pinned to by the upstream.lock in the index, or null when the index holds no lock. */
+/** The tree each upstream is pinned to by the upstream.lock in the index, or null when the index holds no lock.
+ * The index holds only the path of a staged link, so the lock it points to is read, as the build reads it. */
 function stagedPins(book: Book): Map<string, string> | null {
-  const staged = spawn(["git", "cat-file", "blob", `:${relative(book.root, join(book.dir, "upstream.lock"))}`], { cwd: book.root });
+  const rel = relative(book.root, join(book.dir, "upstream.lock"));
+  const staged = spawn(["git", "cat-file", "blob", `:${rel}`], { cwd: book.root });
   if (staged.code !== 0) return null;
+  const linked = git(["ls-files", "-s", "--", rel], { cwd: book.root }).startsWith("120000 ");
   let data;
   try {
-    data = loads(decode(staged.stdout));
+    data = linked ? book.lock() : loads(decode(staged.stdout));
   } catch (e) {
     if (!(e instanceof JsonError)) throw e;
     throw new Fail(`the ${relative(book.root, join(book.dir, "upstream.lock"))} in the index can't be read (${e.message}), so the hook can't tell which copy to stage. `

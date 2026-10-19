@@ -8058,6 +8058,23 @@ describe("VendorTest", () => {
     expect(gitIn(t, ["ls-files", "-s"])).toBe(index);
   });
 
+  folderTest("test_the_hook_restores_the_pinned_copy_through_an_upstream_lock_that_is_a_link", (t) => {
+    trackExtra(t, "vendor/extra");
+    const [inside, outside] = [join(t.repo.path, ".patchbook/upstream.lock"), join(t.tmp, "outside-upstream.lock")];
+    renameSync(inside, outside);
+    symlinkSync(outside, inside);
+    gitIn(t, ["add", "-A"]);
+    gitIn(t, ["commit", "-qm", "setup"]);
+    gitIn(t, ["rm", "-r", "-q", "--cached", "vendor/extra"]);
+    t.repo.write("note.txt", "a note\n");
+    gitIn(t, ["add", "note.txt"]);
+    const commit = hookedCommit(t, ["-qm", "a note"]);
+    expect(commit.stderr).toContain(replacedLine);
+    expect(commit.code).toBe(0);
+    expect(inHead(t, "vendor/extra")).toEqual(pinnedFiles("vendor/extra"));
+    expect(gitIn(t, ["status", "--short"]).trim()).toBe("");
+  });
+
   folderTest("test_a_commit_that_changes_nothing_in_the_copy_says_nothing_about_it", (t) => {
     trackExtra(t, "vendor/extra");
     gitIn(t, ["add", "-A"]);
