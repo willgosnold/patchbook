@@ -18,7 +18,7 @@ import { bytesEqual, decode, decodeReplace, encode, isText } from "./lib/text.ts
 type Draft = Omit<Entry, "intent"> & { intent: string | null };
 type Plan = { path: string; entries: Map<string, Draft>; notes: [string, string][] };
 
-export async function cmdRecord(args: { change: string | null; intent: string | null }) {
+export async function cmdRecord(args: { change: string | null; intent: string | null; only?: (path: string) => boolean }) {
   const book = await Book.find();
   const problems: Problem[] = [];
   const changes = new Map(readChanges(book, problems).map((c) => [c.name, c]));
@@ -33,7 +33,7 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
   const hasBlocks = new Set(rglob(join(book.dir, "blocks"), ".entries").map((p) => p.slice(0, -".entries".length)));
   const prefix = book.layout.kind === "folder" && book.layout.from ? book.layout.from + "/" : "";
   // Only files edited by hand since the last build. Others differ because the patchbook changed.
-  const edited = handEdits(book, a.out);
+  const edited = handEdits(book, a.out).filter(args.only ?? (() => true));
   if (!edited.length) {
     process.stdout.write("no hand edits to the output since the last build; nothing to record\n");
     return 0;

@@ -17,7 +17,7 @@ import { quoteToml } from "./lib/toml.ts";
 import { cmdRecord } from "./record.ts";
 import { checkUpstreamRemote, notThisRepo } from "./remote.ts";
 import { cmdConfig } from "./settings.ts";
-import { installSkill, SCHEDULE } from "./skill.ts";
+import { cmdSkill, installSkill, recordSkill, SCHEDULE, leftBehindSkill } from "./skill.ts";
 import { absoluteRemote, defaultName, cmdUpstream } from "./store.ts";
 import { cmdCheck, cmdSync, syncUpstream } from "./sync.ts";
 
@@ -68,13 +68,7 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   book.writeLock(name, commit, git(["rev-parse", "HEAD^{tree}"], { cwd: dest }));
   writeBuildLock(book, book.currentOutput());
   installHook(dest);
-  if (installSkill(book)) {
-    process.chdir(dest);
-    await cmdRecord({
-      change: "patchbook-update-skill",
-      intent: "Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.",
-    });
-  }
+  if (installSkill(book)) await recordSkill(book);
   git(["add", "-A"], { cwd: dest });
   git(["commit", "--quiet", "-m", `Start a patchbook at upstream ${commit.slice(0, 7)}`], { cwd: dest, env: noHook() });
   process.stdout.write(`cloned ${shown} into ${dest}, pinned at ${commit.slice(0, 7)}.\n`
@@ -113,9 +107,10 @@ async function cmdInit(args: {
   const base = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: root });
   book.writeLock(name, base, book.upstreams[0]!.treeOf(base));
   if (!hasRemote) git(["remote", "add", "--end-of-options", "upstream", args.upstream], { cwd: root });
-  installSkill(book);
+  const installed = installSkill(book);
   writeConfig(root, text);
   installHookOrWarn(root);
+  if (installed && (installed.changed.length || leftBehindSkill(book).length)) await recordSkill(book);
   process.stdout.write(`pinned upstream at ${base.slice(0, 7)}, where this repo branched from ${follows}.\n`
     + "Capture your existing changes with `patchbook record`, then `patchbook build`, and commit.\n" + SCHEDULE + "\n");
   return 0;
@@ -259,6 +254,11 @@ const COMMANDS = new Map<string, Command>([
     help: "install the pre-commit hook, or run it",
     positionals: [{ dest: "action", choices: ["install", "run"] }],
     run: (a) => cmdHook({ action: a.text("action") === "install" ? "install" : "run" }),
+  }],
+  ["skill", {
+    help: "write this patchbook's update skill into the repo",
+    positionals: [{ dest: "action", choices: ["install"] }],
+    run: () => cmdSkill(),
   }],
   ["config", {
     help: "show settings and where each comes from, or set one",
