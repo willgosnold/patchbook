@@ -166,16 +166,16 @@ const docTest = (name: string, body: (t: Doc) => void): void => sandboxTest(() =
 describe("the codex provider", () => {
   forkTest("record calls codex as configured and takes its name and intent from the answer", (t) => {
     t.env["PATCHBOOK_PROVIDER"] = "codex";
-    t.fake("codex", `Here you go:\n${answer("codex-shout", "Shout the second line.")}\nAnything else?`);
+    t.fake("codex", answer("codex-shout", "Shout the second line."));
     t.edit();
     const out = t.record().stdout;
     const args = t.args("codex");
-    expect(args.slice(0, 8)).toEqual(["exec", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=high", "--skip-git-repo-check", "-s", "read-only"]);
-    expect(args[8]).toBe("-C");
-    expect(args).toHaveLength(11);
-    expect(args[10]).toBe("-");
-    expect(args[9]).not.toBe(t.fork.path);
-    expect(existsSync(args[9]!)).toBe(false);
+    expect(args.slice(0, 9)).toEqual(["exec", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=high", "--skip-git-repo-check", "-s", "read-only", "--ephemeral"]);
+    expect(args[9]).toBe("-C");
+    expect(args).toHaveLength(12);
+    expect(args[11]).toBe("-");
+    expect(args[10]).not.toBe(t.fork.path);
+    expect(existsSync(args[10]!)).toBe(false);
     const prompt = read(join(t.tmp, "codex.prompt"));
     expect(prompt).toContain("disk/app.txt");
     expect(prompt).toContain("-two\n+TWO");
