@@ -11445,6 +11445,49 @@ exec '${Bun.which("git")}' "$@"
     expect(out.stderr).toContain("its lock ");
   });
 
+  vendorTest("test_a_sync_journal_that_puts_a_change_file_back_under_a_link_out_of_the_repo_is_left_for_the_user", (t) => {
+    const journal = plantJournal(t, "", false);
+    const outside = join(t.tmp, "outside");
+    mkdirSync(outside);
+    rmSync(join(t.repo.path, ".patchbook/changes"), { recursive: true, force: true });
+    symlinkSync(outside, join(t.repo.path, ".patchbook/changes"));
+    mkdirSync(join(journal, "before/changes/tweak/ours"), { recursive: true });
+    writeFileSync(join(journal, "before/changes/tweak/ours/a.md.pb"), "from the journal\n");
+    const before = tree(t.repo.path);
+    const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(readdirSync(outside)).toEqual([]);
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(out.stderr).toContain("before/changes/tweak/ours/a.md.pb");
+  });
+
+  vendorTest("test_a_sync_journal_that_puts_last_sync_json_back_through_a_link_out_of_the_repo_is_left_for_the_user", (t) => {
+    const journal = plantJournal(t, "", false);
+    const outside = join(t.tmp, "outside.txt");
+    writeFileSync(outside, "not patchbook's\n");
+    symlinkSync(outside, join(t.repo.path, ".patchbook/last-sync.json"));
+    mkdirSync(join(journal, "before"));
+    writeFileSync(join(journal, "before/last-sync.json"), "from the journal\n");
+    const before = tree(t.repo.path);
+    const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(read(outside)).toBe("not patchbook's\n");
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(out.stderr).toContain("before/last-sync.json");
+  });
+
+  vendorTest("test_a_sync_journal_whose_before_links_to_a_folder_out_of_the_repo_is_left_for_the_user_and_no_link_is_put_back", (t) => {
+    const journal = plantJournal(t, "", false);
+    const outside = join(t.tmp, "outside");
+    mkdirSync(join(outside, "ours"), { recursive: true });
+    writeFileSync(join(outside, "ours/secret.pb"), "a secret outside the repo\n");
+    mkdirSync(join(journal, "before/changes"), { recursive: true });
+    symlinkSync(outside, join(journal, "before/changes/tweak"));
+    const before = tree(t.repo.path);
+    const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(existsSync(join(t.repo.path, ".patchbook/changes/tweak"))).toBe(false);
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(out.stderr).toContain("before/changes/tweak");
+  });
+
   vendorTest("test_track_refuses_a_vendor_folder_that_holds_a_git_repo_before_it_drops_a_pin_an_earlier_track_left", (t) => {
     const extra = new Repo(join(t.tmp, "extra"));
     extra.write("a.md", "a\n");
