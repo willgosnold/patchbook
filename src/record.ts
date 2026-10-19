@@ -375,7 +375,7 @@ export function record(book: Book, change: string | null, intent: string | null,
 
   const touched = new Map<string, Change>();
   const notes: string[] = [];
-  const afterSave = new Set<() => void>();
+  const afterSave: (() => void)[] = [];
   const undo = new Undo();
   undo.hold(book.dir);
   try {
@@ -383,7 +383,7 @@ export function record(book: Book, change: string | null, intent: string | null,
       const done = row(e).apply(e, { target, intent: naming.intent, tracksExecBit: book.tracksExecBit() });
       for (const c of done.touched) touched.set(c.name, c);
       notes.push(...done.notes);
-      if (done.afterSave) afterSave.add(done.afterSave);
+      if (done.afterSave) afterSave.push(done.afterSave);
     }
     if (target && (target.edits.length || (given && changes.has(target.name)))) touched.set(target.name, target);
     for (const c of touched.values()) saveChange(c);

@@ -13458,8 +13458,7 @@ describe("RecordRollbackTest", () => {
     return sh(["git", "commit", "-qm", "edit"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", ...env }, check: false });
   };
 
-  /** Each path under `.patchbook` with its mode and a hash of its bytes, so a test sees any write, however small. */
-  const book = (t: ForkCase): string[] => {
+  const patchbookFingerprint = (t: ForkCase): string[] => {
     const root = join(t.fork.path, ".patchbook");
     const found: string[] = [];
     const walk = (dir: string): void => {
@@ -13511,22 +13510,22 @@ describe("RecordRollbackTest", () => {
   forkTest("test_record_leaves_the_patchbook_as_it_was_when_a_change_write_fails", (t) => {
     if (process.getuid?.() === 0) return;
     shouted(t);
-    const before = book(t);
+    const before = patchbookFingerprint(t);
     readOnly(changeFile(t, "shout"), () => {
       t.pb(["record", "shout", "--intent", "New intent."], { cwd: t.fork.path, code: 1 });
-      expect(book(t)).toEqual(before.map((line) => (line.startsWith("changes/shout/CHANGE.md ") ? line.replace(" 644 ", " 444 ") : line)));
+      expect(patchbookFingerprint(t)).toEqual(before.map((line) => (line.startsWith("changes/shout/CHANGE.md ") ? line.replace(" 644 ", " 444 ") : line)));
     });
   });
 
   forkTest("test_hook_leaves_the_patchbook_as_it_was_when_a_change_write_fails_and_records_on_the_retry", (t) => {
     if (process.getuid?.() === 0) return;
     shouted(t);
-    const before = book(t);
+    const before = patchbookFingerprint(t);
     readOnly(changeFile(t, "shout"), () => {
       const failed = hookCommit(t);
       expect(failed.code).not.toBe(0);
       expect(failed.stderr).not.toContain("file     app.txt");
-      expect(book(t)).toEqual(before.map((line) => (line.startsWith("changes/shout/CHANGE.md ") ? line.replace(" 644 ", " 444 ") : line)));
+      expect(patchbookFingerprint(t)).toEqual(before.map((line) => (line.startsWith("changes/shout/CHANGE.md ") ? line.replace(" 644 ", " 444 ") : line)));
     });
     const retried = hookCommit(t);
     expect(retried.code).toBe(0);
@@ -13539,10 +13538,10 @@ describe("RecordRollbackTest", () => {
     if (process.getuid?.() === 0) return;
     t.fork.write("extra.txt", "ours\n");
     const series = join(t.fork.path, ".patchbook/series");
-    const before = book(t);
+    const before = patchbookFingerprint(t);
     readOnly(series, () => {
       t.pb(["record", "extra", "--intent", "Add extra."], { cwd: t.fork.path, code: 1 });
-      expect(book(t)).toEqual(before.map((line) => (line.startsWith("series ") ? line.replace(" 644 ", " 444 ") : line)));
+      expect(patchbookFingerprint(t)).toEqual(before.map((line) => (line.startsWith("series ") ? line.replace(" 644 ", " 444 ") : line)));
     });
     const retry = t.pb(["record", "extra", "--intent", "Add extra."], { cwd: t.fork.path });
     expect(retry.stdout).toBe("add      extra.txt\n");
@@ -13553,11 +13552,11 @@ describe("RecordRollbackTest", () => {
   forkTest("test_record_leaves_the_patchbook_as_it_was_when_the_build_lock_cannot_be_written", (t) => {
     if (process.getuid?.() === 0) return;
     shouted(t);
-    const before = book(t);
+    const before = patchbookFingerprint(t);
     const lock = join(t.fork.path, ".patchbook/build.lock");
     readOnly(lock, () => {
       t.pb(["record", "shout", "--intent", "New intent."], { cwd: t.fork.path, code: 1 });
-      expect(book(t)).toEqual(before.map((line) => (line.startsWith("build.lock ") ? line.replace(" 644 ", " 444 ") : line)));
+      expect(patchbookFingerprint(t)).toEqual(before.map((line) => (line.startsWith("build.lock ") ? line.replace(" 644 ", " 444 ") : line)));
     });
     t.pb(["record", "shout", "--intent", "New intent."], { cwd: t.fork.path });
     expect(read(changeFile(t, "shout"))).toContain("intent: New intent.");
@@ -13576,5 +13575,22 @@ describe("RecordRollbackTest", () => {
       const failed = t.pb(["record", "shout", "--intent", "New intent."], { cwd: t.fork.path, code: 1 });
       expect(failed.stdout).toBe("");
     });
+  });
+
+  forkTest("test_record_puts_back_a_copy_it_deleted_when_the_build_lock_cannot_be_written", (t) => {
+    if (process.getuid?.() === 0) return;
+    t.fork.write("extra.txt", "ours\n");
+    t.pb(["record", "extra", "--intent", "Add extra."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("extra");
+    t.fork.rm("extra.txt");
+    const before = patchbookFingerprint(t);
+    expect(before.some((line) => line.startsWith("changes/extra/ours/extra.txt.pb "))).toBe(true);
+    readOnly(join(t.fork.path, ".patchbook/build.lock"), () => {
+      t.pb(["record", "extra"], { cwd: t.fork.path, code: 1 });
+      expect(patchbookFingerprint(t)).toEqual(before.map((line) => (line.startsWith("build.lock ") ? line.replace(" 644 ", " 444 ") : line)));
+    });
+    t.pb(["record", "extra"], { cwd: t.fork.path });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
 });
