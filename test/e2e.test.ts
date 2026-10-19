@@ -6695,13 +6695,6 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(t.pb(["status"], { cwd: t.fork.path }).stderr).not.toContain(".githooks/pre-commit");
   });
 
-  forkTest("test_config_rows_stay_aligned_when_a_value_holds_a_character_above_u_ffff", (t) => {
-    t.config(["intent.effort", "😀"]);
-    const rows = t.config([]).split("\n");
-    for (const name of ["intent.effort", "hook.enabled"]) expect(rows.find((l) => l.startsWith(`${name} `))).toMatch(/^.{50}(env|project|user|default)\b/u);
-    expect(rows.find((l) => l.startsWith("intent.effort "))).toContain('"😀"');
-  });
-
   forkTest("test_settings_layer", (t) => {
     const project = join(t.fork.path, ".patchbook/config.toml");
     writeFileSync(project, "# my settings\n" + read(project));

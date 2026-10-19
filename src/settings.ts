@@ -8,7 +8,7 @@ import { intentSettings, PROVIDERS } from "./intent.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, mkdirs, pjoin, readBytes, readText, writeText } from "./lib/fs.ts";
 import { strRepr } from "./lib/repr.ts";
-import { decode, padEndCodePoints } from "./lib/text.ts";
+import { decode } from "./lib/text.ts";
 import { quoteToml } from "./lib/toml.ts";
 
 /** A parsed TOML table. Values stay unknown until a setting or the book's config reads them. */
@@ -374,7 +374,7 @@ export async function cmdConfig(args: { name: string | null; value: string | nul
   for (const n of name !== null ? [name] : NAMES) {
     const [shown, source] = listed(n, book);
     const env = SETTINGS[n].env;
-    process.stdout.write(`${padEndCodePoints(n, 20)} ${padEndCodePoints(shown, 28)} ${source}` + (env && name === null ? `  [${env}]` : "") + "\n");
+    process.stdout.write(`${n.padEnd(20)} ${shown.padEnd(28)} ${source}` + (env && name === null ? `  [${env}]` : "") + "\n");
   }
   return 0;
 }

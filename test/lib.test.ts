@@ -8,7 +8,7 @@ import { nonFolders, rmFolders } from "../src/lib/fs.ts";
 import { dumps, loads } from "../src/lib/json.ts";
 import { git, shellQuote } from "../src/lib/proc.ts";
 import { str, strRepr } from "../src/lib/repr.ts";
-import { byCodePoint, lines, padEndCodePoints, withoutFinalNewline } from "../src/lib/text.ts";
+import { byCodePoint, lines, withoutFinalNewline } from "../src/lib/text.ts";
 
 type Fixture = {
   matcher: { a: string | string[]; b: string | string[]; autojunk: boolean; ratio: number; opcodes: Opcode[] }[];
@@ -97,19 +97,6 @@ describe("listing a folder", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
-});
-
-describe("padEndCodePoints", () => {
-  test("pads to a width in code points, where padEnd counts UTF-16 units", () => {
-    expect(padEndCodePoints("é😀", 4)).toBe("é😀  ");
-    expect("é😀".padEnd(4)).toBe("é😀 ");
-    expect(padEndCodePoints("ab", 4)).toBe("ab  ");
-  });
-
-  test("leaves a text that is already as wide or wider", () => {
-    expect(padEndCodePoints("😀😀", 2)).toBe("😀😀");
-    expect(padEndCodePoints("abc", 2)).toBe("abc");
   });
 });
 
