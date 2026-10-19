@@ -55,6 +55,20 @@ export function shlexQuote(arg: string): string {
 // The implementation under test, as a command line. Defaults to the TypeScript one.
 export const CMD = shlexSplit(process.env["PATCHBOOK_CMD"] || [process.execPath, TOOL].map(shlexQuote).join(" "));
 
+let crashBinary: string | undefined;
+
+// Against a binary, this builds a second one, so the binary under test never carries crash.ts.
+export function crashCmd(): string[] {
+  if (!process.env["PATCHBOOK_CMD"]) return [process.execPath, "--preload", resolve(import.meta.dir, "crash-preload.ts"), TOOL];
+  if (!crashBinary) {
+    const dir = mkdtempSync(join(tmpdir(), "crash"));
+    process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+    crashBinary = join(dir, "patchbook");
+    sh([process.execPath, resolve(import.meta.dir, "crash-build.ts"), "build", crashBinary], { cwd: dir });
+  }
+  return [crashBinary];
+}
+
 // Python's textwrap.dedent: blank lines are emptied, then the common leading whitespace is removed.
 export function dedent(text: string): string {
   text = text.replace(/^[ \t]+(?=\n|$)/gm, "");

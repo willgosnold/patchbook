@@ -6,7 +6,8 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import type { Nearest } from "../src/api.ts";
-import { CMD, Case, Repo, TIMEOUT, TOOL, type Run, dedent, lstrip, mkdirNew, partitionHead, permissionTest, replace, sh, shlexSplit, words } from "./helpers";
+import { carriesCrashInjection } from "./crash-build.ts";
+import { CMD, Case, Repo, TIMEOUT, type Run, crashCmd, dedent, lstrip, mkdirNew, partitionHead, permissionTest, replace, sh, shlexSplit, words } from "./helpers";
 
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
@@ -3501,7 +3502,7 @@ for (const manager of ["git", "husky"]) {
 
 describe.skipIf(!!process.env["PATCHBOOK_CMD"])("init stopped by a preload, so only from source", () => {
   const preloaded = (t: Case, cwd: string, env: Record<string, string>, args: string[]): Run =>
-    sh([process.execPath, "--preload", join(import.meta.dir, "crash.ts"), TOOL, ...args], { cwd, env: { ...t.env, PATCHBOOK_HOOK: "", ...env }, check: false });
+    sh([...crashCmd(), ...args], { cwd, env: { ...t.env, PATCHBOOK_HOOK: "", ...env }, check: false });
 
   for (const [step, layouts, file] of [["its_series", ["fork", "folder"], "series"], ["retired_md", ["fork", "folder"], "retired.md"], ["its_config", ["fork", "folder"], "config.toml"]] as const) {
     for (const layout of layouts) {
@@ -9362,10 +9363,10 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     }
   });
 
-  describe.skipIf(!!process.env["PATCHBOOK_CMD"])("killed by a preload, so only from source", () => {
+  describe("killed by crash injection", () => {
     const killedBeforeWriting = (t: ForkCase, path: string, args: string[]): void => {
       const env = { ...t.env, CRASH_BEFORE_WRITE: path };
-      sh([process.execPath, "--preload", join(import.meta.dir, "crash.ts"), TOOL, ...args], { cwd: t.fork.path, env, check: false });
+      sh([...crashCmd(), ...args], { cwd: t.fork.path, env, check: false });
     };
 
     forkTest("test_a_sync_of_one_upstream_first_undoes_a_killed_sync_of_another_and_its_report", (t) => {
@@ -11359,7 +11360,7 @@ exec '${Bun.which("git")}' "$@"
     expect(pinRefs(t, head)).toBe(0);
   });
 
-  describe.skipIf(!!process.env["PATCHBOOK_CMD"])("killed by a preload, so only from source", () => {
+  describe("killed by crash injection", () => {
     for (const file of ["pin", "lock"]) {
       vendorTest(`test_a_sync_killed_before_it_deletes_its_journal_${file}_keeps_its_ref_once_an_older_commit_is_checked_out`, (t) => {
         const extra = extraWithAChange(t, true);
@@ -11370,7 +11371,7 @@ exec '${Bun.which("git")}' "$@"
         extra.write("b.md", "b\n");
         const head = extra.commit("v3");
         const env = { ...t.env, CRASH_BEFORE_RM: `/.patchbook/sync-extra/${file}` };
-        sh([process.execPath, "--preload", join(import.meta.dir, "crash.ts"), TOOL, "sync", "extra"], { cwd: t.repo.path, env, check: false });
+        sh([...crashCmd(), "sync", "extra"], { cwd: t.repo.path, env, check: false });
         expect(t.repo.read(".patchbook/upstream.lock")).toContain(head);
         expect(existsSync(join(t.repo.path, ".patchbook/sync-extra", file))).toBe(true);
         t.repo.commit("sync extra to v3");
@@ -12932,7 +12933,7 @@ exec '${Bun.which("git")}' "$@"
       extra.write("b.md", "b\n");
       extra.commit("b");
       const env = { ...t.env, CRASH_BEFORE_WRITE: "/.patchbook/sync-extra/lock" };
-      sh([process.execPath, "--preload", join(import.meta.dir, "crash.ts"), TOOL, "sync", "extra"], { cwd: t.repo.path, env, check: false });
+      sh([...crashCmd(), "sync", "extra"], { cwd: t.repo.path, env, check: false });
       expect(existsSync(join(t.repo.path, ".patchbook/sync-extra/old"))).toBe(true);
       return extra;
     };
@@ -15471,4 +15472,24 @@ describe("RecordRollbackTest", () => {
     t.pb(["record", "extra"], { cwd: t.fork.path });
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
+});
+
+describe("CrashInjection", () => {
+  test("test_the_command_under_test_carries_no_crash_injection", () => {
+    const src = join(import.meta.dir, "..", "src");
+    const shipped = process.env["PATCHBOOK_CMD"] ? [CMD[0]!] : (readdirSync(src, { recursive: true }) as string[]).filter((p) => p.endsWith(".ts")).map((p) => join(src, p));
+    expect(shipped.length).toBeGreaterThan(0);
+    expect(shipped.filter(carriesCrashInjection)).toEqual([]);
+  });
+
+  test("test_a_crash_build_is_found_to_carry_crash_injection", () => {
+    const dir = mkdtempSync(join(tmpdir(), "crash"));
+    try {
+      const built = join(dir, "patchbook");
+      sh([process.execPath, join(import.meta.dir, "crash-build.ts"), "build", built], { cwd: dir });
+      expect(carriesCrashInjection(built)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, TIMEOUT);
 });
