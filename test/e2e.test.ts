@@ -11349,6 +11349,30 @@ exec '${Bun.which("git")}' "$@"
     });
   }
 
+  vendorTest("test_a_sync_journal_that_names_a_folder_the_config_does_not_vendor_is_left_for_the_user_and_nothing_is_deleted", (t) => {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "a\n");
+    extra.commit("a");
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    const pin = JSON.parse(t.repo.read(".patchbook/upstream.lock")).extra;
+    t.repo.write("docs/a.md", "mine\n");
+    t.repo.commit("my own notes");
+    t.repo.write("docs/a.md", "edited since the commit\n");
+    const journal = join(t.repo.path, ".patchbook/sync-extra");
+    mkdirSync(join(journal, "old"), { recursive: true });
+    writeFileSync(join(journal, "old/planted.txt"), "from the journal\n");
+    const record = { from: `${pin.commit} ${pin.tree}`, to: "", rewrite: true, added: "", vendor: "docs", copy: false, made: "" };
+    writeFileSync(join(journal, "pin"), JSON.stringify(record));
+    const before = tree(t.repo.path);
+    const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain(".patchbook/sync-extra holds a sync of extra");
+    expect(out.stderr).toContain(JSON.stringify("docs"));
+    expect(out.stderr).toContain("vendor/extra");
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(t.repo.read("docs/a.md")).toBe("edited since the commit\n");
+    expect(read(join(journal, "old/planted.txt"))).toBe("from the journal\n");
+  });
+
   vendorTest("test_track_refuses_a_vendor_folder_that_holds_a_git_repo_before_it_drops_a_pin_an_earlier_track_left", (t) => {
     const extra = new Repo(join(t.tmp, "extra"));
     extra.write("a.md", "a\n");
