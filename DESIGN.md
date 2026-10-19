@@ -149,7 +149,7 @@ Patchbook does not check for links inside `.patchbook/`. A link in `blocks/` is 
 
 ## Lines and whitespace
 
-A line ends after each `\n`, as in git. A `\r` before the `\n` stays in the line, and nothing else ends one, so a lone `\r`, a form feed or U+2028 is part of the line around it. A last line with no `\n` is still a line. `patchbook show`, the diff a model reads to write an intent, and the diff of a recorded paragraph all cut lines this way, so their hunks match `git diff` on the same files.
+A line ends after each `\n`, as in git. A `\r` before the `\n` stays in the line, and nothing else ends one, so a lone `\r`, a form feed or U+2028 is part of the line around it. A last line with no `\n` is still a line. Git cuts the lines of every diff patchbook prints (see Diffs), and `record` cuts a file at the same places when it matches lines.
 
 Whitespace is what JavaScript's `\s` and `trim()` match: spaces, tabs, line ends, a no-break space and the other Unicode spaces, and a BOM. `\x1c` to `\x1f` and U+0085 are text. A line of only whitespace is blank and ends a paragraph, and patchbook trims whitespace from the intent of a `CHANGE.md`, the fields of a block entry, the lines of `series` and a list setting.
 
@@ -168,6 +168,26 @@ Where patchbook reads git's output, it takes off only the `\n` git ends a value 
 ## Ordering
 
 Patchbook sorts paths and names by code point. That is the order of their UTF-8 bytes, which git sorts paths in, and it is the same in every locale: `Z` comes before `a`, and `é` after `z`. It compares whole paths, so `a-b/x` comes before `a/b`, as `git ls-files` lists them. `build.lock`, the upstreams in `upstream.lock`, the files `upstream` lists and the paths `check` and `sync` report all follow this order.
+
+## Diffs
+
+Every diff patchbook prints or gives a model is git's: `patchbook show`, the diff a model reads to write an intent, and the diff of a recorded paragraph. Patchbook writes the two sides to files in a new temporary folder and runs `git diff --no-index --text` on them there. It gives git an environment with only `PATH`, that folder as `HOME`, no system config or attributes, and a ceiling at the folder's parent, so git finds no repository. So no config file, no `.gitattributes`, no `GIT_DIFF_OPTS` and no `GIT_DIR` from the pre-commit hook changes a diff, and the same two texts give the same diff on every machine. It is git's default diff, with three lines of context and git's default algorithm. A `diff.algorithm` set for your own `git diff` doesn't apply.
+
+Everything from the first `@@` is git's output, byte for byte: the hunk ranges, the function name git prints after `@@`, and `\ No newline at end of file`. Patchbook writes the two lines above it, `--- <from>` and `+++ <to>`. They name `upstream/<path>` and `ours/<path>` for `show`, `built/<path>` and `disk/<path>` for a model, and `/dev/null` for a side that doesn't exist. Two equal sides give no diff. Git reads both sides as text, so it never prints `Binary files differ`. For a file that isn't text, the diff for a model says `binary file <path> added`, `deleted` or `changed` and asks git for nothing. Each diff spawns one git, which takes 4 to 8 ms.
+
+## Matching and similarity
+
+Patchbook compares two texts as two lists. `record` compares the lines of a file, cut at each `\n`, to cut an edit into paragraphs. Similarity compares the code points of two texts. Two elements match when they are the same string. None is left out: a blank line, a `}` or a space counts like any other element, however often it appears and however long the text is.
+
+A matching pairs elements of the old list with equal elements of the new one, in order. Patchbook takes a matching with the most pairs, a longest common subsequence. When several have the most, it pairs the elements both lists start with, then the elements they end with among the rest. Between those, it takes the pairs that come earliest. Of two such matchings, it takes the one whose first different pair has the earlier old element, or on the same old element the earlier new one. Each stretch between two pairs is one edit. `record` gives the edit to the paragraphs whose lines it touches, or to the paragraph before it when it touches none.
+
+The similarity of two texts is twice the pairs in the matching of their code points, over the code points of both texts. Two empty texts have similarity 1. `similarity()` in `src/lib/match.ts` makes the number, and it is the one place patchbook rounds it: to hundredths, with a half rounded up, worked out on the counts. So 0.575 is 0.58, where `Math.round(r * 100) / 100` gives 0.57, because 0.575 isn't exact in binary. Patchbook compares only this rounded number, and on a tie the candidate it found first comes first. It uses the number three times:
+
+- An orphan's nearest new blocks are the two most similar blocks with a similarity of at least 0.4.
+- An export in `hooks.ts` that isn't a hook gets `did you mean` the most similar hook if that hook's similarity is at least 0.6, and the list of hooks otherwise.
+- A file edit whose file upstream no longer has lists the three added paths with the most similar names.
+
+Matching takes time in proportion to the two lengths multiplied together, after the shared start and end, divided by 32. Similarity keeps one row of bits. Pairing lines keeps a row for each old line, n × m / 8 bytes for n old and m new lines between the shared start and end, so 1 MB for 3000 lines each. A 3000-line file rewritten end to end pairs in about 5 ms, and 300 paragraphs of 3000 code points each take about 0.6 s to score against one.
 
 ## JSON files and output
 
@@ -251,7 +271,7 @@ A problem always has `problem`, its kind, first. The other fields depend on the 
 | `orphan` | `file`, `hash`, `kind`, `rules`, `intent`, `upstream`, `patched`, `nearest` | An entry whose paragraph changed upstream. `kind` is `translation`, `policy` or `keep`. `nearest` is a list of `{line, hash, similarity}`, where `similarity` is a number from 0.4 to 1, as below. |
 | `check` | file, `detail` | A problem the repo's `check` hook reports. A hook may return any kind. |
 
-**Similarity.** A nearest block's `similarity` says how much of its text matches the entry's old paragraph. It is twice the code points in the blocks that `SequenceMatcher` matches, over the code points of both paragraphs. `similarity()` in `src/blocks.ts` makes the number, and it is the one place patchbook rounds it: to hundredths, with a half rounded up, worked out on the counts. So 0.575 is 0.58, where `Math.round(r * 100) / 100` gives 0.57, because 0.575 isn't exact in binary. `nearest` lists the two most similar paragraphs whose similarity is at least 0.4, most similar first, and on a tie in the order patchbook found them. `status` shows the same number as a percent, as in `nearest new blocks: line 7 [3f2a9c1b0d4e] 90%`, and so it shows a `similarity` that a `check` hook returns.
+**Similarity.** A nearest block's `similarity` says how much of its text matches the entry's old paragraph, rounded to hundredths, as Matching and similarity defines it. `nearest` lists the two most similar paragraphs whose similarity is at least 0.4, most similar first, and on a tie in the order patchbook found them. `status` shows the same number as a percent, as in `nearest new blocks: line 7 [3f2a9c1b0d4e] 90%`, and so it shows a `similarity` that a `check` hook returns.
 
 ### `.patchbook/last-sync.json`
 
