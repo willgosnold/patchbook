@@ -12751,4 +12751,21 @@ describe("ModeTest", () => {
     expect(isExecutable(join(t.fork.path, "bin/run.sh"))).toBe(false);
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
+
+  forkTest("test_record_of_a_deleted_replace_output_drops_the_base_copy_a_mode_change_wrote", (t) => {
+    replaceCopy(t, "docs/guide.md", "replaced\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    const guide = join(t.fork.path, "docs/guide.md");
+    chmodSync(guide, 0o755);
+    t.pb(["record", "--intent", "Run the guide."], { cwd: t.fork.path });
+    const rep = join(t.fork.path, ".patchbook/changes/rep");
+    expect(existsSync(join(rep, "base/docs/guide.md.pb"))).toBe(true);
+    t.pb(["build"], { cwd: t.fork.path });
+    rmSync(guide);
+    t.pb(["record", "--intent", "Drop the guide."], { cwd: t.fork.path });
+    expect(sh(["find", ".", "-type", "f"], { cwd: rep }).stdout.trim()).toBe("./CHANGE.md");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(existsSync(guide)).toBe(false);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
 });
