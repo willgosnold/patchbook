@@ -119,7 +119,7 @@ An upstream block that matches a check and has no entry is **missing**. Output t
 
 An export with any other name is an error, with a suggestion if the name is close to a hook (`blockterms` gets "did you mean `blockTerms`?"). Patchbook also checks what each hook returns, and fails with a message when it's the wrong shape.
 
-Hooks run on Bun, inside the `patchbook` binary, so running one needs no separate Bun or Node install. A hook can import built-ins and the packages the repo has in `node_modules`, and no others. Patchbook reads `hooks.ts` and no other file by that name, so a `hooks` file in another language that sits in `.patchbook/` is a file it doesn't know about, and leaves alone.
+Hooks run on Bun, inside the `patchbook` binary, so running one needs no separate Bun or Node install. A hook can import built-ins and the packages the repo has in `node_modules`, and no others. Patchbook reads `hooks.ts` and no other hooks file. A `hooks.js` in `.patchbook/` is a file it doesn't know about, and `init` and `status` go on without it.
 
 ## Trust
 

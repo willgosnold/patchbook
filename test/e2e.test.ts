@@ -2872,18 +2872,18 @@ test("test_init_loads_hooks_before_it_writes_anything", () => {
   }
 }, TIMEOUT);
 
-test("test_a_hooks_file_in_another_language_is_a_file_patchbook_does_not_know_about", () => {
+test("test_a_hooks_js_is_a_file_patchbook_does_not_know_about", () => {
   const t = new Case();
   try {
     const up = new Repo(join(t.tmp, "upstream"));
     up.write("app.txt", "one\n");
     up.commit("start");
     const fork = forkOf(t, up);
-    const stray = "def placeholder(kind, key):\n    return None\n";
-    fork.write(".patchbook/hooks.py", stray);
+    const stray = "export const placeholder = () => null;\n";
+    fork.write(".patchbook/hooks.js", stray);
     t.pb(["init", "--upstream", up.path], { cwd: fork.path });
     expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
-    expect(fork.read(".patchbook/hooks.py")).toBe(stray);
+    expect(fork.read(".patchbook/hooks.js")).toBe(stray);
   } finally {
     t.cleanup();
   }
@@ -8650,7 +8650,7 @@ exec '${Bun.which("git")}' "$@"
   });
 
   vendorTest("test_block_terms_may_return_a_string", (t) => {
-    // Python iterated a string into its characters, and a set of them is what the block needs entries for.
+    // A string is read as its characters, and a set of them is what the block needs entries for.
     writeFileSync(join(t.repo.path, ".patchbook/hooks.ts"), dedent(`
       export function blockTerms(path: string, block: string) {
         return block.includes("wave") ? "ba" : [];

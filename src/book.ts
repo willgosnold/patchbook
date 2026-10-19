@@ -132,12 +132,12 @@ async function loadHooks(dir: string): Promise<Hooks> {
   return hooks;
 }
 
-/** Strings count: Python iterated one into its characters. */
+/** Strings count: a string is read as its characters. */
 function isIterable(value: unknown): value is Iterable<unknown> {
   return typeof value === "string" || (typeof value === "object" && value !== null && Symbol.iterator in value);
 }
 
-/** Only the `problem` kind is checked. The rest of the fields are the hook's to get right, as in Python. */
+/** Only the `problem` kind is checked. The rest of the fields are the hook's to get right. */
 function isProblem(value: unknown): value is Problem {
   return isTable(value) && typeof value["problem"] === "string";
 }
