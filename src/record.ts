@@ -10,7 +10,7 @@ import { installHookOrWarn } from "./githook.ts";
 import { nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, rglob, sameFile, writeText } from "./lib/fs.ts";
+import { exists, type File, LINK, type Mode, rglob, sameFile, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { replace, splitlines, strip } from "./lib/py.ts";
 import { bytesEqual, decode, decodeReplace, encode, isText } from "./lib/text.ts";
@@ -18,6 +18,12 @@ import { bytesEqual, decode, decodeReplace, encode, isText } from "./lib/text.ts
 /** An entry a recording makes. A null intent means it still needs one. */
 type Draft = Omit<Entry, "intent"> & { intent: string | null };
 type Plan = { path: string; entries: Map<string, Draft>; notes: [string, string][] };
+
+/** The mode to write for an edited file's own copy: a link follows `now`, and a regular file over a recorded link is a plain file. Otherwise the copy keeps its mode. */
+function recordedMode(now: Mode, built: Mode): Mode | undefined {
+  if (now === LINK) return LINK;
+  return built === LINK ? 0o644 : undefined;
+}
 
 export async function cmdRecord(args: { change: string | null; intent: string | null; current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean }) {
   const book = await Book.find();
@@ -40,6 +46,7 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
     process.stdout.write("no hand edits to the output since the last build; nothing to record\n");
     return 0;
   }
+  refuseLinkTurnedFile(a, current, edited);
   const blocked = (p: string) => {
     const src = a.sources.get(p);
     return src?.kind === "up" && hasBlocks.has(src.path) && current.has(p);
@@ -126,7 +133,7 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
         notes.push(`skipped  ${p}: its copy in ${c.name} uses placeholders; edit that copy directly`);
         continue;
       }
-      c.write("ours", src.path, now.data);
+      c.write("ours", src.path, now.data, recordedMode(now.mode, built.mode));
       touched.set(c.name, c);
       notes.push(`update   ${p} (in ${c.name})`);
     } else {
@@ -157,6 +164,19 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
     writeBuildLines(book, lock);
   }
   return 0;
+}
+
+/** An upstream link keeps its type in the build, so a regular file over it would be written back as a link. */
+function refuseLinkTurnedFile(a: ReturnType<typeof assemble>, current: ReadonlyMap<string, File>, edited: readonly string[]): void {
+  const turned = edited.filter((p) => {
+    const src = a.sources.get(p);
+    return src !== undefined && a.out.get(p)?.mode === LINK && a.upstream.get(src.path)?.mode === LINK
+      && current.get(p) !== undefined && current.get(p)!.mode !== LINK;
+  });
+  if (turned.length) {
+    throw new Fail(turned.map((p) => `${p} is a link upstream, and a regular file now`).join("\n")
+      + "\npatchbook can't record a link turned into a file yet (#133).");
+  }
 }
 
 /** Work out the block entry updates that make the build produce `now` for a file with block entries.
