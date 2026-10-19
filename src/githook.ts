@@ -788,14 +788,15 @@ async function runHook(undo: Undo) {
     a = recorded.after ?? assemble(book);
   }
   let built: string[] = [];
+  const left = stagedEdits(a.out);
+  if (left.length) {
+    throw new Fail("couldn't record these hand edits:\n  " + left.join("\n  ")
+      + (a.problems.length ? "\nThe patchbook has problems, which may be why; `patchbook status` lists them." : "")
+      + "\nMove them into the patchbook yourself, or skip the hook once with PATCHBOOK_HOOK=0.");
+  }
   if (a.problems.length) {
     warn(`patchbook: ${a.problems.length} problems, so the output wasn't rebuilt. \`patchbook status\` lists them.\n`);
   } else {
-    const left = stagedEdits(a.out);
-    if (left.length) {
-      throw new Fail("couldn't record these hand edits:\n  " + left.join("\n  ")
-        + "\nMove them into the patchbook yourself, or skip the hook once with PATCHBOOK_HOOK=0.");
-    }
     const { stage, disk } = plan(a.out);
     built = stage;
     const written = [...disk.stale, ...disk.changed];
