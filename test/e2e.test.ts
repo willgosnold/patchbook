@@ -10589,7 +10589,7 @@ exec '${Bun.which("git")}' "$@"
   });
 
   /** A commit on top of upstream's head whose tree also holds a blob at `path`, which `git add` refuses to stage for a `.git` and only `git mktree` can store. */
-  const withBlobAt = (up: Repo, path: string): void => {
+  const withBlobAt = (t: Case, up: Repo, path: string): void => {
     const git = (args: string[], input = ""): string => {
       const r = Bun.spawnSync(["git", ...args], { cwd: up.path, env: t.env, stdin: Buffer.from(input), stdout: "pipe" });
       return r.stdout.toString().trim();
@@ -10604,7 +10604,7 @@ exec '${Bun.which("git")}' "$@"
     const up = new Repo(join(t.tmp, name));
     up.write("a.md", "a\n");
     up.commit("a");
-    withBlobAt(up, path);
+    withBlobAt(t, up, path);
     return up;
   };
 
@@ -10647,7 +10647,7 @@ exec '${Bun.which("git")}' "$@"
   vendorTest("test_an_upstream_that_holds_a_dot_git_is_refused_when_a_sync_would_only_rewrite_the_copy", (t) => {
     const gentry = extraAt(t);
     t.pb(["track", "gentry", gentry.path], { cwd: t.repo.path });
-    withBlobAt(gentry, ".git");
+    withBlobAt(t, gentry, ".git");
     t.pb(["check"], { cwd: t.repo.path, code: 1 }); // fetches the commit; no patchbook can pin it now, so the lock is the one an older patchbook wrote
     const [commit, treeId] = sh(["git", "rev-parse", "HEAD", "HEAD^{tree}"], { cwd: gentry.path }).stdout.split("\n");
     const lock = join(t.repo.path, ".patchbook/upstream.lock");
@@ -10703,7 +10703,7 @@ exec '${Bun.which("git")}' "$@"
       test(`test_every_command_that_builds_refuses_a_pin_that_holds_${path}`, () => {
         const { t, repo, out, good } = dotGitCase();
         try {
-          withBlobAt(good, path);
+          withBlobAt(t, good, path);
           expect(t.pb(["check"], { cwd: repo.path, code: 1 }).stderr).toContain(refused("good"));
           expect(t.pb(["sync"], { cwd: repo.path, code: 1 }).stderr).toContain(refused("good"));
           const lockPath = join(repo.path, ".patchbook/upstream.lock");
