@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
 import { Book, PB, refuseClimbingPaths, refuseExportedGit } from "./book.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isDir, isSymlink, lexists, mkdirs, normMode, pjoin, readDisk, readText, relative, resolve, writeDisk } from "./lib/fs.ts";
+import { exists, type File, isDir, isSymlink, lexists, mkdirs, type Mode, normMode, pjoin, readDisk, readText, relative, resolve, writeDisk } from "./lib/fs.ts";
 import { sha1 } from "./lib/hash.ts";
 import { loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
@@ -317,19 +317,51 @@ export function pinned(u: Upstream, pin: Pin): string {
   return pin.commit;
 }
 
-export function treeFiles(gd: string, tree: string, path: string): Files {
+function treeEntries(gd: string, tree: string, path: string): { rel: string; mode: Mode; oid: string }[] {
   const args = ["ls-tree", "-r", "-z", "--full-tree", tree, ...(path ? ["--", path] : [])];
-  const entries: { rel: string; mode: number; oid: string }[] = [];
+  const entries: { rel: string; mode: Mode; oid: string }[] = [];
   for (const item of decode(run(["git", "--literal-pathspecs", ...args], { cwd: gd })).split("\0")) {
     if (!item) continue;
     const tab = item.indexOf("\t");
     const [mode = "", kind, oid = ""] = split(item.slice(0, tab));
     const found = item.slice(tab + 1);
     if (kind !== "blob") continue; // submodules are not copied
-    entries.push({ rel: path ? found.slice(path.length + 1) : found, mode: parseInt(mode, 8), oid });
+    entries.push({ rel: path ? found.slice(path.length + 1) : found, mode: normMode(parseInt(mode, 8)), oid });
   }
+  return entries;
+}
+
+function readEntries(gd: string, entries: { rel: string; mode: Mode; oid: string }[]): Files {
   const blobs = readBlobs(gd, entries.map((e) => e.oid));
-  return new Map(entries.map(({ rel, mode, oid }) => [rel, { data: blobs.get(oid)!, mode: normMode(mode) }]));
+  return new Map(entries.map(({ rel, mode, oid }) => [rel, { data: blobs.get(oid)!, mode }]));
+}
+
+export function treeFiles(gd: string, tree: string, path: string): Files {
+  return readEntries(gd, treeEntries(gd, tree, path));
+}
+
+class TreeBlob {
+  bytes: Uint8Array | undefined;
+  constructor(readonly gd: string, readonly oid: string, readonly mode: Mode) {}
+
+  get data(): Uint8Array {
+    return (this.bytes ??= readBlobs(this.gd, [this.oid]).get(this.oid)!);
+  }
+}
+
+/** Like `treeFiles`, but reads bytes on demand and keeps git's ids, when they are the SHA-1 `blobOid` gives. */
+export function treeBlobs(gd: string, tree: string, path: string): Files {
+  const entries = treeEntries(gd, tree, path);
+  if (entries.some((e) => e.oid.length !== 40)) return readEntries(gd, entries);
+  return new Map(entries.map(({ rel, mode, oid }) => [rel, new TreeBlob(gd, oid, mode)]));
+}
+
+export function readBlobsOf(files: Iterable<File>): void {
+  const unread = Array.from(files).filter((f): f is TreeBlob => f instanceof TreeBlob && f.bytes === undefined);
+  for (const [gd, group] of Map.groupBy(unread, (f) => f.gd)) {
+    const blobs = readBlobs(gd, group.map((f) => f.oid));
+    for (const f of group) f.bytes = blobs.get(f.oid)!;
+  }
 }
 
 export function readBlobs(gd: string, oids: string[]): Map<string, Uint8Array> {

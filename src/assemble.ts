@@ -11,10 +11,10 @@ import { type Change, editText, readChanges } from "./changes.ts";
 import { installHookOrWarn, stageModes, upstreamModes, warnUnhooked } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import {
-  exists, type File, gitMode, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, type Mode, nonFolders, outputMode, parseGitMode, readText, relative, resolve, rglob, rmFolders,
-  sameFile, sameMode, type Seen, writeDisk, writeText,
+  exists, type File, fileOid, gitMode, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, type Mode, nonFolders, outputMode, parseGitMode, readText, relative, resolve, rglob,
+  rmFolders, sameFile, sameMode, type Seen, writeDisk, writeText,
 } from "./lib/fs.ts";
-import { blobOid } from "./lib/hash.ts";
+import { forgetBlobOids } from "./lib/hash.ts";
 import { dumps, type Json, loads } from "./lib/json.ts";
 import { type Env, git, run, spawn } from "./lib/proc.ts";
 import { floatRepr, ljust, rstrip, sorted, sortedBy, strip } from "./lib/py.ts";
@@ -67,6 +67,10 @@ export type Assembly = {
 const CONFLICT = /^(?:<{7}|>{7})(?: |$)/;
 /** A line that starts with a conflict marker. Python's `^` in MULTILINE breaks on `\n` only. */
 export const hasConflictMarker = (text: string) => text.split("\n").some((line) => CONFLICT.test(line));
+const mayHoldMarker = (data: Uint8Array) => {
+  const bytes = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  return bytes.includes("<<<<<<<") || bytes.includes(">>>>>>>");
+};
 
 function intoReserved(where: InEdit, path: string, { place, refuse }: Reserved): Problem {
   const detail = `${path} would be written into ${place}`;
@@ -238,8 +242,9 @@ export function assemble(book: Book): Assembly {
 
   book.hooks.finish?.(out);
   if (book.hooks.check) problems.push(...book.hooks.check(new Map(Array.from(out, ([p, f]) => [p, f.data]))));
+  forgetBlobOids();
   for (const [p, { data, mode }] of out) {
-    if (mode !== LINK && isText(data) && hasConflictMarker(decode(data))) {
+    if (mode !== LINK && mayHoldMarker(data) && isText(data) && hasConflictMarker(decode(data))) {
       problems.push({ problem: "conflict", file: p, detail: "conflict marker in the output" });
     }
   }
@@ -252,7 +257,7 @@ export const buildLockPath = (book: Book) => book.data("build.lock");
 
 export type Stamp = { oid: string; mode: Mode | null };
 
-export const stampOf = (f: File): Stamp => ({ oid: blobOid(f.data), mode: f.mode });
+export const stampOf = (f: File): Stamp => ({ oid: fileOid(f), mode: f.mode });
 
 const LOCK_LINE = /^(\d{6}) (\S+) (.*)$/;
 
@@ -339,7 +344,7 @@ export type BuildLock = ReadonlyMap<string, Stamp>;
 /** A lock line with no mode stands for the mode the current build writes for that path. */
 export function builtAs(file: File | undefined, stamp: Stamp | undefined, built: Mode | undefined, tracksExecBit: boolean): boolean {
   if (file === undefined || stamp === undefined) return file === undefined && stamp === undefined;
-  return blobOid(file.data) === stamp.oid && sameMode(stamp.mode ?? built ?? file.mode, file.mode, tracksExecBit);
+  return fileOid(file) === stamp.oid && sameMode(stamp.mode ?? built ?? file.mode, file.mode, tracksExecBit);
 }
 
 /** The outputs edited by hand since the last build. A file's mode counts only where its exec bit is the user's. */

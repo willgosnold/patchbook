@@ -6,6 +6,7 @@ import {
 import { basename, dirname, join, relative as rel, resolve as absolute } from "node:path";
 import { getSystemErrorMessage } from "node:util";
 import { Fail } from "./fail.ts";
+import { blobOid } from "./hash.ts";
 import { compareParts } from "./py.ts";
 import { bytesEqual, decode, decodeReplace, encode } from "./text.ts";
 
@@ -13,7 +14,9 @@ export const LINK = 0o120000;
 export const GITLINK = 0o160000;
 export type Mode = 0o644 | 0o755 | typeof LINK;
 /** A file as git stores it: its bytes, or a symlink's target, and its mode. */
-export type File = { data: Uint8Array; mode: Mode };
+export type File = { data: Uint8Array; mode: Mode; oid?: string };
+
+export const fileOid = (f: File) => f.oid ?? blobOid(f.data);
 
 export function normMode(mode: number): Mode {
   if (mode === LINK) return LINK;
@@ -62,7 +65,8 @@ export const sameMode = (a: Mode, b: Mode, tracksExecBit = true) => a === b || (
 
 export function sameFile(a: File | undefined, b: File | undefined, tracksExecBit = true): boolean {
   if (a === undefined || b === undefined) return a === b;
-  return sameMode(a.mode, b.mode, tracksExecBit) && bytesEqual(a.data, b.data);
+  if (!sameMode(a.mode, b.mode, tracksExecBit)) return false;
+  return a.oid === undefined && b.oid === undefined ? bytesEqual(a.data, b.data) : fileOid(a) === fileOid(b);
 }
 
 /** `Path(a) / b`: joined and normalised, with no trailing slash. An absolute part drops the ones before it. */

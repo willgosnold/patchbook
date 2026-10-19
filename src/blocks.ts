@@ -1,7 +1,7 @@
 // Block entries: a paragraph of an upstream file, keyed by the hash of its text, with its patched text.
 // Also the rules a block is checked against: [[check]] patterns, placeholders and the hooks.
 import type { InBlock, InOutput, Nearest, Problem } from "./api.ts";
-import { Book, escape } from "./book.ts";
+import { Book, type Check, escape } from "./book.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { pjoin, readText } from "./lib/fs.ts";
@@ -132,12 +132,18 @@ export class Rules {
     this.placeholder = kinds.length ? new RegExp(`\\{\\{(${kinds.map(escape).join("|")}):([^}]+)\\}\\}`, "gu") : null;
   }
 
+  private checksOf(outPath: string): Check[] {
+    return this.book.checks.filter((c) => c.files.some((r) => r.test(outPath)) && !c.exclude.some((r) => r.test(outPath)));
+  }
+
+  watches(outPath: string): boolean {
+    return this.book.hooks.blockTerms !== undefined || this.checksOf(outPath).length > 0;
+  }
+
   terms(outPath: string, block: string): string[] {
     const found = new Set<string>();
-    for (const c of this.book.checks) {
-      if (c.files.some((r) => r.test(outPath)) && !c.exclude.some((r) => r.test(outPath))) {
-        for (const m of block.matchAll(c.pattern)) found.add(m[0]);
-      }
+    for (const c of this.checksOf(outPath)) {
+      for (const m of block.matchAll(c.pattern)) found.add(m[0]);
     }
     const hook = this.book.hooks.blockTerms;
     if (hook) for (const t of hook(outPath, block, this.outputs)) found.add(t);
@@ -213,6 +219,7 @@ export function patchBlocks(args: {
   owners?: (number | null)[];
 }): { text: string; applied: number } {
   const { rules, outPath, rel, text, entries, used = new Set(), unmatched = [], problems = [], owners } = args;
+  if (!entries.size && owners === undefined && !rules.watches(outPath)) return { text, applied: 0 };
   const lines = text.split("\n");
   const spans = blockSpans(lines);
   const out: string[] = [];

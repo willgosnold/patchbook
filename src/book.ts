@@ -14,7 +14,7 @@ import { git, run, spawn } from "./lib/proc.ts";
 import { length, type PyValue, sortedBy, strRepr } from "./lib/py.ts";
 import { decode } from "./lib/text.ts";
 import { isTable, parseToml, type Table } from "./settings.ts";
-import { stagedFolder, treeFiles, Upstream } from "./store.ts";
+import { stagedFolder, treeBlobs, Upstream } from "./store.ts";
 
 export const PB = ".patchbook";
 
@@ -697,17 +697,18 @@ export class Book {
   }
 
   /** The output from `source`, each file marked with whether its exec bit is the user's. Under core.fileMode=false a
-   * disk read takes the index's mode, which is what `git add -A` stages. */
+   * disk read takes the index's mode, which is what `git add -A` stages. Each file is marked in place, since a copy
+   * would read the bytes of a staged file that `treeBlobs` reads only when asked. */
   seen(source: OutputSource): Map<string, Seen> {
     const files = source === "index" ? this.stagedOutput() : this.currentOutput();
-    if (this.tracksExecBit()) return new Map(Array.from(files, ([p, f]) => [p, { ...f, chosen: true }]));
+    if (this.tracksExecBit()) return new Map(Array.from(files, ([p, f]) => [p, Object.assign(f, { chosen: true })]));
     const index = source === "index" ? new Map(Array.from(files, ([p, f]) => [p, f.mode])) : this.indexModes();
     const since = this.stagedChanges();
     const regular = (mode: Mode | null | undefined) => (mode === 0o644 || mode === 0o755 ? mode : undefined);
     return new Map(Array.from(files, ([p, f]) => {
       const c = since.get(p);
       const chosen = c !== undefined && regular(c.staged) !== undefined && c.staged !== (regular(c.head) ?? 0o644);
-      return [p, { data: f.data, mode: f.mode === LINK ? LINK : regular(index.get(p)) ?? 0o644, chosen }];
+      return [p, Object.assign(f, { mode: f.mode === LINK ? LINK : regular(index.get(p)) ?? 0o644, chosen })];
     }));
   }
 
@@ -727,7 +728,7 @@ export class Book {
   stagedOutput(): Map<string, File> {
     const root = this.outputRoot();
     const tree = git(["write-tree"], { cwd: this.root });
-    const files = treeFiles(this.root, tree, root !== this.root ? relative(this.root, root) : "");
+    const files = treeBlobs(this.root, tree, root !== this.root ? relative(this.root, root) : "");
     return new Map(Array.from(files).filter(([p]) => !this.isReserved(p)));
   }
 

@@ -20,7 +20,7 @@ export function isText(data: Uint8Array): boolean {
 }
 
 export function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  return a.length === b.length && a.every((x, i) => x === b[i]);
+  return a.length === b.length && Buffer.compare(a, b) === 0;
 }
 
 export function concat(...parts: Uint8Array[]): Uint8Array {

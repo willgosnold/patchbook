@@ -306,7 +306,7 @@ function modelDiff(a: Assembly, current: ReadonlyMap<string, File>, ask: Asked):
 }
 
 /** What a recording says, and the copies whose mode it picked, repo-relative, for the commit hook to stage. */
-export type RecordResult = { text: string; copies: ReadonlyMap<string, Mode> };
+export type RecordResult = { text: string; copies: ReadonlyMap<string, Mode>; after: Assembly | null };
 
 export async function cmdRecord(args: { change: string | null; intent: string | null; only?: (path: string) => boolean }) {
   const book = await Book.find();
@@ -352,7 +352,7 @@ export function fill(book: Book, change: string | null, intent: string | null): 
 
 export function record(
   book: Book, change: string | null, intent: string | null,
-  opts: { seen: ReadonlyMap<string, Seen>; edits?: readonly string[]; only?: ((path: string) => boolean) | undefined; undo?: Undo },
+  opts: { seen: ReadonlyMap<string, Seen>; edits?: readonly string[]; only?: ((path: string) => boolean) | undefined; undo?: Undo; assembly?: Assembly },
 ): RecordResult {
   if (change && !CHANGE_NAME.test(change)) throw new Fail(notAChangeName(change));
   const problems: Problem[] = [];
@@ -360,11 +360,11 @@ export function record(
   const changes = roster.parsed;
   const badName = problems.find((p) => p.file === "series" && "refuse" in p);
   if (badName) throw new Fail(`refusing to record: ${describe(badName)}\nRename it to lowercase letters, digits and dashes in series and changes/ first.`);
-  const a = assemble(book);
+  const a = opts.assembly ?? assemble(book);
   const current = opts.seen;
   // Only files edited by hand since the last build. Others differ because the patchbook changed.
   const edited = (opts.edits ?? handEdits(book, a.out, current)).filter(opts.only ?? (() => true));
-  if (!edited.length) return { text: "no hand edits to the output since the last build; nothing to record\n", copies: new Map() };
+  if (!edited.length) return { text: "no hand edits to the output since the last build; nothing to record\n", copies: new Map(), after: null };
   refuseLinkTurnedFile(a, current, edited);
   refuseFolderToFile(book, a.out, current, edited);
   const s = snapshot(book, a, current, changes);
@@ -387,6 +387,7 @@ export function record(
   const afterSave: (() => void)[] = [];
   const undo = opts.undo ?? new Undo();
   undo.hold(book.dir);
+  let after: Assembly | null = null;
   try {
     for (const e of edits) {
       const done = row(e).apply(e, { target, intent: naming.intent });
@@ -402,9 +403,9 @@ export function record(
     // The recorded output is now what the patchbook builds, so it no longer counts as a hand edit.
     const lock = readBuildLock(book);
     if (lock !== null) {
-      const after = assemble(book).out;
+      after = assemble(book);
       for (const p of edited) {
-        const built = after.get(p);
+        const built = after.out.get(p);
         const now = current.get(p);
         if (built !== undefined && sameFile(now, built, now?.chosen ?? true)) lock.set(p, stampOf(built));
         else if (built === undefined && !current.has(p)) lock.delete(p);
@@ -424,7 +425,7 @@ export function record(
   const owners = Array.from(touched.keys()).join(", ");
   const dropped = naming.unused && edits.some((e) => e.kind !== "skip");
   const text = (naming.said !== null ? naming.said + "\n" : "") + notes.map((n) => n + "\n").join("") + (dropped ? `intent   not used${owners ? `: the edits went to ${owners}` : ""}\n` : "");
-  return { text, copies };
+  return { text, copies, after };
 }
 
 /** An upstream link keeps its type in the build, so a regular file over it would be written back as a link. */
