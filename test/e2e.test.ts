@@ -8790,7 +8790,7 @@ exec '${Bun.which("git")}' "$@"
       expect(t.repo.read("vendor/extra/c.log")).toBe("hidden\n");
       expect(t.repo.read(".patchbook/changes/tweak/ours/extra/a.md.pb")).toBe("ONE\ntwo\nthree\nfour\nFIVE\n");
       const ignored = sh(["git", "status", "--porcelain", "--ignored", "--untracked-files=all"], { cwd: t.repo.path }).stdout;
-      expect(ignored.split("\n").filter((line) => line.startsWith("!!"))).toEqual([]);
+      expect(ignored.split("\n").filter((line) => line.startsWith("!!"))).toEqual(["!! .patchbook/.gitignore", "!! .patchbook/last-sync.json"]);
       expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
     });
   }

@@ -93,16 +93,28 @@ export async function cmdSync(args: { name: string | null; ref: string | null })
   };
   const stale = [...reports.keys()].some((name) => !book.upstreams.some((u) => u.name === name));
   let synced = false;
-  for (const u of targets) {
-    const report = syncUpstream(book, u, args.ref, changes, (r) => {
-      reports.set(u.name, r);
-      save();
-    });
-    if (report) synced = true;
+  try {
+    for (const u of targets) {
+      const report = syncUpstream(book, u, args.ref, changes, (r) => {
+        reports.set(u.name, r);
+        save();
+      });
+      if (report) synced = true;
+    }
+    if (stale && !synced) save();
+  } finally {
+    if (exists(path)) ignoreReport(book);
   }
-  if (stale && !synced) save();
   if (synced) process.stdout.write("Next: patchbook status\n");
   return 0;
+}
+
+/** The report is this checkout's state, so git is told to leave it alone. Every sync checks the rule, which gives a repo made before it the same one. The rule file ignores itself, so a sync leaves nothing to commit. */
+function ignoreReport(book: Book): void {
+  const p = join(book.dir, ".gitignore");
+  const rules = exists(p) ? readTextReplace(p) : "";
+  const missing = [REPORT, ".gitignore"].filter((rule) => !rules.split("\n").includes(rule));
+  if (missing.length) writeText(p, rules + (rules && !rules.endsWith("\n") ? "\n" : "") + missing.join("\n") + "\n");
 }
 
 /** The reports in `last-sync.json`, with or without `version`. Kept as read; nothing here reads their fields. */
