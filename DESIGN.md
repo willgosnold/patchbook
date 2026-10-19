@@ -205,7 +205,7 @@ A problem always has `problem`, its kind, first. The other fields depend on the 
 
 ### `.patchbook/last-sync.json`
 
-Written by `patchbook sync`. It has an entry for each upstream in the config that a sync has moved, in config order. Each entry is the report of the latest sync that moved that upstream, so entries can come from different runs. A sync that writes the report and then fails to write the pin leaves an entry for a move `upstream.lock` does not hold. An upstream no sync has moved has no entry.
+Written by `patchbook sync`. It has an entry for each upstream in the config that a sync has moved, in config order. Each entry is the report of the latest sync that moved that upstream, so entries can come from different runs. A sync killed after it writes the report and before it moves the pin leaves an entry for a move `upstream.lock` does not hold, until the next `sync` puts the report back. An upstream no sync has moved has no entry.
 
 `sync` writes the file after each upstream it moves, before it moves that upstream's pin, and keeps the entries of the upstreams it did not move. It drops the entry of an upstream no longer in the config, even on a sync that moves nothing. A file that does not parse counts as empty, and the next sync that writes replaces it. To keep only one run's moves, a reader keeps the entries whose `from` is the upstream's pin before that run and whose `to` is its pin in `upstream.lock` after it.
 
@@ -213,7 +213,7 @@ Written by `patchbook sync`. It has an entry for each upstream in the config tha
 | --- | --- | --- |
 | `version` | `1` | |
 | `upstreams.<name>.from` | string or null | The commit pinned before that sync, null when nothing was pinned before that sync. |
-| `upstreams.<name>.to` | string | The commit that sync pinned, unless writing the pin failed. Compare it with `upstream.lock` to tell. |
+| `upstreams.<name>.to` | string | The commit that sync pinned, unless that sync was killed before it moved the pin. Compare it with `upstream.lock` to tell. |
 | `upstreams.<name>.upstream` | string list | The files upstream changed, as `files` in `check`. |
 | `upstreams.<name>.merged` | list | `{change, path}` for each file edit that merged without conflict. |
 | `upstreams.<name>.conflicts` | list | `{change, path, count}` for a text file with `count` conflicts in our copy, or `{change, path, detail}` for a binary file. |
