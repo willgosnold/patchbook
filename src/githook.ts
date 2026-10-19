@@ -10,7 +10,7 @@ import { type Change, readChanges } from "./changes.ts";
 import { record } from "./record.ts";
 import { Fail } from "./lib/fail.ts";
 import {
-  exists, type File, gitMode, isDir, isSymlink, LINK, lexists, meantMode, mkdirs, type Mode, parseGitMode, readBytes, readDisk, readTextReplace, relative, resolve,
+  exists, type File, fsMessage, gitMode, isDir, isSymlink, LINK, lexists, meantMode, mkdirs, type Mode, parseGitMode, readBytes, readDisk, readTextReplace, relative, resolve,
   sameFile, type Seen, writeBytes, writeText,
 } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
@@ -478,8 +478,9 @@ export function installHookOrWarn(book: Book, undo?: Undo): void {
   try {
     keepGitHook(book, undo);
   } catch (e) {
-    if (!(e instanceof Error && "errno" in e)) throw e;
-    process.stderr.write(`patchbook: couldn't install the pre-commit hook: ${e.message}\nUntil it is installed, a commit doesn't record hand edits to the build output in the patchbook.\n`);
+    const said = fsMessage(e);
+    if (said === null) throw e;
+    process.stderr.write(`patchbook: couldn't install the pre-commit hook (${said})\nUntil it is installed, a commit doesn't record hand edits to the build output in the patchbook.\n`);
   }
 }
 

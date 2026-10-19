@@ -6,7 +6,7 @@ import { assemble, describe, handEdits } from "./assemble.ts";
 import { Book } from "./book.ts";
 import { appendSeries, readChanges, Roster } from "./changes.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, isDir, isSymlink, lexists, mkdirs, readBytes, writeText } from "./lib/fs.ts";
+import { exists, fsMessage, isDir, isSymlink, lexists, mkdirs, readBytes, writeText } from "./lib/fs.ts";
 import { spawn } from "./lib/proc.ts";
 import { strip } from "./lib/py.ts";
 import { bytesEqual, decode, encode } from "./lib/text.ts";
@@ -50,21 +50,14 @@ const sharesSkills = (root: string, p: string) => {
   return shared !== null && real(parent) === shared;
 };
 
-const folderNote = (root: string, at: string) =>
-  `patchbook: ${relative(root, at)} is a folder, so the skill there was left as it is\n`;
+export const folderFail = (blocked: readonly string[]) =>
+  new Fail(`the update skill was not installed, since a folder sits where it goes:\n  ${blocked.join("\n  ")}\n`
+    + "Move or remove the folder, then run `patchbook skill install`.");
 
 const linkNote = (p: string) => `patchbook: ${p} is a symlink, and install won't write through a link\n`;
 
-/**
- * Point `at` to `target`, unless a real folder is already there.
- * Returns null when it left a folder alone.
- */
-function link(root: string, at: string, target: string, hold: (p: string) => void): boolean | null {
+function link(at: string, target: string, hold: (p: string) => void): boolean {
   if (pointsAt(at, target)) return false;
-  if (!isSymlink(at) && isDir(at)) {
-    process.stderr.write(folderNote(root, at));
-    return null;
-  }
   hold(at);
   if (lexists(at)) unlinkSync(at);
   mkdirs(dirname(at));
@@ -75,8 +68,9 @@ function link(root: string, at: string, target: string, hold: (p: string) => voi
 /**
  * Install the update skill for agents in the repo. Returns the paths it changed, or null if it installed nothing.
  * It writes nothing, at any skill path, when one holds a copy that HEAD doesn't, which would be lost.
+ * It also writes nothing when a folder sits at a skill path, and returns those paths as `blocked` for the caller to fail with.
  */
-export function installSkill(book: Book, outer?: Undo): { changed: string[] } | null {
+export function installSkill(book: Book, outer?: Undo): { changed: string[]; blocked: string[] } | null {
   if (!setting("start.install_skill", book)[0]) return null;
   const agents = setting("start.agents", book)[0];
   const unknown = agents.filter((a) => !AGENTS.has(a));
@@ -91,6 +85,8 @@ export function installSkill(book: Book, outer?: Undo): { changed: string[] } | 
     for (const p of linked) process.stderr.write(linkNote(p));
     return null;
   }
+  const blocked = folders(book);
+  if (blocked.length) return { changed: [], blocked };
   const dir = join(book.root, ".agents", "skills", NAME);
   const file = join(book.root, FILE);
   const changed: string[] = [];
@@ -111,7 +107,7 @@ export function installSkill(book: Book, outer?: Undo): { changed: string[] } | 
     for (const { link: folder } of known) {
       if (!folder || sharesSkills(book.root, `${folder}/${NAME}`)) continue;
       const at = join(book.root, folder, NAME);
-      if (link(book.root, at, dir, hold)) changed.push(at);
+      if (link(at, dir, hold)) changed.push(at);
     }
     if (!exists(file) || !bytesEqual(readBytes(file), SKILL_BYTES)) {
       writeText(file, skill);
@@ -119,12 +115,13 @@ export function installSkill(book: Book, outer?: Undo): { changed: string[] } | 
     }
   } catch (e) {
     // A file where a folder should go, or a read-only repo, shouldn't stop `clone` or `init` from finishing.
-    if (!(e instanceof Error && "errno" in e)) throw e;
+    const said = fsMessage(e);
+    if (said === null) throw e;
     undo.restore();
-    process.stderr.write(`patchbook: couldn't install the update skill: ${e.message}\n`);
+    process.stderr.write(`patchbook: couldn't install the update skill (${said})\n`);
     return null;
   }
-  return { changed: changed.map((p) => relative(book.root, p)) };
+  return { changed: changed.map((p) => relative(book.root, p)), blocked: [] };
 }
 
 const ownsSkill = (p: string) => p === FILE || p === LINK;
@@ -176,7 +173,6 @@ function symlinked(book: Book): string[] {
   return Array.from(new Set(through)).filter((p) => isSymlink(join(book.root, p)));
 }
 
-/** The paths an install would write that are real folders. `skill install` refuses them; clone and init leave them. */
 const folders = (book: Book) => wanted(book).filter((p) =>
   !isSymlink(join(book.root, p)) && isDir(join(book.root, p)) && !sharesSkills(book.root, p));
 
@@ -256,9 +252,12 @@ export async function cmdSkill(): Promise<number> {
     throw new Fail(`the update skill was not installed at ${linked.join(", ")}`);
   }
   const blocked = folders(book);
-  if (blocked.length) {
-    for (const p of blocked) process.stderr.write(folderNote(book.root, join(book.root, p)));
-    throw new Fail(`the update skill was not installed at ${blocked.join(", ")}`);
+  if (blocked.length) throw folderFail(blocked);
+  const held = book.layout.kind === "fork"
+    ? wanted(book).filter((p) => Array.from(a.out.keys()).some((k) => k.startsWith(`${p}/`))) : [];
+  if (held.length) {
+    throw new Fail(`the update skill was not installed, since the patchbook still holds a folder where it goes:\n  ${held.join("\n  ")}\n`
+      + "Commit its removal so the hook records it, or run `patchbook record`, then run this again.");
   }
   const { kept, lost } = replacements(book);
   const hidden = lost.filter((p) => ignored(book, p));
