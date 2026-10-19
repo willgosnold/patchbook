@@ -570,7 +570,7 @@ export class Book {
     return this.isPatchbook(path) || this.heldBy(path) !== null;
   }
 
-  private isPatchbook(path: string): boolean {
+  isPatchbook(path: string): boolean {
     return this.layout.kind === "fork" && under(path, PB);
   }
 

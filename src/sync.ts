@@ -33,9 +33,11 @@ export async function cmdCheck() {
     if (head !== pin.commit) {
       u.fetch(head);
       if (u.treeOf(head) !== pin.tree) {
-        const old = pin.tree ? book.buildable(u.mounted(u.files(held ? pinned(u, pin) : u.heal(pinned(u, pin)))), false) : new Map<string, File>();
-        r.moved = true;
-        r.files = upstreamDelta(old, book.buildable(u.mounted(u.files(head))));
+        const old = pin.tree ? u.mounted(u.files(held ? pinned(u, pin) : u.heal(pinned(u, pin)))) : new Map<string, File>();
+        const now = u.mounted(u.files(head));
+        const own = (files: ReadonlyMap<string, File>) => new Map([...files].filter(([p]) => !book.isPatchbook(p)));
+        r.moved = !pin.tree || upstreamDelta(own(old), own(now)).length > 0;
+        if (r.moved) r.files = upstreamDelta(book.buildable(old, false), book.buildable(now));
       }
     }
     upstreams.set(u.name, r);
