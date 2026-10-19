@@ -3,7 +3,7 @@ import { chmodSync, lstatSync, mkdtempSync, readdirSync, readFileSync, renameSyn
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
-import { Book, refuseNestedGit, unsafeVendor } from "./book.ts";
+import { Book, refuseNestedGit, refuseUpstreamGit, unsafeVendor } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
@@ -134,6 +134,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     return null;
   }
   const raw = u.files(commit);
+  if (u.vendor) refuseUpstreamGit(u.name, relative(book.root, u.vendor), raw.keys());
   const old = pin.tree ? book.buildable(u.mounted(u.files(u.heal(pinned(u, pin)))), false) : new Map<string, File>();
   const fresh = book.buildable(u.mounted(raw));
   const report: SyncReport = {
@@ -175,6 +176,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   journaled(book, u, pin, { commit, tree }, (j) => {
     u.keep(commit);
     takeVendor(u.vendor, join(j, "old"));
+    refuseMovedGit(book, u, join(j, "old"));
     if (u.vendor) writeVendor(u, u.vendor, raw, tree);
     saveBefore(book, j, writes.map((w) => w.c.content(w.side, w.path)));
     for (const w of writes) w.c.write(w.side, w.path, w.data);
@@ -209,8 +211,10 @@ function isFolder(vendor: string): boolean {
 }
 
 function rewriteVendor(book: Book, u: Upstream, vendor: string, pin: Pin, raw: ReadonlyMap<string, File>, tree: string): void {
+  refuseUpstreamGit(u.name, relative(book.root, vendor), raw.keys());
   journaled(book, u, pin, null, (j) => {
     takeVendor(vendor, join(j, "old"));
+    refuseMovedGit(book, u, join(j, "old"));
     writeVendor(u, vendor, raw, tree);
   });
 }
@@ -274,6 +278,17 @@ function locked(u: Upstream): string | null {
   }
 }
 
+/** A repo made since the last check moves into `old` with the copy, and the journal's drop would delete it there. Put the copy back and refuse, so nothing stays half done. */
+function refuseMovedGit(book: Book, u: Upstream, old: string): void {
+  if (!u.vendor || !lexists(old)) return;
+  try {
+    refuseNestedGit(book.root, u.name, u.vendor, undefined, old);
+  } catch (e) {
+    renameSync(old, u.vendor);
+    throw e;
+  }
+}
+
 function takeVendor(vendor: string | null, to: string | null): void {
   if (!vendor || !lexists(vendor)) return;
   if (to) renameSync(vendor, to);
@@ -300,7 +315,9 @@ function recover(book: Book, u: Upstream): void {
     const vendor = path ? pjoin(book.root, path) : null;
     const unsafe = vendor && unsafeVendor(book.root, vendor);
     if (unsafe) throw stuck(book, u, `its record names the vendor folder ${JSON.stringify(path)}, which ${unsafe}`);
-    if (vendor) refuseNestedGit(book.root, u.name, vendor, relative(book.root, j));
+    const old = join(j, "old");
+    const newCopy = lexists(old) || !copy;
+    if (vendor && newCopy) refuseNestedGit(book.root, u.name, vendor, relative(book.root, j));
     const now = locked(u);
     const wrote = lexists(join(j, "lock"));
     const torn = now === null && wrote;
@@ -321,9 +338,10 @@ function recover(book: Book, u: Upstream): void {
       else rmSync(join(book.dir, "upstream.lock"), { force: true });
     }
     release(book, u, added);
-    const old = join(j, "old");
-    const newCopy = lexists(old) || !copy;
-    if (newCopy) takeVendor(vendor, null);
+    if (newCopy) {
+      if (vendor) refuseNestedGit(book.root, u.name, vendor, relative(book.root, j));
+      takeVendor(vendor, null);
+    }
     if (vendor && made) removeMadeFolders(vendor, join(book.root, made));
     if (vendor && lexists(old)) {
       mkdirs(dirname(vendor));

@@ -192,7 +192,7 @@ function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly str
 }
 
 /** Whether one name, not a path, is a name git reads as `.git`. */
-const segmentNamesGit = (segment: string): boolean => hfsDotGit(segment) || ntfsDotGit(segment);
+export const segmentNamesGit = (segment: string): boolean => hfsDotGit(segment) || ntfsDotGit(segment);
 
 /** Why a sync must never replace `vendor` (an absolute path), or null. Links above it are resolved, but not the last name: a sync moves or deletes a link there, never what it points to. */
 export function unsafeVendor(root: string, vendor: string): string | null {
@@ -234,11 +234,12 @@ function findGit(dir: string): Stop | null {
 }
 
 /**
- * A `.git` inside the vendored copy is the user's: upstream can't hold one that git would stage, and a sync would move it away and delete it.
+ * A `.git` inside the vendored copy is the user's: syncUpstream refuses an upstream tree that holds one (git mktree can store it), and a sync would move this one away and delete it.
  * A folder the walk can't read might hold one, so it refuses too. `journal` is set when the copy is a killed sync's, which finishing would delete.
+ * `copy` is where to look when the vendored copy has been moved aside. The message still names `vendor`.
  */
-export function refuseNestedGit(root: string, name: string, vendor: string, journal?: string): void {
-  const stop = findGit(vendor);
+export function refuseNestedGit(root: string, name: string, vendor: string, journal?: string, copy = vendor): void {
+  const stop = findGit(copy);
   if (stop === null) return;
   const folder = relative(root, vendor);
   const at = joinPath(folder, stop.path);
@@ -253,6 +254,13 @@ export function refuseNestedGit(root: string, name: string, vendor: string, jour
     ? "Finishing the sync would delete it. Move it out of the folder, then sync again. The sync stays where it is until then."
     : `Every sync replaces the copy and would delete it. Move it out of the folder, or change vendor for ${name}.`;
   throw new Fail(`${stalled} holds ${at}, a git repo of its own. ${then}`);
+}
+
+/** Refuses an upstream whose files hold a name git reads as `.git`: the copy would hold a repo of its own, and no sync could finish over it. Runs before the journal and any write. */
+export function refuseUpstreamGit(name: string, vendor: string, files: Iterable<string>): void {
+  for (const p of files) {
+    if (p.split("/").some(segmentNamesGit)) throw new Fail(`upstream ${name} holds ${p}, which git reads as ${GIT}, so it can't be vendored into ${vendor}. Nothing was changed.`);
+  }
 }
 
 /** `**` matches any number of folders, `*` and `?` stay within one. */
