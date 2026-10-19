@@ -12,6 +12,7 @@ import { exists, type File, isSymlink, lexists, LINK, mkdirs, type Mode, nonFold
 import { dumps, JsonError, loads } from "./lib/json.ts";
 import { spawn } from "./lib/proc.ts";
 import { sorted } from "./lib/py.ts";
+import { say, verbatim, warn } from "./lib/term.ts";
 import { bytesEqual, decodeReplace, isText } from "./lib/text.ts";
 import { type Pin, pinned, type Upstream } from "./store.ts";
 
@@ -44,7 +45,7 @@ export async function cmdCheck() {
     moved = moved || r.moved;
   }
   const result: Written<CheckJson> = { version: 1, moved, upstreams };
-  process.stdout.write(dumps(result, 2) + "\n");
+  verbatim(dumps(result, 2) + "\n");
   return moved ? EXIT_MOVED : 0;
 }
 
@@ -119,7 +120,7 @@ export async function cmdSync(args: { name: string | null; ref: string | null })
   } finally {
     if (exists(path)) ignoreReport(book);
   }
-  if (synced) process.stdout.write("Next: patchbook status\n");
+  if (synced) say("Next: patchbook status\n");
   return 0;
 }
 
@@ -133,7 +134,7 @@ function ignoreReport(book: Book): void {
     if (missing.length) appendFileSync(p, (kept.length && kept[kept.length - 1] !== 0x0a ? "\n" : "") + missing.join("\n") + "\n");
   } catch (e) {
     if (!(e instanceof Error && "errno" in e)) throw e;
-    process.stderr.write(`patchbook: couldn't add ${REPORT} to ${relative(book.root, p)} (${e.message}), so ${REPORT} stays untracked\n`);
+    warn(`patchbook: couldn't add ${REPORT} to ${relative(book.root, p)} (${e.message}), so ${REPORT} stays untracked\n`);
   }
 }
 
@@ -161,7 +162,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     const rewrite = u.vendor !== null && (!isFolder(u.vendor) || u.vendorTree(u.vendor).tree !== tree);
     if (rewrite) rewriteVendor(book, u, u.vendor, pin, u.files(commit), tree);
     const rest = rewrite ? "Rewrote the vendored copy, which did not." : "Nothing to do.";
-    process.stdout.write(`${u.name}: upstream at ${commit.slice(0, 7)} matches the pin (tree ${tree.slice(0, 7)}). ${rest}\n`);
+    say(`${u.name}: upstream at ${commit.slice(0, 7)} matches the pin (tree ${tree.slice(0, 7)}). ${rest}\n`);
     warnLeft(book, u);
     return null;
   }
@@ -219,7 +220,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     writeFileSync(join(j, "lock"), lexists(lock) ? readFileSync(lock) : "");
     book.writeLock(u.name, commit, tree);
   });
-  process.stdout.write(`${u.name}: pinned ${commit.slice(0, 7)}. ${report.upstream.length} upstream files changed, `
+  say(`${u.name}: pinned ${commit.slice(0, 7)}. ${report.upstream.length} upstream files changed, `
     + `${report.merged.length} of ours merged cleanly, ${report.conflicts.length} conflicts, ${report.gone.length} gone.\n`);
   warnLeft(book, u);
   return report;
@@ -548,6 +549,6 @@ function ignoreAll(j: string): void {
 function warnLeft(book: Book, u: Upstream): void {
   const j = journal(book, u);
   if (!lexists(j)) return;
-  process.stderr.write(`patchbook: couldn't delete ${relative(book.root, j)}, which holds files a sync of ${u.name} no longer needs. `
+  warn(`patchbook: couldn't delete ${relative(book.root, j)}, which holds files a sync of ${u.name} no longer needs. `
     + "git ignores it, but it still takes disk space. Make it writable and delete it by hand; the next sync tries again.\n");
 }

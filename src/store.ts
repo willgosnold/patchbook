@@ -10,6 +10,7 @@ import { sha1 } from "./lib/hash.ts";
 import { loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
 import { type PyValue, slice, sorted, split, strip } from "./lib/py.ts";
+import { say, verbatim, warn } from "./lib/term.ts";
 import { decode, decodeReplace, encode } from "./lib/text.ts";
 import { storeDir, type Table } from "./settings.ts";
 
@@ -173,7 +174,7 @@ export class Upstream {
       this.keep(commit);
     } catch (e) {
       if (!(e instanceof Fail)) throw e;
-      process.stderr.write(`patchbook: couldn't keep ${commit.slice(0, 7)} in ${this.inRepo ? "this repo" : "the store"}, so git gc may prune it. ${e.message}\n`);
+      warn(`patchbook: couldn't keep ${commit.slice(0, 7)} in ${this.inRepo ? "this repo" : "the store"}, so git gc may prune it. ${e.message}\n`);
     }
     return commit;
   }
@@ -459,7 +460,7 @@ export async function cmdUpstream(args: { name: string; path: string | null; dif
     const where = [u.path, args.path].filter((p) => p).join("/");
     const rel = u.path ? [`--relative=${u.path}/`] : [];
     const diff = run(["git", "diff", "--no-color", ...rel, old, commit, "--", ...(where ? [where] : [])], { cwd: u.gitDir() });
-    process.stdout.write(decodeReplace(diff));
+    verbatim(decodeReplace(diff));
     return 0;
   }
   const files = u.files(commit);
@@ -468,15 +469,15 @@ export async function cmdUpstream(args: { name: string; path: string | null; dif
     refuseExportedGit(u.name, dest, files.keys());
     if (lexists(dest) && !(isDir(dest) && readdirSync(dest).length === 0)) throw new Fail(`can't export upstream ${u.name} into ${dest}, which already exists and isn't empty. Name a new or empty folder. Nothing was changed.`);
     for (const [path, file] of files) writeDisk(join(dest, path), file);
-    process.stdout.write(`wrote ${files.size} files of ${u.name} at ${commit.slice(0, 7)} to ${dest}\n`);
+    say(`wrote ${files.size} files of ${u.name} at ${commit.slice(0, 7)} to ${dest}\n`);
     return 0;
   }
   if (args.path) {
     const file = files.get(args.path);
     if (!file) throw new Fail(`${u.name} has no ${args.path} at ${commit.slice(0, 7)}`);
-    process.stdout.write(file.data);
+    verbatim(file.data);
     return 0;
   }
-  process.stdout.write(sorted(files.keys()).join("\n") + "\n");
+  say(sorted(files.keys()).join("\n") + "\n");
   return 0;
 }

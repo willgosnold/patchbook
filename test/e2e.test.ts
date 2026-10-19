@@ -5777,9 +5777,7 @@ describe("ForkTest", () => {
     }
   });
 
-  /** A control character a terminal acts on: C0 other than newline and tab, DEL, and C1. */
-  const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
-  /** JSON as `dumps(value, 2)` writes it, with everything outside printable ASCII escaped. */
+  const CONTROL = /[\p{Cc}--[\n\t]]/v;
   const asciiJson = (value: unknown): string =>
     JSON.stringify(value, null, 2).replace(/[\u007f-￿]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`) + "\n";
   const renameUpstream = (t: ForkCase, name: string): void => {

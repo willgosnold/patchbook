@@ -12,6 +12,7 @@ import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, LINK, meantMode, type Mode, recordedModes, relative, sameFile, type Seen, writeText } from "./lib/fs.ts";
 import { replace, splitlines, strip } from "./lib/py.ts";
+import { say, warn } from "./lib/term.ts";
 import { bytesEqual, decode, encode, isText } from "./lib/text.ts";
 import { Undo } from "./undo.ts";
 
@@ -311,12 +312,12 @@ export type RecordResult = { text: string; copies: ReadonlyMap<string, Mode>; af
 export async function cmdRecord(args: { change: string | null; intent: string | null; only?: (path: string) => boolean }) {
   const book = await Book.find();
   installHookOrWarn(book);
-  process.stdout.write(record(book, args.change, args.intent, { seen: book.seen("disk"), only: args.only }).text);
+  say(record(book, args.change, args.intent, { seen: book.seen("disk"), only: args.only }).text);
   return 0;
 }
 
 export async function cmdIntent(args: { change: string | null; intent: string | null }) {
-  process.stdout.write(fill(await Book.find(), args.change, args.intent));
+  say(fill(await Book.find(), args.change, args.intent));
   return 0;
 }
 
@@ -417,7 +418,7 @@ export function record(
     if (opts.undo) throw error;
     const stuck = undo.restore();
     if (stuck.length) {
-      process.stderr.write("patchbook: couldn't put these back as they were:\n  " + stuck.join("\n  ")
+      warn("patchbook: couldn't put these back as they were:\n  " + stuck.join("\n  ")
         + "\nCheck that you can write to them, then compare them with `git diff` before you commit again.\n");
     }
     throw error;

@@ -13,6 +13,7 @@ import { Fail } from "./lib/fail.ts";
 import { exists, isSymlink, lexists, readText, resolve, writeText } from "./lib/fs.ts";
 import { git, refuseCredentials } from "./lib/proc.ts";
 import { rstrip, split, strRepr } from "./lib/py.ts";
+import { say, warn } from "./lib/term.ts";
 import { quoteToml } from "./lib/toml.ts";
 import { cmdIntent, cmdRecord } from "./record.ts";
 import { checkUpstreamRemote, notThisRepo } from "./remote.ts";
@@ -81,7 +82,7 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   if (skill && !skill.blocked.length) await recordSkill(book);
   git(["add", "-A"], { cwd: dest });
   git(["commit", "--quiet", "-m", `Start a patchbook at upstream ${commit.slice(0, 7)}`], { cwd: dest, env: noHook() });
-  process.stdout.write(`cloned ${args.url} into ${dest}, pinned at ${commit.slice(0, 7)}.\n`
+  say(`cloned ${args.url} into ${dest}, pinned at ${commit.slice(0, 7)}.\n`
     + (inherited ? `Upstream has a ${PB}/ of its own. It is not part of this fork, so patchbook removed it and builds leave it out.\n` : "")
     + `${commitAdvice(book)}\n`
     + `${SCHEDULE}\n`
@@ -107,7 +108,7 @@ async function allOrNothing<T>(book: Book, write: (undo: Undo) => Promise<T>): P
   } catch (e) {
     const stuck = undo.restore();
     if (stuck.length) {
-      process.stderr.write("patchbook: init couldn't put these back as they were:\n  " + stuck.join("\n  ")
+      warn("patchbook: init couldn't put these back as they were:\n  " + stuck.join("\n  ")
         + "\nCheck that you can write to them, and put them back yourself before you run init again.\n");
     }
     throw e;
@@ -141,7 +142,7 @@ async function cmdInit(args: {
       await installHook(book, undo);
       return skill;
     });
-    process.stdout.write(`Next: patchbook build, then stage and commit.\n${SCHEDULE}\n`);
+    say(`Next: patchbook build, then stage and commit.\n${SCHEDULE}\n`);
     if (skill?.blocked.length) throw folderFail(skill.blocked);
     return 0;
   }
@@ -169,7 +170,7 @@ async function cmdInit(args: {
     if (installed && (installed.changed.length || leftBehindSkill(book).length)) await recordSkill(book);
     return installed;
   });
-  process.stdout.write(`pinned upstream at ${base.slice(0, 7)}, where this repo branched from ${args.upstream}.\n`
+  say(`pinned upstream at ${base.slice(0, 7)}, where this repo branched from ${args.upstream}.\n`
     + "Capture your existing changes with `patchbook record`, then `patchbook build`, stage, and commit.\n" + SCHEDULE + "\n");
   if (installed?.blocked.length) throw folderFail(installed.blocked);
   return 0;
@@ -191,7 +192,7 @@ async function cmdTrack(args: { name: string; url: string; branch: string; path:
   syncUpstream(candidate, candidate.upstream(args.name), args.branch, []);
   writeText(config, text);
   const where = mount ? `${mount}/` : "the root";
-  process.stdout.write(`Its files appear at ${where} of the staged tree. Ship what you need with edits (move, copy), then build.\n`);
+  say(`Its files appear at ${where} of the staged tree. Ship what you need with edits (move, copy), then build.\n`);
   return 0;
 }
 
@@ -631,12 +632,15 @@ try {
   process.exitCode = await main(process.argv.slice(2));
 } catch (e) {
   if (e instanceof Exit) {
-    (e.code === 0 ? process.stdout : process.stderr).write(e.text);
+    (e.code === 0 ? say : warn)(e.text);
     process.exitCode = e.code;
   } else if (e instanceof Fail) {
-    process.stderr.write(`patchbook: ${e.message}\n`);
+    warn(`patchbook: ${e.message}\n`);
     process.exitCode = 1;
-  } else throw e;
+  } else {
+    warn(Bun.inspect(e) + "\n");
+    process.exitCode = 1;
+  }
 } finally {
   noticeLeftOut();
 }

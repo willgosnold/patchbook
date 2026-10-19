@@ -17,6 +17,7 @@ import { blobOid } from "./lib/hash.ts";
 import { JsonError, loads } from "./lib/json.ts";
 import { type Env, git, run, spawn } from "./lib/proc.ts";
 import { quote, sorted, strip } from "./lib/py.ts";
+import { say, warn } from "./lib/term.ts";
 import { bytesEqual, concat, decode, decodeReplace, encode } from "./lib/text.ts";
 import { type Source, setting } from "./settings.ts";
 import { readBlobsOf, refuseMergedUpstream, stagedTree } from "./store.ts";
@@ -308,7 +309,7 @@ const NEW_SCRIPT_MODE: Mode = 0o755;
 async function putFirst(book: Book, hook: Extract<Hook, { kind: "script" }>, undo?: Undo): Promise<void> {
   const where = shown(book.root, hook.path);
   if (writesThroughALink(book, hook.path)) {
-    process.stderr.write(ADD_TO_FOREIGN(where));
+    warn(ADD_TO_FOREIGN(where));
     return;
   }
   const text = exists(hook.path) ? readBytes(hook.path) : null;
@@ -322,14 +323,14 @@ async function putFirst(book: Book, hook: Extract<Hook, { kind: "script" }>, und
   }
   const key = relative(book.root, hook.path);
   if (book.layout.kind !== "fork" || !isUnrecorded(book, book.currentOutput(), key)) {
-    if (wrote) process.stderr.write(PUT_FIRST(hook.manager, where) + "\n");
+    if (wrote) warn(PUT_FIRST(hook.manager, where) + "\n");
     return;
   }
   const seen = book.seen("disk");
   const newScript = text === null ? seen.get(key) : undefined;
   if (newScript) seen.set(key, { ...newScript, mode: NEW_SCRIPT_MODE, chosen: true });
   recordAndStage(book, seen, key, hookIntent(hook.manager, where), newScript !== undefined);
-  process.stderr.write(`${PUT_FIRST(hook.manager, where)}, recorded the edit in the patchbook, and staged both\n`);
+  warn(`${PUT_FIRST(hook.manager, where)}, recorded the edit in the patchbook, and staged both\n`);
 }
 
 function recordAndStage(book: Book, seen: ReadonlyMap<string, Seen>, key: string, intent: string, newScript: boolean): void {
@@ -339,7 +340,7 @@ function recordAndStage(book: Book, seen: ReadonlyMap<string, Seen>, key: string
   ]);
   const before = oids();
   const recorded = record(book, HOOK_CHANGE, intent, { seen, edits: [key] });
-  process.stdout.write(recorded.text);
+  say(recorded.text);
   const wrote = Array.from(oids()).filter(([p, oid]) => oid !== before.get(p)).map(([p]) => p);
   git(["--literal-pathspecs", "add", "-A", "-f", "--", key, ...wrote], { cwd: book.root });
   stageModes(book.root, newScript ? new Map([...recorded.copies, [key, NEW_SCRIPT_MODE]]) : recorded.copies);
@@ -420,7 +421,7 @@ function updateScript(path: string): boolean {
   const change = PYTHON_HOOK.test(text) ? "to run patchbook from PATH" : text === UNGUARDED_SCRIPT ? "to skip a checkout with no patchbook" : null;
   if (change === null) return false;
   writeHook(path);
-  process.stderr.write(`patchbook: updated ${path} ${change}\n`);
+  warn(`patchbook: updated ${path} ${change}\n`);
   return true;
 }
 
@@ -430,14 +431,14 @@ export function keepGitHook(book: Book, undo?: Undo): void {
   undo?.hold(dirname(hookFile));
   if (!exists(hookFile)) {
     writeHook(hookFile);
-    process.stderr.write("patchbook: installed a pre-commit hook that records and builds on each commit\n");
+    warn("patchbook: installed a pre-commit hook that records and builds on each commit\n");
     return;
   }
   if (updateScript(hookFile)) return;
   if (ours(hookFile)) {
     if (!isExecutable(hookFile)) {
       chmodSync(hookFile, 0o755);
-      process.stderr.write(`patchbook: made ${shown(book.root, hookFile)} executable, so git runs it\n`);
+      warn(`patchbook: made ${shown(book.root, hookFile)} executable, so git runs it\n`);
     }
     return;
   }
@@ -458,18 +459,18 @@ export async function installHook(book: Book, undo?: Undo): Promise<boolean> {
     case "config": {
       const files = configFiles(book.root, hook.manager);
       if (files.length > 1) {
-        process.stderr.write(MANY_CONFIGS(hook.manager, files.map((f) => shown(book.root, f))));
+        warn(MANY_CONFIGS(hook.manager, files.map((f) => shown(book.root, f))));
         return false;
       }
-      process.stderr.write(ADD_TO_CONFIG(hook.manager, shown(book.root, hook.path), readTextReplace(hook.path)));
+      warn(ADD_TO_CONFIG(hook.manager, shown(book.root, hook.path), readTextReplace(hook.path)));
       break;
     }
     case "foreign":
-      process.stderr.write(ADD_TO_FOREIGN(shown(book.root, hook.path)));
+      warn(ADD_TO_FOREIGN(shown(book.root, hook.path)));
       break;
   }
   const { hookFile } = hookPaths(book.root);
-  if (hook.gitRunsIt && exists(hookFile) && !isExecutable(hookFile)) process.stderr.write(NOT_EXECUTABLE(shown(book.root, hookFile)));
+  if (hook.gitRunsIt && exists(hookFile) && !isExecutable(hookFile)) warn(NOT_EXECUTABLE(shown(book.root, hookFile)));
   return true;
 }
 
@@ -480,7 +481,7 @@ export function installHookOrWarn(book: Book, undo?: Undo): void {
   } catch (e) {
     const said = fsMessage(e);
     if (said === null) throw e;
-    process.stderr.write(`patchbook: couldn't install the pre-commit hook (${said})\nUntil it is installed, a commit doesn't record hand edits to the build output in the patchbook.\n`);
+    warn(`patchbook: couldn't install the pre-commit hook (${said})\nUntil it is installed, a commit doesn't record hand edits to the build output in the patchbook.\n`);
   }
 }
 
@@ -502,13 +503,13 @@ function inspect(book: Book): HookReport {
 
 export function warnUnhooked(book: Book): void {
   const { advice } = inspect(book);
-  if (advice !== null) process.stderr.write(advice);
+  if (advice !== null) warn(advice);
 }
 
 function printHookStatus(book: Book): void {
   const { enabled, source, runs, calls, checked, advice } = inspect(book);
   const where = calls && checked !== null && runs !== checked ? `, in ${checked}` : "";
-  process.stdout.write(`hook.enabled: ${enabled ? "on" : "off"} (${source})\ngit runs: ${runs ?? "nothing"}\ncalls patchbook: ${calls ? "yes" : "no"}${where}\n${advice ?? ""}`);
+  say(`hook.enabled: ${enabled ? "on" : "off"} (${source})\ngit runs: ${runs ?? "nothing"}\ncalls patchbook: ${calls ? "yes" : "no"}${where}\n${advice ?? ""}`);
 }
 
 function unstaged(root: string, paths: string[]): string[] {
@@ -694,7 +695,7 @@ function stageVendors(book: Book): void {
     if (was) git(["read-tree", was], { cwd: book.root });
     throw e;
   }
-  for (const { name, rel } of stale) process.stderr.write(`patchbook: the pre-commit hook staged the pinned copy of ${name} under ${rel}, in place of what the index held\n`);
+  for (const { name, rel } of stale) warn(`patchbook: the pre-commit hook staged the pinned copy of ${name} under ${rel}, in place of what the index held\n`);
 }
 
 export async function cmdHook(args: { action: "install" | "run" | "status" }) {
@@ -708,7 +709,7 @@ export async function cmdHook(args: { action: "install" | "run" | "status" }) {
     if (hookEnabled(book)) {
       keepGitHook(book);
       return await installHook(book) ? 0 : 1;
-    } else process.stderr.write(`patchbook: hook.enabled is off, so no hook was installed. ${turnOn(setting("hook.enabled", book)[1])}\n`);
+    } else warn(`patchbook: hook.enabled is off, so no hook was installed. ${turnOn(setting("hook.enabled", book)[1])}\n`);
     return 0;
   }
   const undo = new Undo();
@@ -717,7 +718,7 @@ export async function cmdHook(args: { action: "install" | "run" | "status" }) {
   } catch (e) {
     const stuck = undo.restore();
     if (stuck.length) {
-      process.stderr.write("patchbook: couldn't put these back as they were:\n  " + stuck.join("\n  ")
+      warn("patchbook: couldn't put these back as they were:\n  " + stuck.join("\n  ")
         + "\nCheck that you can write to them, then compare them with `git diff` before you commit again.\n");
     }
     throw e;
@@ -803,13 +804,13 @@ async function runHook(undo: Undo) {
     if (!a.problems.length) plan(asRecorded(a.out, edited));
     for (const p of buildInputs(book)) undo.hold(join(book.root, p));
     const recorded = record(book, null, process.env["PATCHBOOK_INTENT"] ?? null, { seen: staged, edits: edited, undo, assembly: a });
-    process.stdout.write(recorded.text);
+    say(recorded.text);
     copies = recorded.copies;
     a = recorded.after ?? assemble(book);
   }
   let built: string[] = [];
   if (a.problems.length) {
-    process.stderr.write(`patchbook: ${a.problems.length} problems, so the output wasn't rebuilt. \`patchbook status\` lists them.\n`);
+    warn(`patchbook: ${a.problems.length} problems, so the output wasn't rebuilt. \`patchbook status\` lists them.\n`);
   } else {
     const left = stagedEdits(a.out);
     if (left.length) {
@@ -824,7 +825,7 @@ async function runHook(undo: Undo) {
       for (const p of written) undo.hold(join(book.outputRoot(), p));
       writeOutput(book, a.out, disk);
     }
-    if (built.length || written.length) process.stderr.write(`patchbook: built from ${book.pins()}\n`);
+    if (built.length || written.length) warn(`patchbook: built from ${book.pins()}\n`);
   }
   const wrote = [...unstaged(book.root, buildInputs(book)), ...built.map((p) => inRepo(book, p))];
   const recordedIgnored = Array.from(ignoredInPatchbook(book.root)).filter(([p, oid]) => ignored.get(p) !== oid).map(([p]) => p);
@@ -841,7 +842,7 @@ async function runHook(undo: Undo) {
     for (const add of adds) git(add, { cwd: book.root, env });
     stageModes(book.root, modes, env);
   } else if (partial && (adds.length || moded.length)) {
-    process.stderr.write("patchbook: your index won't have what the hook staged. After the commit, run "
+    warn("patchbook: your index won't have what the hook staged. After the commit, run "
       + `\`git --literal-pathspecs reset -q -- ${sorted(new Set([...wrote, ...recordedIgnored, ...moded])).map(quote).join(" ")}\`\n`);
   }
   stageVendors(book);

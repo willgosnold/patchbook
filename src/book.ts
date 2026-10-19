@@ -12,6 +12,7 @@ import {
 import { dumps, loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
 import { length, type PyValue, sortedBy, strRepr } from "./lib/py.ts";
+import { warn } from "./lib/term.ts";
 import { decode } from "./lib/text.ts";
 import { isTable, parseToml, type Table } from "./settings.ts";
 import { stagedFolder, treeBlobs, Upstream } from "./store.ts";
@@ -73,7 +74,7 @@ export function noticeLeftOut(): void {
   const total = Array.from(leftOut.values()).reduce((n, paths) => n + paths.size, 0);
   const folders = sortedBy(leftOut, ([folder]) => folder).map(([folder, paths]) => `${folder} (${paths.size})`).join(", ");
   leftOut.clear();
-  process.stderr.write(`patchbook: left ${total} upstream files out of the build because they would land in a vendored copy: ${folders}.\n`);
+  warn(`patchbook: left ${total} upstream files out of the build because they would land in a vendored copy: ${folders}.\n`);
 }
 
 const HOOKS = ["placeholder", "blockTerms", "finish", "check"] as const;

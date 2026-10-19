@@ -18,6 +18,7 @@ import { forgetBlobOids } from "./lib/hash.ts";
 import { dumps, type Json, loads } from "./lib/json.ts";
 import { type Env, git, run, spawn } from "./lib/proc.ts";
 import { floatRepr, ljust, rstrip, sorted, sortedBy, strip } from "./lib/py.ts";
+import { say, verbatim, warn } from "./lib/term.ts";
 import { bytesEqual, decode, encode, isText } from "./lib/text.ts";
 import { pinned, refuseMergedUpstream } from "./store.ts";
 
@@ -415,7 +416,7 @@ export async function cmdBuild(args: { force: boolean; commit: boolean }) {
   installHookOrWarn(book);
   const a = assemble(book);
   if (a.problems.length) {
-    for (const p of a.problems) process.stderr.write(describe(p) + "\n");
+    for (const p of a.problems) warn(describe(p) + "\n");
     throw new Fail(`${a.problems.length} problems; nothing built. \`patchbook status\` lists them.`);
   }
   const current = book.seen("disk");
@@ -426,7 +427,7 @@ export async function cmdBuild(args: { force: boolean; commit: boolean }) {
       + "Move the edits into the patchbook with `patchbook record`, or pass --force to discard them.");
   }
   writeOutput(book, a.out, changesOf(current, a.out, book.tracksExecBit()));
-  process.stdout.write(`built ${a.out.size} files from ${book.pins()} with ${a.applied} edits\n`);
+  say(`built ${a.out.size} files from ${book.pins()} with ${a.applied} edits\n`);
   if (args.commit) commitBuild(book, a);
   return 0;
 }
@@ -456,13 +457,13 @@ function commitBuild(book: Book, a: Assembly): void {
     if (!ancestor) parents.push("-p", commit);
   }
   if (git(["rev-parse", "HEAD^{tree}"], { cwd: root }) === tree && parents.length === 2) {
-    process.stdout.write("nothing to commit\n");
+    say("nothing to commit\n");
     return;
   }
   const message = `Build from upstream ${book.pins()}`;
   const commit = git(["commit-tree", tree, ...parents, "-m", message], { cwd: root });
   git(["update-ref", "HEAD", commit], { cwd: root });
-  process.stdout.write(`committed ${commit.slice(0, 7)}: ${message}\n`);
+  say(`committed ${commit.slice(0, 7)}: ${message}\n`);
 }
 
 function headTreeWith(root: string, add: (env: Env) => void): string {
@@ -487,13 +488,13 @@ export async function cmdStatus(args: { json: boolean }) {
     const status: Omit<StatusJson, "upstreams" | "last_sync"> & { upstreams: Json; last_sync: Json } = {
       version: 1, upstreams: book.lock(), applied: a.applied, problems: a.problems, last_sync: report,
     };
-    process.stdout.write(dumps(status, 2) + "\n");
+    verbatim(dumps(status, 2) + "\n");
   } else {
-    for (const p of a.problems) process.stdout.write(describe(p) + "\n");
+    for (const p of a.problems) say(describe(p) + "\n");
     const counts = new Map<string, number>();
     for (const p of a.problems) counts.set(p.problem, (counts.get(p.problem) ?? 0) + 1);
     const summary = sortedBy(counts, ([k]) => k).map(([k, n]) => `${n} ${k}`).join(", ") || "no problems";
-    process.stdout.write(`${a.applied} edits apply at ${book.pins()}; ${summary}\n`);
+    say(`${a.applied} edits apply at ${book.pins()}; ${summary}\n`);
   }
   return a.problems.length ? 1 : 0;
 }
@@ -516,7 +517,7 @@ export async function cmdScaffold(args: { file: string[] }) {
     const skeletons = found.map((p) => formatEntry({ hash: p.hash, kind: "translation", rules: "", intent: "", upstream: p.upstream, patched: p.upstream }));
     writeText(path, existing + skeletons.join("\n"));
   }
-  process.stdout.write(`scaffolded ${count} entries in ${byFile.size} files\n`);
+  say(`scaffolded ${count} entries in ${byFile.size} files\n`);
   return 0;
 }
 
