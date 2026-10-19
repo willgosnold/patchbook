@@ -3009,10 +3009,8 @@ const CREDENTIAL_URLS = [
   ["an_ssh_password", "ssh://git:s3cretpw@host.invalid/team/up", "ssh://git@host.invalid/team/up"],
 ] as const;
 
-/** What a run that is refused must leave as it found it, besides the repo: the user's store and the folder it runs in. */
 const storeState = (t: Case): Record<string, string> | null => (existsSync(join(t.tmp, "store")) ? tree(join(t.tmp, "store")) : null);
 
-/** Lets git reach `repo` through `url`, so a command that did not refuse `url` would go on and record it. */
 const reachableAs = (t: Case, url: string, repo: Repo): void =>
   void Object.assign(t.env, {
     GIT_CONFIG_COUNT: "2",

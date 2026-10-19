@@ -37,7 +37,6 @@ export function redact(text: string): string {
     WEB_SCHEMES.test(scheme) ? `${scheme}://` : `${scheme}://${userinfo.split(":")[0]}@`);
 }
 
-/** Refuse a URL that `redact` would change, since patchbook records a URL without those credentials and could not fetch from it again. */
 export function refuseCredentials(url: string): void {
   const shown = redact(url);
   if (shown !== url) {
