@@ -10749,7 +10749,6 @@ exec '${Bun.which("git")}' "$@"
   });
 
   describe("upstream --export", () => {
-    /** A repo that tracks `evil`, pinned at a tree that also holds `path`, the way an older patchbook could pin it: track and sync now refuse such a tree. */
     const exportCase = (path: string | null): { t: Case; repo: Repo } => {
       const t = new Case();
       const base = new Repo(join(t.tmp, "base"));
@@ -10766,7 +10765,7 @@ exec '${Bun.which("git")}' "$@"
       t.pb(["track", "evil", evil.path], { cwd: repo.path });
       if (path !== null) {
         withBlobAt(evil, path);
-        t.pb(["check"], { cwd: repo.path, code: null }); // fetches the commit
+        t.pb(["check"], { cwd: repo.path, code: null });
         const [commit, treeId] = sh(["git", "rev-parse", "HEAD", "HEAD^{tree}"], { cwd: evil.path }).stdout.split("\n");
         const lock = join(repo.path, ".patchbook/upstream.lock");
         writeFileSync(lock, JSON.stringify({ ...JSON.parse(read(lock)), evil: { commit, tree: treeId } }, null, 2) + "\n");

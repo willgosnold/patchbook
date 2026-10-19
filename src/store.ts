@@ -1,9 +1,9 @@
 // The upstreams: one bare repo per remote in the user's store, fetched shallowly, read at the pin.
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
-import { Book, PB } from "./book.ts";
+import { Book, PB, refuseExportedGit } from "./book.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, isDir, isSymlink, lexists, mkdirs, normMode, pjoin, readDisk, readText, relative, resolve, writeDisk } from "./lib/fs.ts";
 import { sha1 } from "./lib/hash.ts";
@@ -431,6 +431,8 @@ export async function cmdUpstream(args: { name: string; path: string | null; dif
   const files = u.files(commit);
   if (args.export) {
     const dest = resolve(args.export);
+    refuseExportedGit(u.name, dest, files.keys());
+    if (lexists(dest) && !(isDir(dest) && readdirSync(dest).length === 0)) throw new Fail(`can't export upstream ${u.name} into ${dest}, which already exists and isn't empty. Name a new or empty folder. Nothing was changed.`);
     for (const [path, file] of files) writeDisk(join(dest, path), file);
     process.stdout.write(`wrote ${files.size} files of ${u.name} at ${commit.slice(0, 7)} to ${dest}\n`);
     return 0;
