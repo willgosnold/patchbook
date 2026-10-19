@@ -88,6 +88,6 @@ patchbook skill install             # write this patchbook's update skill into t
 patchbook --help
 ```
 
-Tests: `bun test`. Typecheck: `bun run typecheck`.
+Tests: `bun test`. Typecheck: `bun run typecheck`. To contribute, read [CONTRIBUTING.md](CONTRIBUTING.md). To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 Used by [wstack](https://github.com/willgosnold/wstack).

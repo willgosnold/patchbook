@@ -1,0 +1,63 @@
+name: Bug report
+description: Patchbook did something wrong, printed something wrong, or crashed.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search open and closed issues first, and check the bug still happens on the latest release.
+        Remove tokens, passwords and private URLs from anything you paste. Git remote URLs can hold credentials.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `patchbook --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed it
+      options:
+        - npm
+        - install.sh
+        - built from source
+        - other
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS and tools
+      description: Your OS and CPU, `git --version`, and the `claude` or `codex` version if the bug involves intents or the update skill.
+    validations:
+      required: true
+  - type: dropdown
+    id: layout
+    attributes:
+      label: Layout
+      options:
+        - fork (patchbook clone)
+        - folder (patchbook init --output-to)
+        - not sure
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Commands that reproduce the bug, starting from a new repo if you can, and what each one printed.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Your `.patchbook/config.toml`, the hook manager you use, or anything else that seems related.

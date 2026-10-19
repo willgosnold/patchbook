@@ -1,0 +1,20 @@
+name: Question
+description: Ask how to do something with patchbook, or report docs that are wrong or unclear.
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check README.md and DESIGN.md first. If the docs were wrong or unclear, say which part.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What you're trying to do, what you tried, and what happened.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `patchbook --version`, if you have it installed.
