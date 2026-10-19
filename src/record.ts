@@ -9,10 +9,11 @@ import { appendSeries, CHANGE_NAME, Change, notAChangeName, readSeries, Roster, 
 import { installHookOrWarn } from "./githook.ts";
 import { changeDiff, ModelFailed, nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
-import { Fail, Partway } from "./lib/fail.ts";
+import { Fail } from "./lib/fail.ts";
 import { exists, type File, LINK, type Mode, sameFile, sameMode, writeText } from "./lib/fs.ts";
 import { replace, splitlines, strip } from "./lib/py.ts";
 import { bytesEqual, decode, encode, isText } from "./lib/text.ts";
+import { Undo } from "./undo.ts";
 
 /** An entry a recording makes. A null intent means it still needs one. */
 type Draft = Omit<Entry, "intent"> & { intent: string | null };
@@ -48,7 +49,7 @@ const NOTHING: Need = { named: false, drafts: [] };
 const NAMED: Need = { named: true, drafts: [] };
 
 type Recording = { target: Change | null; intent: string | null; tracksExecBit: boolean };
-type Done = { touched: readonly Change[]; notes: readonly string[]; waitsForSave?: true; afterSave?: () => void };
+type Done = { touched: readonly Change[]; notes: readonly string[]; afterSave?: () => void };
 
 type Row<K extends Kind> = { needs(e: Edited<K>): Need; apply(e: Edited<K>, r: Recording): Done };
 
@@ -59,7 +60,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
       const c = r.target!;
       c.edits.push({ kind: "add", path: e.staged });
       c.write("ours", e.staged, e.now.data, e.now.mode);
-      return { touched: [c], notes: [`add      ${e.path}`], waitsForSave: true };
+      return { touched: [c], notes: [`add      ${e.path}`] };
     },
   },
   "delete-upstream": {
@@ -69,7 +70,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
       c.edits.push({ kind: "delete", path: e.staged });
       const entries = e.entries;
       const afterSave = () => { if (entries !== null && exists(entries)) unlinkSync(entries); };
-      return { touched: [c], notes: [`delete   ${e.path}`], waitsForSave: true, afterSave };
+      return { touched: [c], notes: [`delete   ${e.path}`], afterSave };
     },
   },
   "unadd": {
@@ -77,7 +78,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     apply: (e) => {
       e.change.edits = e.change.edits.filter((x) => !(x.kind === "add" && x.path === e.staged));
       const afterSave = () => dropCopies(e.change, e.staged);
-      return { touched: [e.change], notes: [`unadd    ${e.path} (from ${e.change.name})`], waitsForSave: true, afterSave };
+      return { touched: [e.change], notes: [`unadd    ${e.path} (from ${e.change.name})`], afterSave };
     },
   },
   "unreplace": {
@@ -87,7 +88,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
       e.change.edits = e.change.edits.filter((x) => !(x.kind === "replace" && x.path === e.staged));
       c.edits.push({ kind: "delete", path: e.staged });
       const afterSave = () => dropCopies(e.change, e.staged);
-      return { touched: [e.change, c], notes: [`delete   ${e.path} (replace removed from ${e.change.name})`], waitsForSave: true, afterSave };
+      return { touched: [e.change, c], notes: [`delete   ${e.path} (replace removed from ${e.change.name})`], afterSave };
     },
   },
   "update-ours": {
@@ -111,7 +112,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
       c.edits.push({ kind: "file", path: e.rel });
       c.write("base", e.rel, e.to.base.data, e.to.base.mode);
       c.write("ours", e.rel, e.now.data, e.now.mode);
-      return { touched: [c], notes: [`file     ${e.path}`], waitsForSave: true };
+      return { touched: [c], notes: [`file     ${e.path}`] };
     },
   },
   "paragraph-edit": {
@@ -307,7 +308,7 @@ function modelDiff(a: Assembly, current: ReadonlyMap<string, File>, ask: Asked):
 
 export type RecordResult = { text: string };
 
-export async function cmdRecord(args: { change: string | null; intent: string | null; current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean }) {
+export async function cmdRecord(args: { change: string | null; intent: string | null; current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean; undo?: Undo }) {
   const book = await Book.find();
   if (args.current === undefined) installHookOrWarn(book);
   process.stdout.write(record(book, args.change, args.intent, args).text);
@@ -349,7 +350,7 @@ export function fill(book: Book, change: string | null, intent: string | null): 
   return filled.map(([c, text]) => `intent   ${c.name}: ${text}\n`).join("") + files.map((f) => `entries  ${f.rel}: ${f.intent}\n`).join("");
 }
 
-export function record(book: Book, change: string | null, intent: string | null, opts: { current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean } = {}): RecordResult {
+export function record(book: Book, change: string | null, intent: string | null, opts: { current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean; undo?: Undo } = {}): RecordResult {
   if (change && !CHANGE_NAME.test(change)) throw new Fail(notAChangeName(change));
   const problems: Problem[] = [];
   const roster = Roster.read(book, problems);
@@ -373,28 +374,21 @@ export function record(book: Book, change: string | null, intent: string | null,
   if (target && given) target.intent = given;
 
   const touched = new Map<string, Change>();
-  const notes: { text: string; waits: readonly Change[]; after: (() => void) | null }[] = [];
-  const saved = new Set<Change>();
-  const finished = new Set<() => void>();
-  const printed = () => (naming.said !== null ? naming.said + "\n" : "")
-    + notes.filter((n) => n.waits.every((c) => saved.has(c)) && (n.after === null || finished.has(n.after))).map((n) => n.text + "\n").join("");
+  const notes: string[] = [];
+  const afterSave: (() => void)[] = [];
+  const undo = opts.undo ?? new Undo();
+  undo.hold(book.dir);
   try {
     for (const e of edits) {
       const done = row(e).apply(e, { target, intent: naming.intent, tracksExecBit: book.tracksExecBit() });
       for (const c of done.touched) touched.set(c.name, c);
-      for (const text of done.notes) notes.push({ text, waits: done.waitsForSave ? done.touched : [], after: done.afterSave ?? null });
+      notes.push(...done.notes);
+      if (done.afterSave) afterSave.push(done.afterSave);
     }
     if (target && (target.edits.length || (given && changes.has(target.name)))) touched.set(target.name, target);
-    for (const c of touched.values()) {
-      saveChange(c);
-      saved.add(c);
-    }
+    for (const c of touched.values()) saveChange(c);
     if (target?.edits.length && !readSeries(book).includes(target.name)) appendSeries(book, target.name);
-    for (const n of notes) {
-      if (n.after === null || finished.has(n.after)) continue;
-      n.after();
-      finished.add(n.after);
-    }
+    for (const after of afterSave) after();
     // The recorded output is now what the patchbook builds, so it no longer counts as a hand edit.
     const lock = readBuildLock(book);
     if (lock !== null) {
@@ -407,11 +401,18 @@ export function record(book: Book, change: string | null, intent: string | null,
       writeBuildLines(book, lock);
     }
   } catch (error) {
-    throw new Partway(printed(), error);
+    // An Undo passed in belongs to the caller, which puts everything back and names what it couldn't, once.
+    if (opts.undo) throw error;
+    const stuck = undo.restore();
+    if (stuck.length) {
+      process.stderr.write("patchbook: couldn't put these back as they were:\n  " + stuck.join("\n  ")
+        + "\nCheck that you can write to them, then compare them with `git diff` before you commit again.\n");
+    }
+    throw error;
   }
   const owners = Array.from(touched.keys()).join(", ");
   const dropped = naming.unused && edits.some((e) => e.kind !== "skip");
-  return { text: printed() + (dropped ? `intent   not used${owners ? `: the edits went to ${owners}` : ""}\n` : "") };
+  return { text: (naming.said !== null ? naming.said + "\n" : "") + notes.map((n) => n + "\n").join("") + (dropped ? `intent   not used${owners ? `: the edits went to ${owners}` : ""}\n` : "") };
 }
 
 /** An upstream link keeps its type in the build, so a regular file over it would be written back as a link. */
