@@ -1,10 +1,10 @@
 // End-to-end tests: each one builds a throwaway upstream repo and drives the CLI against it.
 
 import { describe, expect, test } from "bun:test";
-import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, appendFileSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import { Case, Repo, dedent, lstrip, mkdirNew, partitionHead, replace, sh, words } from "./helpers";
+import { Case, Repo, dedent, lstrip, mkdirNew, partitionHead, replace, sh, shlexSplit, words } from "./helpers";
 
 const TIMEOUT = 120_000;
 
@@ -225,6 +225,27 @@ function vendorTest(name: string, body: (t: VendorCase) => void): void {
     }
   }, TIMEOUT);
 }
+
+/** What Vite+'s `vp config` and husky's `husky` leave in a repo: core.hooksPath at `<dir>/_`, whose pre-commit runs `<dir>/pre-commit`. */
+function installManager(repo: Repo, dir: string): void {
+  repo.write(`${dir}/_/.gitignore`, "*\n");
+  repo.write(`${dir}/_/pre-commit`, `#!/bin/sh\nsh -e "$(dirname "$(dirname "$0")")/pre-commit"\n`, 0o755);
+  sh(["git", "config", "core.hooksPath", `${dir}/_`], { cwd: repo.path });
+}
+
+const NOTE_STAGED = `git diff --cached --name-only > "$(git rev-parse --git-dir)/staged-when-checked"\n`;
+
+function forkWith(t: Case, files: Record<string, string>): Repo {
+  const up = new Repo(join(t.tmp, "upstream"));
+  up.write("app.txt", "one\ntwo\n");
+  for (const [path, text] of Object.entries(files)) up.write(path, text);
+  up.commit("start");
+  t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+  return new Repo(join(t.tmp, "fork"));
+}
+
+const withHook = (t: Case) => ({ ...t.env, PATCHBOOK_HOOK: "1" });
+const committedFiles = (repo: Repo): string[] => words(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: repo.path }).stdout);
 
 test("test_version", () => {
   const t = new Case();
@@ -2959,6 +2980,656 @@ test("test_a_command_warns_and_runs_while_the_pre_commit_hook_cannot_be_installe
   }
 }, TIMEOUT);
 
+test("test_commit_through_vite_plus_records_when_it_is_installed_after_clone", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, { ".vite-hooks/pre-commit": NOTE_STAGED });
+    installManager(fork, ".vite-hooks");
+    fork.write("app.txt", "one\nTWO\n");
+    sh(["git", "commit", "-qam", "shout"], { cwd: fork.path, env: withHook(t) });
+    expect(committedFiles(fork)).toContain(".patchbook/changes/shout/CHANGE.md");
+    expect(read(join(fork.path, ".git/staged-when-checked"))).toContain(".patchbook/changes/shout/CHANGE.md");
+    expect(sh(["git", "status", "--porcelain"], { cwd: fork.path }).stdout).toBe("");
+    t.pb(["build"], { cwd: fork.path });
+    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_commit_through_vite_plus_stops_without_patchbook_unless_skipped", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, { ".vite-hooks/pre-commit": NOTE_STAGED });
+    installManager(fork, ".vite-hooks");
+    const path = t.env["PATH"]!.split(":").filter((d) => !existsSync(join(d, "patchbook"))).join(":");
+    const teammate = { ...t.env, PATCHBOOK_HOOK: "1", PATH: path };
+    fork.write("app.txt", "one\nTWO\n");
+    const stopped = sh(["git", "commit", "-qam", "shout"], { cwd: fork.path, check: false, env: teammate });
+    expect(stopped.code).not.toBe(0);
+    expect(stopped.stderr).toContain("npm install -g patchbook");
+    expect(stopped.stderr).toContain("PATCHBOOK_HOOK=0");
+    sh(["git", "commit", "-qam", "shout"], { cwd: fork.path, env: { ...teammate, PATCHBOOK_HOOK: "0" } });
+    expect(sh(["git", "log", "-1", "--format=%s"], { cwd: fork.path }).stdout).toBe("shout\n");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_status_warns_when_vite_plus_runs_a_hook_without_patchbook", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, { ".vite-hooks/pre-commit": NOTE_STAGED });
+    installManager(fork, ".vite-hooks");
+    fork.write(".vite-hooks/pre-commit", NOTE_STAGED);
+    Object.assign(t.env, { PATCHBOOK_HOOK: "1" });
+    expect(t.pb(["status"], { cwd: fork.path }).stderr).toContain(".vite-hooks/pre-commit");
+    t.pb(["hook", "install"], { cwd: fork.path });
+    expect(t.pb(["status"], { cwd: fork.path }).stderr).not.toContain(".vite-hooks/pre-commit");
+    expect(fork.read(".vite-hooks/pre-commit")).toEndWith(NOTE_STAGED);
+    sh(["git", "add", "-A"], { cwd: fork.path });
+    fork.write("app.txt", "one\nTWO\n");
+    sh(["git", "commit", "-qam", "shout"], { cwd: fork.path, env: withHook(t) });
+    expect(committedFiles(fork)).toContain(".patchbook/changes/shout/CHANGE.md");
+    t.pb(["build"], { cwd: fork.path });
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_init_puts_patchbook_first_in_a_husky_hook", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("skills/a/SKILL.md", "Para one.\n");
+    up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    repo.write(".husky/pre-commit", NOTE_STAGED);
+    repo.commit("start");
+    installManager(repo, ".husky");
+    t.pb(["init", "--upstream", up.path, "--output-from", "skills", "--output-to", "skills"], { cwd: repo.path });
+    expect(repo.read(".husky/pre-commit")).toEndWith(NOTE_STAGED);
+    t.pb(["build"], { cwd: repo.path });
+    sh(["git", "add", "-A"], { cwd: repo.path });
+    sh(["git", "commit", "-qm", "built"], { cwd: repo.path, env: withHook(t) });
+    repo.write("skills/a/SKILL.md", "Para uno.\n");
+    sh(["git", "commit", "-qam", "spanish"], { cwd: repo.path, env: withHook(t) });
+    expect(read(join(repo.path, ".git/staged-when-checked"))).toContain(".patchbook/changes/shout/CHANGE.md");
+    expect(sh(["git", "status", "--porcelain"], { cwd: repo.path }).stdout).toBe("");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+const GUARD = [
+  'if [ "$PATCHBOOK_HOOK" != 0 ] && [ -f .patchbook/config.toml ]; then',
+  "  if ! command -v patchbook >/dev/null; then",
+  `    echo "patchbook isn't installed, so this commit can't record hand edits to the build output." >&2`,
+  '    echo "Install it with npm install -g patchbook, or skip it once with PATCHBOOK_HOOK=0 git commit" >&2',
+  "    exit 1",
+  "  fi",
+  "  patchbook hook run || exit 1",
+  "fi",
+].join("\n") + "\n";
+
+const indent = (text: string, spaces: number): string => text.replace(/^(?=.)/gm, " ".repeat(spaces));
+
+const LEFTHOOK_SNIPPET = `pre-commit:\n  commands:\n    patchbook:\n      priority: 1\n      run: |\n${indent(GUARD, 8)}`;
+
+const LEFTHOOK_TOML_SNIPPET = `[pre-commit.commands.patchbook]\npriority = 1\nrun = '''\n${GUARD}'''\n`;
+
+const LEFTHOOK_JSON_SNIPPET = `{\n  "pre-commit": {\n    "commands": {\n      "patchbook": {\n        "priority": 1,\n        "run": ${JSON.stringify(GUARD)}\n      }\n    }\n  }\n}\n`;
+
+const PRE_COMMIT_SNIPPET = `repos:
+  - repo: local
+    hooks:
+      - id: patchbook
+        name: patchbook
+        entry: |
+${indent(`sh -c '${GUARD.trimEnd().replaceAll("'", "'\\''")}'`, 10)}
+        language: system
+        pass_filenames: false
+        always_run: true
+`;
+
+const LEFTHOOK_DISPATCHER = `#!/bin/sh\n# lefthook stand-in\nlefthook run pre-commit "$@"\n`;
+
+const LEFTHOOK_BY_EXTENSION = { yml: LEFTHOOK_SNIPPET, yaml: LEFTHOOK_SNIPPET, toml: LEFTHOOK_TOML_SNIPPET, json: LEFTHOOK_JSON_SNIPPET, jsonc: LEFTHOOK_JSON_SNIPPET };
+
+const LEFTHOOK_NAMES = ["lefthook", ".lefthook", ".config/lefthook"].flatMap((name) =>
+  Object.entries(LEFTHOOK_BY_EXTENSION).map(([extension, snippet]) => [`${name}.${extension}`, snippet] as const));
+
+const SNIPPETS = {
+  ...Object.fromEntries(LEFTHOOK_NAMES.map(([name, snippet]) => [name, { snippet, dispatcher: LEFTHOOK_DISPATCHER }])),
+  ".pre-commit-config.yaml": {
+    snippet: PRE_COMMIT_SNIPPET,
+    dispatcher: `#!/usr/bin/env bash\n# File generated by pre-commit: https://pre-commit.com\nexec pre-commit hook-impl --hook-type=pre-commit -- "$@"\n`,
+  },
+};
+
+for (const [config, { snippet, dispatcher }] of Object.entries(SNIPPETS)) {
+  test(`test_hook_install_prints_what_to_add_to_${config}`, () => {
+    const t = new Case();
+    try {
+      const existing = /json/.test(config) ? "" : "# lint on commit\n";
+      const fork = forkWith(t, { [config]: existing });
+      writeFileSync(join(fork.path, ".git/hooks/pre-commit"), dispatcher);
+      const install = t.pb(["hook", "install"], { cwd: fork.path }).stderr;
+      expect(install).toContain(snippet.trim());
+      expect(install).toContain(config);
+      expect(install).not.toContain(".git/hooks/pre-commit");
+      expect(fork.read(config)).toBe(existing);
+      expect(read(join(fork.path, ".git/hooks/pre-commit"))).toBe(dispatcher);
+      Object.assign(t.env, { PATCHBOOK_HOOK: "1" });
+      expect(t.pb(["status"], { cwd: fork.path }).stderr).toContain(config);
+      fork.write(config, snippet);
+      expect(t.pb(["status"], { cwd: fork.path }).stderr).not.toContain(config);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
+const parsed = {
+  yaml: (text: string): any => Bun.YAML.parse(text),
+  toml: (text: string): any => Bun.TOML.parse(text),
+  json: (text: string): any => JSON.parse(text),
+};
+
+const COMMANDS: Record<string, (printed: string) => string[]> = {
+  "lefthook.yml": (printed) => ["sh", "-c", parsed.yaml(printed)["pre-commit"].commands.patchbook.run],
+  "lefthook.toml": (printed) => ["sh", "-c", parsed.toml(printed)["pre-commit"].commands.patchbook.run],
+  "lefthook.json": (printed) => ["sh", "-c", parsed.json(printed)["pre-commit"].commands.patchbook.run],
+  ".pre-commit-config.yaml": (printed) => shlexSplit(parsed.yaml(printed).repos[0].hooks[0].entry),
+};
+
+const printedSnippet = (stderr: string): string => stderr.split("rebuilt output:\n\n")[1]!.split("\nLeave parallel off")[0]!;
+
+for (const config of Object.keys(COMMANDS)) {
+  test(`test_the_snippet_for_${config}_guards_the_command_like_the_hook_lines`, () => {
+    const t = new Case();
+    try {
+      const fork = forkWith(t, { [config]: /json/.test(config) ? "" : "# lint on commit\n" });
+      const argv = COMMANDS[config]!(printedSnippet(t.pb(["hook", "install"], { cwd: fork.path }).stderr));
+      const plain = join(t.tmp, "plain");
+      mkdirSync(plain);
+      const noPatchbook = { ...withHook(t), PATH: t.env["PATH"]!.split(":").filter((d) => !existsSync(join(d, "patchbook"))).join(":") };
+      const blocked = sh(argv, { cwd: fork.path, env: noPatchbook, check: false });
+      expect(blocked.code).toBe(1);
+      expect(blocked.stderr).toContain("npm install -g patchbook");
+      expect(blocked.stderr).toContain("PATCHBOOK_HOOK=0");
+      const skipped = sh(argv, { cwd: fork.path, env: { ...noPatchbook, PATCHBOOK_HOOK: "0" }, check: false });
+      expect([skipped.code, skipped.stderr]).toEqual([0, ""]);
+      const outside = sh(argv, { cwd: plain, env: noPatchbook, check: false });
+      expect([outside.code, outside.stderr]).toEqual([0, ""]);
+      expect(sh(argv, { cwd: fork.path, env: withHook(t), check: false }).code).toBe(0);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
+type Paste = {
+  name: string;
+  config: string;
+  existing: string;
+  says: string;
+  merge: (existing: string, printed: string) => string;
+  parse: (text: string) => any;
+  check: (merged: any) => void;
+  omits?: RegExp[];
+};
+
+const hasPatchbook = (hook: any): void => expect(hook.run).toContain("patchbook hook run");
+
+const PASTES: Paste[] = [
+  ...["lefthook.yml", ".config/lefthook.yaml"].flatMap((config): Paste[] => [
+    {
+      name: "no pre-commit key", config, existing: "skip_output:\n  - meta\n", says: `Add this to ${config},`,
+      merge: (existing, printed) => existing + printed, parse: parsed.yaml,
+      check: (m) => { expect(m.skip_output).toEqual(["meta"]); hasPatchbook(m["pre-commit"].commands.patchbook); },
+    },
+    {
+      name: "a pre-commit key without commands", config, existing: "pre-commit:\n  parallel: true\n", says: `Add this under the pre-commit key in ${config},`,
+      merge: (existing, printed) => existing + printed, parse: parsed.yaml, omits: [/^pre-commit:/m],
+      check: (m) => { expect(m["pre-commit"].parallel).toBe(true); hasPatchbook(m["pre-commit"].commands.patchbook); },
+    },
+    {
+      name: "a pre-commit key with commands", config, existing: "pre-commit:\n  commands:\n    lint:\n      run: echo lint\n", says: `Add this under commands, in the pre-commit key of ${config},`,
+      merge: (existing, printed) => existing + printed, parse: parsed.yaml, omits: [/^pre-commit:/m, /^\s*commands:/m],
+      check: (m) => { expect(m["pre-commit"].commands.lint.run).toBe("echo lint"); hasPatchbook(m["pre-commit"].commands.patchbook); },
+    },
+  ]),
+  ...["lefthook.toml", ".lefthook.toml"].flatMap((config): Paste[] => [
+    {
+      name: "no pre-commit table", config, existing: 'skip_output = ["meta"]\n', says: `Add this to ${config},`,
+      merge: (existing, printed) => existing + printed, parse: parsed.toml,
+      check: (m) => { expect(m.skip_output).toEqual(["meta"]); hasPatchbook(m["pre-commit"].commands.patchbook); },
+    },
+    {
+      name: "a pre-commit table", config, existing: "[pre-commit]\nparallel = true\n", says: `Add this to ${config},`,
+      merge: (existing, printed) => existing + printed, parse: parsed.toml,
+      check: (m) => { expect(m["pre-commit"].parallel).toBe(true); hasPatchbook(m["pre-commit"].commands.patchbook); },
+    },
+    {
+      name: "pre-commit commands", config, existing: '[pre-commit.commands.lint]\nrun = "echo lint"\n', says: `Add this to ${config},`,
+      merge: (existing, printed) => existing + printed, parse: parsed.toml,
+      check: (m) => { expect(m["pre-commit"].commands.lint.run).toBe("echo lint"); hasPatchbook(m["pre-commit"].commands.patchbook); },
+    },
+  ]),
+  ...["lefthook.json", "lefthook.jsonc"].flatMap((config): Paste[] => [
+    {
+      name: "an empty file", config, existing: "", says: `Add this to ${config},`,
+      merge: (_, printed) => printed, parse: parsed.json,
+      check: (m) => hasPatchbook(m["pre-commit"].commands.patchbook),
+    },
+    {
+      name: "no pre-commit key", config, existing: '{ "skip_output": ["meta"] }', says: `Add this inside the top-level braces of ${config}, with a comma after the member before it if there is one,`,
+      merge: (existing, printed) => existing.replace(/ \}$/, `, ${printed.trim()} }`), parse: parsed.json, omits: [/^\{/m],
+      check: (m) => { expect(m.skip_output).toEqual(["meta"]); hasPatchbook(m["pre-commit"].commands.patchbook); },
+    },
+    {
+      name: "a pre-commit key without commands", config, existing: '{ "pre-commit": { "parallel": true } }', says: `Add this inside "pre-commit" in ${config}, with a comma after the member before it if there is one,`,
+      merge: (existing, printed) => existing.replace(/ \} \}$/, `, ${printed.trim()} } }`), parse: parsed.json, omits: [/"pre-commit"/],
+      check: (m) => { expect(m["pre-commit"].parallel).toBe(true); hasPatchbook(m["pre-commit"].commands.patchbook); },
+    },
+    {
+      name: "a pre-commit key with commands", config, existing: '{ "pre-commit": { "commands": { "lint": { "run": "echo lint" } } } }',
+      says: `Add this inside "commands" in "pre-commit" in ${config}, with a comma after the member before it if there is one,`,
+      merge: (existing, printed) => existing.replace(/ \} \} \}$/, `, ${printed.trim()} } } }`), parse: parsed.json, omits: [/"pre-commit"/, /"commands"/],
+      check: (m) => { expect(m["pre-commit"].commands.lint.run).toBe("echo lint"); hasPatchbook(m["pre-commit"].commands.patchbook); },
+    },
+  ]),
+  {
+    name: "no repos key", config: ".pre-commit-config.yaml", existing: "exclude: ^vendor/\n", says: "Add this to .pre-commit-config.yaml,",
+    merge: (existing, printed) => existing + printed, parse: parsed.yaml,
+    check: (m) => { expect(m.exclude).toBe("^vendor/"); expect(m.repos[0].hooks[0].id).toBe("patchbook"); },
+  },
+  {
+    name: "repos with entries", config: ".pre-commit-config.yaml",
+    existing: "repos:\n  - repo: https://example.com/linters\n    rev: v1\n    hooks:\n      - id: lint\n",
+    says: "Add this as the first item under repos in .pre-commit-config.yaml,",
+    merge: (existing, printed) => existing.replace("repos:\n", "repos:\n" + printed), parse: parsed.yaml, omits: [/^repos:/m],
+    check: (m) => { expect(m.repos[0].hooks[0].id).toBe("patchbook"); expect(m.repos[1].hooks[0].id).toBe("lint"); expect(m.repos).toHaveLength(2); },
+  },
+  {
+    name: "an empty repos list", config: ".pre-commit-config.yaml", existing: "repos: []\n", says: "Add this to .pre-commit-config.yaml in place of repos: [],",
+    merge: (_, printed) => printed, parse: parsed.yaml,
+    check: (m) => expect(m.repos[0].hooks[0].id).toBe("patchbook"),
+  },
+];
+
+for (const { name, config, existing, says, merge, parse, check, omits = [] } of PASTES) {
+  test(`test_hook_install_prints_what_goes_into_${config}_with_${name.replaceAll(" ", "_")}`, () => {
+    const t = new Case();
+    try {
+      const fork = forkWith(t, { [config]: existing });
+      const install = t.pb(["hook", "install"], { cwd: fork.path }).stderr;
+      expect(install).toContain(says);
+      const printed = printedSnippet(install);
+      for (const absent of omits) expect(printed).not.toMatch(absent);
+      expect(fork.read(config)).toBe(existing);
+      check(parse(merge(existing, printed)));
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
+test("test_hook_install_in_a_repo_nested_in_a_fork_fails_instead_of_installing_nothing", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, {});
+    const inner = new Repo(join(fork.path, "vendor/inner"));
+    inner.write("a.txt", "a\n");
+    inner.commit("inner");
+    const outerHook = read(join(fork.path, ".git/hooks/pre-commit"));
+    const install = t.pb(["hook", "install"], { cwd: inner.path, code: 1 });
+    expect(install.stderr).toContain("another git repo");
+    expect(install.stderr).toContain("/fork");
+    expect(existsSync(join(inner.path, ".git/hooks/pre-commit"))).toBe(false);
+    expect(read(join(fork.path, ".git/hooks/pre-commit"))).toBe(outerHook);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_hook_install_works_from_a_folder_inside_the_repo_that_holds_the_patchbook", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, { ".husky/pre-commit": NOTE_STAGED });
+    installManager(fork, ".husky");
+    mkdirSync(join(fork.path, "sub/dir"), { recursive: true });
+    t.pb(["hook", "install"], { cwd: join(fork.path, "sub/dir") });
+    expect(fork.read(".husky/pre-commit")).toContain("patchbook hook run || exit 1");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+const LATIN1_HOOK = Buffer.concat([Buffer.from("# caf"), Buffer.from([0xe9]), Buffer.from(` lint\r\n# written on Windows\r\n${NOTE_STAGED}`)]);
+const carriageReturns = (bytes: Uint8Array) => bytes.filter((b) => b === 0x0d).length;
+
+test("test_clone_keeps_the_bytes_of_a_hook_that_is_not_utf8", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\ntwo\n");
+    mkdirSync(join(up.path, ".vite-hooks"));
+    writeFileSync(join(up.path, ".vite-hooks/pre-commit"), LATIN1_HOOK);
+    up.commit("start");
+    t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+    const fork = new Repo(join(t.tmp, "fork"));
+    const hook = readFileSync(join(fork.path, ".vite-hooks/pre-commit"));
+    expect(hook.subarray(hook.length - LATIN1_HOOK.length).equals(LATIN1_HOOK)).toBe(true);
+    expect(carriageReturns(hook)).toBe(carriageReturns(LATIN1_HOOK));
+    expect(hook.includes(Buffer.from("\ufffd"))).toBe(false);
+    expect(hook.toString("latin1")).toContain("patchbook hook run || exit 1");
+    t.pb(["build"], { cwd: fork.path });
+    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_init_keeps_the_bytes_of_a_husky_hook_that_is_not_utf8", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("skills/a/SKILL.md", "Para one.\n");
+    up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    mkdirSync(join(repo.path, ".husky"));
+    writeFileSync(join(repo.path, ".husky/pre-commit"), LATIN1_HOOK);
+    repo.commit("start");
+    installManager(repo, ".husky");
+    t.pb(["init", "--upstream", up.path, "--output-from", "skills", "--output-to", "skills"], { cwd: repo.path });
+    const hook = readFileSync(join(repo.path, ".husky/pre-commit"));
+    expect(hook.subarray(hook.length - LATIN1_HOOK.length).equals(LATIN1_HOOK)).toBe(true);
+    expect(carriageReturns(hook)).toBe(carriageReturns(LATIN1_HOOK));
+    expect(hook.includes(Buffer.from("\ufffd"))).toBe(false);
+    expect(hook.toString("latin1")).toContain("patchbook hook run || exit 1");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_a_hook_script_in_the_tree_does_not_hide_another_tools_git_hook", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, { ".husky/pre-commit": NOTE_STAGED });
+    fork.write(".git/hooks/pre-commit", "#!/bin/sh\necho their hook\n", 0o755);
+    Object.assign(t.env, { PATCHBOOK_HOOK: "1" });
+    expect(t.pb(["status"], { cwd: fork.path }).stderr).toContain(".git/hooks/pre-commit");
+    const install = t.pb(["hook", "install"], { cwd: fork.path }).stderr;
+    expect(install).toContain(".git/hooks/pre-commit");
+    expect(install).toContain("patchbook hook run || exit 1");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_another_hooks_path_wins_over_a_lefthook_config", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, { "lefthook.yml": "# lint on commit\n" });
+    sh(["git", "config", "core.hooksPath", ".githooks"], { cwd: fork.path });
+    Object.assign(t.env, { PATCHBOOK_HOOK: "1" });
+    const status = t.pb(["status"], { cwd: fork.path }).stderr;
+    expect(status).toContain(".githooks/pre-commit");
+    expect(status).not.toContain("lefthook.yml");
+    const install = t.pb(["hook", "install"], { cwd: fork.path }).stderr;
+    expect(install).toContain(".githooks/pre-commit");
+    expect(install).not.toContain("priority: 1");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_clone_does_not_write_through_a_linked_hook_script", () => {
+  const t = new Case();
+  try {
+    const outside = join(t.tmp, "outside.sh");
+    writeFileSync(outside, "echo outside\n");
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\ntwo\n");
+    mkdirSync(join(up.path, ".husky"));
+    symlinkSync(outside, join(up.path, ".husky/pre-commit"));
+    up.commit("start");
+    const clone = t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+    expect(read(outside)).toBe("echo outside\n");
+    expect(clone.stderr).toContain("patchbook hook run || exit 1");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_a_commented_patchbook_line_does_not_count_as_running_it", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, { ".vite-hooks/pre-commit": "# TODO: patchbook hook run\n" + NOTE_STAGED });
+    expect(fork.read(".vite-hooks/pre-commit")).toContain("patchbook hook run || exit 1");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_hook_install_records_a_manager_script_that_runs_patchbook_unrecorded", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, {});
+    fork.write(".husky/pre-commit", "#!/bin/sh\npatchbook hook run || exit 1\n", 0o755);
+    installManager(fork, ".husky");
+    const install = t.pb(["hook", "install"], { cwd: fork.path }).stderr;
+    expect(install).toContain("recorded the edit in the patchbook");
+    expect(fork.read(".patchbook/series")).toContain("patchbook-hook");
+    Object.assign(t.env, { PATCHBOOK_HOOK: "1" });
+    sh(["git", "commit", "-qm", "hook"], { cwd: fork.path, env: withHook(t) });
+    t.pb(["build"], { cwd: fork.path });
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_init_in_a_fork_stages_the_series_with_the_hook_change", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\ntwo\n");
+    up.commit("start");
+    sh(["git", "clone", "-q", up.path, "mine"], { cwd: t.tmp });
+    const repo = new Repo(join(t.tmp, "mine"));
+    repo.write(".husky/pre-commit", NOTE_STAGED);
+    repo.commit("husky");
+    installManager(repo, ".husky");
+    t.pb(["init", "--upstream", up.path], { cwd: repo.path });
+    const staged = words(sh(["git", "diff", "--cached", "--name-only"], { cwd: repo.path }).stdout);
+    expect(staged).toContain(".husky/pre-commit");
+    expect(staged).toContain(".patchbook/series");
+    expect(staged.some((p) => p.startsWith(".patchbook/changes/patchbook-hook/"))).toBe(true);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_status_trusts_patchbooks_hook_kept_by_pre_commits_migration_mode", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, { ".pre-commit-config.yaml": "repos: []\n" });
+    renameSync(join(fork.path, ".git/hooks/pre-commit"), join(fork.path, ".git/hooks/pre-commit.legacy"));
+    fork.write(
+      ".git/hooks/pre-commit",
+      `#!/bin/sh\n# File generated by pre-commit: https://pre-commit.com\n"$(dirname "$0")/pre-commit.legacy" "$@" || exit 1\n`,
+      0o755,
+    );
+    const install = t.pb(["hook", "install"], { cwd: fork.path }).stderr;
+    expect(install).toContain("- id: patchbook");
+    expect(install).not.toContain("won't run");
+    Object.assign(t.env, { PATCHBOOK_HOOK: "1" });
+    expect(t.pb(["status"], { cwd: fork.path }).stderr).not.toContain("doesn't run");
+    fork.write("app.txt", "one\nTWO\n");
+    sh(["git", "add", "-A"], { cwd: fork.path });
+    sh(["git", "commit", "-qm", "shout"], { cwd: fork.path, env: withHook(t) });
+    expect(committedFiles(fork).some((p) => p.startsWith(".patchbook/changes/"))).toBe(true);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_the_printed_lines_are_safe_in_a_hooks_folder_every_repo_shares", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, {});
+    const shared = join(t.tmp, "shared");
+    mkdirSync(shared);
+    sh(["git", "config", "core.hooksPath", shared], { cwd: fork.path });
+    const install = t.pb(["hook", "install"], { cwd: fork.path }).stderr;
+    const lines = install.match(/^# patchbook:[\s\S]*?^fi$/m)![0];
+    writeFileSync(join(shared, "pre-commit"), "#!/bin/sh\n" + lines + "\n");
+    chmodSync(join(shared, "pre-commit"), 0o755);
+    const plain = new Repo(join(t.tmp, "plain"));
+    sh(["git", "config", "core.hooksPath", shared], { cwd: plain.path });
+    plain.write("a.txt", "a\n");
+    sh(["git", "add", "-A"], { cwd: plain.path });
+    sh(["git", "commit", "-qm", "plain"], { cwd: plain.path, env: withHook(t) });
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_clone_does_not_write_through_a_linked_hook_folder", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\ntwo\n");
+    up.write("tools/husky/pre-commit", "echo lint\n");
+    symlinkSync("tools/husky", join(up.path, ".husky"));
+    up.commit("start");
+    const clone = t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+    const fork = new Repo(join(t.tmp, "fork"));
+    expect(fork.read("tools/husky/pre-commit")).toBe("echo lint\n");
+    expect(clone.stderr).toContain("patchbook hook run || exit 1");
+    const recorded = Object.keys(tree(fork.path)).filter((p) => p.startsWith(".patchbook/changes/patchbook-update-skill/"));
+    expect(recorded.filter((p) => p.includes("husky"))).toEqual([]);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_a_leftover_legacy_hook_does_not_hide_another_tools_hook", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, {});
+    renameSync(join(fork.path, ".git/hooks/pre-commit"), join(fork.path, ".git/hooks/pre-commit.legacy"));
+    fork.write(".git/hooks/pre-commit", "#!/bin/sh\necho other tool\n", 0o755);
+    Object.assign(t.env, { PATCHBOOK_HOOK: "1" });
+    expect(t.pb(["status"], { cwd: fork.path }).stderr).toContain(".git/hooks/pre-commit");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_a_lefthook_config_does_not_hide_a_dispatcher_that_is_not_lefthooks", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, { "lefthook.yml": LEFTHOOK_SNIPPET });
+    fork.write(".git/hooks/pre-commit", "#!/bin/sh\necho unrelated dispatcher\n", 0o755);
+    Object.assign(t.env, { PATCHBOOK_HOOK: "1" });
+    expect(t.pb(["status"], { cwd: fork.path }).stderr).toContain(".git/hooks/pre-commit");
+    const install = t.pb(["hook", "install"], { cwd: fork.path }).stderr;
+    expect(install).toContain(".git/hooks/pre-commit");
+    expect(install).toContain("patchbook hook run || exit 1");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_hook_install_puts_patchbook_first_in_a_husky_folder_below_the_root", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, { "frontend/.husky/pre-commit": NOTE_STAGED });
+    installManager(fork, "frontend/.husky");
+    const install = t.pb(["hook", "install"], { cwd: fork.path });
+    expect(fork.read("frontend/.husky/pre-commit")).toContain("patchbook hook run || exit 1");
+    expect(install.stderr).toContain("recorded the edit in the patchbook");
+    fork.write("app.txt", "one\nTWO\n");
+    sh(["git", "commit", "-qam", "shout"], { cwd: fork.path, env: withHook(t) });
+    expect(committedFiles(fork).some((p) => p.startsWith(".patchbook/changes/"))).toBe(true);
+    t.pb(["build"], { cwd: fork.path });
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_hook_install_stages_record_files_git_ignores", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, {});
+    appendFileSync(join(fork.path, ".git/info/exclude"), "*.pb\n");
+    fork.write(".husky/pre-commit", "#!/bin/sh\necho lint\n", 0o755);
+    installManager(fork, ".husky");
+    t.pb(["hook", "install"], { cwd: fork.path });
+    const staged = words(sh(["git", "diff", "--cached", "--name-only"], { cwd: fork.path }).stdout);
+    expect(staged.some((p) => p.startsWith(".patchbook/changes/patchbook-hook/") && p.endsWith(".pb"))).toBe(true);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_status_is_quiet_once_a_linked_husky_folder_runs_patchbook", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\ntwo\n");
+    up.write("tools/husky/pre-commit", "echo lint\n");
+    symlinkSync("tools/husky", join(up.path, ".husky"));
+    up.commit("start");
+    const clone = t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
+    const fork = new Repo(join(t.tmp, "fork"));
+    installManager(fork, ".husky");
+    fork.write("tools/husky/pre-commit", clone.stderr.match(/^# patchbook:[\s\S]*?^fi$/m)![0] + "\necho lint\n");
+    Object.assign(t.env, { PATCHBOOK_HOOK: "1" });
+    expect(t.pb(["status"], { cwd: fork.path }).stderr).not.toContain("doesn't run");
+    expect(t.pb(["hook", "install"], { cwd: fork.path }).stderr).not.toContain("_/pre-commit");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_a_pre_commit_dispatcher_that_mentions_lefthook_is_still_pre_commits", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, { "lefthook.yml": LEFTHOOK_SNIPPET, ".pre-commit-config.yaml": "repos: []\n" });
+    fork.write(
+      ".git/hooks/pre-commit",
+      `#!/usr/bin/env bash\n# File generated by pre-commit: https://pre-commit.com\nINSTALL_PYTHON=/opt/lefthook/venv/bin/python\nexec "$INSTALL_PYTHON" -mpre_commit hook-impl --hook-type=pre-commit -- "$@"\n`,
+      0o755,
+    );
+    Object.assign(t.env, { PATCHBOOK_HOOK: "1" });
+    expect(t.pb(["status"], { cwd: fork.path }).stderr).toContain(".pre-commit-config.yaml");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_migration_mode_advice_follows_pre_commit_not_a_stray_lefthook_config", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, { ".pre-commit-config.yaml": "repos: []\n", "lefthook.yml": "# old\n" });
+    renameSync(join(fork.path, ".git/hooks/pre-commit"), join(fork.path, ".git/hooks/pre-commit.legacy"));
+    fork.write(
+      ".git/hooks/pre-commit",
+      `#!/bin/sh\n# File generated by pre-commit: https://pre-commit.com\n"$(dirname "$0")/pre-commit.legacy" "$@" || exit 1\n`,
+      0o755,
+    );
+    const install = t.pb(["hook", "install"], { cwd: fork.path }).stderr;
+    expect(install).toContain("- id: patchbook");
+    expect(install).not.toContain("priority: 1");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 describe("ForkTest", () => {
   // Each layout puts a vendored copy where its own upstream's build writes, so a build would land in it.
   for (const [where, mount, vendor] of [
@@ -5116,6 +5787,18 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(read(hook)).toBe(edited);
     expect(t.pb(["hook", "install"], { cwd: t.fork.path }).stderr).toContain("is another tool's hook; add `patchbook hook run`");
     expect(read(hook)).toBe(edited);
+  });
+
+  forkTest("test_another_hooks_path_gets_the_lines_to_add", (t) => {
+    sh(["git", "config", "core.hooksPath", ".githooks"], { cwd: t.fork.path });
+    const install = t.pb(["hook", "install"], { cwd: t.fork.path }).stderr;
+    expect(install).toContain(".githooks/pre-commit");
+    expect(install).toContain("patchbook hook run");
+    expect(existsSync(join(t.fork.path, ".githooks"))).toBe(false);
+    Object.assign(t.env, { PATCHBOOK_HOOK: "1" });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stderr).toContain(".githooks/pre-commit");
+    t.fork.write(".githooks/pre-commit", "patchbook hook run || exit 1\n", 0o755);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stderr).not.toContain(".githooks/pre-commit");
   });
 
   forkTest("test_settings_layer", (t) => {

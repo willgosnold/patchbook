@@ -118,6 +118,7 @@ function writing<T>(write: () => T): T {
 
 export const writeText = (p: string, text: string) => writing(() => writeFileSync(p, encode(text)));
 export const readBytes = (p: string): Uint8Array => readFileSync(p);
+export const writeBytes = (p: string, data: Uint8Array) => writeFileSync(p, data);
 export const mkdirs = (p: string) => mkdirSync(p, { recursive: true });
 
 export function readDisk(p: string): File {

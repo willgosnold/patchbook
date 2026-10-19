@@ -22,3 +22,13 @@ export function isText(data: Uint8Array): boolean {
 export function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((x, i) => x === b[i]);
 }
+
+export function concat(...parts: Uint8Array[]): Uint8Array {
+  const joined = new Uint8Array(parts.reduce((n, part) => n + part.length, 0));
+  let at = 0;
+  for (const part of parts) {
+    joined.set(part, at);
+    at += part.length;
+  }
+  return joined;
+}
