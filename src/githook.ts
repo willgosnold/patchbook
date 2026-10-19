@@ -5,7 +5,7 @@ import type { Problem } from "./api.ts";
 import {
   assemble, type Assembly, buildLockPath, type BuildLock, builtAs, type Changes, changesOf, describe, handEdits, inRepo, parseBuildLock, readBuildLock, refuseFolderToFile, writeOutput,
 } from "./assemble.ts";
-import { Book, buildInputs, PB, placeholderOutputs, under } from "./book.ts";
+import { Book, buildInputs, PB, parseLock, placeholderOutputs, under } from "./book.ts";
 import { type Change, readChanges } from "./changes.ts";
 import { record } from "./record.ts";
 import { Fail } from "./lib/fail.ts";
@@ -14,7 +14,6 @@ import {
   sameFile, type Seen, writeBytes, writeText,
 } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
-import { JsonError, loads } from "./lib/json.ts";
 import { type Env, git, run, shellQuote, spawn } from "./lib/proc.ts";
 import { say, warn } from "./lib/term.ts";
 import { byCodePoint, bytesEqual, concat, decode, decodeReplace, encode } from "./lib/text.ts";
@@ -626,21 +625,15 @@ function stagedPins(book: Book): Map<string, string> | null {
   const staged = spawn(["git", "cat-file", "blob", `:${rel}`], { cwd: book.root });
   if (staged.code !== 0) return null;
   const linked = git(["ls-files", "-s", "--", rel], { cwd: book.root }).startsWith("120000 ");
-  let data;
+  let pins;
   try {
-    data = linked ? book.lock() : loads(decode(staged.stdout));
+    pins = linked ? book.lock() : parseLock(decode(staged.stdout));
   } catch (e) {
-    if (!(e instanceof JsonError)) throw e;
-    throw new Fail(`the ${relative(book.root, join(book.dir, "upstream.lock"))} in the index can't be read (${e.message}), so the hook can't tell which copy to stage. `
+    if (!(e instanceof Fail)) throw e;
+    throw new Fail(`the ${rel} in the index can't be read (${e.message}), so the hook can't tell which copy to stage. `
       + "Stage a good lock, or skip the hook once with PATCHBOOK_HOOK=0.");
   }
-  if (!(data instanceof Map)) return null;
-  const pins = new Map<string, string>();
-  for (const [name, pin] of data) {
-    const tree = pin instanceof Map ? pin.get("tree") : null;
-    if (typeof tree === "string" && tree) pins.set(name, tree);
-  }
-  return pins;
+  return new Map(pins.map((p) => [p.name, p.tree]));
 }
 
 /** The tree git would commit from the index, or null when it can't write one, as with unmerged paths. */

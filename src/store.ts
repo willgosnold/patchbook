@@ -5,13 +5,13 @@ import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
 import { Book, PB, refuseClimbingPaths, refuseExportedGit } from "./book.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isDir, isSymlink, lexists, mkdirs, type Mode, normMode, pjoin, readDisk, readText, relative, resolve, writeDisk } from "./lib/fs.ts";
+import { exists, type File, isDir, isSymlink, lexists, mkdirs, type Mode, normMode, pjoin, readDisk, relative, resolve, writeDisk } from "./lib/fs.ts";
 import { sha1 } from "./lib/hash.ts";
-import { type JsonValue, loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
 import { say, verbatim, warn } from "./lib/term.ts";
 import { byCodePoint, decode, decodeReplace, encode } from "./lib/text.ts";
 import { storeDir, type Table } from "./settings.ts";
+import { readLastSync } from "./sync.ts";
 
 export type Pin = { commit?: string; tree?: string };
 type Files = Map<string, File>;
@@ -100,14 +100,8 @@ export class Upstream {
   }
 
   pin(): Pin {
-    const raw = this.book.lock().get(this.name);
-    if (!(raw instanceof Map)) return {};
-    const pin: Pin = {};
-    for (const key of ["commit", "tree"] as const) {
-      const value = raw.get(key);
-      if (typeof value === "string" && value) pin[key] = value;
-    }
-    return pin;
+    const found = this.book.lock().find((p) => p.name === this.name);
+    return found ? { commit: found.commit, tree: found.tree } : {};
   }
 
   gitDir(): string {
@@ -434,12 +428,6 @@ export function stagedTree(root: string, rel: string): string | null {
   }
 }
 
-function get(value: JsonValue | undefined, key: string): JsonValue | undefined {
-  if (value === undefined) return undefined;
-  if (!(value instanceof Map)) throw new Fail(`last-sync.json: expected an object holding ${key}`);
-  return value.get(key);
-}
-
 /** Read an upstream at its pin, from the store: list its files, print one, export them, or diff the last sync. */
 export async function cmdUpstream(args: { name: string; path: string | null; diff: boolean; since: string | null; export: string | null }) {
   const book = await Book.find();
@@ -448,9 +436,7 @@ export async function cmdUpstream(args: { name: string; path: string | null; dif
   if (!pin.tree) throw new Fail(`upstream ${u.name} has no pin yet. Run: patchbook sync ${u.name}`);
   const commit = u.heal(pinned(u, pin));
   if (args.diff || args.since) {
-    const last = join(book.dir, "last-sync.json");
-    const from = exists(last) ? get(get(get(loads(readText(last)), "upstreams") ?? new Map(), u.name) ?? new Map(), "from") : undefined;
-    const old = args.since || (typeof from === "string" ? from : "");
+    const old = args.since || readLastSync(book)?.upstreams.find((r) => r.name === u.name)?.from || "";
     if (!old) throw new Fail(`no earlier pin of ${u.name} to compare with; pass --since <commit>`);
     if (args.since) u.have(old);
     else u.heal(old);

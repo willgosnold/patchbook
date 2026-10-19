@@ -160,7 +160,7 @@ Patchbook would follow a link inside `.patchbook/` out of the repo, or into anot
 - When upstream still matches the pin, `sync` hashes the vendored copy. If the copy does not match the pin, such as one that is empty, missing, edited by hand, half written, or a symlink in place of the folder, `sync` writes it again and says so. A symlink is moved into the folder with the old copy, never followed, and comes back as a link if the rewrite fails or is killed. As in a sync that moves the pin, the old copy waits in `.patchbook/sync-<name>/` until the new one checks out. It leaves the change files, `last-sync.json` and the lock alone. A failed or killed rewrite puts the copy back as it was, and the next `sync` writes it again. If the lock has changed since a kill, the folder is left for the user, as for a killed sync that moves the pin.
 - **`last-sync.json` is ignored, not committed.** It holds each upstream's latest report (`{version: 1, upstreams: {<name>: {from, to, ...}}}`, see JSON output), kept across runs, so it is state of one checkout. Every `sync` that ends with the file on disk, even one with nothing to do, makes sure `.patchbook/.gitignore` lists `last-sync.json` and `.gitignore`, appending what is missing and leaving the bytes already there as they are. Writing the rules is best effort: if the file can't be read or written, `sync` prints a `patchbook:` warning that `last-sync.json` stays untracked, and its own result and exit code are unchanged. A repo made before this gets the ignore on its next sync, with no step for the user. The file ignores itself, so while neither file is tracked a sync leaves nothing untracked and `git add -A` adds neither; a repo that committed either one sees it modified. Why ignored:
   - A report says what one sync did. Committed, a daily update in a fresh worktree would read last week's entry for an upstream that has not moved since, with nothing to tell it from today's, and each sync commit would carry a report that goes stale at the next one.
-  - Its readers cope without it. `status --json` shows `last_sync: null` and `upstream <name> --diff` asks for `--since <commit>`. The update skill reads it right after its own `sync`, in the same worktree.
+  - Its readers cope without it. `status --json` shows `lastSync: null` and `upstream <name> --diff` asks for `--since <commit>`. The update skill reads it right after its own `sync`, in the same worktree.
   - The sync journal already treats it as local state: it saves the file and puts it back when a sync fails, and keeps its own folder out of git the same way.
   - A repo that already committed the file keeps it tracked, since an ignore does not untrack a file. `git rm --cached .patchbook/last-sync.json` ends that, and sync does not run it for the user.
 - `patchbook status [--json]` lists the problems, what sync merged on its own, and how much upstream changed in each file we touch.
@@ -189,41 +189,67 @@ Where patchbook reads git's output, it takes off only the `\n` git ends a value 
 
 ## Ordering
 
-Patchbook sorts paths and names by code point. That is the order of their UTF-8 bytes, which git sorts paths in, and it is the same in every locale: `Z` comes before `a`, and `é` after `z`. It compares whole paths, so `a-b/x` comes before `a/b`, as `git ls-files` lists them. `build.lock`, the keys of `upstream.lock`, the files `upstream` lists and the paths `check` and `sync` report all follow this order.
+Patchbook sorts paths and names by code point. That is the order of their UTF-8 bytes, which git sorts paths in, and it is the same in every locale: `Z` comes before `a`, and `é` after `z`. It compares whole paths, so `a-b/x` comes before `a/b`, as `git ls-files` lists them. `build.lock`, the upstreams in `upstream.lock`, the files `upstream` lists and the paths `check` and `sync` report all follow this order.
 
-## JSON output
+## JSON files and output
 
-The update skill and other agents read three JSON documents: what `patchbook check` prints, what `patchbook status --json` prints, and `.patchbook/last-sync.json`, which `patchbook sync` writes. `CheckJson`, `StatusJson` and `LastSync` in `src/api.ts` are their types. The code that writes `check` and `last-sync.json` is typed against them. So is `status --json`, except `upstreams` and `last_sync`, which it copies from the files as they are. With patchbook installed from npm, `import type { CheckJson } from "patchbook"` gets the same types.
+Patchbook writes four JSON documents. `.patchbook/upstream.lock` is committed with the repo. `.patchbook/last-sync.json` is a report that `patchbook sync` writes and nobody commits. `patchbook check` and `patchbook status --json` print the other two. `UpstreamLock`, `LastSync`, `CheckJson` and `StatusJson` in `src/api.ts` are their types, and the code that writes each document is typed against its type. With patchbook installed from npm, `import type { CheckJson } from "patchbook"` gets the same types. Patchbook also reads two JSON texts that it doesn't write: a placeholder file with `format = "json"`, and the reply of the model that writes an intent.
 
-**Versions.** Each document has its own integer `version`, the first key. All three are 1. A version goes up when a field is removed or renamed, changes type, or means something else. A new field leaves it alone, so a reader ignores keys it doesn't know. So does a new `problem` kind, or a new prefix in `files`, so a reader treats a value it doesn't know as unknown and does not fail. A `last-sync.json` with no `version` was written before the field existed. It has the version 1 shape, and patchbook reads it as it reads a new one. `status --json` shows `last_sync` as the file has it, so for an older file `last_sync` has no `version` either.
+**Writing.** Patchbook writes each document with `JSON.stringify(value, null, 2)` and a newline at the end. Text outside ASCII is written as UTF-8, not as `\u` escapes, except that every control character is a `\u` escape, so none reaches a terminal raw. Keys come in the order the tables below list them. Each list of upstreams is a list of objects with `name` first, never an object keyed by upstream name, because JavaScript puts a key such as `2` in front of the other keys of an object, whatever order it was added in. Writing a number that isn't finite fails, so a `NaN` never becomes `null`.
 
-In the tables, `<name>` is an upstream's name.
+**Reading.** Patchbook reads JSON with `JSON.parse` and then checks the shape of what it got, in `src/lib/shape.ts`, the only place in `src/` that calls `JSON.parse`. It refuses text that isn't JSON, which includes `NaN` and `Infinity`. It also refuses a field that is missing or has the wrong type, an upstream named twice, a commit or tree that isn't 40 or 64 lowercase hex digits, and a count that isn't a whole number from 0, such as `1e400`. The message names the file and the field, as in `.patchbook/upstream.lock: upstreams[1].tree is missing.` A reader ignores keys it doesn't know.
+
+**Versions.** Each document patchbook writes has its own integer `version`, the first key. `upstream.lock` is version 1. `last-sync.json`, `check` and `status --json` are version 2. A version goes up when a field is removed or renamed, changes type, or means something else. A new field leaves it alone, so a reader ignores keys it doesn't know. So does a new `problem` kind, or a new prefix in `files`, so a reader treats a value it doesn't know as unknown and does not fail. Patchbook reads only the version it writes, and it has no code that converts an older file. It refuses a file with no version, or with another version, and says which, as in `.patchbook/last-sync.json is version 1, and this patchbook reads version 2.` To fix an `upstream.lock` from before version 1, which is an object keyed by upstream name, rewrite it by hand as the version 1 example below shows. To fix a `last-sync.json`, delete it. It only reports past syncs, and the next sync writes a new one.
+
+### `.patchbook/upstream.lock`
+
+Written by `clone`, `init`, `track` and `sync`, and committed. It has an entry for each upstream in the config that has a pin, sorted by name. An entry for a name that is no longer in the config is still checked when patchbook reads the file, and is left out the next time patchbook writes it.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `version` | `1` | |
+| `upstreams[].name` | string | The upstream's name in `config.toml`. |
+| `upstreams[].commit` | string | The pinned commit. |
+| `upstreams[].tree` | string | The pinned commit's tree hash. |
+
+```json
+{
+  "version": 1,
+  "upstreams": [
+    {
+      "name": "pstack",
+      "commit": "101b274b3f1c2b3e8a5d6c7f8e9a0b1c2d3e4f50",
+      "tree": "54ac5261f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5"
+    }
+  ]
+}
+```
 
 ### `patchbook check`
 
-Printed on stdout. Exit 0 if no upstream moved, 10 if any did.
+Printed on stdout. Exit 0 if no upstream moved, 10 if any did. It has an entry for each upstream in the config, in config order.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `version` | `1` | |
+| `version` | `2` | |
 | `moved` | boolean | Any upstream moved. |
-| `upstreams.<name>.pinned` | string or null | The pinned commit, null when nothing is pinned. |
-| `upstreams.<name>.head` | string | The commit at the head of the upstream's branch. |
-| `upstreams.<name>.moved` | boolean | The head's files differ from the pin's. A new commit with the same files is not a move, and in a fork neither is one that changes only upstream's own `.patchbook/`. |
-| `upstreams.<name>.files` | string list | Empty unless `moved`. Otherwise `added <path>`, `changed <path>` or `deleted <path>` for each file that differs, sorted by path. Paths include the upstream's mount. Files the build leaves out aren't listed. |
+| `upstreams[].name` | string | The upstream's name. |
+| `upstreams[].pinned` | string or null | The pinned commit, null when nothing is pinned. |
+| `upstreams[].head` | string | The commit at the head of the upstream's branch. |
+| `upstreams[].moved` | boolean | The head's files differ from the pin's. A new commit with the same files is not a move, and in a fork neither is one that changes only upstream's own `.patchbook/`. |
+| `upstreams[].files` | string list | Empty unless `moved`. Otherwise `added <path>`, `changed <path>` or `deleted <path>` for each file that differs, sorted by path. Paths include the upstream's mount. Files the build leaves out aren't listed. |
 
 ### `patchbook status --json`
 
-Printed on stdout. Exit 0 if `problems` is empty, 1 if not.
+Printed on stdout. Exit 0 if `problems` is empty, 1 if not. Plain `patchbook status` doesn't read `last-sync.json`. `status --json` does, so it stops on a `last-sync.json` it can't read.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `version` | `1` | |
-| `upstreams.<name>.commit` | string | The pinned commit, from `upstream.lock` as the file has it. |
-| `upstreams.<name>.tree` | string | The pinned commit's tree hash. |
+| `version` | `2` | |
+| `upstreams` | list | The entries of `upstream.lock` for the upstreams in the config: `{name, commit, tree}`, sorted by name. |
 | `applied` | integer | The number of edits that apply at the pins. |
 | `problems` | list | The problems, as below. |
-| `last_sync` | object or null | `last-sync.json` as the file has it, or null if there is none. |
+| `lastSync` | object or null | The document in `last-sync.json`, or null if there is none. |
 
 A problem always has `problem`, its kind, first. The other fields depend on the kind. A location is one of these sets of fields:
 
@@ -244,25 +270,36 @@ A problem always has `problem`, its kind, first. The other fields depend on the 
 | `placeholder` | output or block, `detail` | A `{{kind:name}}` that neither the `placeholder` hook nor the placeholder source gives a value. |
 | `leak` | output with `line`, or block, then `terms` | Text that a `[[check]]` pattern or `blockTerms` flags is still in the output. Without `hash`, `line` is the 1-based line in the output where the paragraph starts. `terms` is a string list. |
 | `missing` | block, `terms`, `upstream` | A paragraph that needs an entry. `upstream` is its text. |
-| `orphan` | `file`, `hash`, `kind`, `rules`, `intent`, `upstream`, `patched`, `nearest` | An entry whose paragraph changed upstream. `kind` is `translation`, `policy` or `keep`. `nearest` is a list of `{line, hash, similarity}`, where `similarity` is a number from 0.4 to 1, rounded to two places with a half rounded up. |
+| `orphan` | `file`, `hash`, `kind`, `rules`, `intent`, `upstream`, `patched`, `nearest` | An entry whose paragraph changed upstream. `kind` is `translation`, `policy` or `keep`. `nearest` is a list of `{line, hash, similarity}`, where `similarity` is a number from 0.4 to 1, as below. |
 | `check` | file, `detail` | A problem the repo's `check` hook reports. A hook may return any kind. |
+
+**Similarity.** A nearest block's `similarity` says how much of its text matches the entry's old paragraph. It is twice the code points in the blocks that `SequenceMatcher` matches, over the code points of both paragraphs. `similarity()` in `src/blocks.ts` makes the number, and it is the one place patchbook rounds it: to hundredths, with a half rounded up, worked out on the counts. So 0.575 is 0.58, where `Math.round(r * 100) / 100` gives 0.57, because 0.575 isn't exact in binary. `nearest` lists the two most similar paragraphs whose similarity is at least 0.4, most similar first, and on a tie in the order patchbook found them. `status` shows the same number as a percent, as in `nearest new blocks: line 7 [3f2a9c1b0d4e] 90%`, and so it shows a `similarity` that a `check` hook returns.
 
 ### `.patchbook/last-sync.json`
 
 Written by `patchbook sync`. It has an entry for each upstream in the config that a sync has moved, in config order. Each entry is the report of the latest sync that moved that upstream, so entries can come from different runs. A sync killed after it writes the report and before it moves the pin leaves an entry for a move `upstream.lock` does not hold, until the next `sync` puts the report back. An upstream no sync has moved has no entry.
 
-`sync` writes the file after each upstream it moves, before it moves that upstream's pin, and keeps the entries of the upstreams it did not move. It drops the entry of an upstream no longer in the config, even on a sync that moves nothing. A file that does not parse counts as empty, and the next sync that writes replaces it. To keep only one run's moves, a reader keeps the entries whose `from` is the upstream's pin before that run and whose `to` is its pin in `upstream.lock` after it.
+`sync` reads the file before it moves anything, and stops on a file it can't read, so it never drops the reports of the other upstreams. It writes the file after each upstream it moves, before it moves that upstream's pin, and keeps the entries of the upstreams it did not move. It drops the entry of an upstream no longer in the config, even on a sync that moves nothing. `upstream <name> --diff` reads it to find the earlier pin, and stops on a file it can't read, as `status --json` does. To keep only one run's moves, a reader keeps the entries whose `from` is the upstream's pin before that run and whose `to` is its pin in `upstream.lock` after it.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `version` | `1` | |
-| `upstreams.<name>.from` | string or null | The commit pinned before that sync, null when nothing was pinned before that sync. |
-| `upstreams.<name>.to` | string | The commit that sync pinned, unless that sync was killed before it moved the pin. Compare it with `upstream.lock` to tell. |
-| `upstreams.<name>.upstream` | string list | The files upstream changed, as `files` in `check`. |
-| `upstreams.<name>.merged` | list | `{change, path}` for each file edit that merged without conflict. |
-| `upstreams.<name>.conflicts` | list | `{change, path, count}` for a text file with `count` conflicts in our copy, or `{change, path, detail}` for a binary file. |
-| `upstreams.<name>.gone` | list | `{change, path, maybe}` for a file edit whose file upstream no longer has. `maybe` is up to three added paths with similar names, most similar first. |
-| `upstreams.<name>.replaced_upstream_changed` | string list | `<change>: <path>` for each `replace` edit whose file changed upstream. |
+| `version` | `2` | |
+| `upstreams[].name` | string | The upstream's name. |
+| `upstreams[].from` | string or null | The commit pinned before that sync, null when nothing was pinned before that sync. |
+| `upstreams[].to` | string | The commit that sync pinned, unless that sync was killed before it moved the pin. Compare it with `upstream.lock` to tell. |
+| `upstreams[].upstream` | string list | The files upstream changed, as `files` in `check`. |
+| `upstreams[].merged` | list | `{change, path}` for each file edit that merged without conflict. |
+| `upstreams[].conflicts` | list | `{change, path, count}` for a text file with `count` conflicts in our copy, or `{change, path, detail}` for a binary file. |
+| `upstreams[].gone` | list | `{change, path, maybe}` for a file edit whose file upstream no longer has. `maybe` is up to three added paths with similar names, most similar first. |
+| `upstreams[].replacedUpstreamChanged` | string list | `<change>: <path>` for each `replace` edit whose file changed upstream. |
+
+### Placeholder files
+
+For a `[placeholders.<kind>]` table with `format = "json"`, the default, patchbook reads its `file` as one JSON object. Each key is a placeholder's name, and its value is a string, or a list of strings that patchbook joins with `, `. A key that starts with `_` is a comment, whatever its value. Patchbook refuses any other value, such as a number, `true` or `null`, and names the file and the key: `.patchbook/strings.json: "enabled" must be a string or a list of strings, not true.`
+
+### The model's reply
+
+The model that writes an intent replies with `{"change": "<name>", "intent": "<intent>"}`. Patchbook reads the text from the first `{` to the last `}` of the reply as JSON. `record` stops if the reply has no object, if the object isn't JSON, if `change` or `intent` is missing or isn't a string, if `change` breaks the change-name rule, or if `intent` is blank. Its message says which, as in `claude's reply: intent is missing.`, then quotes the first 500 characters of the reply and asks for a name and `--intent`.
 
 ## Settings
 
@@ -292,7 +329,7 @@ This repo ships a `patchbook-update` skill, built into the `patchbook` binary. `
 3. Resolves each problem from the change's intent and the repo's guide (`guide` in the config). One commit per change.
 4. Deletes scratch files it or a test wrote, and asks if a file in the output or a vendored copy was edited by hand. Then commits each other change left in the worktree on its own, never `.patchbook/last-sync.json`, or asks if it can't tell what one is. Builds, the run's only build, and commits what the build wrote. Then runs the `test` from the config on `origin/main`, which is a command or an instruction file for the agent, and asks if it can't read that file there. After each test run it deletes every untracked file that isn't ignored, except `.patchbook/last-sync.json`, since only the test can have left one. It makes at most two attempts to fix a failing test, each changing what the test checks, never the test, its scripts or its fixtures. It commits each test fix on its own, then builds and tests again.
 5. Starts a review in a fresh subagent. With T3's `delegate_task` it runs on another provider's model when T3 can run one, otherwise on the same model. With another agent's subagent tool it runs on that agent's model. With no subagent tool, the skill reviews the work itself in a separate pass. The reviewer gets each intent, the upstream change, and our result, and says per change whether the result meets the intent, and once whether upstream added anything that should have been handled. A change or question with no verdict counts as a fail. It waits up to an hour for the verdict before step 6, and a review that times out or stops on a question counts as a fail. Such a fail finds nothing to fix, so it commits nothing before the next round. It commits each review fix on its own, then builds and tests again. At most two rounds.
-6. If, on the commit it pushes, `patchbook status` and `patchbook build` exit 0 and `git status --porcelain --untracked-files=no` prints nothing after the build, and the sync was clean or the test command on `origin/main` exited 0, pushes its branch to `main`, runs the config's `deploy`, removes the worktree and branch it made (without `--force`, keeping them if git refuses), and ends with a short summary, reporting a failed deploy as a failure, settling the thread when it has thread tools. The sync was clean when the report of each upstream `patchbook sync` pinned has an empty `replaced_upstream_changed`, step 3 found nothing to handle, nothing came after the sync commit but files the build wrote, and the rebase brought in no commits.
+6. If, on the commit it pushes, `patchbook status` and `patchbook build` exit 0 and `git status --porcelain --untracked-files=no` prints nothing after the build, and the sync was clean or the test command on `origin/main` exited 0, pushes its branch to `main`, runs the config's `deploy`, removes the worktree and branch it made (without `--force`, keeping them if git refuses), and ends with a short summary, reporting a failed deploy as a failure, settling the thread when it has thread tools. The sync was clean when the report of each upstream `patchbook sync` pinned has an empty `replacedUpstreamChanged`, step 3 found nothing to handle, nothing came after the sync commit but files the build wrote, and the rebase brought in no commits.
 
 It stops and asks instead of merging when:
 
@@ -304,7 +341,7 @@ It stops and asks instead of merging when:
 - a test fails and it can't fix it, an instruction-file test included, or it can't read the instruction file on `origin/main`;
 - a test leaves tracked files changed, even if it passed;
 - step 4 finds a hand edit to the output or a vendored copy;
-- a `replaced_upstream_changed` entry in the report of an upstream `patchbook sync` pinned has no step 3 commit that names its file;
+- a `replacedUpstreamChanged` entry in the report of an upstream `patchbook sync` pinned has no step 3 commit that names its file;
 - the branch changes the config's `test`;
 - the only fix for a failing test changes the test, its scripts or its fixtures;
 - the final rebase fails, which it aborts.
