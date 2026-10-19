@@ -176,7 +176,7 @@ function replyFields(reply: string): ReadonlyMap<string, PyValue> {
     const answer = loads(FENCE.exec(text)?.[1] ?? text);
     if (answer instanceof Map) return answer;
   } catch (e) {
-    if (!(e instanceof JsonError)) throw e;
+    if (!(e instanceof JsonError || e instanceof RangeError)) throw e;
   }
   return new Map();
 }

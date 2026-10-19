@@ -13395,6 +13395,7 @@ describe("PendingIntentTest", () => {
       ["a_fence_around_text", "```\nnot json\n```"],
       ["an_unclosed_fence", "```json\n" + REPLY],
       ["an_array_holding_the_object", `[${REPLY}]`],
+      ["an_array_nested_too_deep_to_decode", "[".repeat(32768) + "0" + "]".repeat(32768)],
       ["an_object_with_a_missing_intent", '{"change": "louder"}'],
       ["text_that_is_not_json", "I cannot help with that."],
       ["an_empty_reply", ""],
