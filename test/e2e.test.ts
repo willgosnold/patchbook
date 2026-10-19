@@ -9314,6 +9314,45 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     t.pb(["build"], { cwd: t.fork.path });
   });
 
+  // A placeholder copy record must skip, and a series line naming no change, which status reports as a problem.
+  const skipWithAProblem = (t: ForkCase): void => {
+    ownedFileEdit(t, "{{snippet:v}}", true);
+    t.fork.write(".patchbook/series", t.fork.read(".patchbook/series") + "ghost\n");
+    t.fork.commit("a problem");
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("series: no change called ghost");
+  };
+
+  forkTest("test_hook_refuses_an_edit_it_cant_record_when_the_patchbook_has_a_problem", (t) => {
+    skipWithAProblem(t);
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("one", "ONE"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    const state = gitState(t);
+    const files = tree(t.fork.path);
+    const refused = intoKeptCommit(t);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain("couldn't record these hand edits:\n  app.txt\n");
+    expect(gitState(t)).toBe(state);
+    expect(tree(t.fork.path)).toEqual(files);
+  });
+
+  forkTest("test_hook_still_commits_with_a_problem_when_every_edit_is_recorded", (t) => {
+    skipWithAProblem(t);
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+    t.fork.write(".patchbook/notes.md", "a note\n");
+    sh(["git", "add", ".patchbook/notes.md"], { cwd: t.fork.path });
+    const noEdit = intoKeptCommit(t);
+    expect(noEdit.code).toBe(0);
+    expect(noEdit.stderr).toContain("1 problems, so the output wasn't rebuilt.");
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).not.toBe(head);
+    t.fork.write("docs/guide.md", "a better guide\n");
+    sh(["git", "add", "docs/guide.md"], { cwd: t.fork.path });
+    const recorded = intoKeptCommit(t);
+    expect(recorded.code).toBe(0);
+    expect(recorded.stderr).toContain("1 problems, so the output wasn't rebuilt.");
+    expect(changeText(t, "shout-two")).toContain("- file docs/guide.md");
+    expect(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.fork.path }).stdout).toContain(".patchbook/changes/shout-two/CHANGE.md");
+  });
+
   forkTest("a symlink the fork adds stays a symlink in the build", (t) => {
     symlinkSync("app.txt", join(t.fork.path, "link"));
     t.pb(["record", "link", "--intent", "Link to the app."], { cwd: t.fork.path });
