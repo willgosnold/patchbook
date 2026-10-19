@@ -2508,6 +2508,20 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(read(user)).not.toContain("fake-x");
   });
 
+  forkTest("test_config_writes_the_user_config_and_installs_a_missing_hook_in_a_clone", (t) => {
+    sh(["git", "clone", "-q", t.fork.path, "teammate"], { cwd: t.tmp });
+    const teammate = new Repo(join(t.tmp, "teammate"));
+    const hook = join(teammate.path, ".git/hooks/pre-commit");
+    expect(existsSync(hook)).toBe(false);
+    const out = t.pb(["config", "intent.model", "fake-x"], { cwd: teammate.path });
+    expect(out.stdout).toContain("intent.model");
+    expect(out.stderr).toContain("installed a pre-commit hook");
+    expect(read(hook)).toContain("Installed by patchbook");
+    teammate.write("app.txt", replace(teammate.read("app.txt"), "two", "TWO"));
+    sh(["git", "commit", "-qam", "shout"], { cwd: teammate.path, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    expect(existsSync(join(teammate.path, ".patchbook/changes/shout/CHANGE.md"))).toBe(true);
+  });
+
   forkTest("test_a_user_config_that_is_not_toml_is_named_in_the_error", (t) => {
     const user = join(t.tmp, "config/patchbook/config.toml");
     mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
