@@ -5,7 +5,8 @@ import { describe, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CheckJson, UpstreamCheck, UpstreamLock } from "../src/api.ts";
-import { Case, Repo, partitionHead, replace, sh, shlexQuote as q, words } from "./helpers";
+import { shellQuote as q } from "../src/lib/proc.ts";
+import { Case, Repo, sh, words } from "./helpers";
 
 const TIMEOUT = 120_000;
 
@@ -76,7 +77,7 @@ class Fork extends Sandbox {
   }
 
   edit(): void {
-    this.fork.write("app.txt", replace(this.fork.read("app.txt"), "two", "TWO"));
+    this.fork.write("app.txt", this.fork.read("app.txt").replaceAll("two", "TWO"));
   }
 
   record(args: string[] = [], code: number | null = 0) {
@@ -440,8 +441,8 @@ pattern = '\bCursor\b'
 `);
     this.pb(["scaffold"], { cwd: this.repo.path });
     this.entries = join(this.repo.path, ".patchbook/blocks/guide.md.entries");
-    const text = replace(read(this.entries), "rules: \nintent: \n", "rules: t3\nintent: Speak T3.\n");
-    writeFileSync(this.entries, `${partitionHead(text, "--- patched\n")}--- patched\nOpen T3 and say hello.\n`);
+    const text = read(this.entries).replaceAll("rules: \nintent: \n", "rules: t3\nintent: Speak T3.\n");
+    writeFileSync(this.entries, `${text.split("--- patched\n")[0]!}--- patched\nOpen T3 and say hello.\n`);
     this.pb(["build"], { cwd: this.repo.path });
   }
 
@@ -450,7 +451,7 @@ pattern = '\bCursor\b'
   }
 
   edit(old: string, repl: string): void {
-    this.repo.write(this.guide, replace(this.repo.read(this.guide), old, repl));
+    this.repo.write(this.guide, this.repo.read(this.guide).replaceAll(old, repl));
   }
 
   record(args: string[] = []) {

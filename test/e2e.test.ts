@@ -5,7 +5,7 @@ import { accessSync, appendFileSync, chmodSync, constants, existsSync, lstatSync
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import type { CheckJson, LastSync, Nearest, SyncReport, UpstreamCheck, UpstreamLock, UpstreamPin } from "../src/api.ts";
-import { CMD, Case, Repo, TOOL, type Run, dedent, lstrip, mkdirNew, partitionHead, replace, sh, shlexSplit, words } from "./helpers";
+import { CMD, Case, Repo, TOOL, type Run, dedent, sh, splitWords, words } from "./helpers";
 
 const TIMEOUT = 120_000;
 
@@ -67,7 +67,7 @@ const setRemote = (config: string, remote: string): void => writeFileSync(config
 const cloneFollowing = (t: ForkCase, remote: string): string => {
   const origin = join(t.tmp, "origin.git");
   sh(["git", "init", "-q", "--bare", origin], { cwd: t.tmp });
-  t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+  t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
   t.up.commit("upstream edit");
   t.pb(["sync"], { cwd: t.fork.path });
   setRemote(join(t.fork.path, ".patchbook/config.toml"), remote);
@@ -114,7 +114,7 @@ class ForkCase extends Case {
   }
 
   recordFeature(): void {
-    this.fork.write("app.txt", replace(this.fork.read("app.txt"), "two", "TWO"));
+    this.fork.write("app.txt", this.fork.read("app.txt").replaceAll("two", "TWO"));
     this.fork.write("extra.txt", "ours\n");
     this.fork.rm("docs/guide.md");
     this.pb(["record", "feature", "--intent", "Shout the second line, add extra.txt, drop the guide."], { cwd: this.fork.path });
@@ -172,12 +172,12 @@ class VendorCase extends Case {
 
   recordEdit(old: string, repl: string, ...args: string[]): string {
     const skill = "skills/hello/SKILL.md";
-    this.repo.write(skill, replace(this.repo.read(skill), old, repl));
+    this.repo.write(skill, this.repo.read(skill).replaceAll(old, repl));
     const out = this.pb(["record", ...args], { cwd: this.repo.path }).stdout;
     const edited = this.repo.read(skill);
     this.pb(["build"], { cwd: this.repo.path }); // no --force: the edit is recorded
     expect(this.repo.read(skill)).toBe(edited);
-    expect(replace(this.pb(["status"], { cwd: this.repo.path }).stdout, "no problems", "")).not.toContain("problem");
+    expect(this.pb(["status"], { cwd: this.repo.path }).stdout.replaceAll("no problems", "")).not.toContain("problem");
     return out;
   }
 
@@ -187,8 +187,8 @@ class VendorCase extends Case {
     expect(status).not.toContain("README"); // only what ships is checked
     this.pb(["scaffold"], { cwd: this.repo.path });
     const entries = join(this.repo.path, ".patchbook/blocks/skills/hello/SKILL.md.entries");
-    const text = replace(read(entries), "rules: \nintent: \n", "rules: t3\nintent: Speak T3.\n");
-    const head = partitionHead(text, "--- patched\n");
+    const text = read(entries).replaceAll("rules: \nintent: \n", "rules: t3\nintent: Speak T3.\n");
+    const head = text.split("--- patched\n")[0]!;
     writeFileSync(entries, head + "--- patched\n{{snippet:greet}}\n");
     this.pb(["build"], { cwd: this.repo.path });
     const out = this.repo.read("skills/hello/SKILL.md");
@@ -3242,7 +3242,7 @@ const COMMANDS: Record<string, (printed: string) => string[]> = {
   "lefthook.yml": (printed) => ["sh", "-c", parsed.yaml(printed)["pre-commit"].commands.patchbook.run],
   "lefthook.toml": (printed) => ["sh", "-c", parsed.toml(printed)["pre-commit"].commands.patchbook.run],
   "lefthook.json": (printed) => ["sh", "-c", parsed.json(printed)["pre-commit"].commands.patchbook.run],
-  ".pre-commit-config.yaml": (printed) => shlexSplit(parsed.yaml(printed).repos[0].hooks[0].entry),
+  ".pre-commit-config.yaml": (printed) => splitWords(parsed.yaml(printed).repos[0].hooks[0].entry),
 };
 
 const printedSnippet = (stderr: string): string => stderr.split("rebuilt output:\n\n")[1]!.split("\nLeave parallel off")[0]!;
@@ -4154,7 +4154,7 @@ describe("ForkTest", () => {
 
   forkTest("test_a_vendor_folder_on_the_root_upstream_is_rejected", (t) => {
     const config = join(t.fork.path, ".patchbook/config.toml");
-    writeFileSync(config, replace(read(config), 'mount = ""', 'mount = ""\nvendor = "vendor"'));
+    writeFileSync(config, read(config).replaceAll('mount = ""', 'mount = ""\nvendor = "vendor"'));
     const status = t.pb(["status"], { cwd: t.fork.path, code: 1 });
     expect(status.stderr).toContain("the vendored copy of upstream (vendor) overlaps the folder upstream builds into (the repo root)");
     expect(status.stderr).toContain("Change vendor for upstream.");
@@ -4368,7 +4368,7 @@ describe("ForkTest", () => {
     t.pb(["track", "lib", lib.path], { cwd: t.fork.path });
     t.pb(["track", "bup", bup.path, "--vendor", "lib/vendored"], { cwd: t.fork.path });
     const change = join(t.fork.path, ".patchbook/changes/into-vendor");
-    mkdirNew(join(change, "ours/lib/vendored"));
+    mkdirSync(join(change, "ours/lib/vendored"), { recursive: true });
     writeFileSync(join(change, "ours/lib/vendored/n.md.pb"), "ours\n");
     writeFileSync(join(change, "CHANGE.md"), "# into-vendor\n\nintent: Write into the vendored copy.\n\nedits:\n- add lib/vendored/n.md\n");
     writeFileSync(join(t.fork.path, ".patchbook/series"), "into-vendor\n");
@@ -4391,7 +4391,7 @@ describe("ForkTest", () => {
       t.pb(["build"], { cwd: t.fork.path });
       t.fork.commit("track");
       const change = join(t.fork.path, ".patchbook/changes/into-vendor");
-      mkdirNew(join(change, "ours/vendor/extra"));
+      mkdirSync(join(change, "ours/vendor/extra"), { recursive: true });
       writeFileSync(join(change, "ours/vendor/extra/new.md.pb"), "ours\n");
       writeFileSync(join(change, "CHANGE.md"), `# into-vendor\n\nintent: Write into the vendored copy.\n\nedits:\n- ${edit}\n`);
       writeFileSync(join(t.fork.path, ".patchbook/series"), "into-vendor\n");
@@ -4422,7 +4422,7 @@ describe("ForkTest", () => {
   for (const [name, edit, dest, place] of intoKept) {
     forkTest(`test_${name}_is_invalid_and_nothing_is_written`, (t) => {
       const change = join(t.fork.path, ".patchbook/changes/into-kept");
-      mkdirNew(change);
+      mkdirSync(change, { recursive: true });
       if (edit.startsWith("add ")) {
         mkdirSync(join(change, "ours", dirname(dest)), { recursive: true });
         writeFileSync(join(change, "ours", `${dest}.pb`), "ours\n");
@@ -4465,14 +4465,14 @@ describe("ForkTest", () => {
     for (const pending of [false, true]) {
       forkTest(`test_hook_refuses_a_${name}${pending ? "_with_a_hand_edit_pending" : ""}_and_leaves_everything_as_it_was`, (t) => {
         const change = join(t.fork.path, ".patchbook/changes/into-kept");
-        mkdirNew(change);
+        mkdirSync(change, { recursive: true });
         if (edit.startsWith("add ")) {
           mkdirSync(join(change, "ours", dirname(dest)), { recursive: true });
           writeFileSync(join(change, "ours", `${dest}.pb`), "ours\n");
         }
         writeFileSync(join(change, "CHANGE.md"), `# into-kept\n\nintent: Write into a place a build keeps.\n\nedits:\n- ${edit}\n`);
         writeFileSync(join(t.fork.path, ".patchbook/series"), "into-kept\n");
-        if (pending) t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+        if (pending) t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
         sh(["git", "add", "-A"], { cwd: t.fork.path });
         const files = tree(t.fork.path);
         const state = gitState(t);
@@ -4529,10 +4529,10 @@ describe("ForkTest", () => {
     for (const pending of [false, true]) {
       forkTest(`test_hook_refuses_an_unsafe_${name}_edit${pending ? "_with_a_hand_edit_pending" : ""}_and_leaves_everything_as_it_was`, (t) => {
         const change = join(t.fork.path, ".patchbook/changes/unsafe");
-        mkdirNew(change);
+        mkdirSync(change, { recursive: true });
         writeFileSync(join(change, "CHANGE.md"), `# unsafe\n\nintent: Name a path outside the tree.\n\nedits:\n- ${edit}\n`);
         writeFileSync(join(t.fork.path, ".patchbook/series"), "unsafe\n");
-        if (pending) t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+        if (pending) t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
         sh(["git", "add", "-A"], { cwd: t.fork.path });
         const files = tree(t.fork.path);
         const state = gitState(t);
@@ -4555,7 +4555,7 @@ describe("ForkTest", () => {
 
   forkTest("test_hook_still_warns_and_commits_for_another_problem", (t) => {
     const change = join(t.fork.path, ".patchbook/changes/gone");
-    mkdirNew(change);
+    mkdirSync(change, { recursive: true });
     writeFileSync(join(change, "CHANGE.md"), "# gone\n\nintent: Delete a file upstream lacks.\n\nedits:\n- delete missing.txt\n");
     writeFileSync(join(t.fork.path, ".patchbook/series"), "gone\n");
     sh(["git", "add", "-A"], { cwd: t.fork.path });
@@ -4592,7 +4592,7 @@ describe("ForkTest", () => {
   for (const [name, edit] of escaping) {
     forkTest(`test_${name}_is_invalid_and_nothing_is_read_or_written_outside`, (t) => {
       const change = join(t.fork.path, ".patchbook/changes/esc");
-      mkdirNew(join(change, "ours"));
+      mkdirSync(join(change, "ours"), { recursive: true });
       const path = /^add (\S+)$/.exec(edit)?.[1];
       if (path) {
         mkdirSync(dirname(join(change, "ours", path)), { recursive: true });
@@ -4622,7 +4622,7 @@ describe("ForkTest", () => {
     ["leading_dot", ".x"], ["with_a_space", "a b"], ["with_an_underscore", "a_b"],
   ] as const) {
     forkTest(`test_record_refuses_a_${label}_change_name_and_writes_nothing`, (t) => {
-      t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+      t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
       const before = tree(t.fork.path);
       const beside = readdirSync(t.tmp).sort();
       const refused = t.pb(["record", name, "--intent", "Shout the second line."], { cwd: t.fork.path, code: 1 });
@@ -4633,7 +4633,7 @@ describe("ForkTest", () => {
   }
 
   forkTest("test_a_series_line_that_is_not_a_change_name_is_invalid_and_its_folder_is_not_read", (t) => {
-    mkdirNew(join(t.fork.path, ".patchbook/elsewhere"));
+    mkdirSync(join(t.fork.path, ".patchbook/elsewhere"), { recursive: true });
     writeFileSync(join(t.fork.path, ".patchbook/elsewhere/CHANGE.md"), "# elsewhere\n\nintent: Not a change.\n\nedits:\n- delete app.txt\n");
     writeFileSync(join(t.fork.path, ".patchbook/series"), "../elsewhere\n..\n.\na/b\n/abs\n");
     const status = t.pb(["status"], { cwd: t.fork.path, code: 1 });
@@ -4652,7 +4652,7 @@ describe("ForkTest", () => {
 
   forkTest("test_a_change_folder_that_is_not_a_change_name_is_invalid_and_a_strict_one_is_just_unlisted", (t) => {
     for (const name of ["we\\ird", "Loose_Name", "loose-name"]) {
-      mkdirNew(join(t.fork.path, ".patchbook/changes", name));
+      mkdirSync(join(t.fork.path, ".patchbook/changes", name), { recursive: true });
       writeFileSync(join(t.fork.path, ".patchbook/changes", name, "CHANGE.md"), `# ${name}\n\nintent: Loose.\n\nedits:\n- delete app.txt\n`);
     }
     const status = t.pb(["status"], { cwd: t.fork.path, code: 1 });
@@ -4668,14 +4668,14 @@ describe("ForkTest", () => {
     ["a_folder_with_a_backslash_that_is_not_in_the_series", "we\\ird", false],
   ] as const;
   const badName = (t: ForkCase, name: string, listed: boolean): void => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     t.pb(["record", "tmp-fix", "--intent", "Shout the second line."], { cwd: t.fork.path });
     const changes = join(t.fork.path, ".patchbook/changes");
     renameSync(join(changes, "tmp-fix"), join(changes, name));
     writeFileSync(join(changes, name, "CHANGE.md"), read(join(changes, name, "CHANGE.md")).replace("# tmp-fix", `# ${name}`));
     writeFileSync(join(t.fork.path, ".patchbook/series"), listed ? `${name}\n` : "");
     t.fork.commit("bad name");
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("three", "THREE"));
   };
 
   for (const [what, name, listed] of badNames) {
@@ -4720,7 +4720,7 @@ describe("ForkTest", () => {
   }
 
   forkTest("test_record_still_takes_a_strict_name_and_makes_one_from_the_intent", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     t.pb(["record", "my-fix", "--intent", "Shout the second line."], { cwd: t.fork.path });
     t.fork.write("extra.txt", "ours\n");
     t.pb(["record", "--intent", "Add an extra file."], { cwd: t.fork.path });
@@ -4731,7 +4731,7 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_record_with_an_empty_name_names_the_change_from_the_intent", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     t.pb(["record", "", "--intent", "Make the second line loud."], { cwd: t.fork.path });
     expect(readdirSync(join(t.fork.path, ".patchbook/changes"))).toEqual(["make-the-second-line"]);
   });
@@ -4754,7 +4754,7 @@ describe("ForkTest", () => {
     });
   };
   const fix = (t: ForkCase): void => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     t.pb(["record", "fix", "--intent", "Shout the second line."], { cwd: t.fork.path });
     t.pb(["build", "--force"], { cwd: t.fork.path });
     t.fork.commit("fix");
@@ -4763,7 +4763,7 @@ describe("ForkTest", () => {
   keepsRejected(
     "test_record_keeps_an_edit_line_it_rejected_when_it_updates_the_change_that_owns_the_file",
     fix,
-    (t) => t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE")),
+    (t) => t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("three", "THREE")),
     (t) => void t.pb(["record", "--intent", "Shout more."], { cwd: t.fork.path }),
   );
   keepsRejected(
@@ -4792,7 +4792,7 @@ describe("ForkTest", () => {
     t.fork.commit("track");
     t.up.write(".patchbook/notes.md", "upstream's notes\n");
     t.up.write("vendor/extra/new.md", "new\n");
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
     t.up.commit("upstream edit");
     const notice = "patchbook: left 1 upstream files out of the build because they would land in a vendored copy: vendor/extra (1).\n";
     const checked = t.pb(["check"], { cwd: t.fork.path, code: 10 });
@@ -4806,7 +4806,7 @@ describe("ForkTest", () => {
 
   for (const kind of ["annotated", "lightweight"]) {
     forkTest(`test_sync_does_not_import_the_${kind}_tags_of_an_in_repo_upstream`, (t) => {
-      t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+      t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
       t.up.commit("upstream edit");
       sh(["git", "tag", ...(kind === "annotated" ? ["-a", "-m", "release"] : []), "v6"], { cwd: t.up.path });
       t.pb(["sync", "upstream"], { cwd: t.fork.path });
@@ -4834,7 +4834,7 @@ describe("ForkTest", () => {
 
   forkTest("test_sync_merges_clean_upstream_change", (t) => {
     t.recordFeature();
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
     const head = t.up.commit("upstream edit");
     const check = t.pb(["check"], { cwd: t.fork.path, code: 10 });
     expect(check.stdout).toContain("changed app.txt");
@@ -4854,7 +4854,7 @@ describe("ForkTest", () => {
     const hooked = { ...t.env, PATCHBOOK_HOOK: "1" };
     sh(["git", "init", "-q", "--bare", origin], { cwd: t.tmp });
     sh(["git", "remote", "add", "origin", origin], { cwd: t.fork.path });
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
     const head = t.up.commit("upstream edit");
     t.pb(["sync"], { cwd: t.fork.path });
     sh(["git", "commit", "-qam", "Sync upstream"], { cwd: t.fork.path, env: hooked });
@@ -4863,7 +4863,7 @@ describe("ForkTest", () => {
     const fresh = new Repo(join(t.tmp, "fresh"));
     expect(t.pb(["status"], { cwd: fresh.path }).stdout).toBe(`0 edits apply at upstream ${head.slice(0, 7)}; no problems\n`);
     expect(t.pb(["build"], { cwd: fresh.path }).stdout).toContain(`from upstream ${head.slice(0, 7)}`);
-    fresh.write("app.txt", replace(fresh.read("app.txt"), "two", "TWO"));
+    fresh.write("app.txt", fresh.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "commit", "-qam", "shout"], { cwd: fresh.path, env: hooked });
     expect(words(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: fresh.path }).stdout)).toContain(".patchbook/changes/shout/CHANGE.md");
     t.pb(["build", "--commit"], { cwd: fresh.path });
@@ -4873,7 +4873,7 @@ describe("ForkTest", () => {
   forkTest("test_a_fork_and_its_clone_keep_the_pin_through_gc_when_upstream_is_gone", (t) => {
     const origin = join(t.tmp, "origin.git");
     sh(["git", "init", "-q", "--bare", origin], { cwd: t.tmp });
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
     const head = t.up.commit("upstream edit");
     t.pb(["sync"], { cwd: t.fork.path });
     t.fork.commit("Sync upstream");
@@ -4881,7 +4881,7 @@ describe("ForkTest", () => {
     sh(["git", "clone", "-q", "-b", "main", origin, "fresh"], { cwd: t.tmp });
     const fresh = new Repo(join(t.tmp, "fresh"));
     t.pb(["hook", "install"], { cwd: fresh.path });
-    fresh.write("app.txt", replace(fresh.read("app.txt"), "two", "TWO"));
+    fresh.write("app.txt", fresh.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "commit", "-qam", "shout"], { cwd: fresh.path, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
     expect(words(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: fresh.path }).stdout)).toContain(".patchbook/changes/shout/CHANGE.md");
     rmSync(t.up.path, { recursive: true });
@@ -4910,7 +4910,7 @@ describe("ForkTest", () => {
   forkTest("test_a_relative_remote_in_config_fails_sync_status_and_check_and_pins_nothing", (t) => {
     const config = join(t.fork.path, ".patchbook/config.toml");
     writeFileSync(config, read(config).replace(`remote = "${t.up.path}"`, 'remote = "../fork"'));
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
     t.up.commit("upstream edit");
     const lock = t.fork.read(".patchbook/upstream.lock");
     for (const command of ["sync", "status", "check"]) {
@@ -4952,7 +4952,7 @@ describe("ForkTest", () => {
   forkTest("test_a_remote_that_starts_with_a_dash_fails_sync_status_and_check_and_pins_nothing", (t) => {
     const config = join(t.fork.path, ".patchbook/config.toml");
     const original = read(config);
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
     t.up.commit("upstream edit");
     const lock = t.fork.read(".patchbook/upstream.lock");
     for (const remote of ["--bogus", "-x", "--bogus=a:b"]) {
@@ -5050,11 +5050,11 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_init_refuses_an_upstream_remote_that_points_elsewhere_and_pins_nothing", (t) => {
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "one", "ONE"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("one", "ONE"));
     t.up.commit("b1");
     const mine = join(t.tmp, "mine");
     sh(["git", "clone", "-q", t.up.path, mine], { cwd: t.tmp });
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "two", "TWO"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("two", "TWO"));
     t.up.commit("b2");
     const other = join(t.tmp, "other");
     sh(["git", "clone", "-q", t.up.path, other], { cwd: t.tmp });
@@ -5072,7 +5072,7 @@ describe("ForkTest", () => {
     sh(["git", "init", "-q", "--bare", origin], { cwd: t.tmp });
     let head = "";
     for (const word of ["four", "five", "six"]) {
-      t.up.write("app.txt", replace(t.up.read("app.txt"), word, word.toUpperCase()));
+      t.up.write("app.txt", t.up.read("app.txt").replaceAll(word, word.toUpperCase()));
       head = t.up.commit(`shout ${word}`);
     }
     t.pb(["sync"], { cwd: t.fork.path });
@@ -5090,7 +5090,7 @@ describe("ForkTest", () => {
   forkTest("test_a_full_fork_stays_full_after_a_sync_fetches_a_new_pin", (t) => {
     const shallow = (): string => sh(["git", "rev-parse", "--is-shallow-repository"], { cwd: t.fork.path }).stdout.trim();
     expect(shallow()).toBe("false");
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
     const head = t.up.commit("upstream edit");
     t.pb(["sync"], { cwd: t.fork.path });
     expect(lockPin(t.fork.read(".patchbook/upstream.lock"), "upstream").commit).toBe(head);
@@ -5100,7 +5100,7 @@ describe("ForkTest", () => {
 
   forkTest("test_conflict_and_gone", (t) => {
     t.recordFeature();
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "two", "deux"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("two", "deux"));
     t.up.commit("conflicting edit");
     t.pb(["sync"], { cwd: t.fork.path });
     const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
@@ -5159,7 +5159,7 @@ describe("ForkTest", () => {
       "",
     ].join("\n");
     expect(t.pb(["check"], { cwd: t.fork.path }).stdout).toBe(document(false, pinned, "[]"));
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
     const head = t.up.commit("upstream edit");
     expect(t.pb(["check"], { cwd: t.fork.path, code: 10 }).stdout).toBe(document(true, head, '[\n        "changed app.txt"\n      ]'));
   });
@@ -5167,7 +5167,7 @@ describe("ForkTest", () => {
   forkTest("test_sync_writes_a_versioned_report", (t) => {
     t.recordFeature();
     const from = lockPin(t.fork.read(".patchbook/upstream.lock"), "upstream").commit;
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
     const to = t.up.commit("upstream edit");
     t.pb(["sync"], { cwd: t.fork.path });
     expect(t.fork.read(".patchbook/last-sync.json")).toBe([
@@ -5216,7 +5216,7 @@ describe("ForkTest", () => {
       "",
     ].join("\n"));
     t.recordFeature();
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "two", "deux"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("two", "deux"));
     t.up.commit("conflicting edit");
     t.pb(["sync"], { cwd: t.fork.path });
     const status = JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path, code: 1 }).stdout);
@@ -5270,13 +5270,13 @@ describe("ForkTest", () => {
   ] as const) {
     forkTest(`test_a_last_sync_from_${what}_is_refused_by_every_command_that_reads_it`, (t) => {
       t.recordFeature();
-      t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+      t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
       t.up.commit("upstream edit");
       t.pb(["sync"], { cwd: t.fork.path });
       const path = join(t.fork.path, ".patchbook/last-sync.json");
       const { upstreams } = syncedAt(t.fork.path);
       writeFileSync(path, JSON.stringify({ version, upstreams: Object.fromEntries(upstreams.map(({ name, ...r }) => [name, r])) }, null, 2) + "\n");
-      t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
+      t.up.write("app.txt", t.up.read("app.txt").replaceAll("five", "FIVE"));
       t.up.commit("second edit");
       const before = tree(t.fork.path);
       for (const args of [["status", "--json"], ["sync"], ["upstream", "upstream", "--diff"]]) {
@@ -5316,7 +5316,7 @@ describe("ForkTest", () => {
       const config = join(t.repo.path, ".patchbook/config.toml");
       writeFileSync(config, read(config) + '\n[placeholders.str]\nfile = ".patchbook/strings.json"\nformat = "json"\n');
       t.repo.write(".patchbook/strings.json", json);
-      writeFileSync(entries, replace(read(entries), "{{snippet:greet}}", "{{str:greet}} {{str:tools}}"));
+      writeFileSync(entries, read(entries).replaceAll("{{snippet:greet}}", "{{str:greet}} {{str:tools}}"));
       return entries;
     };
 
@@ -5340,7 +5340,7 @@ describe("ForkTest", () => {
     t.missingScaffoldPatchBuild();
     t.repo.commit("built");
     const skill = "plugin/skills/hello/SKILL.md";
-    t.up.write(skill, replace(t.up.read(skill), "say hello", "say hi"));
+    t.up.write(skill, t.up.read(skill).replaceAll("say hello", "say hi"));
     t.up.commit("reword");
     t.pb(["sync"], { cwd: t.repo.path });
     const out = t.pb(["status", "--json"], { cwd: t.repo.path, code: 1 }).stdout;
@@ -5367,19 +5367,19 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_record_writes_the_name_and_intent", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     const out = t.pb(["record"], { cwd: t.fork.path });
     expect(out.stdout).toContain("shout: Shout the second line.");
     const change = read(join(t.fork.path, ".patchbook/changes/shout/CHANGE.md"));
     expect(change).toContain("intent: Shout the second line.");
     expect(change).toContain("- file app.txt");
     expect(read(join(t.tmp, "prompt.txt"))).toContain("+TWO");
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("three", "THREE"));
     t.pb(["record"], { cwd: t.fork.path }); // the model picks shout again, so its intent stays
     expect(read(join(t.fork.path, ".patchbook/changes/shout/CHANGE.md")).split("intent:").length - 1).toBe(1);
     expect(t.pb(["show", "shout"], { cwd: t.fork.path }).stdout).toContain("THREE");
     unlinkSync(join(t.tmp, "prompt.txt"));
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "one", "ONE"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("one", "ONE"));
     expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toContain("(in shout)"); // no model needed
     expect(existsSync(join(t.tmp, "prompt.txt"))).toBe(false);
   });
@@ -5451,7 +5451,7 @@ describe("ForkTest", () => {
   forkTest("test_record_keeps_a_given_intent_when_no_name_is_given", (t) => {
     const prompt = join(t.tmp, "prompt.txt");
     const intent = "Make the second line loud so it stands out.";
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     const out = t.pb(["record", "--intent", intent], { cwd: t.fork.path });
     expect(existsSync(prompt)).toBe(false);
     expect(out.stdout).toContain(`make-the-second-line: ${intent}`);
@@ -5466,7 +5466,7 @@ describe("ForkTest", () => {
 
   forkTest("test_commit_with_an_intent_does_not_need_the_model", (t) => {
     writeFileSync(join(t.tmp, "bin/claude"), "#!/bin/sh\nexit 1\n");
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     const intent = "Make the second line loud.";
     sh(["git", "commit", "-qam", "shout"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: intent } });
     expect(read(join(t.fork.path, ".patchbook/changes/make-the-second-line/CHANGE.md"))).toContain(`intent: ${intent}`);
@@ -5489,7 +5489,7 @@ describe("ForkTest", () => {
   for (const [what, reply, says] of unusableReplies) {
     forkTest(`test_record_refuses_a_model_reply_that_${what}_and_records_nothing`, (t) => {
       writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '${reply}'\n`, { mode: 0o755 });
-      t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+      t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
       const before = tree(t.fork.path);
       const { stderr } = t.pb(["record"], { cwd: t.fork.path, code: 1 });
       expect(stderr.startsWith(`patchbook: ${says}`)).toBe(true);
@@ -5500,7 +5500,7 @@ describe("ForkTest", () => {
 
   forkTest("test_record_names_a_change_from_an_intent_with_one_very_long_word", (t) => {
     const intent = "a".repeat(300);
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     t.pb(["record", "--intent", intent], { cwd: t.fork.path });
     const names = changeNames(t);
     expect(names).toHaveLength(1);
@@ -5511,7 +5511,7 @@ describe("ForkTest", () => {
 
   forkTest("test_record_names_a_change_from_an_intent_with_several_long_words", (t) => {
     const intent = ["a", "b", "c", "d"].map((c) => c.repeat(64)).join(" ");
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     t.pb(["record", "--intent", intent], { cwd: t.fork.path });
     const names = changeNames(t);
     expect(names).toHaveLength(1);
@@ -5521,17 +5521,17 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_record_names_a_change_from_the_first_four_words_of_an_intent", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     t.pb(["record", "--intent", "One two three four five six."], { cwd: t.fork.path });
     expect(changeNames(t)).toEqual(["one-two-three-four"]);
   });
 
   forkTest("test_commit_with_a_blank_intent_asks_the_model", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "commit", "-qam", "shout"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "  \n\t " } });
     expect(read(join(t.fork.path, ".patchbook/changes/shout/CHANGE.md"))).toContain("intent: Shout the second line.");
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("three", "THREE"));
     const commit = sh(["git", "commit", "-qam", "again"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
     expect(commit.stderr).not.toContain("wasn't rebuilt");
     expect(sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout).toBe("");
@@ -5539,7 +5539,7 @@ describe("ForkTest", () => {
 
   forkTest("test_record_keeps_a_multi_line_intent_as_one_line", (t) => {
     const intent = "Shout the second line.\nedits:\n- add ghost.txt";
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     t.pb(["record", "--intent", intent], { cwd: t.fork.path });
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
     t.fork.write("extra.txt", "ours\n");
@@ -5549,9 +5549,9 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_record_with_an_intent_and_no_name_keeps_the_intent_of_a_change_named_unnamed", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "one", "ONE"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("one", "ONE"));
     t.pb(["record", "unnamed", "--intent", "Shout the first line."], { cwd: t.fork.path });
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     t.pb(["record", "--intent", "Shout the second line too."], { cwd: t.fork.path });
     expect(read(join(t.fork.path, ".patchbook/changes/unnamed/CHANGE.md"))).toContain("intent: Shout the first line.");
     expect(read(join(t.fork.path, ".patchbook/changes/unnamed/CHANGE.md"))).not.toContain("second line too");
@@ -5559,7 +5559,7 @@ describe("ForkTest", () => {
 
   forkTest("test_commit_records_and_builds", (t) => {
     expect(read(join(t.fork.path, ".git/hooks/pre-commit"))).toContain("Installed by patchbook");
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "commit", "-qam", "shout"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
     expect(sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout).toBe("");
     const files = words(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.fork.path }).stdout);
@@ -5568,7 +5568,7 @@ describe("ForkTest", () => {
     expect(files).toContain(".patchbook/build.lock");
     // A patchbook edit is built on commit too.
     const ours = join(t.fork.path, ".patchbook/changes/shout/ours/app.txt.pb");
-    writeFileSync(ours, replace(read(ours), "TWO", "Two"));
+    writeFileSync(ours, read(ours).replaceAll("TWO", "Two"));
     sh(["git", "commit", "-qam", "soften"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
     expect(t.fork.read("app.txt")).toContain("Two");
     expect(sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout).toBe("");
@@ -5597,14 +5597,14 @@ describe("ForkTest", () => {
 
   forkTest("test_commit_in_the_main_checkout_still_records_with_a_linked_worktree_around", (t) => {
     sh(["git", "worktree", "add", "-q", "--detach", join(t.tmp, "scratch-wt"), "HEAD~1"], { cwd: t.fork.path });
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     hookCommit(t, ["-qam", "shout"]);
     expect(committed(t)).toContain(".patchbook/build.lock");
     expect(committed(t)).toContain("app.txt");
   });
 
   const mergeUpstream = (t: ForkCase, ...flags: string[]) => {
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "seven", "SEVEN"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("seven", "SEVEN"));
     t.up.commit("upstream shouts seven");
     sh(["git", "fetch", "-q", "upstream"], { cwd: t.fork.path });
     sh(["git", "merge", "-q", "--no-edit", ...flags, "upstream/main"], { cwd: t.fork.path });
@@ -5612,7 +5612,7 @@ describe("ForkTest", () => {
 
   forkTest("test_commit_stops_when_upstream_was_merged_in_directly", (t) => {
     mergeUpstream(t);
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     const staged = tree(t.fork.path);
     const commit = hookCommit(t, ["-m", "shout"], false);
@@ -5647,7 +5647,7 @@ describe("ForkTest", () => {
 
   forkTest("test_commit_works_again_once_sync_has_moved_the_pin_past_a_merged_upstream", (t) => {
     mergeUpstream(t);
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     expect(hookCommit(t, ["-m", "shout"], false).code).not.toBe(0);
     t.pb(["sync"], { cwd: t.fork.path });
@@ -5667,14 +5667,14 @@ describe("ForkTest", () => {
 
   forkTest("test_commit_and_build_still_work_after_sync_pins_an_older_upstream_commit", (t) => {
     const start = sh(["git", "rev-parse", "HEAD"], { cwd: t.up.path }).stdout.trim();
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "seven", "SEVEN"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("seven", "SEVEN"));
     t.up.commit("upstream shouts seven");
     t.pb(["sync"], { cwd: t.fork.path });
     t.pb(["build", "--force", "--commit"], { cwd: t.fork.path });
     t.pb(["sync", "upstream", start], { cwd: t.fork.path });
     t.pb(["build", "--force"], { cwd: t.fork.path });
     expect(t.fork.read("app.txt")).toContain("seven");
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "-A"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "shout"]);
     expect(committed(t)).toContain(".patchbook/changes/shout/CHANGE.md");
@@ -5684,7 +5684,7 @@ describe("ForkTest", () => {
     sh(["git", "commit", "-q", "--allow-empty", "-m", "an empty commit upstream"], { cwd: t.up.path });
     sh(["git", "fetch", "-q", "upstream"], { cwd: t.fork.path });
     sh(["git", "merge", "-q", "--no-edit", "upstream/main"], { cwd: t.fork.path });
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "shout"]);
     expect(committed(t)).toContain(".patchbook/changes/shout/CHANGE.md");
@@ -5692,7 +5692,7 @@ describe("ForkTest", () => {
 
   forkTest("test_commit_leaves_out_an_untracked_file", (t) => {
     t.fork.write("notes.txt", "scratch\n");
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "only app.txt"]);
     const files = committed(t);
@@ -5704,10 +5704,10 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_commit_records_only_the_staged_part_of_a_file", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     const staged = t.fork.read("app.txt");
-    t.fork.write("app.txt", replace(staged, "three", "THREE"));
+    t.fork.write("app.txt", staged.replaceAll("three", "THREE"));
     const unstaged = t.fork.read("app.txt");
     hookCommit(t, ["-m", "shout two"]);
     expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toBe(staged);
@@ -5722,7 +5722,7 @@ describe("ForkTest", () => {
     t.fork.write("staged.txt", "staged\n");
     sh(["git", "add", "staged.txt"], { cwd: t.fork.path });
     t.fork.write("notes.txt", "scratch\n");
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     hookCommit(t, ["-m", "only app.txt", "app.txt"]);
     const files = committed(t);
     expect(files).toContain("app.txt");
@@ -5732,12 +5732,12 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_commit_refuses_to_build_over_unstaged_edits", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     hookCommit(t, ["-am", "shout"]);
     const ours = join(t.fork.path, ".patchbook/changes/shout/ours/app.txt.pb");
-    writeFileSync(ours, replace(read(ours), "TWO", "Two"));
+    writeFileSync(ours, read(ours).replaceAll("TWO", "Two"));
     sh(["git", "add", ours], { cwd: t.fork.path });
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("three", "THREE"));
     const edited = t.fork.read("app.txt");
     t.fork.write("docs/guide.md", "a better guide\n");
     sh(["git", "add", "docs/guide.md"], { cwd: t.fork.path });
@@ -5753,7 +5753,7 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_commit_after_record_takes_what_was_recorded", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     t.fork.write("new.txt", "hello\n");
     t.pb(["record", "loud", "--intent", "Shout the second line and add new.txt."], { cwd: t.fork.path });
     sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
@@ -5765,10 +5765,10 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_commit_after_build_takes_the_built_output", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     hookCommit(t, ["-am", "shout"]);
     const ours = join(t.fork.path, ".patchbook/changes/shout/ours/app.txt.pb");
-    writeFileSync(ours, replace(read(ours), "TWO", "Two"));
+    writeFileSync(ours, read(ours).replaceAll("TWO", "Two"));
     t.pb(["build"], { cwd: t.fork.path });
     sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "soften"]);
@@ -5778,10 +5778,10 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_commit_refuses_patchbook_edits_it_does_not_take", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     hookCommit(t, ["-am", "shout"]);
     const ours = join(t.fork.path, ".patchbook/changes/shout/ours/app.txt.pb");
-    writeFileSync(ours, replace(read(ours), "TWO", "Two"));
+    writeFileSync(ours, read(ours).replaceAll("TWO", "Two"));
     t.fork.write("docs/guide.md", "a better guide\n");
     sh(["git", "add", "docs/guide.md"], { cwd: t.fork.path });
     const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
@@ -5794,14 +5794,14 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_commit_builds_over_a_file_git_converts_on_checkout", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     hookCommit(t, ["-am", "shout"]);
     writeFileSync(join(t.fork.path, ".git/info/attributes"), "*.txt text eol=crlf\n");
     t.fork.rm("app.txt");
     sh(["git", "checkout", "--", "app.txt"], { cwd: t.fork.path });
     expect(t.fork.read("app.txt")).toContain("TWO\r\n");
     const ours = join(t.fork.path, ".patchbook/changes/shout/ours/app.txt.pb");
-    writeFileSync(ours, replace(read(ours), "TWO", "Two"));
+    writeFileSync(ours, read(ours).replaceAll("TWO", "Two"));
     sh(["git", "add", ours], { cwd: t.fork.path });
     hookCommit(t, ["-m", "soften"]);
     expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("Two");
@@ -5812,7 +5812,7 @@ describe("ForkTest", () => {
     sh(["git", "add", "extra.txt"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "extra"]);
     const change = join(t.fork.path, ".patchbook/changes/shout");
-    writeFileSync(join(change, "CHANGE.md"), replace(read(join(change, "CHANGE.md")), "- add extra.txt", "- add local.cfg"));
+    writeFileSync(join(change, "CHANGE.md"), read(join(change, "CHANGE.md")).replaceAll("- add extra.txt", "- add local.cfg"));
     sh(["git", "mv", join(change, "ours/extra.txt.pb"), join(change, "ours/local.cfg.pb")], { cwd: t.fork.path });
     sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
     writeFileSync(join(t.fork.path, ".git/info/exclude"), "local.cfg\n");
@@ -5838,7 +5838,7 @@ describe("ForkTest", () => {
   forkTest("test_commit_leaves_out_an_intent_to_add_file", (t) => {
     t.fork.write("notes.txt", "scratch\n");
     sh(["git", "add", "-N", "notes.txt"], { cwd: t.fork.path });
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "only app.txt"]);
     expect(committed(t).filter((f) => f.includes("notes.txt"))).toEqual([]);
@@ -5864,7 +5864,7 @@ describe("ForkTest", () => {
     const index = join(t.tmp, "index");
     writeFileSync(index, readFileSync(join(t.fork.path, ".git/index")));
     const env = { ...t.env, GIT_INDEX_FILE: index };
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     const commit = sh(["git", "commit", "-qm", "only app.txt", "app.txt"], { cwd: t.fork.path, env: { ...env, PATCHBOOK_HOOK: "1" } });
     expect(commit.stderr).toContain("run `git --literal-pathspecs reset -q -- .patchbook/");
     const paths = commit.stderr.split("reset -q -- ")[1]!.split("`")[0]!.split(" ");
@@ -5878,11 +5878,11 @@ describe("ForkTest", () => {
   };
 
   const stageAnOlderBuild = (t: ForkCase) => {
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "two", "two v1"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("two", "two v1"));
     t.up.commit("v1");
     syncAndBuild(t);
     sh(["git", "add", "-A"], { cwd: t.fork.path });
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "two v1", "two v2"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("two v1", "two v2"));
     t.up.commit("v2");
     syncAndBuild(t);
     sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
@@ -5922,7 +5922,7 @@ describe("ForkTest", () => {
 
   forkTest("test_commit_records_a_staged_edit_the_working_copy_put_back", (t) => {
     const built = t.fork.read("app.txt");
-    t.fork.write("app.txt", replace(built, "two", "TWO"));
+    t.fork.write("app.txt", built.replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     t.fork.write("app.txt", built);
     expect(hookCommit(t, ["-m", "shout"]).stderr).toContain("file     app.txt");
@@ -5931,7 +5931,7 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_commit_records_a_staged_edit_after_build_force", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     t.pb(["build", "--force"], { cwd: t.fork.path });
     expect(hookCommit(t, ["-m", "shout"]).stderr).toContain("file     app.txt");
@@ -5991,8 +5991,8 @@ describe("ForkTest", () => {
     `));
     t.pb(["scaffold"], { cwd: t.fork.path });
     const entries = join(t.fork.path, ".patchbook/blocks/greet.txt.entries");
-    const text = replace(read(entries), "rules: \nintent: \n", "rules: t3\nintent: Speak T3.\n");
-    writeFileSync(entries, partitionHead(text, "--- patched\n") + "--- patched\n{{snippet:greet}}\n");
+    const text = read(entries).replaceAll("rules: \nintent: \n", "rules: t3\nintent: Speak T3.\n");
+    writeFileSync(entries, text.split("--- patched\n")[0]! + "--- patched\n{{snippet:greet}}\n");
     t.pb(["build"], { cwd: t.fork.path });
     sh(["git", "add", "-A"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "greet from strings.md"]);
@@ -6055,7 +6055,7 @@ describe("ForkTest", () => {
     sh(["git", "add", "-A"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "take upstream"]);
     expect(committed(t)).toContain("new.sh");
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     const later = hookCommit(t, ["-m", "shout"]);
     expect(later.stderr).not.toContain("built from");
@@ -6077,14 +6077,14 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_commit_after_sync_leaves_the_sync_report_untracked", (t) => {
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "one", "ONE"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("one", "ONE"));
     t.up.commit("move");
     t.pb(["sync"], { cwd: t.fork.path });
     hookCommit(t, ["-am", "Sync upstream"]);
     expect(committed(t)).toContain(".patchbook/upstream.lock");
     expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("ONE");
     expect(porcelain(t)).toBe("?? .patchbook/last-sync.json\n");
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "shout"]);
     expect(committed(t)).toContain(".patchbook/changes/shout/CHANGE.md");
@@ -6093,7 +6093,7 @@ describe("ForkTest", () => {
 
   forkTest("test_commit_leaves_out_an_untracked_file_in_the_patchbook_folder", (t) => {
     writeFileSync(join(t.fork.path, ".patchbook/scratch.txt"), "my note\n");
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "shout"]);
     expect(committed(t)).toContain(".patchbook/changes/shout/CHANGE.md");
@@ -6106,7 +6106,7 @@ describe("ForkTest", () => {
     t.fork.commit("notes");
     writeFileSync(join(t.fork.path, ".patchbook/notes.md"), "v2\n");
     writeFileSync(join(t.fork.path, ".patchbook/scratch.txt"), "my note\n");
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "two", "deux"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("two", "deux"));
     t.up.commit("move");
     t.pb(["sync"], { cwd: t.fork.path });
     t.pb(["build", "--commit"], { cwd: t.fork.path });
@@ -6117,7 +6117,7 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_partial_commit_says_the_patchbook_changes_are_not_in_it", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     t.pb(["record", "loud", "--intent", "Shout the second line."], { cwd: t.fork.path });
     sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
     const commit = hookCommit(t, ["-m", "only app.txt", "app.txt"], false);
@@ -6136,7 +6136,7 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_commit_over_an_unstaged_edit_advises_a_stash_that_keeps_the_build", (t) => {
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "one", "ONE"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("one", "ONE"));
     t.up.commit("move");
     t.pb(["sync"], { cwd: t.fork.path });
     sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
@@ -6154,7 +6154,7 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_commit_over_an_unstaged_edit_beside_an_intent_to_add_entry_advises_untracking_it_first", (t) => {
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "one", "ONE"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("one", "ONE"));
     t.up.commit("move");
     t.pb(["sync"], { cwd: t.fork.path });
     sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
@@ -6195,7 +6195,7 @@ describe("ForkTest", () => {
 
   forkTest("test_commit_stages_records_the_repo_ignores", (t) => {
     writeFileSync(join(t.fork.path, ".git/info/exclude"), "*.pb\n");
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "shout"]);
     expect(committed(t)).toContain(".patchbook/changes/shout/ours/app.txt.pb");
@@ -6203,7 +6203,7 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_commit_builds_over_an_unstaged_mode_change", (t) => {
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "two", "two v1"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("two", "two v1"));
     t.up.commit("v1");
     t.pb(["sync"], { cwd: t.fork.path });
     sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
@@ -6400,7 +6400,7 @@ describe("ForkTest", () => {
   });
 
   const shoutThenSync = (t: ForkCase, upstream: () => void) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "shout"]);
     upstream();
@@ -6411,7 +6411,7 @@ describe("ForkTest", () => {
   forkTest("test_commit_drops_the_file_of_a_change_retired_after_upstream_deleted_it", (t) => {
     shoutThenSync(t, () => t.up.rm("app.txt"));
     const pb = join(t.fork.path, ".patchbook");
-    writeFileSync(join(pb, "series"), replace(read(join(pb, "series")), "shout\n", ""));
+    writeFileSync(join(pb, "series"), read(join(pb, "series")).replaceAll("shout\n", ""));
     rmSync(join(pb, "changes/shout"), { recursive: true });
     writeFileSync(join(pb, "retired.md"), read(join(pb, "retired.md")) + "\n- shout: upstream deleted app.txt\n");
     sh(["git", "add", "-A"], { cwd: t.fork.path });
@@ -6426,7 +6426,7 @@ describe("ForkTest", () => {
     shoutThenSync(t, () => sh(["git", "mv", "app.txt", "renamed.txt"], { cwd: t.up.path }));
     const change = join(t.fork.path, ".patchbook/changes/shout");
     for (const copy of ["base", "ours"]) renameSync(join(change, copy, "app.txt.pb"), join(change, copy, "renamed.txt.pb"));
-    writeFileSync(join(change, "CHANGE.md"), replace(read(join(change, "CHANGE.md")), "app.txt", "renamed.txt"));
+    writeFileSync(join(change, "CHANGE.md"), read(join(change, "CHANGE.md")).replaceAll("app.txt", "renamed.txt"));
     sh(["git", "add", "-A"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "repair shout"]);
     expect(inHead(t, "app.txt")).toBe("");
@@ -6452,7 +6452,7 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_commit_records_an_edit_staged_with_a_mode_change", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     chmodSync(join(t.fork.path, "app.txt"), 0o755);
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     const commit = hookCommit(t, ["-m", "shout and run"]);
@@ -6462,7 +6462,7 @@ describe("ForkTest", () => {
   });
 
   forkTest("test_commit_records_an_edit_staged_with_a_mode_change_under_an_unstaged_edit", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"), 0o755);
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"), 0o755);
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     const staged = t.fork.read("app.txt");
     t.fork.write("app.txt", staged + "extra\n", 0o755);
@@ -6530,7 +6530,7 @@ describe("ForkTest", () => {
     t.pb(["sync"], { cwd: t.fork.path });
     t.pb(["build", "--commit"], { cwd: t.fork.path });
     for (const [line, shout] of [["two", "TWO"], ["three", "THREE"]] as const) {
-      t.fork.write("app.txt", replace(t.fork.read("app.txt"), line, shout));
+      t.fork.write("app.txt", t.fork.read("app.txt").replaceAll(line, shout));
       sh(["git", "add", "app.txt"], { cwd: t.fork.path });
       expect(hookCommit(t, ["-m", `shout ${line}`]).stderr).not.toContain("keep.log");
       expect(committed(t)).not.toContain("keep.log");
@@ -6557,7 +6557,7 @@ describe("ForkTest", () => {
   readOnlyTest("test_failed_commit_leaves_the_patchbook_as_it_found_it", (t) => {
     const series = read(join(t.fork.path, ".patchbook/series"));
     const lock = read(lockOf(t));
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     chmodSync(lockOf(t), 0o444);
     const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
@@ -6571,7 +6571,7 @@ describe("ForkTest", () => {
   });
 
   readOnlyTest("test_commit_retried_after_a_failed_record_holds_the_output_and_its_record", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     chmodSync(lockOf(t), 0o444);
     expect(hookCommit(t, ["-m", "shout"], false).code).not.toBe(0);
@@ -6586,7 +6586,7 @@ describe("ForkTest", () => {
   });
 
   readOnlyTest("test_failed_commit_leaves_the_output_as_it_found_it", (t) => {
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("five", "FIVE"));
     t.up.commit("shout five");
     t.pb(["sync"], { cwd: t.fork.path });
     sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
@@ -6605,7 +6605,7 @@ describe("ForkTest", () => {
 
   /** Replaces `.patchbook/<name>` with a committed link to a copy outside the repo, and returns what the copy holds. */
   const linkPatchbook = (t: ForkCase, name: string) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "one", "ONE"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("one", "ONE"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "shout one"]);
     const [inside, outside] = [join(t.fork.path, ".patchbook", name), join(t.tmp, `outside-${name.replaceAll("/", "-")}`)];
@@ -6619,7 +6619,7 @@ describe("ForkTest", () => {
   };
 
   const shoutTwo = (t: ForkCase) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     return hookCommit(t, ["-m", "shout"], false);
   };
@@ -6660,7 +6660,7 @@ describe("ForkTest", () => {
 
   /** Commits the `shout` change, then plants `link` in its `ours` copy, pointing at `outside` (made here, holding `keep.txt`). */
   const plantInShout = (t: ForkCase, link: string, file: boolean) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "one", "ONE"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("one", "ONE"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "shout one"]);
     const outside = join(t.tmp, "outside");
@@ -6718,7 +6718,7 @@ describe("ForkTest", () => {
   });
 
   readOnlyTest("test_failed_commit_puts_a_private_copy_back_with_its_own_mode_when_its_bytes_did_not_change", (t) => {
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "one", "ONE"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("one", "ONE"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "shout one"]);
     const copy = join(t.fork.path, ".patchbook/changes/shout/ours/new.md.pb");
@@ -6751,7 +6751,7 @@ describe("ForkTest", () => {
   forkTest("test_commit_all_refuses_an_output_folder_replaced_by_a_link", (t) => {
     renameSync(join(t.fork.path, "docs"), join(t.fork.path, "docs.bak"));
     symlinkSync("docs.bak", join(t.fork.path, "docs"));
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "one", "ONE"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("one", "ONE"));
     const before = tree(t.fork.path);
     const commit = hookCommit(t, ["-am", "link docs"], false);
     expect(commit.code).not.toBe(0);
@@ -6782,7 +6782,7 @@ describe("ForkTest", () => {
 
   readOnlyTest("test_commit_goes_through_when_a_folder_in_the_patchbook_cant_be_read", (t) => {
     writeFileSync(join(t.fork.path, ".git/info/exclude"), "*.junk\n");
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "shout"]);
     const secret = join(t.fork.path, ".patchbook/changes/shout/secret");
@@ -6790,7 +6790,7 @@ describe("ForkTest", () => {
     writeFileSync(join(secret, "s.junk"), "x\n");
     chmodSync(secret, 0o000);
     try {
-      t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE"));
+      t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("three", "THREE"));
       sh(["git", "add", "app.txt"], { cwd: t.fork.path });
       hookCommit(t, ["-m", "shout again"]);
       expect(committed(t)).toContain("app.txt");
@@ -6802,7 +6802,7 @@ describe("ForkTest", () => {
   readOnlyTest("test_failed_commit_puts_a_private_file_back_with_its_own_mode", (t) => {
     const series = join(t.fork.path, ".patchbook/series");
     chmodSync(series, 0o600);
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     chmodSync(lockOf(t), 0o444);
     expect(hookCommit(t, ["-m", "shout"], false).code).not.toBe(0);
@@ -6811,7 +6811,7 @@ describe("ForkTest", () => {
 
   readOnlyTest("test_failed_commit_lists_what_it_could_not_put_back", (t) => {
     const patchbook = join(t.fork.path, ".patchbook");
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     mkdirSync(join(patchbook, "changes"));
     chmodSync(lockOf(t), 0o444);
@@ -6845,7 +6845,7 @@ describe("ForkTest", () => {
   });
 
   readOnlyTest("test_failed_commit_puts_back_the_lock_it_rebuilt_when_nothing_was_recorded", (t) => {
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("five", "FIVE"));
     t.up.commit("shout five");
     t.pb(["sync"], { cwd: t.fork.path });
     sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
@@ -6960,17 +6960,17 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     const project = join(t.fork.path, ".patchbook/config.toml");
     const original = read(project);
     for (const on of ["hook.enabled = true", "hook = { enabled = true }"]) {
-      const before = replace(original, 'layout = "fork"\n', `layout = "fork"\n${on}\n`);
+      const before = original.replaceAll('layout = "fork"\n', `layout = "fork"\n${on}\n`);
       writeFileSync(project, before);
       t.config(["--project", "hook.enabled", "false"]);
       expect(t.config(["hook.enabled"], { PATCHBOOK_HOOK: "" })).toMatch(/false .*project/);
-      expect(read(project)).toBe(replace(before, on, replace(on, "true", "false")));
+      expect(read(project)).toBe(before.replaceAll(on, on.replaceAll("true", "false")));
     }
   });
 
   forkTest("test_config_refuses_to_edit_a_setting_whose_section_is_not_a_table", (t) => {
     const project = join(t.fork.path, ".patchbook/config.toml");
-    const before = replace(read(project), 'layout = "fork"\n', 'layout = "fork"\nhook = true\n');
+    const before = read(project).replaceAll('layout = "fork"\n', 'layout = "fork"\nhook = true\n');
     writeFileSync(project, before);
     expect(t.pb(["config", "--project", "hook.enabled", "false"], { cwd: t.fork.path, code: 1 }).stderr)
       .toContain("hook in the config must be a table, as in [hook]");
@@ -6996,10 +6996,10 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     writeFileSync(user, before);
     t.config(["start.agents", "codex"]);
     expect(t.config(["start.agents"])).toMatch(/\["codex"\] .*user/);
-    expect(read(user)).toBe(replace(before, 'agents = ["claude-code"] # for now', 'agents = ["codex"] # for now'));
+    expect(read(user)).toBe(before.replaceAll('agents = ["claude-code"] # for now', 'agents = ["codex"] # for now'));
     t.config(["--unset", "start.agents"]);
     expect(t.config(["start.agents"])).toMatch(/\["claude-code", "codex"\] .*default/);
-    expect(read(user)).toBe(replace(before, 'agents = ["claude-code"] # for now\n', ""));
+    expect(read(user)).toBe(before.replaceAll('agents = ["claude-code"] # for now\n', ""));
   });
 
   forkTest("test_config_replaces_a_value_that_spans_lines", (t) => {
@@ -7193,7 +7193,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     const before = '# my settings\r\n[start]\nagents = ["claude-code"]\r\nnote = """\na\nb"""\r\n[intent]\nmodel = "x"\n';
     writeFileSync(user, before);
     t.config(["start.agents", "codex"]);
-    expect(read(user)).toBe(replace(before, '["claude-code"]', '["codex"]'));
+    expect(read(user)).toBe(before.replaceAll('["claude-code"]', '["codex"]'));
     t.config(["--unset", "intent.model"]);
     expect(read(user)).toBe('# my settings\r\n[start]\nagents = ["codex"]\r\nnote = """\na\nb"""\r\n[intent]\n');
   });
@@ -7204,7 +7204,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     const before = '# my settings\r\n[start]\r\n# agents\r\nagents = ["claude-code"]\r\nby_host = []\r\n';
     writeFileSync(user, before);
     t.config(["start.agents", "codex"]);
-    expect(read(user)).toBe(replace(before, '["claude-code"]', '["codex"]'));
+    expect(read(user)).toBe(before.replaceAll('["claude-code"]', '["codex"]'));
     t.config(["--unset", "start.agents"]);
     expect(read(user)).toBe("# my settings\r\n[start]\r\n# agents\r\nby_host = []\r\n");
     t.config(["intent.model", "x"]);
@@ -7271,7 +7271,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
   forkTest("test_config_writes_the_user_config_inside_a_book_that_fails_to_load", (t) => {
     const user = join(t.tmp, "config/patchbook/config.toml");
     const config = join(t.fork.path, ".patchbook/config.toml");
-    writeFileSync(config, replace(read(config), 'layout = "fork"', 'layout = "bogus"'));
+    writeFileSync(config, read(config).replaceAll('layout = "fork"', 'layout = "bogus"'));
     const broken = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stderr;
     expect(broken).toContain("bogus");
     expect(t.pb(["config", "intent.model", "fake-x"], { cwd: t.fork.path }).stdout).toContain("intent.model");
@@ -7330,7 +7330,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
 
   forkTest("test_hook_off_in_the_project", (t) => {
     t.config(["--project", "hook.enabled", "false"]);
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "commit", "-qam", "shout"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "" } });
     expect(existsSync(join(t.fork.path, ".patchbook/changes/shout"))).toBe(false);
   });
@@ -7362,7 +7362,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     lib.write("src/lib.txt", "v1\n");
     lib.commit("lib");
     t.pb(["track", "lib", lib.path, "--path", "src"], { cwd: t.fork.path });
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
     t.up.commit("upstream edit");
     lib.write("src/lib.txt", "v2\n");
     lib.commit("lib v2");
@@ -7410,7 +7410,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     t.pb(["sync"], { cwd: t.fork.path });
     expect(Object.keys(lastSync(t))).toEqual(["upstream", "lib"]);
     dropLibFromConfig(t);
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("five", "FIVE"));
     t.up.commit("another edit");
     t.pb(["sync"], { cwd: t.fork.path });
     expect(Object.keys(lastSync(t))).toEqual(["upstream"]);
@@ -7429,12 +7429,12 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     forkTest("test_sync_keeps_the_pin_when_the_report_cannot_be_written", (t) => {
       const file = join(t.fork.path, ".patchbook/last-sync.json");
       const lock = (): string => t.fork.read(".patchbook/upstream.lock");
-      t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+      t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
       t.up.commit("first edit");
       t.pb(["sync"], { cwd: t.fork.path });
       const reported = read(file);
       const pinned = lock();
-      t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
+      t.up.write("app.txt", t.up.read("app.txt").replaceAll("five", "FIVE"));
       const second = t.up.commit("second edit");
       chmodSync(file, 0o444);
       try {
@@ -7457,10 +7457,10 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
       for (const [kind, line, edited, summary, carried] of secondEdits) {
         forkTest(`test_a_sync_that_cannot_write_${blocked}_after_a_${kind}_changes_nothing_and_reports_the_${kind}_when_run_again`, (t) => {
           t.recordFeature();
-          t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+          t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
           const first = t.up.commit("first edit");
           t.pb(["sync"], { cwd: t.fork.path });
-          t.up.write("app.txt", replace(t.up.read("app.txt"), line, edited));
+          t.up.write("app.txt", t.up.read("app.txt").replaceAll(line, edited));
           const second = t.up.commit("second edit");
           const file = join(t.fork.path, ".patchbook", blocked);
           const before = tree(t.fork.path);
@@ -7478,7 +7478,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     }
 
     forkTest("test_a_sync_that_cannot_write_upstream.lock_puts_back_a_last_sync_json_that_is_a_link", (t) => {
-      t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+      t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
       t.up.commit("first edit");
       t.pb(["sync"], { cwd: t.fork.path });
       const report = join(t.fork.path, ".patchbook/last-sync.json");
@@ -7486,7 +7486,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
       renameSync(report, kept);
       symlinkSync(kept, report);
       const reported = read(kept);
-      t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
+      t.up.write("app.txt", t.up.read("app.txt").replaceAll("five", "FIVE"));
       t.up.commit("second edit");
       const lock = join(t.fork.path, ".patchbook/upstream.lock");
       chmodSync(lock, 0o444);
@@ -7511,7 +7511,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
       t.pb(["sync"], { cwd: t.fork.path });
       const reported = lastSync(t);
       const lock = t.fork.read(".patchbook/upstream.lock");
-      t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
+      t.up.write("app.txt", t.up.read("app.txt").replaceAll("five", "FIVE"));
       t.up.commit("second edit");
       lib.write("src/lib.txt", "v3\n");
       lib.commit("lib v3");
@@ -7528,7 +7528,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
       twoMovedUpstreams(t);
       t.pb(["sync"], { cwd: t.fork.path });
       const reported = lastSync(t);
-      t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
+      t.up.write("app.txt", t.up.read("app.txt").replaceAll("five", "FIVE"));
       t.up.commit("second edit");
       killedBeforeWriting(t, "/.patchbook/sync-upstream/lock", ["sync", "upstream"]);
       expect(lastSync(t).upstream).not.toEqual(reported.upstream);
@@ -7543,7 +7543,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     forkTest("test_undoing_a_killed_first_sync_deletes_the_report_it_wrote", (t) => {
       const report = join(t.fork.path, ".patchbook/last-sync.json");
       const lock = t.fork.read(".patchbook/upstream.lock");
-      t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+      t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
       t.up.commit("upstream edit");
       expect(existsSync(report)).toBe(false);
       killedBeforeWriting(t, "/.patchbook/sync-upstream/lock", ["sync"]);
@@ -7556,7 +7556,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
 
   forkTest("test_sync_refuses_a_last_sync_file_that_does_not_parse_and_changes_nothing", (t) => {
     writeFileSync(join(t.fork.path, ".patchbook/last-sync.json"), "{ not json");
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
     t.up.commit("upstream edit");
     const before = tree(t.fork.path);
     const { stderr } = t.pb(["sync"], { cwd: t.fork.path, code: 1 });
@@ -7688,9 +7688,9 @@ describe("VendorTest", () => {
   vendorTest("test_structural_edits", (t) => {
     t.missingScaffoldPatchBuild();
     const change = join(t.repo.path, ".patchbook/changes/support");
-    mkdirNew(join(change, "ours/skills/support"));
+    mkdirSync(join(change, "ours/skills/support"), { recursive: true });
     writeFileSync(join(change, "ours/skills/support/SKILL.md.pb"), "---\nname: support\n---\n");
-    writeFileSync(join(change, "CHANGE.md"), lstrip(dedent(`
+    writeFileSync(join(change, "CHANGE.md"), dedent(`
       # support
 
       intent: Ship the agent briefs inside a support skill.
@@ -7698,7 +7698,7 @@ describe("VendorTest", () => {
       edits:
       - add skills/support/SKILL.md
       - move agents -> skills/support/agents
-    `)));
+    `).trimStart());
     writeFileSync(join(t.repo.path, ".patchbook/series"), "support\n");
     t.pb(["build"], { cwd: t.repo.path });
     expect(t.repo.read("skills/support/agents/helper.md")).toBe("A helper.\n");
@@ -7762,7 +7762,7 @@ describe("VendorTest", () => {
   forkTest("test_a_hand_written_edit_line_with_whitespace_at_the_end_of_a_path_is_refused_and_a_quoted_one_builds", (t) => {
     const dir = join(t.fork.path, ".patchbook/changes/hand");
     const file = join(dir, "CHANGE.md");
-    mkdirNew(dir);
+    mkdirSync(dir, { recursive: true });
     writeFileSync(join(t.fork.path, ".patchbook/series"), "hand\n");
     writeFileSync(file, "# hand\n\nintent: Move the guide.\n\nedits:\n- move docs/guide.md -> moved.txt \n");
     const refused = t.pb(["build"], { cwd: t.fork.path, code: 1 });
@@ -7776,7 +7776,7 @@ describe("VendorTest", () => {
 
   forkTest("test_a_hand_written_edit_path_that_ends_in_a_slash_is_refused_and_nothing_is_built", (t) => {
     const dir = join(t.fork.path, ".patchbook/changes/hand");
-    mkdirNew(dir);
+    mkdirSync(dir, { recursive: true });
     writeFileSync(join(t.fork.path, ".patchbook/series"), "hand\n");
     writeFileSync(join(dir, "CHANGE.md"), "# hand\n\nintent: Move the guide.\n\nedits:\n- move docs/guide.md -> moved /\n");
     const before = tree(t.fork.path);
@@ -7792,12 +7792,12 @@ describe("VendorTest", () => {
     t.up.write("a", "alpha\n");
     t.up.commit("names that end in an arrow");
     t.pb(["sync"], { cwd: t.fork.path });
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     t.pb(["record", "mv", "--intent", "Shout two and move a file."], { cwd: t.fork.path });
     const file = join(t.fork.path, ".patchbook/changes/mv/CHANGE.md");
     writeFileSync(file, read(file) + '- move "a ->" -> b.txt\n');
     t.pb(["build"], { cwd: t.fork.path });
-    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE"));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("three", "THREE"));
     t.pb(["record", "mv", "--intent", "Shout two and move a file."], { cwd: t.fork.path });
     expect(read(file)).toContain('\n- move "a ->" -> b.txt\n');
     t.pb(["build"], { cwd: t.fork.path });
@@ -7810,11 +7810,11 @@ describe("VendorTest", () => {
   vendorTest("test_record_skips_a_paragraph_edit_whose_entry_uses_a_placeholder_that_is_empty", (t) => {
     const entries = t.missingScaffoldPatchBuild();
     t.repo.write(".patchbook/snippets.md", "## none\n\n## greet\n\nSay hello in T3.\n");
-    writeFileSync(entries, replace(read(entries), "--- patched\n{{snippet:greet}}", "--- patched\n{{snippet:none}}{{snippet:greet}}"));
+    writeFileSync(entries, read(entries).replaceAll("--- patched\n{{snippet:greet}}", "--- patched\n{{snippet:none}}{{snippet:greet}}"));
     t.pb(["build"], { cwd: t.repo.path });
     const recorded = read(entries);
     const skill = "skills/hello/SKILL.md";
-    t.repo.write(skill, replace(t.repo.read(skill), "Say hello in T3.", "Say hello in T3. Smile."));
+    t.repo.write(skill, t.repo.read(skill).replaceAll("Say hello in T3.", "Say hello in T3. Smile."));
     const out = t.pb(["record", "--intent", "Smile."], { cwd: t.repo.path }).stdout;
     expect(out).toContain("skipped  hello/SKILL.md: its block entry uses {{snippet:none}}, which is empty, so the edit can't show where it goes; edit its block entries directly");
     expect(read(entries)).toBe(recorded);
@@ -7858,7 +7858,7 @@ describe("VendorTest", () => {
 
   vendorTest("test_record_ignores_output_the_patchbook_changed", (t) => {
     const entries = t.missingScaffoldPatchBuild();
-    writeFileSync(entries, replace(read(entries), "{{snippet:greet}}", "Say hi in T3."));
+    writeFileSync(entries, read(entries).replaceAll("{{snippet:greet}}", "Say hi in T3."));
     expect(t.pb(["record"], { cwd: t.repo.path }).stdout).toContain("nothing to record");
     expect(read(entries)).toContain("Say hi in T3.");
   });
@@ -7867,7 +7867,7 @@ describe("VendorTest", () => {
     t.missingScaffoldPatchBuild();
     t.repo.commit("built");
     const skill = "plugin/skills/hello/SKILL.md";
-    t.up.write(skill, replace(t.up.read(skill), "say hello", "say hi"));
+    t.up.write(skill, t.up.read(skill).replaceAll("say hello", "say hi"));
     t.up.commit("reword");
     t.pb(["check"], { cwd: t.repo.path, code: 10 });
     t.pb(["sync"], { cwd: t.repo.path });
@@ -8049,7 +8049,7 @@ exec '${Bun.which("git")}' "$@"
     extra.commit("a");
     t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
     const change = join(t.repo.path, ".patchbook/changes/tweak");
-    mkdirNew(change);
+    mkdirSync(change, { recursive: true });
     writeFileSync(join(change, "CHANGE.md"), "# tweak\n\nintent: Shout the first line.\n\nedits:\n- file extra/a.md\n");
     mkdirSync(join(change, "base/extra"), { recursive: true });
     mkdirSync(join(change, "ours/extra"), { recursive: true });
@@ -8095,7 +8095,7 @@ exec '${Bun.which("git")}' "$@"
         extra.commit("a");
         t.pb(["track", "extra", extra.path, ...(layout === "vendored" ? ["--vendor", "vendor/extra"] : [])], { cwd: t.repo.path });
         const change = join(t.repo.path, ".patchbook/changes/tweak");
-        mkdirNew(change);
+        mkdirSync(change, { recursive: true });
         writeFileSync(join(change, "CHANGE.md"), "# tweak\n\nintent: Shout the first line.\n\nedits:\n- file extra/a.md\n");
         mkdirSync(join(change, "base/extra"), { recursive: true });
         mkdirSync(join(change, "ours/extra"), { recursive: true });
@@ -8130,7 +8130,7 @@ exec '${Bun.which("git")}' "$@"
     extra.commit("a");
     t.pb(["track", "extra", extra.path, ...(vendored ? ["--vendor", "vendor/extra"] : [])], { cwd: t.repo.path });
     const change = join(t.repo.path, ".patchbook/changes/tweak");
-    mkdirNew(change);
+    mkdirSync(change, { recursive: true });
     writeFileSync(join(change, "CHANGE.md"), "# tweak\n\nintent: Shout the first line.\n\nedits:\n- file extra/a.md\n");
     mkdirSync(join(change, "base/extra"), { recursive: true });
     mkdirSync(join(change, "ours/extra"), { recursive: true });
@@ -8250,7 +8250,7 @@ exec '${Bun.which("git")}' "$@"
     forkTest("test_a_failed_sync_of_the_forks_own_upstream_drops_its_ref_though_an_upstream_on_that_remote_pins_the_commit", (t) => {
       t.pb(["track", "mirror", t.up.path], { cwd: t.fork.path });
       t.fork.commit("track mirror");
-      t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+      t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
       const head = t.up.commit("v2");
       t.pb(["sync", "mirror"], { cwd: t.fork.path });
       const lock = join(t.fork.path, ".patchbook/upstream.lock");
@@ -8617,7 +8617,7 @@ exec '${Bun.which("git")}' "$@"
     t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
     expect(existsSync(join(t.repo.path, "vendor/extra/skills/tool/SKILL.md"))).toBe(true);
     const change = join(t.repo.path, ".patchbook/changes/ship-tool");
-    mkdirNew(change);
+    mkdirSync(change, { recursive: true });
     writeFileSync(join(change, "CHANGE.md"), "# ship-tool\n\nintent: Ship extra's tool skill.\n\nedits:\n- move extra/skills/tool -> skills/tool\n");
     writeFileSync(join(t.repo.path, ".patchbook/series"), "ship-tool\n");
     t.pb(["build"], { cwd: t.repo.path });
@@ -8668,7 +8668,7 @@ exec '${Bun.which("git")}' "$@"
 
   vendorTest("test_absolute_output_folder_is_used_as_given", (t) => {
     const config = join(t.repo.path, ".patchbook/config.toml");
-    writeFileSync(config, replace(read(config), 'to = "skills"', `to = "${join(t.repo.path, "skills")}"`));
+    writeFileSync(config, read(config).replaceAll('to = "skills"', `to = "${join(t.repo.path, "skills")}"`));
     t.missingScaffoldPatchBuild();
     expect(existsSync(join(t.repo.path, t.repo.path))).toBe(false);
   });
@@ -8676,7 +8676,7 @@ exec '${Bun.which("git")}' "$@"
   vendorTest("test_absolute_output_folder_reached_through_a_link_above_the_repo_is_used_as_given", (t) => {
     symlinkSync(t.tmp, join(t.tmp, "via"));
     const config = join(t.repo.path, ".patchbook/config.toml");
-    writeFileSync(config, replace(read(config), 'to = "skills"', `to = "${join(t.tmp, "via/adapted/skills")}"`));
+    writeFileSync(config, read(config).replaceAll('to = "skills"', `to = "${join(t.tmp, "via/adapted/skills")}"`));
     t.missingScaffoldPatchBuild();
     expect(t.repo.read("skills/hello/SKILL.md")).toContain("Hello");
   });
@@ -8762,7 +8762,7 @@ exec '${Bun.which("git")}' "$@"
 
   vendorTest("test_a_copy_into_a_git_name_in_the_output_folder_is_invalid", (t) => {
     const change = join(t.repo.path, ".patchbook/changes/into-git");
-    mkdirNew(change);
+    mkdirSync(change, { recursive: true });
     writeFileSync(join(change, "CHANGE.md"), "# into-git\n\nintent: Write into a git name.\n\nedits:\n- copy skills/hello/SKILL.md -> skills/agents/.git/x\n");
     writeFileSync(join(t.repo.path, ".patchbook/series"), "into-git\n");
     const detail = "skills/agents/.git/x would be written into .git";
@@ -8775,7 +8775,7 @@ exec '${Bun.which("git")}' "$@"
 
   function writeChange(t: VendorCase, name: string, edits: string[]): void {
     const change = join(t.repo.path, ".patchbook/changes", name);
-    mkdirNew(change);
+    mkdirSync(change, { recursive: true });
     writeFileSync(join(change, "CHANGE.md"), `# ${name}\n\nintent: Write somewhere new.\n\nedits:\n${edits.map((e) => `- ${e}\n`).join("")}`);
     writeFileSync(join(t.repo.path, ".patchbook/series"), `${name}\n`);
   }
@@ -8872,7 +8872,7 @@ exec '${Bun.which("git")}' "$@"
 
   vendorTest("test_output_folder_overlaps_a_vendored_copy_at_the_repo_root", (t) => {
     const config = join(t.repo.path, ".patchbook/config.toml");
-    writeFileSync(config, replace(read(config), 'name = "plugin"\n', 'name = "plugin"\nvendor = "."\n'));
+    writeFileSync(config, read(config).replaceAll('name = "plugin"\n', 'name = "plugin"\nvendor = "."\n'));
     const out = t.pb(["status"], { cwd: t.repo.path, code: 1 });
     expect(out.stderr).toContain("overlaps the vendored copy, which is the repo root");
   });
@@ -9256,7 +9256,7 @@ exec '${Bun.which("git")}' "$@"
   vendorTest("test_an_absolute_output_folder_reached_through_a_link_above_the_repo_builds_twice", (t) => {
     symlinkSync(t.tmp, join(t.tmp, "via"));
     const config = join(t.repo.path, ".patchbook/config.toml");
-    writeFileSync(config, replace(read(config), 'to = "skills"', `to = "${join(t.tmp, "via/adapted/skills")}"`));
+    writeFileSync(config, read(config).replaceAll('to = "skills"', `to = "${join(t.tmp, "via/adapted/skills")}"`));
     t.missingScaffoldPatchBuild();
     t.pb(["build"], { cwd: t.repo.path });
     t.pb(["build", "--force"], { cwd: t.repo.path });
@@ -9267,7 +9267,7 @@ exec '${Bun.which("git")}' "$@"
   vendorTest("test_an_absolute_output_folder_reached_through_a_link_to_the_repo_itself_builds_twice", (t) => {
     symlinkSync(t.repo.path, join(t.tmp, "alias"));
     const config = join(t.repo.path, ".patchbook/config.toml");
-    writeFileSync(config, replace(read(config), 'to = "skills"', `to = "${join(t.tmp, "alias/skills")}"`));
+    writeFileSync(config, read(config).replaceAll('to = "skills"', `to = "${join(t.tmp, "alias/skills")}"`));
     t.missingScaffoldPatchBuild();
     t.pb(["build"], { cwd: t.repo.path });
     t.pb(["build", "--force"], { cwd: t.repo.path });
@@ -9429,7 +9429,7 @@ exec '${Bun.which("git")}' "$@"
     rmSync(join(t.repo.path, "skills/d"), { recursive: true });
     symlinkSync("../.patchbook", join(t.repo.path, "skills/d"));
     t.repo.write(".gitignore", "/skills/d\n");
-    t.repo.write("skills/hello/SKILL.md", replace(t.repo.read("skills/hello/SKILL.md"), "Then wave.", "Then bow."));
+    t.repo.write("skills/hello/SKILL.md", t.repo.read("skills/hello/SKILL.md").replaceAll("Then wave.", "Then bow."));
     const before = tree(t.repo.path);
     const commit = sh(["git", "commit", "-q", "--allow-empty", "-m", "edit"], { cwd: t.repo.path, check: false, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
     expect(commit.code).not.toBe(0);
@@ -9476,7 +9476,7 @@ exec '${Bun.which("git")}' "$@"
     rmSync(join(t.repo.path, "skills/d"), { recursive: true });
     symlinkSync("../.patchbook", join(t.repo.path, "skills/d"));
     t.repo.write(".gitignore", "/skills/d\n");
-    t.repo.write("skills/hello/SKILL.md", replace(t.repo.read("skills/hello/SKILL.md"), "Then wave.", "Then bow."));
+    t.repo.write("skills/hello/SKILL.md", t.repo.read("skills/hello/SKILL.md").replaceAll("Then wave.", "Then bow."));
     const before = tree(t.repo.path);
     const out = t.pb(["record"], { cwd: t.repo.path, code: 1 });
     expect(out.stderr).toContain("is really inside .patchbook");
@@ -9518,14 +9518,14 @@ exec '${Bun.which("git")}' "$@"
     const snippets = join(t.tmp, "snippets.md");
     writeFileSync(snippets, t.repo.read(".patchbook/snippets.md"));
     const config = join(t.repo.path, ".patchbook/config.toml");
-    writeFileSync(config, replace(read(config), 'file = ".patchbook/snippets.md"', `file = "${snippets}"`));
+    writeFileSync(config, read(config).replaceAll('file = ".patchbook/snippets.md"', `file = "${snippets}"`));
     t.missingScaffoldPatchBuild();
   });
 
   vendorTest("test_single_upstream_table_is_rejected", (t) => {
     t.missingScaffoldPatchBuild();
     const config = join(t.repo.path, ".patchbook/config.toml");
-    writeFileSync(config, replace(read(config), '[[upstream]]\nname = "plugin"\n', "[upstream]\n"));
+    writeFileSync(config, read(config).replaceAll('[[upstream]]\nname = "plugin"\n', "[upstream]\n"));
     expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stderr).toContain("Use [[upstream]] with a name");
   });
 });
@@ -9544,7 +9544,7 @@ describe("ReadOnlyLockTest", () => {
   const refused = (lock: string) => `patchbook: couldn't write ${realpathSync(lock)}: permission denied\n`;
 
   lockTest("test_sync_names_the_lock_when_it_cannot_write_it", (t, lock) => {
-    t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
     const head = t.up.commit("upstream edit");
     const before = read(lock);
     sh(["chmod", "a-w", lock], { cwd: t.fork.path });
