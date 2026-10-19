@@ -354,6 +354,24 @@ export function handEdits(
   return sorted(Array.from(paths).filter((p) => !sameFile(files.get(p), fresh.get(p), chosen(p)) && last.every((b) => !builtAs(files.get(p), b.get(p), fresh.get(p)?.mode, chosen(p)))));
 }
 
+export const inRepo = (book: Book, p: string) => relative(book.root, join(book.outputRoot(), p));
+
+export function refuseFolderToFile(book: Book, out: ReadonlyMap<string, File>, now: ReadonlyMap<string, File>, edited: readonly string[], hintSuffix = ""): void {
+  const asFile = new Set(edited.filter((p) => now.has(p)));
+  if (!asFile.size) return;
+  const turned = new Map<string, string[]>();
+  for (const p of out.keys()) {
+    const parts = p.split("/");
+    const file = parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join("/")).find((folder) => asFile.has(folder));
+    if (file === undefined) continue;
+    if (!turned.has(file)) turned.set(file, []);
+    turned.get(file)!.push(inRepo(book, p));
+  }
+  if (!turned.size) return;
+  throw new Fail(Array.from(turned, ([file, gone]) => `${inRepo(book, file)} is a file now, and these paths under it are gone:\n  ${gone.join("\n  ")}`).join("\n")
+    + `\nPatchbook can't record a folder turned into a file. Put the folder back${hintSuffix}.`);
+}
+
 /** A folder where the build writes a file goes only if it holds nothing but folders and files this build removes. */
 function refuseIfFolderHoldsFiles(root: string, { stale, changed }: Changes): void {
   const going = new Set(stale);
