@@ -33,43 +33,56 @@ export function spawn(args: readonly string[], { cwd, input, env, capture = true
 const WEB_SCHEMES = /(^|\+)(https?|ftps?)$/i;
 const AUTHORITY = /\b([a-z][a-z0-9+.-]*):\/\/(?=([^/]*))/gi;
 
-type Authority = { scheme: string; start: number; userinfo: string | null };
+type Chars = { from: number; char: string }[];
 
-function* authorities(text: string): Generator<Authority> {
+// Git percent-decodes a non-web url once before it splits it. A `%` without two hex digits stays literal.
+function decodeOnce(raw: string): Chars {
+  const out: Chars = [];
+  for (let i = 0; i < raw.length; i++) {
+    const hex = raw[i] === "%" ? raw.slice(i + 1, i + 3) : "";
+    if (/^[0-9a-f]{2}$/i.test(hex)) {
+      out.push({ from: i, char: String.fromCharCode(parseInt(hex, 16)) });
+      i += 2;
+    } else out.push({ from: i, char: raw[i]! });
+  }
+  return out;
+}
+
+/** The raw span to hide when the url holds a password, or null when patchbook keeps it. */
+function secret(scheme: string, authority: string): [number, number] | null {
+  const at = authority.lastIndexOf("@");
+  if (WEB_SCHEMES.test(scheme)) return at > 0 ? [0, at + 1] : null;
+  const chars = decodeOnce(authority);
+  const end = chars.findIndex(({ char }) => char === "/");
+  const decoded = end < 0 ? chars : chars.slice(0, end);
+  const lastAt = decoded.findLastIndex(({ char }) => char === "@");
+  const colon = decoded.findIndex(({ char }, i) => char === ":" && i < lastAt);
+  return colon < 0 ? null : [decoded[colon]!.from, decoded[lastAt]!.from];
+}
+
+/** Each `scheme://` in the text, with the absolute span of its password, or null when patchbook keeps it. */
+function* authorities(text: string): Generator<[number, number] | null> {
   for (const m of text.matchAll(AUTHORITY)) {
-    const authority = m[2]!;
-    const at = authority.lastIndexOf("@");
-    yield { scheme: m[1]!, start: m.index + m[0].length, userinfo: at < 0 ? null : authority.slice(0, at) };
+    const cut = secret(m[1]!, m[2]!);
+    const start = m.index + m[0].length;
+    yield cut === null ? null : [start + cut[0], start + cut[1]];
   }
 }
 
-// Git percent-decodes the user info before it reaches ssh, so `%3A` is a colon. A `%` that does not start
-// two hex digits stays a literal `%`.
-const SEPARATOR = /:|%3a/i;
-
-const dropsCredentials = (scheme: string, userinfo: string): boolean =>
-  WEB_SCHEMES.test(scheme) ? userinfo !== "" : SEPARATOR.test(userinfo);
-
 /** User info runs to the last `@` before the first `/`, so a password may hold spaces, `#` or `?`. */
 export function redact(text: string): string {
-  const cuts: [number, number][] = [];
-  for (const { scheme, start, userinfo } of authorities(text)) {
-    if (userinfo === null) continue;
-    if (WEB_SCHEMES.test(scheme)) cuts.push([start, start + userinfo.length + 1]);
-    else if (SEPARATOR.test(userinfo)) cuts.push([start + userinfo.search(SEPARATOR), start + userinfo.length]);
-  }
   let out = "";
   let at = 0;
-  for (const [from, to] of cuts) {
-    out += text.slice(at, from);
-    at = Math.max(at, to);
+  for (const cut of authorities(text)) {
+    if (cut === null) continue;
+    out += text.slice(at, cut[0]);
+    at = Math.max(at, cut[1]);
   }
   return out + text.slice(at);
 }
 
 export function refuseCredentials(url: string): void {
-  const first = authorities(url).next().value;
-  if (first?.userinfo != null && dropsCredentials(first.scheme, first.userinfo)) {
+  if (authorities(url).next().value != null) {
     throw new Fail(`${redact(url)} has credentials that patchbook would not keep. Give git the password through a credential helper instead. See: git help credential`);
   }
 }
