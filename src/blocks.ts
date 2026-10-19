@@ -110,7 +110,10 @@ export function checkEntry(e: Entry): string | null {
   return null;
 }
 
-/** Rounded in whole numbers: as a double, 0.565 * 100 is 56.49999999999999, so Math.round(r * 100) / 100 gives 0.56. */
+/**
+ * Twice the matching code points over the code points of both texts, to hundredths with a half rounded up.
+ * It rounds the counts, not the ratio: as a double, 0.575 * 100 is 57.49999999999999, so Math.round(r * 100) / 100 gives 0.57.
+ */
 export function similarity(a: string, b: string): number {
   const total = Array.from(a).length + Array.from(b).length;
   if (total === 0) return 1;

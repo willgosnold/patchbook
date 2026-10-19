@@ -324,11 +324,20 @@ describe("similarity", () => {
     expect(similarity("abcdefgh", "abcdeXYZ")).toBe(0.63);
   });
 
-  test("rounds a half up where rounding the float would round it down", () => {
-    const a = "x".repeat(113) + "a".repeat(88);
-    const b = "x".repeat(113) + "b".repeat(86);
-    expect(new SequenceMatcher<string>(a, b).ratio()).toBe(0.565);
-    expect(similarity(a, b)).toBe(0.57);
+  test("rounds a decimal half up where rounding the float rounds it down", () => {
+    const halves = [
+      { shared: 23, onlyA: 17, onlyB: 17, ratio: 0.575, float: 0.57, rounded: 0.58 },
+      { shared: 113, onlyA: 88, onlyB: 86, ratio: 0.565, float: 0.56, rounded: 0.57 },
+      { shared: 57, onlyA: 144, onlyB: 142, ratio: 0.285, float: 0.28, rounded: 0.29 },
+    ];
+    for (const { shared, onlyA, onlyB, ratio, float, rounded } of halves) {
+      const a = "x".repeat(shared) + "a".repeat(onlyA);
+      const b = "x".repeat(shared) + "b".repeat(onlyB);
+      const r = new SequenceMatcher<string>(a, b).ratio();
+      expect(r).toBe(ratio);
+      expect(Math.round(r * 100) / 100).toBe(float);
+      expect(similarity(a, b)).toBe(rounded);
+    }
   });
 
   test("counts a code point once, as SequenceMatcher does", () => {
