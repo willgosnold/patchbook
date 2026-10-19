@@ -2532,6 +2532,14 @@ for (const [layout, hasRemote] of [["fork", true], ["folder", false]] as const) 
   }, TIMEOUT);
 }
 
+forkTest("test_a_message_escapes_the_control_and_format_characters_in_a_config_value", (t) => {
+  const config = join(t.fork.path, ".patchbook/config.toml");
+  writeFileSync(config, read(config).replace(/^layout = .*$/m, 'layout = "x\\u009b2Jy\\u202ez\\u007f\\u0085"'));
+  const refused = t.pb(["status"], { cwd: t.fork.path, code: 1 });
+  expect(refused.stderr).toContain('layout must be folder or fork, not "x\\u009b2Jy\\u202ez\\u007f\\u0085"');
+  expect(refused.stderr.replace(/\n$/, "")).not.toMatch(/[\p{Cc}\p{Cf}]/u);
+});
+
 test("test_a_refused_fork_init_does_not_print_the_password_in_a_remote", () => {
   const t = new Case();
   try {

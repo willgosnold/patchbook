@@ -17,6 +17,7 @@ const { Book, globRe, lockText, parseLock } = await import("../src/book.ts");
 const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
 const { intentSettings, pendingDiff, PROVIDERS, writeIntent } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
+const { quote } = await import("../src/lib/text.ts");
 const { setting, setToml, USER_CONFIG } = await import("../src/settings.ts");
 const { lastSyncText, parseLastSync } = await import("../src/sync.ts");
 
@@ -1069,7 +1070,7 @@ describe("parseChange", () => {
     for (const ws of [" ", "\t", "\uFEFF", "\u00A0", "\u3000"]) {
       for (const kind of KINDS) {
         const quoted = editText({ kind: "add", path: `a${ws}` }).slice("add ".length);
-        expect(() => parse([`- ${kind} a${ws}`])).toThrow(`CHANGE.md:6: the path ${JSON.stringify(`a${ws}`)} starts or ends with whitespace; write it in double quotes: ${quoted}`);
+        expect(() => parse([`- ${kind} a${ws}`])).toThrow(`CHANGE.md:6: the path ${quote(`a${ws}`)} starts or ends with whitespace; write it in double quotes: ${quoted}`);
         expect(() => parse([`- ${kind} ${ws}a`])).toThrow("CHANGE.md:6: the path ");
       }
       for (const kind of ["move", "copy"] as const) {

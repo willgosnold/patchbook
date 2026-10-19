@@ -10,7 +10,7 @@ import { Fail } from "./lib/fail.ts";
 import type { File } from "./lib/fs.ts";
 import { spawn, which } from "./lib/proc.ts";
 import { object, readJson, string } from "./lib/shape.ts";
-import { decodeReplace, encode, isText } from "./lib/text.ts";
+import { decodeReplace, encode, isText, quote } from "./lib/text.ts";
 import { configured, readToml, type Source, setting, SETTINGS, type Table, USER_CONFIG } from "./settings.ts";
 
 type Provider = { model: string; effort: string; command(model: string, effort: string, tmp: string): string[] };
@@ -71,7 +71,7 @@ export function intentSettings(book: Book | null, quiet = false, sources?: Map<s
     provider = found[0] ?? "claude";
   }
   const spec = PROVIDERS.get(provider);
-  if (!spec) throw new Fail(`intent.provider is one of ${Array.from(PROVIDERS.keys()).join(", ")}, not ${JSON.stringify(provider)}`);
+  if (!spec) throw new Fail(`intent.provider is one of ${Array.from(PROVIDERS.keys()).join(", ")}, not ${quote(provider)}`);
   const layers: [Source, Table | null, string][] = [
     ["env", null, ""],
     ...(book ? [["project", book.config, join(book.dir, "config.toml")] as [Source, Table, string]] : []),

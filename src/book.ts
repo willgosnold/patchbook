@@ -7,7 +7,7 @@ import { exists, type File, GITLINK, isDir, isMode, isSymlink, lexists, mkdirs, 
 import { similarity } from "./lib/match.ts";
 import { git, run, spawn } from "./lib/proc.ts";
 import { jsonText, named, object, oid, readJson, type Shape, string, versioned } from "./lib/shape.ts";
-import { byCodePoint, decode } from "./lib/text.ts";
+import { byCodePoint, decode, quote } from "./lib/text.ts";
 import { isTable, parseToml, type Table } from "./settings.ts";
 import { stagedFolder, treeFiles, Upstream } from "./store.ts";
 
@@ -89,7 +89,7 @@ async function loadHooks(dir: string): Promise<Hooks> {
   const hooks: Hooks = {};
   if (typeof module !== "object" || module === null) return hooks;
   for (const [name, fn] of Object.entries(module)) {
-    if (!isHookName(name)) throw hookFail(path, `${JSON.stringify(name)} isn't a hook${suggest(name)}`);
+    if (!isHookName(name)) throw hookFail(path, `${quote(name)} isn't a hook${suggest(name)}`);
     if (typeof fn !== "function") throw hookFail(path, `\`${name}\` must be a function`);
     const call = (...args: unknown[]): unknown => fn(...args);
     switch (name) {
@@ -97,7 +97,7 @@ async function loadHooks(dir: string): Promise<Hooks> {
         hooks.placeholder = (kind, key) => {
           const value = call(kind, key);
           if (value === null || value === undefined || typeof value === "string") return value;
-          throw hookFail(path, `placeholder(${JSON.stringify(kind)}, ${JSON.stringify(key)}) returned ${typeof value}, not a string`);
+          throw hookFail(path, `placeholder(${quote(kind)}, ${quote(key)}) returned ${typeof value}, not a string`);
         };
         break;
       case "blockTerms":
@@ -124,7 +124,7 @@ async function loadHooks(dir: string): Promise<Hooks> {
           if (!isIterable(found)) throw hookFail(path, "check must return a list of problems");
           return Array.from(found, (p) => {
             if (isProblem(p)) return p;
-            throw hookFail(path, `check returned ${JSON.stringify(p)}, not a problem like { problem: "check", file, detail }`);
+            throw hookFail(path, `check returned ${quote(p)}, not a problem like { problem: "check", file, detail }`);
           });
         };
         break;
@@ -167,7 +167,7 @@ function repoAsSpelled(realRoot: string, path: string): string | null {
 function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly string[]): string {
   const dir = pjoin(root, to);
   const rel = relative(resolve(root), resolve(dir));
-  const shown = JSON.stringify(to);
+  const shown = quote(to);
   if (rel === ".") throw new Fail(`[output] to ${shown} is the repo root. Name a folder inside the repo.`);
   if (under(rel, "..")) throw new Fail(`[output] to ${shown} is outside the repo. Name a folder inside it.`);
   if (under(rel, PB)) throw new Fail(`[output] to ${shown} is inside ${PB}. patchbook never builds into ${PB}, so those files would never land. Change [output] to.`);
@@ -246,7 +246,7 @@ export class Book {
     this.config = parseToml(config, join(this.dir, "config.toml"));
     const kind = Object.hasOwn(this.config, "layout") ? this.config["layout"] : "fork";
     if (kind !== "folder" && kind !== "fork") {
-      throw new Fail(`layout must be folder or fork, not ${JSON.stringify(kind)}`);
+      throw new Fail(`layout must be folder or fork, not ${quote(kind)}`);
     }
     const raw = this.config["upstream"];
     if (isTable(raw)) throw new Fail("config.toml has a single [upstream] table. Use [[upstream]] with a name instead.");

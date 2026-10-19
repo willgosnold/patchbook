@@ -1,3 +1,5 @@
+import { quote } from "./text.ts";
+
 /** One positional argument. The kind alone decides the type `run` receives for it. */
 export type ArgSpec =
   | { readonly kind: "one"; readonly help: string }
@@ -263,19 +265,19 @@ function describe(p: Problem): string {
     case "missing":
       return `missing ${p.what}`;
     case "unknown-command":
-      return `unknown command ${JSON.stringify(p.word)}`;
+      return `unknown command ${quote(p.word)}`;
     case "unknown-option":
-      return `unknown option ${JSON.stringify(p.flag)}`;
+      return `unknown option ${quote(p.flag)}`;
     case "missing-value":
       return p.next?.startsWith("-")
-        ? `${p.flag} needs a value. To pass ${JSON.stringify(p.next)} as its value, write \`${p.flag}=${p.next}\`.`
+        ? `${p.flag} needs a value. To pass ${quote(p.next)} as its value, write \`${p.flag}=${p.next}\`.`
         : `${p.flag} needs a value`;
     case "value-for-flag":
-      return `${p.flag} takes no value, got ${JSON.stringify(p.value)}`;
+      return `${p.flag} takes no value, got ${quote(p.value)}`;
     case "extra-argument":
-      return `extra argument ${JSON.stringify(p.value)}`;
+      return `extra argument ${quote(p.value)}`;
     case "not-a-choice":
-      return `expected ${list(p.choices)}, not ${JSON.stringify(p.value)}`;
+      return `expected ${list(p.choices)}, not ${quote(p.value)}`;
     case "repeated-option":
       return `${p.flag} given twice`;
     case "conflict":

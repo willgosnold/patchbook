@@ -6,7 +6,7 @@ import { Book } from "./book.ts";
 import { unifiedDiff } from "./lib/diff.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, foldersWith, isSymlink, LINK, lexists, mkdirs, type Mode, readDisk, readText, writeDisk, writeText } from "./lib/fs.ts";
-import { decode, encode } from "./lib/text.ts";
+import { decode, encode, quote } from "./lib/text.ts";
 
 export const EDIT_KINDS = ["file", "add", "replace", "delete", "move", "copy"] as const;
 type EditKind = (typeof EDIT_KINDS)[number];
@@ -18,7 +18,7 @@ export type Edit =
 export const CHANGE_NAME = /^[a-z0-9][a-z0-9-]*$/;
 
 export const notAChangeName = (name: string) =>
-  `${JSON.stringify(name)} isn't a valid change name; use lowercase letters, digits and hyphens, starting with a letter or digit`;
+  `${quote(name)} isn't a valid change name; use lowercase letters, digits and hyphens, starting with a letter or digit`;
 
 const ESCAPES: Record<string, number> = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, '"': 34, "\\": 92 };
 
@@ -118,7 +118,7 @@ const ARROW = " -> ";
 
 function unsafePath(path: string): string | null {
   if (!path.split("/").some((part) => part === "" || part === "." || part === "..")) return null;
-  return `${JSON.stringify(path)} must be a path inside the tree: not absolute, with no empty, . or .. segment and no slash at the end`;
+  return `${quote(path)} must be a path inside the tree: not absolute, with no empty, . or .. segment and no slash at the end`;
 }
 
 function isEditKind(kind: string): kind is EditKind {
@@ -138,7 +138,7 @@ function readPath(rest: string, from: number, where: string, isDest = false): { 
   const end = stop < 0 ? rest.length : stop;
   const path = rest.slice(from, end);
   if (path === "") throw new Fail(`${where}: expected \`- <${EDIT_KINDS.join("|")}> <path>\``);
-  if (/^\s|\s$/.test(path)) throw new Fail(`${where}: the path ${JSON.stringify(path)} starts or ends with whitespace; write it in double quotes: ${quotePath(path)}`);
+  if (/^\s|\s$/.test(path)) throw new Fail(`${where}: the path ${quote(path)} starts or ends with whitespace; write it in double quotes: ${quotePath(path)}`);
   if (/\p{Cc}/u.test(path)) throw new Fail(`${where}: a bare path can't hold a control character; write it in double quotes: ${quotePath(path)}`);
   return { path, end };
 }

@@ -8,7 +8,7 @@ import { pjoin, readText } from "./lib/fs.ts";
 import { sha256 } from "./lib/hash.ts";
 import { similarity } from "./lib/match.ts";
 import { list, readJson, type Shape, ShapeError, shown, string, table } from "./lib/shape.ts";
-import { byCodePoint, decode } from "./lib/text.ts";
+import { byCodePoint, decode, quote } from "./lib/text.ts";
 
 export const ENTRY_FIELDS = ["kind", "rules", "intent"] as const;
 export const ENTRY_KINDS = ["translation", "policy", "keep"];
@@ -130,7 +130,7 @@ const VALUE: Shape<string> = (v, at) => {
 };
 
 const PLACEHOLDERS: Shape<Map<string, string>> = (v, at) =>
-  new Map(Object.entries(table(v, at)).filter(([k]) => !k.startsWith("_")).map(([k, x]) => [k, VALUE(x, JSON.stringify(k))]));
+  new Map(Object.entries(table(v, at)).filter(([k]) => !k.startsWith("_")).map(([k, x]) => [k, VALUE(x, quote(k))]));
 
 export function parsePlaceholders(text: string, file: string): Map<string, string> {
   return readJson(text, PLACEHOLDERS, file);
@@ -187,7 +187,7 @@ export class Rules {
     return text.replace(this.placeholder, (m: string, kind: string, name: string) => {
       const value = (hook ? hook(kind, name) : null) ?? this.source(kind).get(name);
       if (value === undefined) {
-        report(`unknown ${kind} ${JSON.stringify(name)}`);
+        report(`unknown ${kind} ${quote(name)}`);
         return m;
       }
       return value;
