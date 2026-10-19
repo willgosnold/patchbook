@@ -11349,6 +11349,144 @@ exec '${Bun.which("git")}' "$@"
     });
   }
 
+  vendorTest("test_a_sync_journal_that_names_a_folder_the_config_does_not_vendor_is_left_for_the_user_and_nothing_is_deleted", (t) => {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "a\n");
+    extra.commit("a");
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    const pin = JSON.parse(t.repo.read(".patchbook/upstream.lock")).extra;
+    t.repo.write("docs/a.md", "mine\n");
+    t.repo.commit("my own notes");
+    t.repo.write("docs/a.md", "edited since the commit\n");
+    const journal = join(t.repo.path, ".patchbook/sync-extra");
+    mkdirSync(join(journal, "old"), { recursive: true });
+    writeFileSync(join(journal, "old/planted.txt"), "from the journal\n");
+    const record = { from: `${pin.commit} ${pin.tree}`, to: "", rewrite: true, added: "", vendor: "docs", copy: false, made: "" };
+    writeFileSync(join(journal, "pin"), JSON.stringify(record));
+    const before = tree(t.repo.path);
+    const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain(".patchbook/sync-extra holds a sync of extra");
+    expect(out.stderr).toContain(JSON.stringify("docs"));
+    expect(out.stderr).toContain("vendor/extra");
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(t.repo.read("docs/a.md")).toBe("edited since the commit\n");
+    expect(read(join(journal, "old/planted.txt"))).toBe("from the journal\n");
+  });
+
+  const plantJournal = (t: VendorCase, vendor: string, copy: boolean): string => {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "a\n");
+    extra.commit("a");
+    t.pb(["track", "extra", extra.path, ...(vendor ? ["--vendor", vendor] : [])], { cwd: t.repo.path });
+    const pin = JSON.parse(t.repo.read(".patchbook/upstream.lock")).extra;
+    const journal = join(t.repo.path, ".patchbook/sync-extra");
+    mkdirSync(journal, { recursive: true });
+    const record = { from: `${pin.commit} ${pin.tree}`, to: "", rewrite: true, added: "", vendor, copy, made: "" };
+    writeFileSync(join(journal, "pin"), JSON.stringify(record));
+    return journal;
+  };
+
+  vendorTest("test_a_sync_journal_that_puts_back_upstream_lock_as_a_link_out_of_the_repo_is_left_for_the_user_and_nothing_is_written_through_it", (t) => {
+    const journal = plantJournal(t, "", false);
+    const outside = join(t.tmp, "outside.txt");
+    writeFileSync(outside, "not patchbook's\n");
+    mkdirSync(join(journal, "before"));
+    symlinkSync(outside, join(journal, "before/upstream.lock"));
+    writeFileSync(join(journal, "lock"), "from the journal\n");
+    t.repo.write(".patchbook/upstream.lock", "");
+    const before = tree(t.repo.path);
+    const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(read(outside)).toBe("not patchbook's\n");
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(out.stderr).toContain(".patchbook/sync-extra holds a sync of extra");
+    expect(out.stderr).toContain("before/upstream.lock");
+  });
+
+  vendorTest("test_a_sync_journal_whose_lock_is_a_link_out_of_the_repo_is_left_for_the_user_and_its_target_is_not_read", (t) => {
+    const journal = plantJournal(t, "", false);
+    const outside = join(t.tmp, "outside.txt");
+    writeFileSync(outside, "a secret outside the repo\n");
+    symlinkSync(outside, join(journal, "lock"));
+    t.repo.write(".patchbook/upstream.lock", "");
+    const before = tree(t.repo.path);
+    const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(t.repo.read(".patchbook/upstream.lock")).not.toContain("a secret");
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(out.stderr).toContain(".patchbook/sync-extra holds a sync of extra");
+    expect(out.stderr).toContain("its lock ");
+  });
+
+  vendorTest("test_a_sync_journal_that_puts_a_change_file_back_under_a_link_out_of_the_repo_is_left_for_the_user", (t) => {
+    const journal = plantJournal(t, "", false);
+    const outside = join(t.tmp, "outside");
+    mkdirSync(outside);
+    rmSync(join(t.repo.path, ".patchbook/changes"), { recursive: true, force: true });
+    symlinkSync(outside, join(t.repo.path, ".patchbook/changes"));
+    mkdirSync(join(journal, "before/changes/tweak/ours"), { recursive: true });
+    writeFileSync(join(journal, "before/changes/tweak/ours/a.md.pb"), "from the journal\n");
+    const before = tree(t.repo.path);
+    const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(readdirSync(outside)).toEqual([]);
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(out.stderr).toContain("before/changes/tweak/ours/a.md.pb");
+  });
+
+  vendorTest("test_a_sync_journal_that_puts_last_sync_json_back_through_a_link_out_of_the_repo_is_left_for_the_user", (t) => {
+    const journal = plantJournal(t, "", false);
+    const outside = join(t.tmp, "outside.txt");
+    writeFileSync(outside, "not patchbook's\n");
+    symlinkSync(outside, join(t.repo.path, ".patchbook/last-sync.json"));
+    mkdirSync(join(journal, "before"));
+    writeFileSync(join(journal, "before/last-sync.json"), "from the journal\n");
+    const before = tree(t.repo.path);
+    const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(read(outside)).toBe("not patchbook's\n");
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(out.stderr).toContain("before/last-sync.json");
+  });
+
+  vendorTest("test_a_sync_journal_whose_before_links_to_a_folder_out_of_the_repo_is_left_for_the_user_and_no_link_is_put_back", (t) => {
+    const journal = plantJournal(t, "", false);
+    const outside = join(t.tmp, "outside");
+    mkdirSync(join(outside, "ours"), { recursive: true });
+    writeFileSync(join(outside, "ours/secret.pb"), "a secret outside the repo\n");
+    mkdirSync(join(journal, "before/changes"), { recursive: true });
+    symlinkSync(outside, join(journal, "before/changes/tweak"));
+    const before = tree(t.repo.path);
+    const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(existsSync(join(t.repo.path, ".patchbook/changes/tweak"))).toBe(false);
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(out.stderr).toContain("before/changes/tweak");
+  });
+
+  vendorTest("test_a_sync_journal_that_is_a_link_to_a_folder_out_of_the_repo_is_left_for_the_user_and_nothing_in_it_is_moved", (t) => {
+    const journal = plantJournal(t, "vendor/extra", true);
+    const outside = join(t.tmp, "outside");
+    renameSync(journal, outside);
+    mkdirSync(join(outside, "old"));
+    writeFileSync(join(outside, "old/a.md"), "not patchbook's\n");
+    symlinkSync(outside, journal);
+    const before = tree(t.repo.path);
+    const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(read(join(outside, "old/a.md"))).toBe("not patchbook's\n");
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(out.stderr).toContain(".patchbook/sync-extra holds a sync of extra");
+    expect(out.stderr).toContain("leads outside the repo");
+  });
+
+  vendorTest("test_a_sync_journal_whose_pin_is_a_link_out_of_the_repo_is_left_for_the_user_and_its_target_is_not_read", (t) => {
+    const journal = plantJournal(t, "vendor/extra", true);
+    const outside = join(t.tmp, "outside.txt");
+    renameSync(join(journal, "pin"), outside);
+    writeFileSync(outside, read(outside).replace('"vendor/extra"', '"vendor/a-secret"'));
+    symlinkSync(outside, join(journal, "pin"));
+    const before = tree(t.repo.path);
+    const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).not.toContain("a-secret");
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(out.stderr).toContain("its pin ");
+  });
+
   vendorTest("test_track_refuses_a_vendor_folder_that_holds_a_git_repo_before_it_drops_a_pin_an_earlier_track_left", (t) => {
     const extra = new Repo(join(t.tmp, "extra"));
     extra.write("a.md", "a\n");
@@ -11673,6 +11811,21 @@ exec '${Bun.which("git")}' "$@"
     vendorTest("test_a_sync_after_a_killed_sync_with_nothing_of_yours_in_the_copy_still_finishes", (t) => {
       killedSync(t);
       t.pb(["sync", "extra"], { cwd: t.repo.path });
+      expect(t.repo.read("vendor/extra/b.md")).toBe("b\n");
+      noJournal(t);
+    });
+
+    vendorTest("test_a_sync_killed_while_it_wrote_an_upstream_lock_that_links_into_the_repo_is_put_right_by_the_next_sync", (t) => {
+      const [link, target] = [join(t.repo.path, ".patchbook/upstream.lock"), join(t.repo.path, "pins/upstream.lock")];
+      mkdirSync(dirname(target));
+      renameSync(link, target);
+      symlinkSync("../pins/upstream.lock", link);
+      const extra = killedSync(t);
+      writeFileSync(join(t.repo.path, ".patchbook/sync-extra/lock"), read(target));
+      writeFileSync(target, "");
+      t.pb(["sync", "extra"], { cwd: t.repo.path });
+      expect(readlinkSync(link)).toBe("../pins/upstream.lock");
+      expect(JSON.parse(read(target)).extra.commit).toBe(sh(["git", "rev-parse", "HEAD"], { cwd: extra.path }).stdout.trim());
       expect(t.repo.read("vendor/extra/b.md")).toBe("b\n");
       noJournal(t);
     });

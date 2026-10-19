@@ -3,12 +3,12 @@ import { appendFileSync, chmodSync, lstatSync, mkdtempSync, readdirSync, readFil
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
-import { Book, refuseNestedGit, refuseUpstreamGit, unsafeVendor } from "./book.ts";
+import { Book, GIT, refuseNestedGit, refuseUpstreamGit, segmentNamesGit, under, unsafeVendor } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isSymlink, LINK, lexists, mkdirs, type Mode, pjoin, readDisk, readText, readTextReplace, sameFile, setsMode, writeDisk, writeText } from "./lib/fs.ts";
+import { exists, type File, isSymlink, lexists, LINK, mkdirs, type Mode, nonFolders, pjoin, readDisk, readText, readTextReplace, resolve, sameFile, setsMode, writeDisk, writeText } from "./lib/fs.ts";
 import { dumps, JsonError, loads } from "./lib/json.ts";
 import { spawn } from "./lib/proc.ts";
 import { sorted } from "./lib/py.ts";
@@ -371,7 +371,55 @@ function takeVendor(vendor: string | null, to: string | null): void {
 /** Recover every upstream, torn locks first. Each journal saves last-sync.json, so none may start while another is pending. */
 function recoverAll(book: Book): void {
   const tore = (u: Upstream) => lexists(join(journal(book, u), "lock"));
-  for (const u of [...book.upstreams.filter(tore), ...book.upstreams.filter((u) => !tore(u))]) recover(book, u);
+  for (const u of [...book.upstreams.filter(tore), ...book.upstreams.filter((u) => !tore(u))]) {
+    const odd = misshapen(book, u);
+    if (odd) throw stuck(book, u, odd);
+    recover(book, u);
+  }
+}
+
+/**
+ * Why recovery must not trust a journal found on disk, or null: its `before/` holds what a sync never saves there, or recovery would read or write through a path outside the repo or in `.git`.
+ * A journal can be committed, so it is anyone's data. Recovery reads the lock and the report by their bytes and writes them back through whatever link is in place.
+ * A sync that fails as it runs recovers its own journal without this check, since what it puts back is what it found.
+ */
+function misshapen(book: Book, u: Upstream): string | null {
+  const j = journal(book, u);
+  if (!exists(join(j, "pin"))) return null;
+  const strayed = astray(book.root, j);
+  if (strayed) return `it ${strayed}, and recovery would read it and move what it holds`;
+  const pinStrayed = astray(book.root, join(j, "pin"));
+  if (pinStrayed) return `its pin ${pinStrayed}, and recovery would read it`;
+  const [lock, before, upstreamLock, lastSync] = [join(j, "lock"), join(j, "before"), join(book.dir, "upstream.lock"), join(book.dir, REPORT)];
+  const saved = lexists(before) && !astray(book.root, before) ? nonFolders(before) : [];
+  const odd = saved.find((rel) => rel !== REPORT && !(rel.startsWith("changes/") && rel.endsWith(".pb")));
+  if (odd) return `its before/${odd} is not one a sync saves`;
+  const report = saved.includes(REPORT);
+  const paths: [string, string, boolean, string][] = [
+    ["its lock", lock, lexists(lock), "recovery would read it"],
+    ["its before", before, lexists(before), "recovery would read it"],
+    [`its before/${REPORT}`, join(before, REPORT), report, "recovery would read it"],
+    ...saved.filter((rel) => rel !== REPORT).map((rel): [string, string, boolean, string] => {
+      const folder = dirname(join(book.dir, rel));
+      return [relative(book.root, folder), folder, true, `recovery would put its before/${rel} back there`];
+    }),
+    [relative(book.root, upstreamLock), upstreamLock, lexists(lock) && locked(u) === null, "recovery would write its lock back through it"],
+    [relative(book.root, lastSync), lastSync, report, `recovery would write its before/${REPORT} back through it`],
+  ];
+  for (const [name, p, used, then] of paths) {
+    const leads = used && astray(book.root, p);
+    if (leads) return `${name} ${leads}, and ${then}`;
+  }
+  return null;
+}
+
+/** Where `p` goes when it leaves the repo or reaches `.git`, once every link on the way is followed, `p` itself included, or null. A link to nothing counts, since a write through it makes the file it names. */
+function astray(root: string, p: string): string | null {
+  if (lexists(p) && !exists(p)) return "leads nowhere";
+  const rel = relative(resolve(root), resolve(p));
+  if (under(rel, "..")) return "leads outside the repo";
+  if (rel.split("/").some(segmentNamesGit)) return `leads into ${GIT}`;
+  return null;
 }
 
 function recover(book: Book, u: Upstream): void {
@@ -388,6 +436,9 @@ function recover(book: Book, u: Upstream): void {
     const vendor = path ? pjoin(book.root, path) : null;
     const unsafe = vendor && unsafeVendor(book.root, vendor);
     if (unsafe) throw stuck(book, u, `its record names the vendor folder ${JSON.stringify(path)}, which ${unsafe}`);
+    if (vendor && vendor !== u.vendor) {
+      throw stuck(book, u, `its record names the vendor folder ${JSON.stringify(path)}, and config.toml ${u.vendor ? `sets ${JSON.stringify(relative(book.root, u.vendor))}` : "sets no vendor folder"} for ${u.name}`);
+    }
     const old = join(j, "old");
     const newCopy = lexists(old) || !copy;
     if (vendor && newCopy) refuseNestedGit(book.root, u.name, vendor, relative(book.root, j));
@@ -401,10 +452,10 @@ function recover(book: Book, u: Upstream): void {
     }
     if (vendor && newCopy) refuseUserFilesInCopy(book, u, vendor, j, rewrite ? from : to);
     const before = join(j, "before");
-    const saved = lexists(before) ? readdirSync(before, { recursive: true, encoding: "utf8" }) : [];
-    for (const rel of saved.filter((rel) => rel !== REPORT)) {
-      if (!lstatSync(join(before, rel)).isDirectory()) putBack(join(book.dir, rel), readDisk(join(before, rel)));
-    }
+    const unreadable: string[] = [];
+    const saved = lexists(before) ? nonFolders(before, unreadable) : [];
+    if (unreadable.length) throw stuck(book, u, `${relative(book.root, join(before, unreadable[0]!))} can't be read`);
+    for (const rel of saved.filter((rel) => rel !== REPORT)) putBack(join(book.dir, rel), readDisk(join(before, rel)));
     if (lexists(before)) putReport(join(book.dir, REPORT), join(before, REPORT));
     if (torn) {
       const was = readFileSync(join(j, "lock"));
