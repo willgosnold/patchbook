@@ -10748,6 +10748,107 @@ exec '${Bun.which("git")}' "$@"
     }, TIMEOUT);
   });
 
+  describe("upstream --export", () => {
+    const exportCase = (path: string | null): { t: Case; repo: Repo } => {
+      const t = new Case();
+      const base = new Repo(join(t.tmp, "base"));
+      base.write("README.md", "base\n");
+      base.commit("start");
+      const repo = new Repo(join(t.tmp, "mine"));
+      repo.write("README.md", "mine\n");
+      repo.commit("start");
+      t.pb(["init", "--upstream", base.path, "--output-to", "out"], { cwd: repo.path });
+      repo.commit("init");
+      const evil = new Repo(join(t.tmp, "evil"));
+      evil.write("a.md", "a\n");
+      evil.commit("a");
+      t.pb(["track", "evil", evil.path], { cwd: repo.path });
+      if (path !== null) {
+        withBlobAt(t, evil, path);
+        t.pb(["check"], { cwd: repo.path, code: null });
+        const [commit, treeId] = sh(["git", "rev-parse", "HEAD", "HEAD^{tree}"], { cwd: evil.path }).stdout.split("\n");
+        const lock = join(repo.path, ".patchbook/upstream.lock");
+        writeFileSync(lock, JSON.stringify({ ...JSON.parse(read(lock)), evil: { commit, tree: treeId } }, null, 2) + "\n");
+      }
+      return { t, repo };
+    };
+
+    for (const path of [".git/config", "GIT~1/config"]) {
+      test(`test_export_refuses_an_upstream_that_holds_${path}_and_writes_nothing`, () => {
+        const { t, repo } = exportCase(path);
+        try {
+          const dest = join(repo.path, "exp");
+          const before = tree(repo.path);
+          const config = repo.read(".git/config");
+          const out = t.pb(["upstream", "evil", "--export", dest], { cwd: repo.path, code: 1 });
+          expect(out.stderr).toContain(`upstream evil holds ${path}, which git reads as .git, so it can't be exported into ${dest}. Nothing was changed.`);
+          expect(out.stdout).toBe("");
+          expect(existsSync(dest)).toBe(false);
+          expect(tree(repo.path)).toEqual(before);
+          expect(repo.read(".git/config")).toBe(config);
+        } finally {
+          t.cleanup();
+        }
+      }, TIMEOUT);
+    }
+
+    test("test_export_to_the_repo_root_leaves_the_repos_own_git_config", () => {
+      const { t, repo } = exportCase(".git/config");
+      try {
+        const before = tree(repo.path);
+        const config = repo.read(".git/config");
+        t.pb(["upstream", "evil", "--export", "."], { cwd: repo.path, code: 1 });
+        expect(repo.read(".git/config")).toBe(config);
+        expect(tree(repo.path)).toEqual(before);
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+
+    test("test_export_refuses_a_folder_that_is_not_empty_and_writes_nothing", () => {
+      const { t, repo } = exportCase(null);
+      try {
+        const dest = join(repo.path, "exp");
+        repo.write("exp/a.md", "mine, not upstream's\n");
+        repo.write("exp/other.txt", "other\n");
+        const before = tree(repo.path);
+        const out = t.pb(["upstream", "evil", "--export", dest], { cwd: repo.path, code: 1 });
+        expect(out.stderr).toContain(`can't export upstream evil into ${dest}, which already exists and isn't empty. Name a new or empty folder. Nothing was changed.`);
+        expect(out.stdout).toBe("");
+        expect(tree(repo.path)).toEqual(before);
+        expect(repo.read("exp/a.md")).toBe("mine, not upstream's\n");
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+
+    test("test_export_refuses_a_destination_that_is_a_file_and_the_repo_root", () => {
+      const { t, repo } = exportCase(null);
+      try {
+        const before = tree(repo.path);
+        const file = join(repo.path, "README.md");
+        expect(t.pb(["upstream", "evil", "--export", file], { cwd: repo.path, code: 1 }).stderr).toContain(`which already exists and isn't empty`);
+        expect(t.pb(["upstream", "evil", "--export", "."], { cwd: repo.path, code: 1 }).stderr).toContain(`which already exists and isn't empty`);
+        expect(tree(repo.path)).toEqual(before);
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+
+    test("test_export_still_writes_into_a_new_folder_and_an_empty_one", () => {
+      const { t, repo } = exportCase(null);
+      try {
+        t.pb(["upstream", "evil", "--export", join(repo.path, "fresh")], { cwd: repo.path });
+        expect(repo.read("fresh/a.md")).toBe("a\n");
+        mkdirSync(join(repo.path, "empty"));
+        t.pb(["upstream", "evil", "--export", join(repo.path, "empty")], { cwd: repo.path });
+        expect(repo.read("empty/a.md")).toBe("a\n");
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+  });
+
   test("test_init_refuses_an_upstream_that_holds_a_dot_git_and_leaves_no_patchbook", () => {
     const t = new Case();
     try {

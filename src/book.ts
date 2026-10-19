@@ -256,17 +256,25 @@ export function refuseNestedGit(root: string, name: string, vendor: string, jour
   throw new Fail(`${stalled} holds ${at}, a git repo of its own. ${then}`);
 }
 
+function refuseGit(name: string, files: Iterable<string>, then: string): void {
+  for (const p of files) {
+    if (p.split("/").some(segmentNamesGit)) throw new Fail(`upstream ${name} holds ${p}, which git reads as ${GIT}, ${then} Nothing was changed.`);
+  }
+}
+
 /** Refuses an upstream whose files hold a name git reads as `.git`: the copy would hold a repo of its own, and no sync could finish over it. Runs before the journal and any write. */
 export function refuseUpstreamGit(name: string, vendor: string, files: Iterable<string>): void {
-  for (const p of files) {
-    if (p.split("/").some(segmentNamesGit)) throw new Fail(`upstream ${name} holds ${p}, which git reads as ${GIT}, so it can't be vendored into ${vendor}. Nothing was changed.`);
-  }
+  refuseGit(name, files, `so it can't be vendored into ${vendor}.`);
+}
+
+/** Refuses an upstream whose files hold a name git reads as `.git`: an export would write a repo config the upstream controls into `dest`. Runs before any write. */
+export function refuseExportedGit(name: string, dest: string, files: Iterable<string>): void {
+  refuseGit(name, files, `so it can't be exported into ${dest}.`);
 }
 
 /** Refuses a staged path of upstream `u` that holds a name git reads as `.git`: the build would write a repo config the upstream controls into the user's tree. */
 function refuseBuiltGit(u: Upstream, staged: string): void {
-  const path = u.mount ? staged.slice(u.mount.length + 1) : staged;
-  if (path.split("/").some(segmentNamesGit)) throw new Fail(`upstream ${u.name} holds ${path}, which git reads as ${GIT}, so a build would put a git repo of its own in your tree. Nothing was changed.`);
+  refuseGit(u.name, [u.mount ? staged.slice(u.mount.length + 1) : staged], "so a build would put a git repo of its own in your tree.");
 }
 
 /** `**` matches any number of folders, `*` and `?` stay within one. */
