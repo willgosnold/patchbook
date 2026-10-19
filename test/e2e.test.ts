@@ -6203,6 +6203,7 @@ describe("ForkTest", () => {
     sh(["git", "add", "-A"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "take upstream"]);
     expect(committed(t)).toContain("new.sh");
+    expect(sh(["git", "ls-tree", "HEAD", "new.sh"], { cwd: t.fork.path }).stdout).toStartWith("100755 ");
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     const later = hookCommit(t, ["-m", "shout"]);
@@ -6529,6 +6530,7 @@ describe("ForkTest", () => {
     expect(modeInHead(t, ".husky/pre-commit")).toBe("100755");
     const pb = join(t.fork.path, ".patchbook/changes/add-the-pre-commit/ours/.husky/pre-commit.pb");
     expect(isExecutable(pb)).toBe(true);
+    expect(sh(["git", "ls-tree", "HEAD", relative(t.fork.path, pb)], { cwd: t.fork.path }).stdout).toStartWith("100755 ");
     chmodSync(join(t.fork.path, ".husky/pre-commit"), 0o644);
     writeFileSync(join(t.fork.path, ".husky/pre-commit"), "npm test --run\n");
     installManager(t.fork, ".husky");
@@ -12886,6 +12888,186 @@ describe("ModeTest", () => {
     t.pb(["build"], { cwd: t.fork.path });
     expect(existsSync(guide)).toBe(false);
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+});
+
+describe("ExecBitTest", () => {
+  type Bit = 0o644 | 0o755;
+  type Cell = { path: "hook" | "record" | "install"; fileMode: "true" | "false"; edit: boolean; bit: Bit; owner: "change" | "upstream" };
+
+  const commit = (t: ForkCase, message: string, intent: string, args: string[] = []): void => {
+    sh(["git", "commit", "-q", "-m", message, ...args], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: intent } });
+  };
+  const git = (t: ForkCase, ...args: string[]): string => sh(["git", ...args], { cwd: t.fork.path }).stdout;
+  const setFileMode = (t: ForkCase, on: "true" | "false"): void => void git(t, "config", "core.fileMode", on);
+  const headMode = (t: ForkCase, path: string): string => git(t, "ls-tree", "HEAD", "--", path).split(" ")[0]!;
+  const porcelain = (t: ForkCase): string => git(t, "status", "--porcelain");
+  const gitMode = (bit: Bit): string => (bit === 0o755 ? "100755" : "100644");
+  const bitOf = (p: string): Bit => (isExecutable(p) ? 0o755 : 0o644);
+  /** HEAD's ours copy of an output: its git mode and its path. */
+  const headCopy = (t: ForkCase, path: string): { mode: string; at: string } => {
+    const line = git(t, "ls-tree", "-r", "HEAD", "--", ".patchbook/changes").split("\n").find((l) => l.endsWith(`/ours/${path}.pb`)) ?? "";
+    return { mode: line.split(" ")[0]!, at: line.split("\t")[1] ?? "" };
+  };
+  /** What a collaborator gets: a fresh clone of the fork, built with core.fileMode=true. */
+  const freshBuild = (t: ForkCase): string => {
+    const fresh = join(t.tmp, "fresh");
+    sh(["git", "clone", "-q", t.fork.path, fresh], { cwd: t.tmp });
+    sh(["git", "config", "core.fileMode", "true"], { cwd: fresh });
+    t.pb(["build", "--force"], { cwd: fresh });
+    return fresh;
+  };
+
+  const cell = (t: ForkCase, c: Cell): void => {
+    const from: Bit = c.bit === 0o755 ? 0o644 : 0o755;
+    const file = c.path === "install" ? ".husky/pre-commit" : c.owner === "change" ? "mine.sh" : from === 0o755 ? "bin/run.sh" : "app.txt";
+    const disk = join(t.fork.path, file);
+    if (c.owner === "change") {
+      t.fork.write(file, "echo one\n", from);
+      git(t, "add", file);
+      commit(t, "add the script", "Add the script.");
+    }
+    setFileMode(t, c.fileMode);
+    if (c.edit) appendFileSync(disk, "echo two\n");
+    chmodSync(disk, c.bit);
+    if (c.path === "hook") {
+      git(t, "add", file);
+      if (c.fileMode === "false") git(t, "update-index", `--chmod=${c.bit === 0o755 ? "+" : "-"}x`, file);
+      commit(t, "change the script", "Change the script.");
+    } else if (c.path === "record") {
+      expect(t.pb(["record", "--intent", "Change the script."], { cwd: t.fork.path }).stdout).toContain(file);
+      t.pb(["build"], { cwd: t.fork.path });
+      expect(bitOf(disk)).toBe(c.bit);
+      git(t, "add", "-A");
+      commit(t, "record the script", "Record the script.");
+    } else {
+      installManager(t.fork, ".husky");
+      t.pb(["hook", "install"], { cwd: t.fork.path });
+      commit(t, "hook install", "Stage the hook.");
+    }
+    expect(headMode(t, file)).toBe(gitMode(c.bit));
+    expect(porcelain(t)).toBe("");
+    setFileMode(t, "true");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(bitOf(disk)).toBe(c.bit);
+    expect(porcelain(t)).toBe("");
+    expect(bitOf(join(freshBuild(t), file))).toBe(c.bit);
+  };
+
+  const BITS = [[0o755, "a_program_bit"], [0o644, "a_plain_bit"]] as const;
+  const EDITS = [[true, "with_an_edit"], [false, "alone"]] as const;
+  const OWNERS = [["change", "on_a_file_we_added"], ["upstream", "on_an_upstream_file"]] as const;
+  for (const [bit, bitName] of BITS) {
+    for (const [edit, editName] of EDITS) {
+      for (const [owner, ownerName] of OWNERS) {
+        for (const fileMode of ["true", "false"] as const) {
+          forkTest(`test_commit_with_file_modes_${fileMode}_records_${bitName}_${editName}_${ownerName}`, (t) => cell(t, { path: "hook", fileMode, edit, bit, owner }));
+        }
+        forkTest(`test_record_with_file_modes_true_records_${bitName}_${editName}_${ownerName}`, (t) => cell(t, { path: "record", fileMode: "true", edit, bit, owner }));
+      }
+      forkTest(`test_hook_install_with_file_modes_true_takes_the_disk_bit_${bitName}_${editName}_on_a_script_we_added`, (t) =>
+        cell(t, { path: "install", fileMode: "true", edit, bit, owner: "change" }));
+    }
+  }
+
+  forkTest("test_hook_install_with_file_modes_false_keeps_the_exec_bit_of_a_script_we_added_through_the_next_build", (t) => {
+    const script = join(t.fork.path, ".husky/pre-commit");
+    setFileMode(t, "false");
+    t.fork.write(".husky/pre-commit", "echo checks\n", 0o755);
+    git(t, "add", ".husky/pre-commit");
+    git(t, "update-index", "--chmod=+x", ".husky/pre-commit");
+    commit(t, "add husky script", "Add the pre-commit script.");
+    expect(headMode(t, ".husky/pre-commit")).toBe("100755");
+    expect(headCopy(t, ".husky/pre-commit").mode).toBe("100755");
+    chmodSync(script, 0o644);
+    writeFileSync(script, "echo checks --run\n");
+    installManager(t.fork, ".husky");
+    t.pb(["hook", "install"], { cwd: t.fork.path });
+    commit(t, "husky script edit", "Edit the pre-commit script.");
+    expect(headMode(t, ".husky/pre-commit")).toBe("100755");
+    expect(headCopy(t, ".husky/pre-commit").mode).toBe("100755");
+    setFileMode(t, "true");
+    t.pb(["build", "--force"], { cwd: t.fork.path });
+    expect(isExecutable(script)).toBe(true);
+    expect(porcelain(t)).toBe("");
+    expect(bitOf(join(freshBuild(t), ".husky/pre-commit"))).toBe(0o755);
+  });
+
+  forkTest("test_commit_with_file_modes_false_commits_a_new_program_and_its_copy_at_755", (t) => {
+    setFileMode(t, "false");
+    t.fork.write("new.sh", "echo new\n", 0o755);
+    git(t, "add", "new.sh");
+    git(t, "update-index", "--chmod=+x", "new.sh");
+    commit(t, "add new.sh", "Add a program.");
+    expect(headMode(t, "new.sh")).toBe("100755");
+    expect(headCopy(t, "new.sh").mode).toBe("100755");
+    expect(bitOf(join(freshBuild(t), "new.sh"))).toBe(0o755);
+  });
+
+  const upstreamProgram = (t: ForkCase): void => {
+    setFileMode(t, "false");
+    t.up.write("new.sh", "echo up\n", 0o755);
+    t.up.commit("add new.sh");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    git(t, "add", "-A");
+  };
+
+  forkTest("test_commit_with_file_modes_false_commits_a_program_from_upstream_at_755", (t) => {
+    upstreamProgram(t);
+    commit(t, "take upstream", "Take upstream.");
+    expect(headMode(t, "new.sh")).toBe("100755");
+    expect(existsSync(join(t.fork.path, ".patchbook/changes"))).toBe(false);
+  });
+
+  forkTest("test_commit_of_named_paths_with_file_modes_false_commits_a_program_from_upstream_at_755", (t) => {
+    upstreamProgram(t);
+    commit(t, "take upstream", "Take upstream.", ["--", "new.sh", ".patchbook"]);
+    expect(headMode(t, "new.sh")).toBe("100755");
+    expect(git(t, "ls-files", "-s", "new.sh")).toStartWith("100755 ");
+  });
+
+  for (const fileMode of ["true", "false"] as const) {
+    forkTest(`test_commit_with_file_modes_${fileMode}_records_an_executable_file_over_a_link_we_added_at_its_committed_bit`, (t) => {
+      setFileMode(t, fileMode);
+      symlinkSync("app.txt", join(t.fork.path, "link"));
+      git(t, "add", "link");
+      commit(t, "add the link", "Add the link.");
+      unlinkSync(join(t.fork.path, "link"));
+      t.fork.write("link", "run\n", 0o755);
+      git(t, "add", "link");
+      if (fileMode === "false") git(t, "update-index", "--chmod=+x", "link");
+      commit(t, "make the link a program", "Make the link a program.");
+      expect(headMode(t, "link")).toBe("100755");
+      const fresh = freshBuild(t);
+      expect(isSymlink(join(fresh, "link"))).toBe(false);
+      expect(bitOf(join(fresh, "link"))).toBe(0o755);
+    });
+  }
+
+  forkTest("test_commit_with_file_modes_false_leaves_the_committed_mode_of_a_copy_it_did_not_write", (t) => {
+    t.fork.write("new.sh", "echo new\n", 0o755);
+    git(t, "add", "new.sh");
+    commit(t, "add new.sh", "Add a program.");
+    const copy = headCopy(t, "new.sh");
+    expect(copy.mode).toBe("100755");
+    setFileMode(t, "false");
+    chmodSync(join(t.fork.path, copy.at), 0o644);
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    git(t, "add", "app.txt");
+    commit(t, "shout", "Shout the second line.");
+    expect(headCopy(t, "new.sh").mode).toBe("100755");
+  });
+
+  forkTest("test_commit_after_a_manual_record_with_file_modes_false_commits_the_chosen_bit", (t) => {
+    setFileMode(t, "false");
+    git(t, "update-index", "--chmod=+x", "app.txt");
+    t.pb(["record", "--intent", "Run the app."], { cwd: t.fork.path });
+    git(t, "add", "-A");
+    commit(t, "run the app", "Run the app.");
+    expect(headMode(t, "app.txt")).toBe("100755");
+    expect(headCopy(t, "app.txt").mode).toBe("100755");
+    expect(bitOf(join(freshBuild(t), "app.txt"))).toBe(0o755);
   });
 });
 
