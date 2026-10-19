@@ -10588,18 +10588,23 @@ exec '${Bun.which("git")}' "$@"
     expect(t.repo.read("vendor/extra/b.md")).toBe("b\n");
   });
 
-  /** A commit whose tree holds a `.git` blob, which `git add` refuses to stage and only `git mktree` can store. */
-  const upstreamWithDotGit = (t: VendorCase, name: string): Repo => {
-    const up = new Repo(join(t.tmp, name));
-    up.write("a.md", "a\n");
-    up.commit("a");
+  /** A commit on top of upstream's head whose tree also holds a blob at `path`, which `git add` refuses to stage for a `.git` and only `git mktree` can store. */
+  const withBlobAt = (up: Repo, path: string): void => {
     const git = (args: string[], input = ""): string => {
       const r = Bun.spawnSync(["git", ...args], { cwd: up.path, env: t.env, stdin: Buffer.from(input), stdout: "pipe" });
       return r.stdout.toString().trim();
     };
-    const blob = git(["hash-object", "-w", "a.md"]);
-    const treeId = git(["mktree"], `100644 blob ${blob}\t.git\n100644 blob ${blob}\ta.md\n`);
-    git(["update-ref", "refs/heads/main", git(["commit-tree", treeId, "-p", "HEAD", "-m", "with .git"])]);
+    const blob = git(["hash-object", "-w", "--stdin"], "a\n");
+    const entry = (parts: string[]): string =>
+      parts.length === 1 ? `100644 blob ${blob}\t${parts[0]}` : `040000 tree ${git(["mktree"], entry(parts.slice(1)) + "\n")}\t${parts[0]}`;
+    const treeId = git(["mktree"], `${git(["ls-tree", "HEAD"])}\n${entry(path.split("/"))}\n`);
+    git(["update-ref", "refs/heads/main", git(["commit-tree", treeId, "-p", "HEAD", "-m", `with ${path}`])]);
+  };
+  const upstreamWithDotGit = (t: Case, name: string, path = ".git"): Repo => {
+    const up = new Repo(join(t.tmp, name));
+    up.write("a.md", "a\n");
+    up.commit("a");
+    withBlobAt(up, path);
     return up;
   };
 
@@ -10637,6 +10642,76 @@ exec '${Bun.which("git")}' "$@"
     const out = t.pb(["sync", "gentry"], { cwd: t.repo.path, code: 1 });
     expect(out.stderr).toContain("upstream gentry holds .git");
     expect(tree(t.repo.path)).toEqual(before);
+  });
+
+  describe("an upstream that is not vendored and holds a path git reads as .git", () => {
+    const spellings = [".git/config", "GIT~1/config", ".git./config", ".g‌it/config"];
+
+    const dotGitCase = (): { t: Case; repo: Repo; out: string; good: Repo } => {
+      const t = new Case();
+      const up = new Repo(join(t.tmp, "up"));
+      up.write("README.md", "up\n");
+      up.commit("start");
+      const repo = new Repo(join(t.tmp, "mine"));
+      repo.write("README.md", "mine\n");
+      repo.commit("start");
+      t.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: repo.path });
+      repo.commit("init");
+      const good = new Repo(join(t.tmp, "good"));
+      good.write("g.md", "g\n");
+      good.commit("g");
+      t.pb(["track", "good", good.path], { cwd: repo.path });
+      t.pb(["build"], { cwd: repo.path });
+      return { t, repo, out: join(repo.path, "out"), good };
+    };
+
+    for (const path of spellings) {
+      const refused = (name: string): string => `upstream ${name} holds ${path}, which git reads as .git, so a build would put a git repo of its own in your tree. Nothing was changed.`;
+
+      test(`test_track_refuses_an_upstream_that_holds_${path}_before_it_pins_and_builds_nothing`, () => {
+        const { t, repo, out } = dotGitCase();
+        try {
+          const evil = upstreamWithDotGit(t, "evil", path);
+          const before = tree(repo.path);
+          const tracked = t.pb(["track", "evil", evil.path], { cwd: repo.path, code: 1 });
+          expect(tracked.stderr).toContain(refused("evil"));
+          expect(tree(repo.path)).toEqual(before);
+          t.pb(["build"], { cwd: repo.path });
+          expect(existsSync(join(out, "evil"))).toBe(false);
+          expect(tree(repo.path)).toEqual(before);
+        } finally {
+          t.cleanup();
+        }
+      }, TIMEOUT);
+
+      test(`test_every_command_that_builds_refuses_a_pin_that_holds_${path}`, () => {
+        const { t, repo, out, good } = dotGitCase();
+        try {
+          withBlobAt(good, path);
+          expect(t.pb(["check"], { cwd: repo.path, code: 1 }).stderr).toContain(refused("good"));
+          expect(t.pb(["sync"], { cwd: repo.path, code: 1 }).stderr).toContain(refused("good"));
+          const lockPath = join(repo.path, ".patchbook/upstream.lock");
+          const good1 = JSON.parse(read(lockPath));
+          const head = sh(["git", "rev-parse", "HEAD", "HEAD^{tree}"], { cwd: good.path }).stdout.split("\n");
+          writeFileSync(lockPath, JSON.stringify({ ...good1, good: { commit: head[0], tree: head[1] } }, null, 2) + "\n");
+          const built = tree(out);
+          const lock = read(lockPath);
+          for (const args of [["build"], ["build", "--force"], ["status"], ["status", "--json"], ["scaffold"]]) {
+            const r = t.pb(args, { cwd: repo.path, code: 1 });
+            expect(r.stderr).toContain(refused("good"));
+            expect(r.stderr).not.toMatch(/^\s+at /m);
+          }
+          const hooked = sh(["git", "commit", "-q", "--allow-empty", "-m", "hook"], { cwd: repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1" }, check: false });
+          expect(hooked.code).not.toBe(0);
+          expect(hooked.stderr).toContain(refused("good"));
+          expect(existsSync(join(out, "good", path.split("/")[0]!))).toBe(false);
+          expect(tree(out)).toEqual(built);
+          expect(read(lockPath)).toBe(lock);
+        } finally {
+          t.cleanup();
+        }
+      }, TIMEOUT);
+    }
   });
 
   const brokenLinks: [string, string, (t: Case, repo: Repo) => string][] = [
