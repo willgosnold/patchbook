@@ -155,6 +155,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   }
   const raw = u.files(commit);
   if (u.vendor) refuseUpstreamGit(u.name, relative(book.root, u.vendor), raw.keys());
+  if (u.vendor) refuseUserFiles(book, u, u.vendor, pin.tree ? u.files(u.heal(pinned(u, pin))) : raw, !pin.tree);
   const old = pin.tree ? book.buildable(u, u.mounted(u.files(u.heal(pinned(u, pin)))), false) : new Map<string, File>();
   const fresh = book.buildable(u, u.mounted(raw));
   const report: SyncReport = {
@@ -232,11 +233,38 @@ function isFolder(vendor: string): boolean {
 
 function rewriteVendor(book: Book, u: Upstream, vendor: string, pin: Pin, raw: ReadonlyMap<string, File>, tree: string): void {
   refuseUpstreamGit(u.name, relative(book.root, vendor), raw.keys());
+  refuseUserFiles(book, u, vendor, raw, false);
   journaled(book, u, pin, null, (j) => {
     takeVendor(vendor, join(j, "old"));
     refuseMovedGit(book, u, join(j, "old"));
     writeVendor(u, vendor, raw, tree);
   });
+}
+
+function userFiles(vendor: string, mirrored: ReadonlyMap<string, File>, unpinned: boolean): string[] {
+  if (!lexists(vendor) || isSymlink(vendor)) return [];
+  if (!lstatSync(vendor).isDirectory()) return unpinned ? [""] : [];
+  const found: string[] = [];
+  const todo = [""];
+  for (let here = todo.pop(); here !== undefined; here = todo.pop()) {
+    for (const e of readdirSync(join(vendor, here), { withFileTypes: true })) {
+      const p = here ? `${here}/${e.name}` : e.name;
+      if (e.isDirectory()) todo.push(p);
+      else if (!mirrored.has(p) || (unpinned && !sameFile(readDisk(join(vendor, p)), mirrored.get(p)))) found.push(p);
+    }
+  }
+  return sorted(found);
+}
+
+function refuseUserFiles(book: Book, u: Upstream, vendor: string, mirrored: ReadonlyMap<string, File>, unpinned: boolean): void {
+  const found = userFiles(vendor, mirrored, unpinned);
+  if (!found.length) return;
+  const folder = relative(book.root, vendor);
+  const shown = found.slice(0, 5).map((p) => (p ? `${folder}/${p}` : folder)).join(", ");
+  const more = found.length > 5 ? ` and ${found.length - 5} more` : "";
+  const one = found.length === 1;
+  throw new Fail(`upstream ${u.name} would replace ${folder}, which holds ${one ? "1 file" : `${found.length} files`} that ${one ? "isn't" : "aren't"} upstream's: ${shown}${more}. `
+    + `Move ${one ? "it" : "them"} out of the folder, or change vendor for ${u.name}. Nothing was changed.`);
 }
 
 /** Checked only in place: git's ignore rules match by path, so the same files hash differently elsewhere. */
