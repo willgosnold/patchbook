@@ -223,7 +223,7 @@ command = "tools/update-projects.sh"
 
 ## Tool
 
-TypeScript on Bun, shipped as one compiled binary, `patchbook`. The binary carries the Bun runtime, so running it needs no Bun, Node, or package manager. It has no npm dependencies at run time.
+TypeScript on Bun, shipped as one compiled binary, `patchbook`. The binary carries the Bun runtime, and `bun build --compile` bundles the npm dependencies into it, so running it needs no Bun, Node, or package manager.
 
 It depends on git, which it uses for merges (`git merge-file`) and the store, and on the `claude` or `codex` CLI to write intents. A repo's `hooks.ts` runs on the binary's Bun.
 

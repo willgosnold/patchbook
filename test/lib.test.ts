@@ -1,6 +1,7 @@
 // src/lib against what CPython gives on the same cases. Regenerate with: python3 test/fixtures/generate.py
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { TomlDocument } from "@decimalturn/toml-patch";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "../src/lib/difflib.ts";
 import { dumps, loads } from "../src/lib/json.ts";
 import {
@@ -82,4 +83,24 @@ test("str.replace", () => {
 
 test("shlex.quote", () => {
   for (const c of cases.quote) expect(quote(c.s)).toBe(c.out);
+});
+
+describe("the TOML library's syntax tree", () => {
+  test("gives each key its table, its dotted path and the lines it spans, which an unset cuts by", () => {
+    const text = '[ a . "b c" ]\n# above\nx = [ # open\n  1,\n] # close\ny.z = 2\n[[arr]]\nq = 1\n';
+    const blocks = new TomlDocument(text).cst as unknown as {
+      type: string;
+      loc: { start: { line: number }; end: { line: number } };
+      key: { value?: string[]; item?: { value: string[] } };
+      items?: typeof blocks;
+    }[];
+    const table = blocks.find((block) => block.type === "Table")!;
+    expect(table.key.item?.value).toEqual(["a", "b c"]);
+    const keys = table.items!.filter((item) => item.type === "KeyValue");
+    expect(keys.map((key) => [key.key.value, key.loc.start.line, key.loc.end.line])).toEqual([
+      [["x"], 3, 5],
+      [["y", "z"], 6, 6],
+    ]);
+    expect(blocks.map((block) => block.type)).toEqual(["Table", "TableArray"]);
+  });
 });

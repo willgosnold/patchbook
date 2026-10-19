@@ -166,44 +166,44 @@ describe("setToml", () => {
 
   test("creates the file and its folders with the section and key", () => {
     const path = file();
-    setToml(path, "intent.model", '"m"');
+    setToml(path, "intent.model", "m");
     expect(read(path)).toBe('[intent]\nmodel = "m"\n');
   });
 
   test("appends a missing section after a blank line", () => {
     const path = put(file(), "[hook]\nenabled = false\n");
-    setToml(path, "intent.model", '"m"');
+    setToml(path, "intent.model", "m");
     expect(read(path)).toBe('[hook]\nenabled = false\n\n[intent]\nmodel = "m"\n');
   });
 
   test("replaces the key where it is, keeping comments and other keys", () => {
     const path = put(file(), '# mine\n[intent]\nprovider = "claude"\nmodel = "old" # why\n# note\neffort = "high"\n');
-    setToml(path, "intent.model", '"new"');
-    expect(read(path)).toBe('# mine\n[intent]\nprovider = "claude"\nmodel = "new"\n# note\neffort = "high"\n');
+    setToml(path, "intent.model", "new");
+    expect(read(path)).toBe('# mine\n[intent]\nprovider = "claude"\nmodel = "new" # why\n# note\neffort = "high"\n');
   });
 
-  test("adds a missing key at the top of its section", () => {
+  test("adds a missing key to its section", () => {
     const path = put(file(), '[intent]\nprovider = "claude"\n\n[hook]\nenabled = true\n');
-    setToml(path, "intent.model", '"m"');
-    expect(read(path)).toBe('[intent]\nmodel = "m"\nprovider = "claude"\n\n[hook]\nenabled = true\n');
+    setToml(path, "intent.model", "m");
+    expect(read(path)).toBe('[intent]\nprovider = "claude"\nmodel = "m"\n\n[hook]\nenabled = true\n');
   });
 
   test("leaves a same-named key in another section alone", () => {
     const path = put(file(), '[a]\nmodel = "a"\n[intent]\nmodel = "old"\n[b]\nmodel = "b"\n');
-    setToml(path, "intent.model", '"new"');
+    setToml(path, "intent.model", "new");
     expect(read(path)).toBe('[a]\nmodel = "a"\n[intent]\nmodel = "new"\n[b]\nmodel = "b"\n');
   });
 
   test("does not mistake a longer key for the one it sets", () => {
-    const path = put(file(), "[intent]\nmodel_hint = 1\nmodel = 2\n");
-    setToml(path, "intent.model", "3");
-    expect(read(path)).toBe("[intent]\nmodel_hint = 1\nmodel = 3\n");
+    const path = put(file(), '[intent]\nmodel_hint = "a"\nmodel = "b"\n');
+    setToml(path, "intent.model", "c");
+    expect(read(path)).toBe('[intent]\nmodel_hint = "a"\nmodel = "c"\n');
   });
 
-  test("matches an indented key", () => {
-    const path = put(file(), "[intent]\n  model   = 2\n");
-    setToml(path, "intent.model", "3");
-    expect(read(path)).toBe("[intent]\nmodel = 3\n");
+  test("matches an indented key and keeps its indentation", () => {
+    const path = put(file(), '[intent]\n  model   = "b"\n');
+    setToml(path, "intent.model", "c");
+    expect(read(path)).toBe('[intent]\n  model   = "c"\n');
   });
 
   test("removes a key and keeps the rest", () => {
@@ -220,16 +220,19 @@ describe("setToml", () => {
     expect(read(path)).toBe(text);
   });
 
-  test("ends the file with exactly one newline", () => {
-    const path = put(file(), "[intent]\nmodel = 1\n\n\n\n");
-    setToml(path, "intent.effort", '"low"');
-    expect(read(path)).toBe('[intent]\neffort = "low"\nmodel = 1\n');
+  test("keeps the end of the file as it was, adding no newline", () => {
+    const path = put(file(), '[intent]\nmodel = "m"\n');
+    setToml(path, "intent.effort", "low");
+    expect(read(path)).toBe('[intent]\nmodel = "m"\neffort = "low"\n');
+    const blanks = put(file(), '[intent]\nmodel = "m"\n\n\n\n');
+    setToml(blanks, "intent.effort", "low");
+    expect(read(blanks)).toBe('[intent]\nmodel = "m"\neffort = "low"\n\n\n\n');
   });
 
   test("keeps the other sections valid TOML", () => {
     const path = put(file(), '[intent]\nprovider = "codex"\n\n[hook]\nenabled = true\n');
-    setToml(path, "intent.model", '"m"');
-    setToml(path, "hook.enabled", "false");
+    setToml(path, "intent.model", "m");
+    setToml(path, "hook.enabled", false);
     expect(Bun.TOML.parse(read(path))).toEqual({ intent: { provider: "codex", model: "m" }, hook: { enabled: false } });
   });
 });

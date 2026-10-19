@@ -2459,6 +2459,295 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(t.config(["start.agents"])).toContain("user");
   });
 
+  forkTest("test_config_changes_a_dotted_key_or_inline_table_in_place", (t) => {
+    const project = join(t.fork.path, ".patchbook/config.toml");
+    const original = read(project);
+    for (const on of ["hook.enabled = true", "hook = { enabled = true }"]) {
+      const before = replace(original, 'layout = "fork"\n', `layout = "fork"\n${on}\n`);
+      writeFileSync(project, before);
+      t.config(["--project", "hook.enabled", "false"]);
+      expect(t.config(["hook.enabled"], { PATCHBOOK_HOOK: "" })).toMatch(/false .*project/);
+      expect(read(project)).toBe(replace(before, on, replace(on, "true", "false")));
+    }
+  });
+
+  forkTest("test_config_refuses_to_edit_a_setting_whose_section_is_not_a_table", (t) => {
+    const project = join(t.fork.path, ".patchbook/config.toml");
+    const before = replace(read(project), 'layout = "fork"\n', 'layout = "fork"\nhook = true\n');
+    writeFileSync(project, before);
+    expect(t.pb(["config", "--project", "hook.enabled", "false"], { cwd: t.fork.path, code: 1 }).stderr)
+      .toContain("hook in the config must be a table, as in [hook]");
+    expect(read(project)).toBe(before);
+  });
+
+  forkTest("test_config_set_and_unset_keep_the_rest_of_a_commented_file", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    const before = dedent(`
+      # my patchbook settings
+      [start]
+      # agents I install for, by machine
+      by_host = [
+        ["laptop", "claude-code"],
+        ["server", "codex"],
+      ]
+      agents = ["claude-code"] # for now
+
+      [intent]
+      model = "claude-haiku-5-5"
+    `);
+    writeFileSync(user, before);
+    t.config(["start.agents", "codex"]);
+    expect(t.config(["start.agents"])).toMatch(/\["codex"\] .*user/);
+    expect(read(user)).toBe(replace(before, 'agents = ["claude-code"] # for now', 'agents = ["codex"] # for now'));
+    t.config(["--unset", "start.agents"]);
+    expect(t.config(["start.agents"])).toMatch(/\["claude-code", "codex"\] .*default/);
+    expect(read(user)).toBe(replace(before, 'agents = ["claude-code"] # for now\n', ""));
+  });
+
+  forkTest("test_config_replaces_a_value_that_spans_lines", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    writeFileSync(user, '[start]\nagents = [\n  "claude-code",\n  "codex",\n]\n');
+    t.config(["start.agents", "codex"]);
+    expect(t.config(["start.agents"])).toMatch(/\["codex"\] .*user/);
+    expect(Bun.TOML.parse(read(user))).toEqual({ start: { agents: ["codex"] } });
+  });
+
+  forkTest("test_config_refuses_an_edit_it_cannot_make_safely", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    for (const [before, model, cause] of [
+      ["[intent]\nmodel = 'old'\n", "first\r\nsecond", 'turn intent.model into "first\\nsecond", not "first\\r\\nsecond"'],
+      ['[__proto__]\nkeep = "this"\n\n[intent]\nmodel = "old"\n', "new", "drop __proto__"],
+      ['[other]\nwhen = 2016-12-31T23:59:60Z\n\n[intent]\nmodel = "old"\n', "new", "the TOML library failed on it (RangeError: "],
+    ]) {
+      writeFileSync(user, before!);
+      const out = t.pb(["config", "intent.model", model!], { cwd: t.fork.path, code: 1 });
+      expect(out.stderr).toContain(`can't change intent.model in ${user} safely: `);
+      expect(out.stderr).toContain(cause!);
+      expect(out.stderr).toContain("The file is left as it was.");
+      expect(out.stderr).not.toContain("    at ");
+      expect(read(user)).toBe(before!);
+    }
+  });
+
+  forkTest("test_config_unset_keeps_the_comments_above_the_key", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    const unset = (before: string, name: string, after: string) => {
+      writeFileSync(user, before);
+      t.config(["--unset", name]);
+      expect(read(user)).toBe(after);
+    };
+    unset(
+      '[start]\n# agents I install for\nagents = ["claude-code"] # for now\nby_host = []\n',
+      "start.agents",
+      "[start]\n# agents I install for\nby_host = []\n",
+    );
+    unset(
+      '# agents I install for\nstart.agents = [\n  "claude-code",\n]\n[intent]\nmodel = "x"\n',
+      "start.agents",
+      '# agents I install for\n[intent]\nmodel = "x"\n',
+    );
+    unset(
+      '# the hook\nhook = { enabled = true }\n',
+      "hook.enabled",
+      '# the hook\nhook = {}\n',
+    );
+  });
+
+  forkTest("test_config_unset_leaves_no_fragment_of_a_multi_line_value", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    const unset = (before: string, after: string) => {
+      writeFileSync(user, before);
+      t.config(["--unset", "start.agents"]);
+      expect(read(user)).toBe(after);
+    };
+    unset(
+      '[start]\n# agents I install for\nagents = [ # open\n  "claude-code", # first\n  # between\n  "codex"\n] # close\nby_host = []\n',
+      "[start]\n# agents I install for\nby_host = []\n",
+    );
+    unset(
+      '# top\n[start]\n\n# agents\n# more\nagents = [\n  "claude-code", # first\n  "codex",\n]\n# about by_host\nby_host = []\n',
+      "# top\n[start]\n\n# agents\n# more\n# about by_host\nby_host = []\n",
+    );
+    unset(
+      '[intent]\nmodel = "x"\n[start]\nagents = [ # open\n  "codex",\n]\n',
+      '[intent]\nmodel = "x"\n[start]\n',
+    );
+  });
+
+  forkTest("test_config_unset_keeps_the_comment_above_a_key_whatever_the_library_would_have_changed", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    const unset = (before: string, after: string) => {
+      writeFileSync(user, before);
+      t.config(["--unset", "intent.model"]);
+      expect(read(user)).toBe(after);
+    };
+    unset("[intent]\n# above\nmodel = 7243981605\n# below\n", "[intent]\n# above\n# below\n");
+    unset('[ table ]\nx = 1\n[intent]\n# above\nmodel = "old"\n', "[ table ]\nx = 1\n[intent]\n# above\n");
+    unset('[intent]\n# above\nmodel = "old" # after\n', "[intent]\n# above\n");
+  });
+
+  forkTest("test_config_unset_refuses_rather_than_drop_a_comment", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    const before = "[hook]\n# about enabled\nenabled.x = 1\n";
+    writeFileSync(user, before);
+    const out = t.pb(["config", "--unset", "hook.enabled"], { cwd: t.fork.path, code: 1 });
+    expect(out.stderr).toContain(`can't change hook.enabled in ${user} safely: the TOML library would drop the comment "# about enabled"`);
+    expect(read(user)).toBe(before);
+  });
+
+  forkTest("test_config_keeps_the_endings_and_the_end_of_a_file_with_no_final_newline", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    writeFileSync(user, '[intent]\n# c\r\nmodel = "old"\n[hook]\r\nenabled = true');
+    t.config(["intent.model", "new"]);
+    expect(read(user)).toBe('[intent]\n# c\r\nmodel = "new"\n[hook]\r\nenabled = true');
+    writeFileSync(user, '[intent]\r\nprovider = "claude"');
+    t.config(["intent.model", "new"]);
+    expect(read(user)).toBe('[intent]\r\nprovider = "claude"\r\nmodel = "new"');
+    writeFileSync(user, '[intent]\nmodel = "old"\n\n\n');
+    t.config(["intent.model", "new"]);
+    expect(read(user)).toBe('[intent]\nmodel = "new"\n\n\n');
+    writeFileSync(user, '[intent]\r# c\rmodel = "old"\r');
+    t.config(["intent.model", "new"]);
+    expect(read(user)).toBe('[intent]\r# c\rmodel = "new"\r');
+  });
+
+  forkTest("test_config_unset_keeps_a_byte_order_mark_and_ignores_a_hash_line_in_the_deleted_string", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    writeFileSync(user, '\uFEFFstart.agents = ["a"]\n[intent]\nmodel = "x"\n');
+    t.config(["--unset", "start.agents"]);
+    expect(read(user)).toBe('\uFEFF[intent]\nmodel = "x"\n');
+    writeFileSync(user, '[hook]\nenabled.t = """\n# inside\n"""\n');
+    t.config(["--unset", "hook.enabled"]);
+    expect(read(user)).toBe("[hook]\n");
+  });
+
+  forkTest("test_config_set_keeps_whitespace_only_lines_at_the_end_of_a_file", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    writeFileSync(user, '[intent]\nmodel = "old"\n  \n\n');
+    t.config(["intent.model", "new"]);
+    expect(read(user)).toBe('[intent]\nmodel = "new"\n  \n\n');
+    writeFileSync(user, '[intent]\nmodel = "old"\n   ');
+    t.config(["intent.model", "new"]);
+    expect(read(user)).toBe('[intent]\nmodel = "new"\n   ');
+  });
+
+  forkTest("test_config_unset_on_a_byte_order_mark_line_keeps_the_endings_of_the_lines_after_it", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    writeFileSync(user, "﻿hook.enabled = true\nstart.agents = []\r\nintent.model = \"x\"\r\n");
+    t.config(["--unset", "hook.enabled"]);
+    expect(read(user)).toBe("﻿start.agents = []\r\nintent.model = \"x\"\r\n");
+    writeFileSync(user, "﻿");
+    t.config(["intent.model", "new"]);
+    expect(read(user)).toBe('﻿[intent]\nmodel = "new"\n');
+  });
+
+  forkTest("test_config_set_after_a_last_line_comment_puts_the_file_tail_once_after_the_new_line", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    writeFileSync(user, "[intent]\n# none yet  \n\n  ");
+    t.config(["intent.model", "new"]);
+    expect(read(user)).toBe('[intent]\n# none yet\n\nmodel = "new"  \n\n  ');
+  });
+
+  forkTest("test_config_set_after_a_last_comment_that_ends_in_a_space_toml_does_not_count_as_blank", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    for (const mark of [" ", " ", "　", "﻿"]) {
+      writeFileSync(user, `[intent]\n# c${mark}`);
+      t.config(["intent.model", "new"]);
+      expect(read(user)).toBe(`[intent]\n# c${mark}\n\nmodel = "new"`);
+    }
+  });
+
+  forkTest("test_config_set_above_a_last_comment_that_ends_in_a_space_toml_does_not_count_as_blank_keeps_it", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    for (const mark of ["\u00A0", "\u2028", "\u3000", "\uFEFF"]) {
+      writeFileSync(user, `[intent]\nmodel = "old"\n# c${mark}\n`);
+      t.config(["intent.model", "new"]);
+      expect(read(user)).toBe(`[intent]\nmodel = "new"\n# c${mark}\n`);
+    }
+  });
+
+  forkTest("test_config_set_on_a_file_with_a_long_run_of_spaces_before_the_end_is_fast", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    writeFileSync(user, `[intent]\nmodel = "old"${" ".repeat(50000)}\n# end\n`);
+    const start = Date.now();
+    t.config(["intent.model", "new"]);
+    expect(Date.now() - start).toBeLessThan(4000);
+    expect(read(user)).toBe('[intent]\nmodel = "new"\n# end\n');
+  });
+
+  forkTest("test_config_keeps_each_lines_own_ending_in_a_file_with_mixed_endings", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    const before = '# my settings\r\n[start]\nagents = ["claude-code"]\r\nnote = """\na\nb"""\r\n[intent]\nmodel = "x"\n';
+    writeFileSync(user, before);
+    t.config(["start.agents", "codex"]);
+    expect(read(user)).toBe(replace(before, '["claude-code"]', '["codex"]'));
+    t.config(["--unset", "intent.model"]);
+    expect(read(user)).toBe('# my settings\r\n[start]\nagents = ["codex"]\r\nnote = """\na\nb"""\r\n[intent]\n');
+  });
+
+  forkTest("test_config_keeps_the_line_endings_of_a_crlf_file", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    const before = '# my settings\r\n[start]\r\n# agents\r\nagents = ["claude-code"]\r\nby_host = []\r\n';
+    writeFileSync(user, before);
+    t.config(["start.agents", "codex"]);
+    expect(read(user)).toBe(replace(before, '["claude-code"]', '["codex"]'));
+    t.config(["--unset", "start.agents"]);
+    expect(read(user)).toBe("# my settings\r\n[start]\r\n# agents\r\nby_host = []\r\n");
+    t.config(["intent.model", "x"]);
+    expect(read(user)).not.toMatch(/[^\r]\n/);
+  });
+
+  forkTest("test_a_config_with_an_integer_too_big_for_bun_says_so_in_either_scope", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    const project = join(t.fork.path, ".patchbook/config.toml");
+    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
+    const big = "[other]\nbig = 9007199254740993\n";
+    writeFileSync(user, big);
+    for (const args of [["config", "intent.model", "x"], ["config", "--unset", "start.agents"], ["config", "intent.model"]]) {
+      const out = t.pb(args, { cwd: t.fork.path, code: 1 });
+      expect(out.stderr).toContain(`${user} holds an integer`);
+      expect(out.stderr).toContain("Bun can't represent");
+      expect(out.stderr).not.toContain("isn't valid TOML");
+    }
+    expect(read(user)).toBe(big);
+    unlinkSync(user);
+    const before = read(project);
+    writeFileSync(project, before + big);
+    for (const args of [["config", "--project", "hook.enabled", "false"], ["config", "--project", "--unset", "hook.enabled"], ["status"], ["build"]]) {
+      const out = t.pb(args, { cwd: t.fork.path, code: 1 });
+      expect(out.stderr).toContain(`${project} holds an integer`);
+      expect(out.stderr).toContain("Bun can't represent");
+      expect(out.stderr).not.toContain("isn't valid TOML");
+    }
+    expect(read(project)).toBe(before + big);
+  });
+
+  forkTest("test_config_starts_a_user_config_that_does_not_exist", (t) => {
+    const user = join(t.tmp, "config/patchbook/config.toml");
+    t.config(["--unset", "start.agents"]);
+    expect(existsSync(user)).toBe(false);
+    t.config(["start.agents", "codex"]);
+    expect(read(user)).toBe('[start]\nagents = ["codex"]\n');
+    expect(t.config(["start.agents"])).toMatch(/\["codex"\] .*user/);
+  });
+
   forkTest("test_track_writes_awkward_values_so_they_read_back_as_given", (t) => {
     const lib = new Repo(join(t.tmp, AWKWARD("lib")));
     lib.write(`${AWKWARD("plug")}/a.txt`, "a\n");
@@ -2536,12 +2825,13 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     const user = join(t.tmp, "config/patchbook/config.toml");
     mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
     writeFileSync(user, "start.agents = [\n");
-    for (const args of [["config"], ["config", "intent.model"]]) {
+    for (const args of [["config"], ["config", "intent.model"], ["config", "intent.model", "x"]]) {
       const out = t.pb(args, { cwd: t.fork.path, code: 1 });
       expect(out.stderr).toContain(`${user} isn't valid TOML`);
       expect(out.stderr).not.toContain("SyntaxError");
       expect(out.stderr).not.toContain("    at ");
     }
+    expect(read(user)).toBe("start.agents = [\n");
   });
 
   forkTest("test_hook_off_in_the_project", (t) => {

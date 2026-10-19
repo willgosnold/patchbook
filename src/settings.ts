@@ -1,12 +1,15 @@
 // Settings: each one's env var, kind and default, read from the env, the project and the user config.
 import { homedir } from "node:os";
 import { dirname } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import { TomlDocument } from "@decimalturn/toml-patch";
 import { Book, NoBook } from "./book.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { intentSettings, PROVIDERS } from "./intent.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, mkdirs, pjoin, readText, writeText } from "./lib/fs.ts";
-import { ljust, lstrip, rstrip, S, strip, strRepr } from "./lib/py.ts";
+import { exists, mkdirs, pjoin, readBytes, readText, writeText } from "./lib/fs.ts";
+import { ljust, S, strRepr } from "./lib/py.ts";
+import { decode } from "./lib/text.ts";
 import { quoteToml } from "./lib/toml.ts";
 
 /** A parsed TOML table. Values stay unknown until a setting or the book's config reads them. */
@@ -18,12 +21,15 @@ export function isTable(value: unknown): value is Table {
   return proto === Object.prototype || proto === null;
 }
 
+const LOSSY_INTEGER = "Integer cannot be losslessly represented";
+
 export function parseToml(text: string, path: string): Table {
   let parsed: unknown;
   try {
     parsed = Bun.TOML.parse(text);
   } catch (e) {
     if (!(e instanceof SyntaxError)) throw e;
+    if (e.message.includes(LOSSY_INTEGER)) throw new Fail(`${path} holds an integer outside +/-(2^53 - 1), which Bun can't represent`);
     throw new Fail(`${path} isn't valid TOML: ${e.message.replace(/^TOML Parse error: /, "")}`);
   }
   if (!isTable(parsed)) throw new Fail(`${path} isn't a TOML table`);
@@ -149,26 +155,173 @@ export function storeDir(): string {
   return pjoin(base, "upstreams");
 }
 
-/** Set or remove (value null) one key in a TOML file, keeping its other lines and comments. */
-export function setToml(path: string, name: string, value: string | null): void {
-  const [section = "", key = ""] = name.split(".");
-  let lines = exists(path) ? readText(path).split("\n") : [];
-  const head = lines.findIndex((l) => strip(l) === `[${section}]`);
-  const assign = `${key} = ${value}`;
-  if (head === -1) {
-    if (value !== null) lines = [...(lines.length && strip(lines.at(-1)!) ? [...lines, ""] : lines), `[${section}]`, assign];
-  } else {
-    let end = lines.findIndex((l, i) => i > head && lstrip(l).startsWith("["));
-    if (end === -1) end = lines.length;
-    const keyLine = new RegExp(`^[${S}]*${key.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&")}[${S}]*=`, "u");
-    const at = lines.findIndex((l, i) => i > head && i < end && keyLine.test(l));
-    if (at !== -1) {
-      if (value === null) lines.splice(at, 1);
-      else lines[at] = assign;
-    } else if (value !== null) lines.splice(head + 1, 0, assign);
-  }
+export function setToml<N extends Name>(path: string, name: N, value: NonNullable<Value<N>> | null): void {
+  const raw = exists(path) ? decode(readBytes(path)) : "";
+  const text = exists(path) ? readText(path) : "";
+  const config = parseToml(text, path);
+  const current = lookup(config, name);
+  if (current === undefined && value === null) return;
+  const refuse = (cause: string) => new Fail(`can't change ${name} in ${path} safely: ${cause}. The file is left as it was. Edit it by hand.`);
+  const out = edited(text, config, name, value, refuse);
   mkdirs(dirname(path));
-  writeText(path, rstrip(lines.join("\n"), "\n") + "\n");
+  writeText(path, withEndingsOf(raw, out));
+}
+
+function edited(text: string, config: Table, name: Name, value: unknown, refuse: (cause: string) => Fail): string {
+  const out = value === null ? withoutSetting(text, name, refuse) : patched(text, name, value, refuse);
+  let read: unknown;
+  try {
+    read = Bun.TOML.parse(out);
+  } catch (e) {
+    if (!(e instanceof SyntaxError)) throw e;
+    throw refuse(`the edit would write invalid TOML (${e.message.replace(/^TOML Parse error: /, "")})`);
+  }
+  const section = name.split(".")[0] ?? "";
+  const unemptied = (table: Table) => (value === null ? withoutEmpty(table, section) : table);
+  const difference = firstDifference(unemptied(withSetting(config, name, value)), unemptied(read as Table), "");
+  if (difference !== null) throw refuse(`the edit would ${difference}`);
+  return out;
+}
+
+// where the file ends once TOML's own blanks (space, tab, newline) are cut, which JS trimEnd() overshoots
+function tomlEnd(text: string): number {
+  let end = text.length;
+  while (end > 0 && " \t\r\n".includes(text[end - 1] as string)) end--;
+  return end;
+}
+
+function patched(text: string, name: Name, value: unknown, refuse: (cause: string) => Fail): string {
+  try {
+    const cut = text.slice(0, tomlEnd(text));
+    const body = cut === "\uFEFF" ? "" : cut; // a file of only a byte order mark has no content
+    const doc = new TomlDocument(body);
+    doc.patch(withSetting(doc.toJsObject, name, value), { trailingNewline: 1, bracketSpacing: false });
+    const out = doc.toTomlString;
+    return body === "" ? (text.startsWith("\uFEFF") ? "\uFEFF" : "") + out : out.slice(0, tomlEnd(out)) + text.slice(body.length);
+  } catch (e) {
+    throw refuse(`the TOML library failed on it (${e instanceof Error ? `${e.name}: ${e.message}` : String(e)})`);
+  }
+}
+
+type Node = {
+  type?: unknown;
+  loc?: { start?: { line?: unknown }; end?: { line?: unknown } };
+  key?: { value?: unknown; item?: { value?: unknown } };
+  items?: unknown;
+};
+
+/**
+ * The first and last line (1-based) of the plain `key = value` that sets `name`, read from the
+ * parser's own syntax tree, or null when the setting is not a line of its own: a member of an inline
+ * table, or a table with dotted keys under it. `cst` is marked internal, so this reads only `type`,
+ * `loc.*.line`, `key.value`, `key.item.value` and `items`; a test pins that shape.
+ */
+function linesOfSetting(text: string, name: Name): [number, number] | null {
+  const parts = name.split(".");
+  const strings = (value: unknown): string[] => (Array.isArray(value) ? value.map(String) : []);
+  const found: [number, number][] = [];
+  let nested = false;
+  const visit = (node: Node, table: string[]) => {
+    const path = [...table, ...strings(node.key?.value)];
+    if (!parts.every((part, i) => path[i] === part)) return;
+    const [start, end] = [node.loc?.start?.line, node.loc?.end?.line];
+    if (path.length === parts.length && typeof start === "number" && typeof end === "number") found.push([start, end]);
+    else nested = true;
+  };
+  for (const block of new TomlDocument(text).cst as unknown as Node[]) {
+    if (block.type === "KeyValue") visit(block, []);
+    if (block.type !== "Table" || !Array.isArray(block.items)) continue;
+    for (const item of block.items as Node[]) if (item.type === "KeyValue") visit(item, strings(block.key?.item?.value));
+  }
+  return !nested && found.length === 1 ? found[0]! : null;
+}
+
+/**
+ * The library drops the comments above a key it deletes, and leaves the comments inside a multi-line
+ * value as orphan lines. So a setting on lines of its own is cut out of the text, from its first line
+ * to the end of its value and the comment after it. Anything else goes to the library, and then every
+ * comment line of the file must still be there.
+ */
+function withoutSetting(text: string, name: Name, refuse: (cause: string) => Fail): string {
+  const span = linesOfSetting(text, name);
+  const lines = text.split("\n");
+  if (span !== null) {
+    const bom = span[0] === 1 && text.startsWith("\uFEFF") ? "\uFEFF" : "";
+    return bom + [...lines.slice(0, span[0] - 1), ...lines.slice(span[1])].join("\n");
+  }
+  const out = patched(text, name, null, refuse);
+  const left = new Map<string, number>();
+  for (const comment of commentsOf(out)) left.set(comment, (left.get(comment) ?? 0) + 1);
+  for (const comment of commentsOf(text)) {
+    const n = left.get(comment) ?? 0;
+    if (n === 0) throw refuse(`the TOML library would drop the comment ${JSON.stringify(comment)}`);
+    left.set(comment, n - 1);
+  }
+  return out;
+}
+
+/** Every comment the parser finds in `text`, as written. A `#` line inside a multi-line string is not one. */
+function commentsOf(text: string): string[] {
+  const comments: string[] = [];
+  for (const block of new TomlDocument(text).cst as unknown as { type?: unknown; raw?: unknown; items?: unknown }[]) {
+    for (const node of [block, ...(Array.isArray(block.items) ? (block.items as typeof block[]) : [])]) {
+      if (node.type === "Comment" && typeof node.raw === "string") comments.push(node.raw.trim());
+    }
+  }
+  return comments;
+}
+
+/** `out` with each line the ending it had in `raw`. Lines the edit changed take the ending of the file's first line. */
+function withEndingsOf(raw: string, out: string): string {
+  if (!/\r/.test(raw)) return out;
+  const marks = raw.match(/\r\n|\r|\n/g) ?? [];
+  const body = (lines: string[]) => (lines[lines.length - 1] === "" ? lines.slice(0, -1) : lines);
+  const bare = (line: string) => line.replace(/^\uFEFF/, "");
+  const was = body(raw.split(/\r\n|\r|\n/)).map(bare);
+  const outLines = out.split("\n");
+  const now = body(outLines);
+  const nowBare = now.map(bare);
+  const mark = (i: number) => marks[i] ?? marks[0] ?? "\n";
+  let head = 0;
+  while (head < Math.min(was.length, nowBare.length) && was[head] === nowBare[head]) head++;
+  let tail = 0;
+  while (tail < Math.min(was.length, nowBare.length) - head && was[was.length - 1 - tail] === nowBare[nowBare.length - 1 - tail]) tail++;
+  const finalNewline = outLines.length > now.length;
+  return now
+    .map((line, i) => {
+      if (i === now.length - 1 && !finalNewline) return line;
+      return line + (i < head ? mark(i) : i >= now.length - tail ? mark(was.length - (now.length - i)) : mark(0));
+    })
+    .join("");
+}
+
+function withoutEmpty(config: Table, section: string): Table {
+  const { [section]: table, ...rest } = config;
+  return isTable(table) && Object.keys(table).length === 0 ? rest : config;
+}
+
+function firstDifference(want: unknown, got: unknown, at: string): string | null {
+  if (isTable(want) && isTable(got)) {
+    for (const key of new Set([...Object.keys(want), ...Object.keys(got)])) {
+      const found = firstDifference(
+        Object.hasOwn(want, key) ? want[key] : undefined,
+        Object.hasOwn(got, key) ? got[key] : undefined,
+        at === "" ? key : `${at}.${key}`,
+      );
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  if (isDeepStrictEqual(want, got)) return null;
+  if (got === undefined) return `drop ${at}`;
+  if (want === undefined) return `add ${at}`;
+  return `turn ${at} into ${JSON.stringify(got)}, not ${JSON.stringify(want)}`;
+}
+
+function withSetting(config: Table, name: Name, value: unknown): Table {
+  const [section = "", key = ""] = name.split(".");
+  const { [key]: _, ...rest } = isTable(config[section]) ? config[section] : {};
+  return { ...config, [section]: value === null ? rest : { ...rest, [key]: value } };
 }
 
 /** A setting as `config` lists it: its value, filled in for the intent settings, and where it came from. */
@@ -220,7 +373,7 @@ export async function cmdConfig(args: { name: string | null; value: string | nul
       throw new Fail(`intent.provider is one of ${Array.from(PROVIDERS.keys()).join(", ")}`);
     }
     const shown = show(name, value);
-    setToml(path, name, shown);
+    setToml(path, name, value);
     process.stdout.write(`${name} = ${shown} in ${path}\n`);
     return 0;
   }
