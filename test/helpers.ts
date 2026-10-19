@@ -48,7 +48,7 @@ export function splitWords(line: string): string[] {
 // The implementation under test, as a command line. Defaults to the TypeScript one.
 export const CMD = splitWords(process.env["PATCHBOOK_CMD"] || [process.execPath, TOOL].map(shellQuote).join(" "));
 
-/** A multi-line fixture without the indentation its source gives it: each line loses the whitespace that every non-blank line starts with, and a blank line becomes empty. */
+/** Takes off the indentation every non-blank line shares, and empties a blank line. */
 export function dedent(text: string): string {
   const lines = text.split("\n").map((line) => (/^[ \t]*$/.test(line) ? "" : line));
   const margins = lines.filter(Boolean).map((line) => /^[ \t]*/.exec(line)![0]);
