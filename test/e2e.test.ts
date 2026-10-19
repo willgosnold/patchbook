@@ -6537,16 +6537,14 @@ describe("ForkTest", () => {
     expect(headMode(t, "mine.sh")).toBe("100644");
   });
 
-  forkTest("test_commit_writes_the_build_over_a_mode_the_index_already_has", (t) => {
+  forkTest("test_commit_records_a_mode_the_index_already_has", (t) => {
     t.fork.write("mine.sh", "echo mine\n", 0o755);
     sh(["git", "add", "mine.sh"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "add mine.sh"]);
     chmodSync(join(t.fork.path, "mine.sh"), 0o644);
     sh(["git", "add", "mine.sh"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "mine.sh is not a program"]);
-    chmodSync(join(t.fork.path, ".patchbook/changes/shout/ours/mine.sh.pb"), 0o644);
-    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
-    hookCommit(t, ["-m", "record that mine.sh is not a program"]);
+    expect(isExecutable(join(t.fork.path, ".patchbook/changes/shout/ours/mine.sh.pb"))).toBe(false);
     expect(isExecutable(join(t.fork.path, "mine.sh"))).toBe(false);
     expect(porcelain(t)).toBe("");
   });
@@ -12363,5 +12361,421 @@ describe("ReadOnlyLockTest", () => {
     expect(existsSync(join(repo.path, ".patchbook/config.toml"))).toBe(false);
     t.pb(init, { cwd: repo.path });
     expect(JSON.parse(read(lock)).upstream.commit).toMatch(/^[0-9a-f]{40}$/);
+  });
+});
+
+describe("ModeTest", () => {
+  const hookCommit = (t: Case, repo: Repo, message: string, intent: string): void => {
+    sh(["git", "commit", "-qam", message], { cwd: repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: intent } });
+  };
+  const lockLines = (t: ForkCase): string[] => read(join(t.fork.path, ".patchbook/build.lock")).split("\n").filter(Boolean);
+  const changeText = (t: ForkCase, name: string): string => read(join(t.fork.path, ".patchbook/changes", name, "CHANGE.md"));
+  const oursOf = (t: ForkCase, change: string, path: string): string => join(t.fork.path, ".patchbook/changes", change, "ours", `${path}.pb`);
+  const NEW_LOCK_LINE = /^(100644|100755|120000) [0-9a-f]{40} \S/;
+
+  const settled = (t: ForkCase): void => {
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout).toBe("");
+  };
+
+  forkTest("test_hook_keeps_a_mode_change_in_the_fork_layout", (t) => {
+    chmodSync(join(t.fork.path, "app.txt"), 0o755);
+    hookCommit(t, t.fork, "make it executable", "Make the app executable.");
+    expect(isExecutable(join(t.fork.path, "app.txt"))).toBe(true);
+    expect(sh(["git", "show", "--summary", "--format=", "HEAD"], { cwd: t.fork.path }).stdout).toContain("mode change 100644 => 100755 app.txt");
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout).toBe("");
+    expect(changeText(t, "make-the-app-executable")).toContain("- file app.txt");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isExecutable(join(t.fork.path, "app.txt"))).toBe(true);
+    settled(t);
+  });
+
+  vendorTest("test_hook_keeps_a_mode_change_in_the_folder_layout", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.up.write("plugin/skills/hello/notes.txt", "notes\n");
+    t.up.commit("notes");
+    t.pb(["sync"], { cwd: t.repo.path });
+    t.pb(["build"], { cwd: t.repo.path });
+    t.pb(["hook", "install"], { cwd: t.repo.path });
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+    sh(["git", "commit", "-qm", "built"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Built it." } });
+    const notes = join(t.repo.path, "skills/hello/notes.txt");
+    chmodSync(notes, 0o755);
+    hookCommit(t, t.repo, "make it executable", "Make the notes executable.");
+    expect(isExecutable(notes)).toBe(true);
+    expect(sh(["git", "show", "--summary", "--format=", "HEAD"], { cwd: t.repo.path }).stdout).toContain("mode change 100644 => 100755 skills/hello/notes.txt");
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.repo.path }).stdout).toBe("");
+    expect(read(join(t.repo.path, ".patchbook/changes/make-the-notes-executable/CHANGE.md"))).toContain("- file skills/hello/notes.txt");
+    t.pb(["build"], { cwd: t.repo.path });
+    expect(isExecutable(notes)).toBe(true);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_of_a_mode_change_alone_records_a_file_edit", (t) => {
+    chmodSync(join(t.fork.path, "app.txt"), 0o755);
+    const out = t.pb(["record", "--intent", "Make the app executable."], { cwd: t.fork.path }).stdout;
+    expect(out).toBe("make-the-app-executable: Make the app executable.\nfile     app.txt\n");
+    expect(changeText(t, "make-the-app-executable")).toContain("- file app.txt");
+    expect(readFileSync(oursOf(t, "make-the-app-executable", "app.txt"), "utf8")).toBe(t.fork.read("app.txt"));
+    expect(isExecutable(oursOf(t, "make-the-app-executable", "app.txt"))).toBe(true);
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isExecutable(join(t.fork.path, "app.txt"))).toBe(true);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_of_a_file_made_not_executable_records_it", (t) => {
+    chmodSync(join(t.fork.path, "bin/run.sh"), 0o644);
+    t.pb(["record", "--intent", "Stop running the script."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isExecutable(join(t.fork.path, "bin/run.sh"))).toBe(false);
+    expect(lockLines(t)).toContainEqual(expect.stringMatching(/^100644 [0-9a-f]{40} bin\/run\.sh$/));
+  });
+
+  forkTest("test_build_treats_a_mode_only_change_as_a_hand_edit", (t) => {
+    chmodSync(join(t.fork.path, "app.txt"), 0o755);
+    const refused = t.pb(["build"], { cwd: t.fork.path, code: 1 });
+    expect(refused.stderr).toContain("these output files changed since the last build:\n  app.txt");
+    expect(isExecutable(join(t.fork.path, "app.txt"))).toBe(true);
+    t.pb(["build", "--force"], { cwd: t.fork.path });
+    expect(isExecutable(join(t.fork.path, "app.txt"))).toBe(false);
+  });
+
+  const contentAndMode = (t: ForkCase, path: string, change: string): void => {
+    const file = join(t.fork.path, path);
+    t.fork.write(path, t.fork.read(path) + "more\n");
+    chmodSync(file, 0o755);
+    const out = t.pb(["record"], { cwd: t.fork.path }).stdout;
+    expect(out).toContain(`(in ${change})`);
+    expect(isExecutable(oursOf(t, change, path))).toBe(true);
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isExecutable(file)).toBe(true);
+    expect(t.fork.read(path)).toContain("more\n");
+    rmSync(file);
+    t.pb(["build", "--force"], { cwd: t.fork.path });
+    expect(isExecutable(file)).toBe(true);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  };
+
+  forkTest("test_record_keeps_a_mode_change_made_with_an_edit_to_an_added_file", (t) => {
+    t.fork.write("tool.sh", "echo one\n");
+    t.pb(["record", "--intent", "Add a tool."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    contentAndMode(t, "tool.sh", "add-a-tool");
+  });
+
+  forkTest("test_record_keeps_a_mode_change_made_with_an_edit_to_a_replaced_file", (t) => {
+    const dir = join(t.fork.path, ".patchbook/changes/rep");
+    mkdirSync(join(dir, "ours/docs"), { recursive: true });
+    writeFileSync(join(dir, "CHANGE.md"), "# rep\n\nintent: Replace the guide.\n\nedits:\n- replace docs/guide.md\n");
+    writeFileSync(join(dir, "ours/docs/guide.md.pb"), "replaced\n");
+    writeFileSync(join(t.fork.path, ".patchbook/series"), "rep\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    contentAndMode(t, "docs/guide.md", "rep");
+  });
+
+  forkTest("test_record_keeps_a_mode_change_made_with_an_edit_to_an_owned_file", (t) => {
+    t.recordFeature();
+    contentAndMode(t, "app.txt", "feature");
+  });
+
+  forkTest("test_sync_keeps_a_recorded_mode", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    chmodSync(join(t.fork.path, "app.txt"), 0o755);
+    t.pb(["record", "shout", "--intent", "Shout the second line."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("record");
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "seven", "SEVEN"));
+    t.up.commit("upstream edits the last line");
+    t.pb(["sync"], { cwd: t.fork.path });
+    expect(isExecutable(oursOf(t, "shout", "app.txt"))).toBe(true);
+    t.pb(["build"], { cwd: t.fork.path });
+    const app = join(t.fork.path, "app.txt");
+    expect(isExecutable(app)).toBe(true);
+    expect(t.fork.read("app.txt")).toContain("TWO");
+    expect(t.fork.read("app.txt")).toContain("SEVEN");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  vendorTest("test_record_skips_a_mode_change_to_a_file_with_block_entries", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    const before = read(entries);
+    const skill = join(t.repo.path, "skills/hello/SKILL.md");
+    chmodSync(skill, 0o755);
+    const out = t.pb(["record", "--intent", "Run the skill."], { cwd: t.repo.path }).stdout;
+    expect(out).toBe(
+      "skipped  hello/SKILL.md: block entries hold no mode, so the mode change was not recorded; "
+      + "to set it, make your finish hook in .patchbook/hooks.ts run out.get(\"hello/SKILL.md\")!.mode = 0o755;\n",
+    );
+    expect(read(entries)).toBe(before);
+    writeFileSync(join(t.repo.path, ".patchbook/hooks.ts"), dedent(`
+      export const finish = (out: Map<string, { data: Uint8Array; mode: number }>) => { out.get("hello/SKILL.md")!.mode = 0o755; };
+    `));
+    t.pb(["build"], { cwd: t.repo.path });
+    expect(isExecutable(skill)).toBe(true);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  vendorTest("test_record_of_an_edit_and_a_mode_change_to_a_file_with_block_entries_records_the_entries", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    const skill = join(t.repo.path, "skills/hello/SKILL.md");
+    t.repo.write("skills/hello/SKILL.md", replace(t.repo.read("skills/hello/SKILL.md"), "Then wave.", "Then wave twice."));
+    chmodSync(skill, 0o755);
+    const out = t.pb(["record", "--intent", "Wave twice."], { cwd: t.repo.path }).stdout;
+    expect(out).toMatch(/^entry {4}hello\/SKILL\.md \[[0-9a-f]{12}\] added\n/);
+    expect(out).toContain("skipped  hello/SKILL.md: block entries hold no mode, so the mode change was not recorded;");
+    expect(read(entries)).toContain("Then wave twice.");
+    t.pb(["build", "--force"], { cwd: t.repo.path });
+    expect(t.repo.read("skills/hello/SKILL.md")).toContain("Then wave twice.");
+  });
+
+  vendorTest("test_record_without_file_modes_of_an_edit_and_a_chmod_to_a_file_with_block_entries_has_no_mode_note", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    sh(["git", "config", "core.fileMode", "false"], { cwd: t.repo.path });
+    const skill = join(t.repo.path, "skills/hello/SKILL.md");
+    t.repo.write("skills/hello/SKILL.md", replace(t.repo.read("skills/hello/SKILL.md"), "Then wave.", "Then wave twice."));
+    chmodSync(skill, 0o755);
+    const out = t.pb(["record", "--intent", "Wave twice."], { cwd: t.repo.path }).stdout;
+    expect(out).toMatch(/^entry {4}hello\/SKILL\.md \[[0-9a-f]{12}\] added\n$/);
+    expect(out).not.toContain("mode change was not recorded");
+    expect(read(entries)).toContain("Then wave twice.");
+  });
+
+  forkTest("test_build_lock_holds_the_mode_of_each_built_file", (t) => {
+    symlinkSync("app.txt", join(t.fork.path, "link"));
+    t.pb(["record", "link", "--intent", "Link to the app."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    const lines = lockLines(t);
+    expect(lines.every((l) => NEW_LOCK_LINE.test(l))).toBe(true);
+    const oid = (path: string): string => sh(["git", "hash-object", path], { cwd: t.fork.path }).stdout.trim();
+    expect(lines).toContain(`100644 ${oid("app.txt")} app.txt`);
+    expect(lines).toContain(`100755 ${oid("bin/run.sh")} bin/run.sh`);
+    sh(["git", "add", "link"], { cwd: t.fork.path });
+    const linkOid = sh(["git", "ls-files", "-s", "link"], { cwd: t.fork.path }).stdout.split(/\s+/)[1];
+    expect(lines.filter((l) => l.endsWith(" link"))).toEqual([`120000 ${linkOid} link`]);
+  });
+
+  const oldLock = (t: ForkCase): void => {
+    const path = join(t.fork.path, ".patchbook/build.lock");
+    writeFileSync(path, lockLines(t).map((l) => l.replace(/^\d{6} /, "") + "\n").join(""));
+  };
+
+  forkTest("test_an_old_format_build_lock_still_reads", (t) => {
+    t.recordFeature();
+    oldLock(t);
+    expect(lockLines(t).some((l) => NEW_LOCK_LINE.test(l))).toBe(false);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toContain("no hand edits");
+    const ours = join(t.fork.path, ".patchbook/changes/feature/ours/app.txt.pb");
+    writeFileSync(ours, replace(read(ours), "TWO", "Two"));
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app.txt")).toContain("Two");
+  });
+
+  forkTest("test_an_old_format_build_lock_still_counts_a_content_change_as_a_hand_edit", (t) => {
+    t.recordFeature();
+    oldLock(t);
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "TWO", "Two"));
+    const refused = t.pb(["build"], { cwd: t.fork.path, code: 1 });
+    expect(refused.stderr).toContain("app.txt");
+    expect(refused.stderr).not.toContain("bin/run.sh");
+  });
+
+  forkTest("test_the_build_after_an_old_format_build_lock_writes_the_new_format", (t) => {
+    t.recordFeature();
+    oldLock(t);
+    t.pb(["build"], { cwd: t.fork.path });
+    const lines = lockLines(t);
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.every((l) => NEW_LOCK_LINE.test(l))).toBe(true);
+    chmodSync(join(t.fork.path, "app.txt"), 0o755);
+    t.pb(["record", "--intent", "Make the app executable."], { cwd: t.fork.path });
+    expect(lockLines(t)).toContainEqual(expect.stringMatching(/^100755 [0-9a-f]{40} app\.txt$/));
+  });
+
+  forkTest("test_a_file_edit_recorded_before_modes_keeps_the_upstream_mode", (t) => {
+    const dir = join(t.fork.path, ".patchbook/changes/old");
+    mkdirSync(join(dir, "base/bin"), { recursive: true });
+    mkdirSync(join(dir, "ours/bin"), { recursive: true });
+    writeFileSync(join(dir, "CHANGE.md"), "# old\n\nintent: Say more.\n\nedits:\n- file bin/run.sh\n");
+    writeFileSync(join(dir, "base/bin/run.sh.pb"), "#!/bin/sh\necho run\n");
+    writeFileSync(join(dir, "ours/bin/run.sh.pb"), "#!/bin/sh\necho run more\n");
+    expect(isExecutable(join(dir, "ours/bin/run.sh.pb"))).toBe(false);
+    writeFileSync(join(t.fork.path, ".patchbook/series"), "old\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("bin/run.sh")).toContain("echo run more");
+    expect(isExecutable(join(t.fork.path, "bin/run.sh"))).toBe(true);
+    expect(lockLines(t)).toContainEqual(expect.stringMatching(/^100755 [0-9a-f]{40} bin\/run\.sh$/));
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_of_a_content_edit_to_an_executable_keeps_it_executable_and_follows_upstream", (t) => {
+    t.fork.write("bin/run.sh", "#!/bin/sh\necho run more\n", 0o755);
+    t.pb(["record", "--intent", "Say more."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isExecutable(join(t.fork.path, "bin/run.sh"))).toBe(true);
+    t.fork.commit("record");
+    chmodSync(join(t.up.path, "bin/run.sh"), 0o644);
+    t.up.commit("upstream stops running it");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isExecutable(join(t.fork.path, "bin/run.sh"))).toBe(false);
+  });
+
+  forkTest("test_sync_carries_an_upstream_mode_change_to_a_file_edit", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.pb(["record", "--intent", "Shout the second line."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("record");
+    t.up.write("app.txt", replace(t.up.read("app.txt"), "seven", "SEVEN"), 0o755);
+    t.up.commit("upstream edits the last line and makes it executable");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app.txt")).toContain("TWO");
+    expect(t.fork.read("app.txt")).toContain("SEVEN");
+    expect(isExecutable(join(t.fork.path, "app.txt"))).toBe(true);
+    t.fork.commit("sync");
+    chmodSync(join(t.up.path, "app.txt"), 0o644);
+    t.up.commit("upstream stops making it executable");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isExecutable(join(t.fork.path, "app.txt"))).toBe(false);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_of_a_retargeted_upstream_symlink_keeps_it_a_symlink", (t) => {
+    symlinkSync("app.txt", join(t.up.path, "link"));
+    t.up.commit("link");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("link");
+    const link = join(t.fork.path, "link");
+    unlinkSync(link);
+    symlinkSync("docs/guide.md", link);
+    t.pb(["record", "--intent", "Point the link at the guide."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(readlinkSync(link)).toBe("docs/guide.md");
+    t.fork.commit("retarget");
+    unlinkSync(link);
+    symlinkSync("bin/run.sh", link);
+    hookCommit(t, t.fork, "retarget again", "Point the link at the script.");
+    expect(readlinkSync(link)).toBe("bin/run.sh");
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout).toBe("");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(readlinkSync(link)).toBe("bin/run.sh");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  const baseBuilt = (t: ForkCase, files: Record<string, [text: string, mode: number]>): void => {
+    for (const [path, [text, mode]] of Object.entries(files)) {
+      writeFileSync(join(t.fork.path, path), text);
+      chmodSync(join(t.fork.path, path), mode);
+    }
+    const out = sh(["git", "ls-files"], { cwd: t.fork.path }).stdout.split("\n").filter((p) => p && !p.startsWith(".patchbook/"));
+    const oid = (p: string): string => sh(["git", "hash-object", p], { cwd: t.fork.path }).stdout.trim();
+    writeFileSync(join(t.fork.path, ".patchbook/build.lock"), out.map((p) => `${oid(p)} ${p}\n`).join(""));
+  };
+  const replaceCopy = (t: ForkCase, path: string, text: string): void => {
+    const dir = join(t.fork.path, ".patchbook/changes/rep");
+    mkdirSync(dirname(join(dir, "ours", `${path}.pb`)), { recursive: true });
+    writeFileSync(join(dir, "CHANGE.md"), `# rep\n\nintent: Replace it.\n\nedits:\n- replace ${path}\n`);
+    writeFileSync(join(dir, "ours", `${path}.pb`), text);
+    chmodSync(join(dir, "ours", `${path}.pb`), 0o644);
+    writeFileSync(join(t.fork.path, ".patchbook/series"), "rep\n");
+  };
+  const emptyHookCommit = (t: ForkCase): void => {
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    sh(["git", "commit", "-q", "--allow-empty", "-m", "hook"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Hook it." } });
+  };
+
+  forkTest("test_a_replace_made_before_modes_still_builds_at_upstreams_mode", (t) => {
+    replaceCopy(t, "bin/run.sh", "#!/bin/sh\necho replaced\n");
+    baseBuilt(t, { "bin/run.sh": ["#!/bin/sh\necho replaced\n", 0o755] });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isExecutable(join(t.fork.path, "bin/run.sh"))).toBe(true);
+    emptyHookCommit(t);
+    expect(isExecutable(join(t.fork.path, "bin/run.sh"))).toBe(true);
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout).toBe("");
+    expect(t.fork.read("bin/run.sh")).toContain("replaced");
+  });
+
+  forkTest("test_a_replace_made_before_modes_keeps_a_mode_recorded_after_it", (t) => {
+    replaceCopy(t, "bin/run.sh", "#!/bin/sh\necho replaced\n");
+    baseBuilt(t, { "bin/run.sh": ["#!/bin/sh\necho replaced\n", 0o755] });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isExecutable(join(t.fork.path, "bin/run.sh"))).toBe(true);
+    chmodSync(join(t.fork.path, "bin/run.sh"), 0o644);
+    t.pb(["record", "--intent", "Stop running it."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isExecutable(join(t.fork.path, "bin/run.sh"))).toBe(false);
+    emptyHookCommit(t);
+    expect(isExecutable(join(t.fork.path, "bin/run.sh"))).toBe(false);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_a_replace_made_before_modes_over_a_plain_file_stays_plain", (t) => {
+    replaceCopy(t, "docs/guide.md", "replaced\n");
+    chmodSync(join(t.fork.path, ".patchbook/changes/rep/ours/docs/guide.md.pb"), 0o755);
+    baseBuilt(t, { "docs/guide.md": ["replaced\n", 0o644] });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isExecutable(join(t.fork.path, "docs/guide.md"))).toBe(false);
+    emptyHookCommit(t);
+    expect(isExecutable(join(t.fork.path, "docs/guide.md"))).toBe(false);
+    chmodSync(join(t.fork.path, "docs/guide.md"), 0o755);
+    t.pb(["record", "--intent", "Run the guide."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isExecutable(join(t.fork.path, "docs/guide.md"))).toBe(true);
+  });
+
+  forkTest("test_an_old_format_build_lock_does_not_hide_a_mode_change", (t) => {
+    t.recordFeature();
+    oldLock(t);
+    const extra = join(t.fork.path, "extra.txt");
+    chmodSync(extra, 0o755);
+    expect(t.pb(["build"], { cwd: t.fork.path, code: 1 }).stderr).toContain("these output files changed since the last build:\n  extra.txt");
+    expect(isExecutable(extra)).toBe(true);
+    sh(["git", "commit", "-qam", "run it"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Run extra." } });
+    expect(isExecutable(extra)).toBe(true);
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout).toBe("");
+    expect(sh(["git", "show", "--summary", "--format=", "HEAD"], { cwd: t.fork.path }).stdout).toContain("mode change 100644 => 100755 extra.txt");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isExecutable(extra)).toBe(true);
+    expect(lockLines(t)).toContainEqual(expect.stringMatching(/^100755 [0-9a-f]{40} extra\.txt$/));
+  });
+
+  forkTest("test_a_file_edit_made_before_modes_builds_a_mode_recorded_after_it", (t) => {
+    const dir = join(t.fork.path, ".patchbook/changes/old");
+    mkdirSync(join(dir, "base/bin"), { recursive: true });
+    mkdirSync(join(dir, "ours/bin"), { recursive: true });
+    writeFileSync(join(dir, "CHANGE.md"), "# old\n\nintent: Say more.\n\nedits:\n- file bin/run.sh\n");
+    writeFileSync(join(dir, "base/bin/run.sh.pb"), "#!/bin/sh\necho run\n");
+    writeFileSync(join(dir, "ours/bin/run.sh.pb"), "#!/bin/sh\necho run more\n");
+    writeFileSync(join(t.fork.path, ".patchbook/series"), "old\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isExecutable(join(t.fork.path, "bin/run.sh"))).toBe(true);
+    chmodSync(join(t.fork.path, "bin/run.sh"), 0o644);
+    expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe("file     bin/run.sh (in old)\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(isExecutable(join(t.fork.path, "bin/run.sh"))).toBe(false);
+    expect(t.fork.read("bin/run.sh")).toContain("echo run more");
+    emptyHookCommit(t);
+    expect(isExecutable(join(t.fork.path, "bin/run.sh"))).toBe(false);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_of_a_deleted_replace_output_drops_the_base_copy_a_mode_change_wrote", (t) => {
+    replaceCopy(t, "docs/guide.md", "replaced\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    const guide = join(t.fork.path, "docs/guide.md");
+    chmodSync(guide, 0o755);
+    t.pb(["record", "--intent", "Run the guide."], { cwd: t.fork.path });
+    const rep = join(t.fork.path, ".patchbook/changes/rep");
+    expect(existsSync(join(rep, "base/docs/guide.md.pb"))).toBe(true);
+    t.pb(["build"], { cwd: t.fork.path });
+    rmSync(guide);
+    t.pb(["record", "--intent", "Drop the guide."], { cwd: t.fork.path });
+    expect(sh(["find", ".", "-type", "f"], { cwd: rep }).stdout.trim()).toBe("./CHANGE.md");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(existsSync(guide)).toBe(false);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
 });

@@ -20,6 +20,17 @@ export function normMode(mode: number): Mode {
   return mode & 0o111 ? 0o755 : 0o644;
 }
 
+const GIT_MODES = new Map<string, Mode>([["100644", 0o644], ["100755", 0o755], ["120000", LINK]]);
+
+export const gitMode = (mode: Mode): string => Array.from(GIT_MODES).find(([, m]) => m === mode)![0];
+/** Whether a change's ours copy has a mode of its own, one that differs from its base copy's. */
+export const setsMode = (ours: File, base: File, tracksExecBit = true): boolean => !sameMode(ours.mode, base.mode, tracksExecBit);
+
+/** The mode an output gets from a change's copy. It follows upstream's until the copy sets one of its own, which a base copy at upstream's mode marks. */
+export const outputMode = (ours: File, base: File | null, up: File | undefined, tracksExecBit = true): Mode =>
+  up === undefined || (base !== null && setsMode(ours, base, tracksExecBit)) ? ours.mode : up.mode;
+export const parseGitMode = (name: string): Mode | undefined => GIT_MODES.get(name);
+
 export function isMode(mode: unknown): mode is Mode {
   return mode === 0o644 || mode === 0o755 || mode === LINK;
 }

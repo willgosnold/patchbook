@@ -8,7 +8,7 @@ import { type Change, readChanges, type Side } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isSymlink, LINK, lexists, mkdirs, pjoin, readDisk, readText, readTextReplace, sameFile, writeDisk, writeText } from "./lib/fs.ts";
+import { exists, type File, isSymlink, LINK, lexists, mkdirs, type Mode, pjoin, readDisk, readText, readTextReplace, sameFile, setsMode, writeDisk, writeText } from "./lib/fs.ts";
 import { dumps, JsonError, loads } from "./lib/json.ts";
 import { spawn } from "./lib/proc.ts";
 import { sorted } from "./lib/py.ts";
@@ -73,6 +73,17 @@ function mergeFile(ours: Uint8Array, base: Uint8Array, theirs: Uint8Array): { me
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+/** A write sync makes to a change's copy, saved in the journal first. No mode keeps the copy's. */
+type Write = { c: Change; side: Side; path: string; data: Uint8Array; mode?: Mode };
+
+function carryMode(c: Change, path: string, theirs: Mode): Write[] {
+  const base = c.file("base", path)!;
+  const ours = c.file("ours", path)!;
+  const writes: Write[] = [{ c, side: "base", path, data: base.data, mode: theirs }];
+  if (!setsMode(ours, base)) writes.push({ c, side: "ours", path, data: ours.data, mode: theirs });
+  return writes;
 }
 
 export async function cmdSync(args: { name: string | null; ref: string | null }) {
@@ -163,7 +174,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     replaced_upstream_changed: [],
   };
 
-  const writes: { c: Change; side: Side; path: string; data: Uint8Array }[] = [];
+  const writes: Write[] = [];
   const added = Array.from(fresh.keys()).filter((p) => !old.has(p));
   for (const c of changes) {
     for (const e of c.edits) {
@@ -181,6 +192,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
         report.gone.push({ change: c.name, path: e.path, maybe });
         continue;
       }
+      if (base !== null && ours !== null) writes.push(...carryMode(c, e.path, fresh.get(e.path)!.mode));
       if (base !== null && bytesEqual(theirs, base)) continue;
       if (base === null || ours === null) throw new Error(`${c.name} has no ${base === null ? "base" : "ours"} copy of ${e.path}`);
       if (!(isText(base) && isText(ours) && isText(theirs))) {
@@ -200,7 +212,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     refuseMovedGit(book, u, join(j, "old"));
     if (u.vendor) writeVendor(u, u.vendor, raw, tree);
     saveBefore(book, j, writes.map((w) => w.c.content(w.side, w.path)));
-    for (const w of writes) w.c.write(w.side, w.path, w.data);
+    for (const w of writes) w.c.write(w.side, w.path, w.data, w.mode);
     beforePin?.(report);
     const lock = join(book.dir, "upstream.lock");
     writeFileSync(join(j, "lock"), lexists(lock) ? readFileSync(lock) : "");
