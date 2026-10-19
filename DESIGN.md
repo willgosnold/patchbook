@@ -195,7 +195,7 @@ Patchbook reads its command line with its own parser, `parseArgv` in `src/lib/ar
 
 - A command line is `patchbook <command>`, then the command's arguments and options in any order. Before the command, patchbook takes only `-h`, `--help` and `--version`.
 - An option is matched by its whole name, such as `--branch`. A prefix such as `--bra` is an unknown option. `-h` is the only short form.
-- An option that takes a value reads it from `--name=value`, or from the next argument when that argument does not start with `-`. A value that starts with `-` needs the `=` form, as in `--upstream=-x`.
+- An option that takes a value reads it from `--name=value`, or from the next argument when that argument is a lone `-` or does not start with `-`. Any other value that starts with `-`, a word with a space or a negative number included, needs the `=` form, as in `--upstream=-x`.
 - After `--`, every argument is an argument, so `patchbook blocks -- -notes.md` names a file that starts with `-`. A lone `-` is always an argument.
 - `-h` or `--help` anywhere before `--` prints help and exits 0, whatever else is on the line. It is the command's help when the first argument is a command, and the list of commands otherwise.
 
@@ -210,8 +210,8 @@ Help text does not wrap to the terminal. A test keeps every help line within 80 
 
 ## Messages
 
-- A command that fails prints `patchbook: ` and the reason on stderr, and exits 1. A usage error starts with `patchbook <command>: ` instead and exits 2.
-- A name, path or value that a message quotes from the command line, a file or another program is in double quotes, as `JSON.stringify` writes it. The quotes show a space at either end, and a quote, a backslash or a control character inside is escaped: `layout must be folder or fork, not "folders"`. Many messages still print such a value bare, as in `no change called shout`; #247 tracks quoting them.
+- A command that fails prints `patchbook: ` and the reason on stderr, and exits 1. A usage error starts with `patchbook <command>: ` instead (`patchbook: ` when no command was found, as in `patchbook: unknown command "frob"`) and exits 2.
+- A name, path or value that a message quotes from the command line, a file or another program is in double quotes, written by `quote` in `src/lib/text.ts`. It is `JSON.stringify`'s text, so the quotes show a space at either end, and a quote or a backslash inside is escaped. Every control character (`\p{Cc}`, DEL and U+0080 to U+009F included), every format character (`\p{Cf}`, such as U+202E) and every lone surrogate is escaped too, as JSON writes it (`\n`, `\t`) or else as `\uXXXX`, or `\u{X…}` above U+FFFF, so a value can't move the cursor or reorder the text after it: `layout must be folder or fork, not "folders"`. Many messages still print such a value bare, as in `no change called shout`; #247 tracks quoting them.
 - Patchbook's own names are bare: its commands, options, settings and problem kinds, and the choices of an argument. A command, an identifier or syntax to type is in backticks: ``Run `patchbook status` ``, ``did you mean `blockTerms`?``.
 - A change or a block entry with no intent shows as `(no intent yet)` in `show`, in the `orphan` lines of `status` and in the list of changes the model gets. Patchbook never prints `None` for it.
 - A file patchbook writes leaves a missing intent empty. `CHANGE.md` gets the line `intent:` with nothing after it, and a block entry gets an empty `intent:` field. The readers take an empty intent as none, and `status` reports the change or the entry as `invalid`, `it has no intent`.
