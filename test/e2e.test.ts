@@ -5362,6 +5362,7 @@ describe("ForkTest", () => {
     const path = join(t.fork.path, ".patchbook/changes", name, "CHANGE.md");
     mkdirSync(join(path, ".."), { recursive: true });
     writeFileSync(path, `# ${name}\n\nintent: Old intent.\n\nedits:\n- add old.txt\n`);
+    sh(["git", "add", path], { cwd: t.fork.path });
     return path;
   };
 
