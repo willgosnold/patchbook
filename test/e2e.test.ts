@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import type { Nearest } from "../src/api.ts";
 import { carriesCrashInjection } from "./crash-build.ts";
-import { CMD, Case, Repo, TIMEOUT, type Run, crashCmd, dedent, lstrip, mkdirNew, partitionHead, permissionTest, replace, sh, shlexSplit, words } from "./helpers";
+import { CMD, Case, Repo, TIMEOUT, type Run, crashCmd, dedent, isRoot, lstrip, mkdirNew, partitionHead, permissionTest, replace, sh, shlexSplit, words } from "./helpers";
 
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
@@ -13831,7 +13831,8 @@ exec '${Bun.which("git")}' "$@"
     }
   };
 
-  test.skipIf(process.platform !== "linux" || !casefold())("test_init_refuses_a_patchbook_in_capitals_on_a_case_insensitive_folder", () => {
+  // As root, unshare -r maps no other user, so the namespace cannot reach the runner's bun.
+  test.skipIf(process.platform !== "linux" || isRoot || !casefold())("test_init_refuses_a_patchbook_in_capitals_on_a_case_insensitive_folder", () => {
     const t = new VendorCase();
     try {
       const mount = join(t.tmp, "cf");
