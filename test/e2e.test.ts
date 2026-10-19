@@ -7613,10 +7613,6 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
   }
 
   const notAFolder: [string, (t: ForkCase, vendor: string) => string | null][] = [
-    ["a_file", (_, vendor) => {
-      writeFileSync(vendor, "a file\n");
-      return null;
-    }],
     ["a_symlink_to_a_missing_path", (t, vendor) => {
       symlinkSync(join(t.tmp, "nowhere"), vendor);
       return null;

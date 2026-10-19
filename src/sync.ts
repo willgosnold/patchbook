@@ -243,7 +243,7 @@ function rewriteVendor(book: Book, u: Upstream, vendor: string, pin: Pin, raw: R
 
 function userFiles(vendor: string, mirrored: ReadonlyMap<string, File>, unpinned: boolean): string[] {
   if (!lexists(vendor) || isSymlink(vendor)) return [];
-  if (!lstatSync(vendor).isDirectory()) return unpinned ? [""] : [];
+  if (!lstatSync(vendor).isDirectory()) return [""];
   const found: string[] = [];
   const todo = [""];
   for (let here = todo.pop(); here !== undefined; here = todo.pop()) {
@@ -256,15 +256,28 @@ function userFiles(vendor: string, mirrored: ReadonlyMap<string, File>, unpinned
   return sorted(found);
 }
 
+function namedFiles(folder: string, found: string[]): string {
+  const shown = found.slice(0, 5).map((p) => (p ? `${folder}/${p}` : folder)).join(", ");
+  const more = found.length > 5 ? ` and ${found.length - 5} more` : "";
+  return `${found.length === 1 ? "1 file that isn't" : `${found.length} files that aren't`} upstream's: ${shown}${more}`;
+}
+
 function refuseUserFiles(book: Book, u: Upstream, vendor: string, mirrored: ReadonlyMap<string, File>, unpinned: boolean): void {
   const found = userFiles(vendor, mirrored, unpinned);
   if (!found.length) return;
   const folder = relative(book.root, vendor);
-  const shown = found.slice(0, 5).map((p) => (p ? `${folder}/${p}` : folder)).join(", ");
-  const more = found.length > 5 ? ` and ${found.length - 5} more` : "";
-  const one = found.length === 1;
-  throw new Fail(`upstream ${u.name} would replace ${folder}, which holds ${one ? "1 file" : `${found.length} files`} that ${one ? "isn't" : "aren't"} upstream's: ${shown}${more}. `
-    + `Move ${one ? "it" : "them"} out of the folder, or change vendor for ${u.name}. Nothing was changed.`);
+  throw new Fail(`upstream ${u.name} would replace ${folder}, which holds ${namedFiles(folder, found)}. `
+    + `Move ${found.length === 1 ? "it" : "them"} out of the folder, or change vendor for ${u.name}. Nothing was changed.`);
+}
+
+/** The copy a killed sync left is the one finishing the undo deletes, so a file in it that the sync's own copy lacks is one the user added since. `at` is the commit the sync's copy was written from. */
+function refuseUserFilesInCopy(book: Book, u: Upstream, vendor: string, j: string, at: string): void {
+  const commit = at.split(" ")[0]!;
+  const found = userFiles(vendor, commit ? u.files(commit) : new Map(), false);
+  if (!found.length) return;
+  const folder = relative(book.root, vendor);
+  throw new Fail(`${relative(book.root, j)} holds a sync of ${u.name} that stopped partway, and the vendored copy (${folder}) holds ${namedFiles(folder, found)}. `
+    + `Finishing the sync would delete ${found.length === 1 ? "it" : "them"}. Move ${found.length === 1 ? "it" : "them"} out of the folder, then sync again. The sync stays where it is until then.`);
 }
 
 /** Checked only in place: git's ignore rules match by path, so the same files hash differently elsewhere. */
@@ -374,6 +387,7 @@ function recover(book: Book, u: Upstream): void {
       if (now !== null && !wrote) release(book, u, added);
       throw stuck(book, u, "upstream.lock has changed since");
     }
+    if (vendor && newCopy) refuseUserFilesInCopy(book, u, vendor, j, rewrite ? from : to);
     const before = join(j, "before");
     const saved = lexists(before) ? readdirSync(before, { recursive: true, encoding: "utf8" }) : [];
     for (const rel of saved.filter((rel) => rel !== REPORT)) {
