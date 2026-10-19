@@ -7,6 +7,7 @@ import { unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, foldersWith, isDir, isSymlink, LINK, lexists, mkdirs, type Mode, readDisk, readText, relative, writeDisk, writeText } from "./lib/fs.ts";
 import { splitlines, strip, W } from "./lib/py.ts";
+import { escaped, say, verbatim } from "./lib/term.ts";
 import { decodeReplace } from "./lib/text.ts";
 
 export const EDIT_KINDS = ["file", "add", "replace", "delete", "move", "copy"] as const;
@@ -203,16 +204,16 @@ export async function cmdShow(args: { change: string }) {
   if (!CHANGE_NAME.test(args.change) || !exists(path)) throw new Fail(`no change called ${args.change}`);
   const rejected: string[] = [];
   const c = parseChange(path, (edit, detail) => rejected.push(`invalid ${edit}: ${detail}\n`));
-  process.stdout.write(`${c.name}: ${c.intent}\n\n`);
-  process.stdout.write(rejected.join(""));
+  say(`${c.name}: ${c.intent}\n\n`);
+  say(rejected.join(""));
   for (const e of c.edits) {
     if (e.kind === "file") {
       const base = splitlines(decodeReplace(c.read("base", e.path) ?? new Uint8Array()), true);
       const ours = splitlines(decodeReplace(c.read("ours", e.path) ?? new Uint8Array()), true);
-      process.stdout.write(unifiedDiff(base, ours, `upstream/${e.path}`, `ours/${e.path}`));
+      verbatim(unifiedDiff(base, ours, escaped(`upstream/${e.path}`), escaped(`ours/${e.path}`)));
     } else if (e.kind === "add" || e.kind === "replace") {
-      process.stdout.write(`${editText(e)} (${(c.read("ours", e.path) ?? new Uint8Array()).length} bytes)\n`);
-    } else process.stdout.write(editText(e) + "\n");
+      say(`${editText(e)} (${(c.read("ours", e.path) ?? new Uint8Array()).length} bytes)\n`);
+    } else say(editText(e) + "\n");
   }
   return 0;
 }

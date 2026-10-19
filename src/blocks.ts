@@ -8,6 +8,7 @@ import { pjoin, readText } from "./lib/fs.ts";
 import { sha256 } from "./lib/hash.ts";
 import { loads } from "./lib/json.ts";
 import { length, round2, S, sorted, str, strip, strRepr, W } from "./lib/py.ts";
+import { verbatim } from "./lib/term.ts";
 import { decode } from "./lib/text.ts";
 
 export const ENTRY_FIELDS = ["kind", "rules", "intent"] as const;
@@ -268,7 +269,7 @@ export async function cmdBlocks(args: { file: string }) {
   const lines = decode(file.data).split("\n");
   for (const [start, end] of blockSpans(lines)) {
     const block = lines.slice(start, end).join("\n");
-    process.stdout.write(`=== line ${start + 1} [${blockHash(block)}]\n${block}\n\n`);
+    verbatim(`=== line ${start + 1} [${blockHash(block)}]\n${block}\n\n`);
   }
   return 0;
 }

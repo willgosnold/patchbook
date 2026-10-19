@@ -8,6 +8,7 @@ import { intentSettings, NO_MODEL, PROVIDERS } from "./intent.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, mkdirs, pjoin, readBytes, readText, writeText } from "./lib/fs.ts";
 import { ljust, S, strRepr } from "./lib/py.ts";
+import { say } from "./lib/term.ts";
 import { decode } from "./lib/text.ts";
 import { quoteToml } from "./lib/toml.ts";
 
@@ -378,16 +379,16 @@ export async function cmdConfig(args: { name: string | null; value: string | nul
     }
     const shown = show(name, value);
     setToml(path, name, value);
-    process.stdout.write(`${name} = ${shown} in ${path}\n`);
+    say(`${name} = ${shown} in ${path}\n`);
     return 0;
   }
   if (name === null) {
-    process.stdout.write(`user config: ${USER_CONFIG}` + (book ? `\nproject config: ${pjoin(book.dir, "config.toml")}` : "") + "\n");
+    say(`user config: ${USER_CONFIG}` + (book ? `\nproject config: ${pjoin(book.dir, "config.toml")}` : "") + "\n");
   }
   for (const n of name !== null ? [name] : NAMES) {
     const [shown, source] = listed(n, book);
     const env = SETTINGS[n].env;
-    process.stdout.write(`${ljust(n, 20)} ${ljust(shown, 28)} ${source}` + (env && name === null ? `  [${env}]` : "") + "\n");
+    say(`${ljust(n, 20)} ${ljust(shown, 28)} ${source}` + (env && name === null ? `  [${env}]` : "") + "\n");
   }
   return 0;
 }

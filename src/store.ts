@@ -10,6 +10,7 @@ import { sha1 } from "./lib/hash.ts";
 import { loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
 import { type PyValue, slice, sorted, split, strip } from "./lib/py.ts";
+import { say, verbatim, warn } from "./lib/term.ts";
 import { decode, decodeReplace, encode } from "./lib/text.ts";
 import { storeDir, type Table } from "./settings.ts";
 
@@ -22,8 +23,6 @@ export function defaultName(remote: string, path: string): string {
 }
 
 const rstrip = (s: string) => s.replace(/\/+$/, "");
-
-const quoted = (s: string): string => JSON.stringify(s).replace(/[\u007f-\u009f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 
 /** git's url_is_local_not_ssh, the rule fetch and ls-remote use. `git clone` also takes an existing folder named like `a:b` as local; this does not. */
 function isLocalPath(remote: string): boolean {
@@ -134,7 +133,7 @@ export class Upstream {
     const shallow = !this.inRepo || git(["rev-parse", "--is-shallow-repository"], { cwd }) === "true" ? ["--depth=1"] : [];
     const landing = `refs/patchbook/tmp/${process.pid}-${randomUUID()}`;
     try {
-      this.onRemote(["fetch", "--quiet", "--no-tags", ...shallow, "--end-of-options", this.source(), `+${ref}:${landing}`], `git fetch ${quoted(this.source())} ${ref}`, cwd);
+      this.onRemote(["fetch", "--quiet", "--no-tags", ...shallow, "--end-of-options", this.source(), `+${ref}:${landing}`], `git fetch ${JSON.stringify(this.source())} ${ref}`, cwd);
       return git(["rev-parse", `${landing}^{commit}`], { cwd });
     } finally {
       spawn(["git", "update-ref", "-d", landing], { cwd });
@@ -173,7 +172,7 @@ export class Upstream {
       this.keep(commit);
     } catch (e) {
       if (!(e instanceof Fail)) throw e;
-      process.stderr.write(`patchbook: couldn't keep ${commit.slice(0, 7)} in ${this.inRepo ? "this repo" : "the store"}, so git gc may prune it. ${e.message}\n`);
+      warn(`patchbook: couldn't keep ${commit.slice(0, 7)} in ${this.inRepo ? "this repo" : "the store"}, so git gc may prune it. ${e.message}\n`);
     }
     return commit;
   }
@@ -215,7 +214,7 @@ export class Upstream {
 
   head(): string {
     const ref = `refs/heads/${this.branch}`;
-    const out = this.onRemote(["ls-remote", "--end-of-options", this.source(), ref], `git ls-remote ${quoted(this.source())} ${ref}`, this.gitDir());
+    const out = this.onRemote(["ls-remote", "--end-of-options", this.source(), ref], `git ls-remote ${JSON.stringify(this.source())} ${ref}`, this.gitDir());
     if (!out) throw new Fail(`upstream ${this.name} has no branch ${this.branch}`);
     return split(out)[0]!;
   }
@@ -459,7 +458,7 @@ export async function cmdUpstream(args: { name: string; path: string | null; dif
     const where = [u.path, args.path].filter((p) => p).join("/");
     const rel = u.path ? [`--relative=${u.path}/`] : [];
     const diff = run(["git", "diff", "--no-color", ...rel, old, commit, "--", ...(where ? [where] : [])], { cwd: u.gitDir() });
-    process.stdout.write(decodeReplace(diff));
+    verbatim(decodeReplace(diff));
     return 0;
   }
   const files = u.files(commit);
@@ -468,15 +467,15 @@ export async function cmdUpstream(args: { name: string; path: string | null; dif
     refuseExportedGit(u.name, dest, files.keys());
     if (lexists(dest) && !(isDir(dest) && readdirSync(dest).length === 0)) throw new Fail(`can't export upstream ${u.name} into ${dest}, which already exists and isn't empty. Name a new or empty folder. Nothing was changed.`);
     for (const [path, file] of files) writeDisk(join(dest, path), file);
-    process.stdout.write(`wrote ${files.size} files of ${u.name} at ${commit.slice(0, 7)} to ${dest}\n`);
+    say(`wrote ${files.size} files of ${u.name} at ${commit.slice(0, 7)} to ${dest}\n`);
     return 0;
   }
   if (args.path) {
     const file = files.get(args.path);
     if (!file) throw new Fail(`${u.name} has no ${args.path} at ${commit.slice(0, 7)}`);
-    process.stdout.write(file.data);
+    verbatim(file.data);
     return 0;
   }
-  process.stdout.write(sorted(files.keys()).join("\n") + "\n");
+  say(sorted(files.keys()).join("\n") + "\n");
   return 0;
 }

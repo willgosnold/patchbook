@@ -9,6 +9,7 @@ import { Fail } from "./lib/fail.ts";
 import { exists, fsMessage, isDir, isSymlink, lexists, mkdirs, readBytes, writeText } from "./lib/fs.ts";
 import { spawn } from "./lib/proc.ts";
 import { strip } from "./lib/py.ts";
+import { say, warn } from "./lib/term.ts";
 import { bytesEqual, decode, encode } from "./lib/text.ts";
 import { cmdRecord } from "./record.ts";
 import { setting } from "./settings.ts";
@@ -75,14 +76,14 @@ export function installSkill(book: Book, outer?: Undo): { changed: string[]; blo
   const agents = setting("start.agents", book)[0];
   const unknown = agents.filter((a) => !AGENTS.has(a));
   if (unknown.length) {
-    process.stderr.write(`patchbook: can't install the skill for ${unknown.join(", ")}. `
+    warn(`patchbook: can't install the skill for ${unknown.join(", ")}. `
       + `start.agents can name ${Array.from(AGENTS.keys()).join(", ")}.\n`);
   }
   const known = agents.flatMap((a) => AGENTS.get(a) ?? []);
   if (!known.length) return null;
   const linked = symlinked(book);
   if (linked.length) {
-    for (const p of linked) process.stderr.write(linkNote(p));
+    for (const p of linked) warn(linkNote(p));
     return null;
   }
   const blocked = folders(book);
@@ -98,7 +99,7 @@ export function installSkill(book: Book, outer?: Undo): { changed: string[]; blo
   try {
     const { lost } = replacements(book);
     if (lost.length) {
-      process.stderr.write(`patchbook: the update skill was not installed, since these skill files differ from the shipped copy and no commit holds them:\n  ${lost.join("\n  ")}\n`
+      warn(`patchbook: the update skill was not installed, since these skill files differ from the shipped copy and no commit holds them:\n  ${lost.join("\n  ")}\n`
         + "Commit them, or move them away, then run `patchbook skill install`.\n");
       return null;
     }
@@ -118,7 +119,7 @@ export function installSkill(book: Book, outer?: Undo): { changed: string[]; blo
     const said = fsMessage(e);
     if (said === null) throw e;
     undo.restore();
-    process.stderr.write(`patchbook: couldn't install the update skill (${said})\n`);
+    warn(`patchbook: couldn't install the update skill (${said})\n`);
     return null;
   }
   return { changed: changed.map((p) => relative(book.root, p)), blocked: [] };
@@ -237,18 +238,18 @@ export async function cmdSkill(): Promise<number> {
   const book = await Book.find();
   const [on, from] = setting("start.install_skill", book);
   if (!on) {
-    process.stdout.write(`start.install_skill is off (${from}), so the update skill was not installed\n`);
+    say(`start.install_skill is off (${from}), so the update skill was not installed\n`);
     return 0;
   }
   const a = assemble(book);
   const problems = a.problems.filter((p) => p.problem !== "conflict");
   if (problems.length) {
-    for (const p of problems) process.stderr.write(describe(p) + "\n");
+    for (const p of problems) warn(describe(p) + "\n");
     throw new Fail(`${problems.length} problems; nothing installed. \`patchbook status\` lists them.`);
   }
   const linked = symlinked(book);
   if (linked.length) {
-    for (const p of linked) process.stderr.write(linkNote(p));
+    for (const p of linked) warn(linkNote(p));
     throw new Fail(`the update skill was not installed at ${linked.join(", ")}`);
   }
   const blocked = folders(book);
@@ -281,10 +282,10 @@ export async function cmdSkill(): Promise<number> {
       : "start.agents is empty, so the update skill was not installed");
   }
   const { changed } = result;
-  process.stdout.write(changed.map((p) => `wrote ${p}\n`).join(""));
-  process.stdout.write(kept.map((p) => `replaced ${p}; your copy is in HEAD\n`).join(""));
+  say(changed.map((p) => `wrote ${p}\n`).join(""));
+  say(kept.map((p) => `replaced ${p}; your copy is in HEAD\n`).join(""));
   const record = fork && (changed.length > 0 || unrecorded.length > 0);
   const code = record ? await recordSkill(book) : 0;
-  if (!changed.length && !record) process.stdout.write("the update skill is already current\n");
+  if (!changed.length && !record) say("the update skill is already current\n");
   return code;
 }
