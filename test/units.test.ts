@@ -1,8 +1,8 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Problem } from "../src/api.ts";
+import type { LastSync, Problem, SyncReport } from "../src/api.ts";
 import type { Assembly } from "../src/assemble.ts";
 import type { Reserved } from "../src/book.ts";
 import type { Edit } from "../src/changes.ts";
@@ -13,12 +13,13 @@ const ambientConfigHome = process.env["XDG_CONFIG_HOME"];
 process.env["XDG_CONFIG_HOME"] = join(sandbox, "config");
 
 const { applyStructure } = await import("../src/assemble.ts");
-const { blockSpans, formatEntry, nearest, readEntries, similarity } = await import("../src/blocks.ts");
-const { Book, globRe } = await import("../src/book.ts");
+const { blockSpans, formatEntry, nearest, parsePlaceholders, readEntries, similarity } = await import("../src/blocks.ts");
+const { Book, globRe, lockText, parseLock } = await import("../src/book.ts");
 const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
 const { intentSettings, pendingDiff, PROVIDERS, writeIntent } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
 const { setToml, USER_CONFIG } = await import("../src/settings.ts");
+const { lastSyncText, parseLastSync } = await import("../src/sync.ts");
 
 type Entry = ReturnType<typeof readEntries> extends Map<string, infer E> ? E : never;
 type Source = ReturnType<typeof applyStructure> extends Map<string, infer S> ? S : never;
@@ -526,11 +527,233 @@ describe("applyStructure", () => {
   });
 });
 
+describe("formats", () => {
+  const refusal = (run: () => unknown): string => {
+    try {
+      run();
+    } catch (e) {
+      if (e instanceof Fail) return e.message;
+      throw e;
+    }
+    throw new Error("expected a refusal");
+  };
+
+  const ID = "a".repeat(40);
+  const OTHER = "b".repeat(40);
+  const pin = (name: string, commit = ID, tree = OTHER) => ({ name, commit, tree });
+
+  describe("upstream.lock", () => {
+    const entry = (name: string) => `    {\n      "name": ${JSON.stringify(name)},\n      "commit": "${ID}",\n      "tree": "${OTHER}"\n    }`;
+
+    test("writes the pins sorted by name by code point, name first, as UTF-8", () => {
+      const text = lockText([pin("lib"), pin("é"), pin("2"), pin("Zed")]);
+      expect(text).toBe(`{\n  "version": 1,\n  "upstreams": [\n${["2", "Zed", "lib", "é"].map(entry).join(",\n")}\n  ]\n}\n`);
+    });
+
+    test("reads back what it writes", () => {
+      const pins = [pin("2"), pin("Zed"), pin("lib", OTHER, ID), pin("é")];
+      expect(parseLock(lockText([...pins].reverse()))).toEqual(pins);
+    });
+
+    test("writes no pins as an empty list", () => {
+      expect(lockText([])).toBe('{\n  "version": 1,\n  "upstreams": []\n}\n');
+    });
+
+    const lock = (upstreams: string, version = '"version": 1, ') => `{${version}"upstreams": [${upstreams}]}`;
+    const lib = `{"name": "lib", "commit": "${ID}", "tree": "${OTHER}"}`;
+
+    test("refuses text that isn't JSON, naming the file", () => {
+      expect(refusal(() => parseLock("<<<<<<< HEAD\n"))).toStartWith(".patchbook/upstream.lock isn't JSON: ");
+    });
+
+    test("refuses NaN as a value", () => {
+      expect(refusal(() => parseLock(lock(`{"name": "lib", "commit": NaN, "tree": "${OTHER}"}`)))).toStartWith(".patchbook/upstream.lock isn't JSON: ");
+    });
+
+    test("refuses a value of the wrong type, naming its path", () => {
+      expect(refusal(() => parseLock(lock(`${lib}, {"name": "x", "commit": 7, "tree": "${OTHER}"}`))))
+        .toStartWith(".patchbook/upstream.lock: upstreams[1].commit must be a full object id (40 or 64 lowercase hex digits), not 7. ");
+    });
+
+    test("refuses an id that isn't a full lowercase hex id", () => {
+      expect(refusal(() => parseLock(lock(`{"name": "lib", "commit": "abc", "tree": "${OTHER}"}`)))).toContain("upstreams[0].commit must be a full object id");
+    });
+
+    test("refuses a missing field", () => {
+      expect(refusal(() => parseLock(lock(`${lib}, {"name": "x", "commit": "${ID}"}`)))).toStartWith(".patchbook/upstream.lock: upstreams[1].tree is missing. ");
+    });
+
+    test("refuses a name twice", () => {
+      expect(refusal(() => parseLock(lock(`${lib}, ${lib}`)))).toStartWith(".patchbook/upstream.lock: upstreams[1] names lib, as upstreams[0] does. ");
+    });
+
+    test("refuses the lock from before it had a version, saying how to fix it", () => {
+      const old = JSON.stringify({ lib: { commit: ID, tree: OTHER } });
+      expect(refusal(() => parseLock(old))).toBe(
+        '.patchbook/upstream.lock has no version, so an older patchbook wrote it. It holds {"version": 1, "upstreams": [{"name": ..., "commit": ..., "tree": ...}]}, one entry per upstream, sorted by name.',
+      );
+    });
+
+    test("refuses another version", () => {
+      expect(refusal(() => parseLock(lock(lib, '"version": 2, ')))).toStartWith(".patchbook/upstream.lock is version 2, from a newer patchbook; this one reads version 1. ");
+    });
+
+    test("ignores a key it doesn't know", () => {
+      expect(parseLock(`{"version": 1, "note": "x", "upstreams": [{"name": "lib", "commit": "${ID}", "tree": "${OTHER}", "extra": 1}]}`)).toEqual([pin("lib")]);
+    });
+  });
+
+  describe("last-sync.json", () => {
+    const report = (name: string, from: string | null): SyncReport => ({
+      name, from, to: ID, upstream: ["changed café/é.txt"], merged: [{ change: "shout", path: "a.txt" }],
+      conflicts: [{ change: "shout", path: "b.txt", count: 2 }, { change: "shout", path: "c.bin", detail: "binary file changed upstream" }],
+      gone: [{ change: "shout", path: "d.txt", maybe: ["e.txt"] }], replacedUpstreamChanged: ["shout: f.txt"],
+    });
+    const doc: LastSync = { version: 2, upstreams: [report("lib", null), report("2", OTHER)] };
+    const entry = (name: string, from: string) => [
+      "    {",
+      `      "name": "${name}",`,
+      `      "from": ${from},`,
+      `      "to": "${ID}",`,
+      '      "upstream": [',
+      '        "changed café/é.txt"',
+      "      ],",
+      '      "merged": [',
+      "        {",
+      '          "change": "shout",',
+      '          "path": "a.txt"',
+      "        }",
+      "      ],",
+      '      "conflicts": [',
+      "        {",
+      '          "change": "shout",',
+      '          "path": "b.txt",',
+      '          "count": 2',
+      "        },",
+      "        {",
+      '          "change": "shout",',
+      '          "path": "c.bin",',
+      '          "detail": "binary file changed upstream"',
+      "        }",
+      "      ],",
+      '      "gone": [',
+      "        {",
+      '          "change": "shout",',
+      '          "path": "d.txt",',
+      '          "maybe": [',
+      '            "e.txt"',
+      "          ]",
+      "        }",
+      "      ],",
+      '      "replacedUpstreamChanged": [',
+      '        "shout: f.txt"',
+      "      ]",
+      "    }",
+    ].join("\n");
+
+    test("writes the reports in the order given, name first, as UTF-8", () => {
+      expect(lastSyncText(doc)).toBe(`{\n  "version": 2,\n  "upstreams": [\n${entry("lib", "null")},\n${entry("2", `"${OTHER}"`)}\n  ]\n}\n`);
+    });
+
+    test("reads back what it writes, both kinds of conflict included", () => {
+      expect(parseLastSync(lastSyncText(doc))).toEqual(doc);
+    });
+
+    const text = (change: (r: Record<string, unknown>) => void, version: unknown = 2): string => {
+      const r: Record<string, unknown> = JSON.parse(lastSyncText(doc)).upstreams[1];
+      change(r);
+      return JSON.stringify({ version, upstreams: [r] });
+    };
+    const what = ".patchbook/last-sync.json";
+    const fix = "It only reports past syncs: delete it, and the next patchbook sync writes a new one.";
+
+    test("refuses text that isn't JSON", () => {
+      expect(refusal(() => parseLastSync("{ not json"))).toStartWith(`${what} isn't JSON: `);
+      expect(refusal(() => parseLastSync('{"version": 2, "upstreams": [{"count": NaN}]}'))).toStartWith(`${what} isn't JSON: `);
+    });
+
+    test("refuses a field of the wrong type, naming its path, and says how to fix the file", () => {
+      expect(refusal(() => parseLastSync(text((r) => (r["merged"] = {}))))).toBe(`${what}: upstreams[0].merged must be a list, not an object. ${fix}`);
+      expect(refusal(() => parseLastSync(text((r) => (r["from"] = 7))))).toStartWith(`${what}: upstreams[0].from must be a full object id`);
+    });
+
+    test("refuses a missing field", () => {
+      expect(refusal(() => parseLastSync(text((r) => delete r["to"])))).toBe(`${what}: upstreams[0].to is missing. ${fix}`);
+    });
+
+    test("refuses a count that isn't a whole number", () => {
+      const bad = text((r) => (r["conflicts"] = [{ change: "x", path: "y", count: 0 }])).replace('"count":0', '"count":1e400');
+      expect(refusal(() => parseLastSync(bad))).toBe(`${what}: upstreams[0].conflicts[0].count must be a whole number from 0, not Infinity. ${fix}`);
+    });
+
+    test("refuses a conflict that is neither kind, naming the field it lacks", () => {
+      expect(refusal(() => parseLastSync(text((r) => (r["conflicts"] = [{ change: "x", path: "y" }]))))).toBe(`${what}: upstreams[0].conflicts[0].detail is missing. ${fix}`);
+    });
+
+    test("refuses a name twice", () => {
+      const twice = JSON.stringify({ version: 2, upstreams: [JSON.parse(lastSyncText(doc)).upstreams[0], JSON.parse(lastSyncText(doc)).upstreams[0]] });
+      expect(refusal(() => parseLastSync(twice))).toBe(`${what}: upstreams[1] names lib, as upstreams[0] does. ${fix}`);
+    });
+
+    test("refuses the first version and the report from before versions", () => {
+      expect(refusal(() => parseLastSync(text(() => {}, 1)))).toBe(`${what} is version 1, and this patchbook reads version 2. ${fix}`);
+      const unversioned = JSON.stringify({ upstreams: { upstream: { from: null, to: ID } } });
+      expect(refusal(() => parseLastSync(unversioned))).toBe(`${what} has no version, so an older patchbook wrote it. ${fix}`);
+    });
+
+    test("refuses the old snake_case key", () => {
+      expect(refusal(() => parseLastSync(text((r) => ((r["replaced_upstream_changed"] = r["replacedUpstreamChanged"]), delete r["replacedUpstreamChanged"])))))
+        .toBe(`${what}: upstreams[0].replacedUpstreamChanged is missing. ${fix}`);
+    });
+  });
+
+  describe("a placeholder file with format = json", () => {
+    test("gives each key a string, or a list of strings joined with a comma and a space", () => {
+      const read = parsePlaceholders('{"greet": "Say hello.", "tools": ["a", "b"], "none": [], "naïve": "é"}', "strings.json");
+      expect([...read]).toEqual([["greet", "Say hello."], ["tools", "a, b"], ["none", ""], ["naïve", "é"]]);
+    });
+
+    test("skips a key that starts with an underscore, whatever it holds", () => {
+      expect([...parsePlaceholders('{"_note": 5, "_list": [1, {}], "a": "x"}', "strings.json")]).toEqual([["a", "x"]]);
+    });
+
+    test("takes constructor as a name like any other, and __proto__ as a comment", () => {
+      expect([...parsePlaceholders('{"__proto__": 1, "constructor": "x"}', "strings.json")]).toEqual([["constructor", "x"]]);
+    });
+
+    test("refuses text that isn't JSON, naming the file", () => {
+      expect(refusal(() => parsePlaceholders("greet: hi", "strings.json"))).toStartWith("strings.json isn't JSON: ");
+      expect(refusal(() => parsePlaceholders('{"a": NaN}', "strings.json"))).toStartWith("strings.json isn't JSON: ");
+    });
+
+    test("refuses a document that isn't an object", () => {
+      expect(refusal(() => parsePlaceholders('["a"]', "strings.json"))).toBe("strings.json must be an object, not a list.");
+    });
+
+    test("refuses a value that is neither, naming the key and what it is", () => {
+      expect(refusal(() => parsePlaceholders('{"enabled": true}', "strings.json"))).toBe('strings.json: "enabled" must be a string or a list of strings, not true.');
+      expect(refusal(() => parsePlaceholders('{"n": 1}', "strings.json"))).toBe('strings.json: "n" must be a string or a list of strings, not 1.');
+      expect(refusal(() => parsePlaceholders('{"n": null}', "strings.json"))).toBe('strings.json: "n" must be a string or a list of strings, not null.');
+      expect(refusal(() => parsePlaceholders('{"n": {"a": "b"}}', "strings.json"))).toBe('strings.json: "n" must be a string or a list of strings, not an object.');
+    });
+
+    test("refuses a list with something other than a string in it, naming the item", () => {
+      expect(refusal(() => parsePlaceholders('{"a": ["x", 1]}', "strings.json"))).toBe('strings.json: "a"[1] must be a string, not 1.');
+    });
+  });
+});
+
 const SANDBOX_CONFIG = join(sandbox, "config", "patchbook", "config.toml");
 const inSandbox = USER_CONFIG === SANDBOX_CONFIG;
 
 test("settings.ts reads the user config from the sandbox", () => {
   expect({ actual: USER_CONFIG, expectedSandbox: SANDBOX_CONFIG }).toEqual({ actual: SANDBOX_CONFIG, expectedSandbox: SANDBOX_CONFIG });
+});
+
+test("no other test file loads a module outside src/lib, which could read settings before this file's sandbox", () => {
+  const others = readdirSync(new URL(".", import.meta.url)).filter((f) => f.endsWith(".ts") && f !== "units.test.ts");
+  const loading = /^import (?!type )[^;]*?from "\.\.\/src\/(?!lib\/)|import\("\.\.\/src\/(?!lib\/)/m;
+  expect(others.filter((f) => loading.test(readFileSync(new URL(f, import.meta.url), "utf8")))).toEqual([]);
 });
 
 describe.skipIf(!inSandbox)("intentSettings", () => {
