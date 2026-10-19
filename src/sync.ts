@@ -3,12 +3,12 @@ import { chmodSync, lstatSync, mkdtempSync, readdirSync, readFileSync, renameSyn
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
-import { Book } from "./book.ts";
+import { Book, refuseNestedGit, refuseUpstreamGit, unsafeVendor } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isSymlink, LINK, lexists, mkdirs, readDisk, readText, readTextReplace, sameFile, writeDisk, writeText } from "./lib/fs.ts";
+import { exists, type File, isSymlink, LINK, lexists, mkdirs, pjoin, readDisk, readText, readTextReplace, sameFile, writeDisk, writeText } from "./lib/fs.ts";
 import { dumps, JsonError, loads } from "./lib/json.ts";
 import { spawn } from "./lib/proc.ts";
 import { sorted } from "./lib/py.ts";
@@ -121,6 +121,7 @@ function savedReports(path: string): Map<string, SyncReport> {
 /** Move one upstream's pin and carry every change on its files forward. Returns the report, or null. */
 export function syncUpstream(book: Book, u: Upstream, ref: string | null, changes: readonly Change[], beforePin?: (report: SyncReport) => void): SyncReport | null {
   recoverAll(book);
+  if (u.vendor) refuseNestedGit(book.root, u.name, u.vendor);
   const pin = u.pin();
   const commit = u.fetch(ref || u.branch);
   const tree = u.treeOf(commit);
@@ -133,6 +134,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     return null;
   }
   const raw = u.files(commit);
+  if (u.vendor) refuseUpstreamGit(u.name, relative(book.root, u.vendor), raw.keys());
   const old = pin.tree ? book.buildable(u.mounted(u.files(u.heal(pinned(u, pin)))), false) : new Map<string, File>();
   const fresh = book.buildable(u.mounted(raw));
   const report: SyncReport = {
@@ -174,6 +176,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   journaled(book, u, pin, { commit, tree }, (j) => {
     u.keep(commit);
     takeVendor(u.vendor, join(j, "old"));
+    refuseMovedGit(book, u, join(j, "old"));
     if (u.vendor) writeVendor(u, u.vendor, raw, tree);
     saveBefore(book, j, writes.map((w) => w.c.content(w.side, w.path)));
     for (const w of writes) w.c.write(w.side, w.path, w.data);
@@ -189,6 +192,8 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
 }
 
 function journaled(book: Book, u: Upstream, from: Pin, to: Required<Pin> | null, write: (j: string) => void): void {
+  // The check at the top of syncUpstream fails fast. This one, right before the copy is taken, leaves a gap of the journal's setup, not the fetch.
+  if (u.vendor) refuseNestedGit(book.root, u.name, u.vendor);
   const j = journal(book, u);
   try {
     begin(book, u, from, to);
@@ -206,8 +211,10 @@ function isFolder(vendor: string): boolean {
 }
 
 function rewriteVendor(book: Book, u: Upstream, vendor: string, pin: Pin, raw: ReadonlyMap<string, File>, tree: string): void {
+  refuseUpstreamGit(u.name, relative(book.root, vendor), raw.keys());
   journaled(book, u, pin, null, (j) => {
     takeVendor(vendor, join(j, "old"));
+    refuseMovedGit(book, u, join(j, "old"));
     writeVendor(u, vendor, raw, tree);
   });
 }
@@ -271,6 +278,17 @@ function locked(u: Upstream): string | null {
   }
 }
 
+/** A repo made since the last check moves into `old` with the copy, and the journal's drop would delete it there. Put the copy back and refuse, so nothing stays half done. */
+function refuseMovedGit(book: Book, u: Upstream, old: string): void {
+  if (!u.vendor || !lexists(old)) return;
+  try {
+    refuseNestedGit(book.root, u.name, u.vendor, undefined, old);
+  } catch (e) {
+    renameSync(old, u.vendor);
+    throw e;
+  }
+}
+
 function takeVendor(vendor: string | null, to: string | null): void {
   if (!vendor || !lexists(vendor)) return;
   if (to) renameSync(vendor, to);
@@ -294,6 +312,12 @@ function recover(book: Book, u: Upstream): void {
       throw stuck(book, u, "its record can't be read");
     }
     const { from, to, rewrite, added, vendor: path, copy, made } = record;
+    const vendor = path ? pjoin(book.root, path) : null;
+    const unsafe = vendor && unsafeVendor(book.root, vendor);
+    if (unsafe) throw stuck(book, u, `its record names the vendor folder ${JSON.stringify(path)}, which ${unsafe}`);
+    const old = join(j, "old");
+    const newCopy = lexists(old) || !copy;
+    if (vendor && newCopy) refuseNestedGit(book.root, u.name, vendor, relative(book.root, j));
     const now = locked(u);
     const wrote = lexists(join(j, "lock"));
     const torn = now === null && wrote;
@@ -314,10 +338,10 @@ function recover(book: Book, u: Upstream): void {
       else rmSync(join(book.dir, "upstream.lock"), { force: true });
     }
     release(book, u, added);
-    const vendor = path ? join(book.root, path) : null;
-    const old = join(j, "old");
-    const newCopy = lexists(old) || !copy;
-    if (newCopy) takeVendor(vendor, null);
+    if (newCopy) {
+      if (vendor) refuseNestedGit(book.root, u.name, vendor, relative(book.root, j));
+      takeVendor(vendor, null);
+    }
     if (vendor && made) removeMadeFolders(vendor, join(book.root, made));
     if (vendor && lexists(old)) {
       mkdirs(dirname(vendor));
@@ -341,8 +365,9 @@ function stuck(book: Book, u: Upstream, why: string): Fail {
     lexists(join(j, "old")) && "old/ holds the vendored copy as it was",
     lexists(join(j, "before")) && "before/ holds the files it wrote over as they were",
   ].filter(Boolean);
-  return new Fail(`${relative(book.root, j)} holds a sync of ${u.name} that stopped partway, but ${why}. `
-    + (held.length ? `In it, ${held.join(", and ")}. Put back what you need, then delete the folder.` : "Delete the folder."));
+  const shown = relative(book.root, j);
+  return new Fail(`${shown} holds a sync of ${u.name} that stopped partway, but ${why}. `
+    + (held.length ? `In it, ${held.join(", and ")}. Put back what you need, then delete ${shown}.` : `Delete ${shown}.`));
 }
 
 function release(book: Book, u: Upstream, added: string): void {

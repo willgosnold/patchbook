@@ -1,5 +1,6 @@
 // The repo, its config and its upstreams.
-import { dirname, join } from "node:path";
+import { readdirSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Hooks, Problem } from "./api.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
@@ -190,6 +191,78 @@ function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly str
   return rel;
 }
 
+/** Whether one name, not a path, is a name git reads as `.git`. */
+export const segmentNamesGit = (segment: string): boolean => hfsDotGit(segment) || ntfsDotGit(segment);
+
+/** Why a sync must never replace `vendor` (an absolute path), or null. Links above it are resolved, but not the last name: a sync moves or deletes a link there, never what it points to. */
+export function unsafeVendor(root: string, vendor: string): string | null {
+  const rel = relative(resolve(root), join(resolve(dirname(vendor)), basename(vendor)));
+  if (rel === ".") return "is the repo root";
+  if (under(rel, "..")) return "is outside the repo";
+  if (under(rel.toLowerCase(), PB)) return `is inside ${PB}`;
+  if (rel.split("/").some(segmentNamesGit)) return `is inside ${GIT}`;
+  // resolve() keeps a link that leads nowhere as a plain name, so the copy would look like it stays in the repo.
+  const repo = repoAsSpelled(resolve(root), dirname(vendor));
+  for (let up = dirname(vendor); up !== repo && up !== dirname(up); up = dirname(up)) {
+    if (lexists(up) && !exists(up)) return `is under ${repo === null ? up : relative(repo, up)}, which is a link to nothing`;
+  }
+  return null;
+}
+
+/** What a walk of the vendored copy stopped at: a `.git`, or a folder it couldn't list and so couldn't clear. Paths are inside `dir`, "" for `dir` itself. */
+type Stop = { kind: "git" | "unreadable"; path: string };
+
+/** The first `.git` in any letter case in `dir`, or the first folder that can't be listed. Links are not followed. A folder that is missing, or not a folder, holds nothing. */
+function findGit(dir: string): Stop | null {
+  if (isSymlink(dir)) return null;
+  const todo = [""];
+  for (let here = todo.pop(); here !== undefined; here = todo.pop()) {
+    let entries;
+    try {
+      entries = readdirSync(join(dir, here), { withFileTypes: true });
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") continue;
+      return { kind: "unreadable", path: here };
+    }
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    const hit = entries.find((e) => segmentNamesGit(e.name));
+    if (hit) return { kind: "git", path: joinPath(here, hit.name) };
+    for (const e of entries.reverse()) if (e.isDirectory()) todo.push(joinPath(here, e.name));
+  }
+  return null;
+}
+
+/**
+ * A `.git` inside the vendored copy is the user's: syncUpstream refuses an upstream tree that holds one (git mktree can store it), and a sync would move this one away and delete it.
+ * A folder the walk can't read might hold one, so it refuses too. `journal` is set when the copy is a killed sync's, which finishing would delete.
+ * `copy` is where to look when the vendored copy has been moved aside. The message still names `vendor`.
+ */
+export function refuseNestedGit(root: string, name: string, vendor: string, journal?: string, copy = vendor): void {
+  const stop = findGit(copy);
+  if (stop === null) return;
+  const folder = relative(root, vendor);
+  const at = joinPath(folder, stop.path);
+  const stalled = journal ? `${journal} holds a sync of ${name} that stopped partway, and the vendored copy (${folder})` : `the vendored copy of ${name} (${folder})`;
+  if (stop.kind === "unreadable") {
+    const then = journal
+      ? `Finishing the sync would delete one. Make it readable, then sync again. The sync stays where it is until then.`
+      : `Every sync replaces the copy and would delete one. Make it readable, move it out of the folder, or change vendor for ${name}.`;
+    throw new Fail(`${stalled} can't be searched for a git repo of your own, since patchbook can't read ${at}. ${then}`);
+  }
+  const then = journal
+    ? "Finishing the sync would delete it. Move it out of the folder, then sync again. The sync stays where it is until then."
+    : `Every sync replaces the copy and would delete it. Move it out of the folder, or change vendor for ${name}.`;
+  throw new Fail(`${stalled} holds ${at}, a git repo of its own. ${then}`);
+}
+
+/** Refuses an upstream whose files hold a name git reads as `.git`: the copy would hold a repo of its own, and no sync could finish over it. Runs before the journal and any write. */
+export function refuseUpstreamGit(name: string, vendor: string, files: Iterable<string>): void {
+  for (const p of files) {
+    if (p.split("/").some(segmentNamesGit)) throw new Fail(`upstream ${name} holds ${p}, which git reads as ${GIT}, so it can't be vendored into ${vendor}. Nothing was changed.`);
+  }
+}
+
 /** `**` matches any number of folders, `*` and `?` stay within one. */
 export function globRe(pattern: string): RegExp {
   const chars = Array.from(pattern);
@@ -307,6 +380,10 @@ export class Book {
     for (const a of this.upstreams) {
       if (!a.vendor) continue;
       const vendored = this.folderOf(a.vendor);
+      const unsafe = unsafeVendor(this.root, a.vendor);
+      if (unsafe) {
+        throw new Fail(`the vendored copy of ${a.name} (${vendored || "."}) ${unsafe}. Every sync replaces it. Change vendor for ${a.name} to a folder inside the repo, other than ${PB} and ${GIT}.`);
+      }
       const written = "A build writes there, but a vendored copy must match upstream exactly.";
       const own = this.outputFolder(a);
       if (own !== null && (underOrRoot(own, vendored) || underOrRoot(vendored, own))) {
