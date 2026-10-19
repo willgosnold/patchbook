@@ -7113,116 +7113,17 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(read(user)).toBe(before);
   });
 
-  forkTest("config keeps the endings and the end of a file with no final newline", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    writeFileSync(user, '[intent]\n# c\r\nmodel = "old"\n[hook]\r\nenabled = true');
-    t.config(["intent.model", "new"]);
-    expect(read(user)).toBe('[intent]\n# c\r\nmodel = "new"\n[hook]\r\nenabled = true');
-    writeFileSync(user, '[intent]\r\nprovider = "claude"');
-    t.config(["intent.model", "new"]);
-    expect(read(user)).toBe('[intent]\r\nprovider = "claude"\r\nmodel = "new"');
-    writeFileSync(user, '[intent]\nmodel = "old"\n\n\n');
-    t.config(["intent.model", "new"]);
-    expect(read(user)).toBe('[intent]\nmodel = "new"\n\n\n');
-    writeFileSync(user, '[intent]\r# c\rmodel = "old"\r');
-    t.config(["intent.model", "new"]);
-    expect(read(user)).toBe('[intent]\r# c\rmodel = "new"\r');
-  });
-
-  forkTest("config unset keeps a byte order mark and ignores a hash line in the deleted string", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    writeFileSync(user, '\uFEFFstart.agents = ["a"]\n[intent]\nmodel = "x"\n');
-    t.config(["--unset", "start.agents"]);
-    expect(read(user)).toBe('\uFEFF[intent]\nmodel = "x"\n');
-    writeFileSync(user, '[hook]\nenabled.t = """\n# inside\n"""\n');
-    t.config(["--unset", "hook.enabled"]);
-    expect(read(user)).toBe("[hook]\n");
-  });
-
-  forkTest("config set keeps whitespace only lines at the end of a file", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    writeFileSync(user, '[intent]\nmodel = "old"\n  \n\n');
-    t.config(["intent.model", "new"]);
-    expect(read(user)).toBe('[intent]\nmodel = "new"\n  \n\n');
-    writeFileSync(user, '[intent]\nmodel = "old"\n   ');
-    t.config(["intent.model", "new"]);
-    expect(read(user)).toBe('[intent]\nmodel = "new"\n   ');
-  });
-
-  forkTest("config unset on a byte order mark line keeps the endings of the lines after it", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    writeFileSync(user, "﻿hook.enabled = true\nstart.agents = []\r\nintent.model = \"x\"\r\n");
-    t.config(["--unset", "hook.enabled"]);
-    expect(read(user)).toBe("﻿start.agents = []\r\nintent.model = \"x\"\r\n");
-    writeFileSync(user, "﻿");
-    t.config(["intent.model", "new"]);
-    expect(read(user)).toBe('﻿[intent]\nmodel = "new"\n');
-  });
-
-  forkTest("config set after a last line comment puts the file tail once after the new line", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    writeFileSync(user, "[intent]\n# none yet  \n\n  ");
-    t.config(["intent.model", "new"]);
-    expect(read(user)).toBe('[intent]\n# none yet\n\nmodel = "new"  \n\n  ');
-  });
-
-  forkTest("config set after a last comment that ends in a space does not count the line as blank", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    for (const mark of [" ", " ", "　", "﻿"]) {
-      writeFileSync(user, `[intent]\n# c${mark}`);
-      t.config(["intent.model", "new"]);
-      expect(read(user)).toBe(`[intent]\n# c${mark}\n\nmodel = "new"`);
-    }
-  });
-
-  forkTest("config set above a last comment that ends in a space keeps the line, as it is not blank", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    for (const mark of ["\u00A0", "\u2028", "\u3000", "\uFEFF"]) {
-      writeFileSync(user, `[intent]\nmodel = "old"\n# c${mark}\n`);
-      t.config(["intent.model", "new"]);
-      expect(read(user)).toBe(`[intent]\nmodel = "new"\n# c${mark}\n`);
-    }
-  });
-
-  forkTest("config set on a file with a long run of spaces before the end is fast", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    writeFileSync(user, `[intent]\nmodel = "old"${" ".repeat(50000)}\n# end\n`);
-    const start = Date.now();
-    t.config(["intent.model", "new"]);
-    expect(Date.now() - start).toBeLessThan(4000);
-    expect(read(user)).toBe('[intent]\nmodel = "new"\n# end\n');
-  });
-
-  forkTest("config keeps each line's own ending in a file with mixed endings", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    const before = '# my settings\r\n[start]\nagents = ["claude-code"]\r\nnote = """\na\nb"""\r\n[intent]\nmodel = "x"\n';
-    writeFileSync(user, before);
-    t.config(["start.agents", "codex"]);
-    expect(read(user)).toBe(before.replaceAll('["claude-code"]', '["codex"]'));
-    t.config(["--unset", "intent.model"]);
-    expect(read(user)).toBe('# my settings\r\n[start]\nagents = ["codex"]\r\nnote = """\na\nb"""\r\n[intent]\n');
-  });
-
-  forkTest("config keeps the line endings of a CRLF file", (t) => {
+  forkTest("config sets and unsets a setting in a CRLF user config, keeping its endings, and says what it set", (t) => {
     const user = join(t.tmp, "config/patchbook/config.toml");
     mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
     const before = '# my settings\r\n[start]\r\n# agents\r\nagents = ["claude-code"]\r\nby_host = []\r\n';
     writeFileSync(user, before);
-    t.config(["start.agents", "codex"]);
+    const set = t.pb(["config", "start.agents", "codex"], { cwd: t.fork.path });
+    expect([set.stdout, set.stderr]).toEqual([`start.agents = ["codex"] in ${user}\n`, ""]);
     expect(read(user)).toBe(before.replaceAll('["claude-code"]', '["codex"]'));
-    t.config(["--unset", "start.agents"]);
+    const unset = t.pb(["config", "--unset", "start.agents"], { cwd: t.fork.path });
+    expect([unset.stdout, unset.stderr]).toEqual(["", ""]);
     expect(read(user)).toBe("# my settings\r\n[start]\r\n# agents\r\nby_host = []\r\n");
-    t.config(["intent.model", "x"]);
-    expect(read(user)).not.toMatch(/[^\r]\n/);
   });
 
   forkTest("a config with an integer too big for Bun says so in either scope", (t) => {

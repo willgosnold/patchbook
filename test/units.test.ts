@@ -245,6 +245,94 @@ describe("setToml", () => {
     setToml(path, "hook.enabled", false);
     expect(Bun.TOML.parse(read(path))).toEqual({ intent: { provider: "codex", model: "m" }, hook: { enabled: false } });
   });
+
+  test("keeps the endings and the end of a file with no final newline", () => {
+    const set = (before: string, after: string) => {
+      const path = put(file(), before);
+      setToml(path, "intent.model", "new");
+      expect(read(path)).toBe(after);
+    };
+    set('[intent]\n# c\r\nmodel = "old"\n[hook]\r\nenabled = true', '[intent]\n# c\r\nmodel = "new"\n[hook]\r\nenabled = true');
+    set('[intent]\r\nprovider = "claude"', '[intent]\r\nprovider = "claude"\r\nmodel = "new"');
+    set('[intent]\nmodel = "old"\n\n\n', '[intent]\nmodel = "new"\n\n\n');
+    set('[intent]\r# c\rmodel = "old"\r', '[intent]\r# c\rmodel = "new"\r');
+  });
+
+  test("unset keeps a byte order mark and ignores a hash line in the deleted string", () => {
+    const path = put(file(), '﻿start.agents = ["a"]\n[intent]\nmodel = "x"\n');
+    setToml(path, "start.agents", null);
+    expect(read(path)).toBe('﻿[intent]\nmodel = "x"\n');
+    const string = put(file(), '[hook]\nenabled.t = """\n# inside\n"""\n');
+    setToml(string, "hook.enabled", null);
+    expect(read(string)).toBe("[hook]\n");
+  });
+
+  test("set keeps whitespace only lines at the end of a file", () => {
+    for (const tail of ["\n  \n\n", "\n   "]) {
+      const path = put(file(), `[intent]\nmodel = "old"${tail}`);
+      setToml(path, "intent.model", "new");
+      expect(read(path)).toBe(`[intent]\nmodel = "new"${tail}`);
+    }
+  });
+
+  test("unset on a byte order mark line keeps the endings of the lines after it", () => {
+    const path = put(file(), '﻿hook.enabled = true\nstart.agents = []\r\nintent.model = "x"\r\n');
+    setToml(path, "hook.enabled", null);
+    expect(read(path)).toBe('﻿start.agents = []\r\nintent.model = "x"\r\n');
+    const mark = put(file(), "﻿");
+    setToml(mark, "intent.model", "new");
+    expect(read(mark)).toBe('﻿[intent]\nmodel = "new"\n');
+  });
+
+  test("set after a last line comment puts the file tail once after the new line", () => {
+    const path = put(file(), "[intent]\n# none yet  \n\n  ");
+    setToml(path, "intent.model", "new");
+    expect(read(path)).toBe('[intent]\n# none yet\n\nmodel = "new"  \n\n  ');
+  });
+
+  test("set after a last comment that ends in a space does not count the line as blank", () => {
+    for (const mark of [" ", " ", "　", "﻿"]) {
+      const path = put(file(), `[intent]\n# c${mark}`);
+      setToml(path, "intent.model", "new");
+      expect(read(path)).toBe(`[intent]\n# c${mark}\n\nmodel = "new"`);
+    }
+  });
+
+  test("set above a last comment that ends in a space keeps the line, as it is not blank", () => {
+    for (const mark of [" ", " ", "　", "﻿"]) {
+      const path = put(file(), `[intent]\nmodel = "old"\n# c${mark}\n`);
+      setToml(path, "intent.model", "new");
+      expect(read(path)).toBe(`[intent]\nmodel = "new"\n# c${mark}\n`);
+    }
+  });
+
+  test("set on a file with a long run of spaces before the end is fast", () => {
+    const path = put(file(), `[intent]\nmodel = "old"${" ".repeat(50000)}\n# end\n`);
+    const start = Date.now();
+    setToml(path, "intent.model", "new");
+    expect(Date.now() - start).toBeLessThan(4000);
+    expect(read(path)).toBe('[intent]\nmodel = "new"\n# end\n');
+  });
+
+  test("keeps each line's own ending in a file with mixed endings", () => {
+    const before = '# my settings\r\n[start]\nagents = ["claude-code"]\r\nnote = """\na\nb"""\r\n[intent]\nmodel = "x"\n';
+    const path = put(file(), before);
+    setToml(path, "start.agents", ["codex"]);
+    expect(read(path)).toBe(before.replaceAll('["claude-code"]', '["codex"]'));
+    setToml(path, "intent.model", null);
+    expect(read(path)).toBe('# my settings\r\n[start]\nagents = ["codex"]\r\nnote = """\na\nb"""\r\n[intent]\n');
+  });
+
+  test("keeps the line endings of a CRLF file", () => {
+    const before = '# my settings\r\n[start]\r\n# agents\r\nagents = ["claude-code"]\r\nby_host = []\r\n';
+    const path = put(file(), before);
+    setToml(path, "start.agents", ["codex"]);
+    expect(read(path)).toBe(before.replaceAll('["claude-code"]', '["codex"]'));
+    setToml(path, "start.agents", null);
+    expect(read(path)).toBe("# my settings\r\n[start]\r\n# agents\r\nby_host = []\r\n");
+    setToml(path, "intent.model", "x");
+    expect(read(path)).not.toMatch(/[^\r]\n/);
+  });
 });
 
 describe("entries", () => {
