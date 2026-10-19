@@ -8,6 +8,7 @@ import {
 } from "./blocks.ts";
 import { Book, buildInputs, GIT, PB, type Reserved, under } from "./book.ts";
 import { type Change, editText, readChanges } from "./changes.ts";
+import { warnUnhooked } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import {
   exists, type File, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, nonFolders, readDisk, readText, relative, resolve, rglob, rmFolders, sameFile, writeDisk, writeText,
@@ -431,6 +432,7 @@ function headTreeWith(root: string, add: (env: Env) => void): string {
 
 export async function cmdStatus(args: { json: boolean }) {
   const book = await Book.find();
+  warnUnhooked(book);
   const a = assemble(book);
   const lastSync = join(book.dir, "last-sync.json");
   const report = exists(lastSync) ? loads(readText(lastSync)) : null;

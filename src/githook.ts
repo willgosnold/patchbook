@@ -1,16 +1,16 @@
 // The pre-commit hook: on each commit, record the hand edits staged in the output, rebuild, and stage both.
 import { chmodSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, extname, isAbsolute, join } from "node:path";
 import type { Problem } from "./api.ts";
 import { assemble, buildLockPath, type BuildLock, type Changes, changesOf, describe, handEdits, parseBuildLock, readBuildLock, writeOutput } from "./assemble.ts";
-import { Book, buildInputs, PB, placeholderOutputs } from "./book.ts";
+import { Book, buildInputs, PB, placeholderOutputs, under } from "./book.ts";
 import { cmdRecord } from "./record.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isDir, isSymlink, lexists, mkdirs, readDisk, readTextReplace, relative, resolve, sameFile, writeText } from "./lib/fs.ts";
+import { exists, type File, isDir, isSymlink, lexists, mkdirs, readBytes, readDisk, readTextReplace, relative, resolve, sameFile, writeBytes, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { git, run, spawn } from "./lib/proc.ts";
 import { quote, sorted, strip } from "./lib/py.ts";
-import { bytesEqual, decode, decodeReplace, encode } from "./lib/text.ts";
+import { bytesEqual, concat, decode, decodeReplace, encode } from "./lib/text.ts";
 import { setting } from "./settings.ts";
 import { linksUnder, Undo } from "./undo.ts";
 
@@ -40,31 +40,308 @@ function writeHook(path: string): void {
   chmodSync(path, 0o755);
 }
 
-/** Install the pre-commit hook, or rewrite the stock one the Python version wrote. Any other hook is left alone, edited or not ours. */
-export function installHook(root: string, verbose = false): void {
-  const path = git(["rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-commit"], { cwd: root });
-  if (!exists(path)) {
-    writeHook(path);
+const GUARD = `if [ "$PATCHBOOK_HOOK" != 0 ] && [ -f .patchbook/config.toml ]; then
+  if ! command -v patchbook >/dev/null; then
+    echo "patchbook isn't installed, so this commit can't record hand edits to the build output." >&2
+    echo "Install it with npm install -g patchbook, or skip it once with PATCHBOOK_HOOK=0 git commit" >&2
+    exit 1
+  fi
+  patchbook hook run || exit 1
+fi
+`;
+
+/** No `exec`, so the manager's checks run after it, and `|| exit 1` stops the commit when the record fails even if those checks pass.
+ * Git runs hooks from the worktree root, so in a repo without a patchbook the lines do nothing, which keeps them safe in a hooks folder that every repo shares. */
+const HOOK_LINES = `# patchbook: record hand edits to the build output and rebuild it, before the checks below. Skip it once with PATCHBOOK_HOOK=0 git commit
+${GUARD}`;
+
+const indent = (text: string, spaces: number) => text.replace(/^(?=.)/gm, " ".repeat(spaces));
+
+const CALLS_PATCHBOOK = /^[^#\n]*\bpatchbook hook run\b/m;
+const HOOK_CHANGE = "patchbook-hook";
+
+type Snippet = { parts: readonly { text: string; into: (where: string) => string }[]; level: (config: string) => number };
+
+const to = (where: string) => `to ${where}`;
+
+const LEFTHOOK_YAML_COMMAND = `patchbook:
+  priority: 1
+  run: |
+${indent(GUARD, 4)}`;
+
+const LEFTHOOK_YAML: Snippet = {
+  parts: [
+    { text: `pre-commit:\n  commands:\n${indent(LEFTHOOK_YAML_COMMAND, 4)}`, into: to },
+    { text: `  commands:\n${indent(LEFTHOOK_YAML_COMMAND, 4)}`, into: (where) => `under the pre-commit key in ${where}` },
+    { text: indent(LEFTHOOK_YAML_COMMAND, 4), into: (where) => `under commands, in the pre-commit key of ${where}` },
+  ],
+  level(config) {
+    const lines = config.split("\n");
+    const start = lines.findIndex((l) => /^["']?pre-commit["']?[ \t]*:/.test(l));
+    if (start < 0) return 0;
+    const after = lines.slice(start + 1);
+    const end = after.findIndex((l) => /^[^\s#]/.test(l));
+    return (end < 0 ? after : after.slice(0, end)).some((l) => /^[ \t]+["']?commands["']?[ \t]*:/.test(l)) ? 2 : 1;
+  },
+};
+
+const LEFTHOOK_TOML: Snippet = {
+  parts: [{ text: `[pre-commit.commands.patchbook]\npriority = 1\nrun = '''\n${GUARD}'''\n`, into: to }],
+  level: () => 0,
+};
+
+const LEFTHOOK_JSON_COMMAND = `"patchbook": {
+  "priority": 1,
+  "run": ${JSON.stringify(GUARD)}
+}`;
+const LEFTHOOK_JSON_COMMANDS = `"commands": {\n${indent(LEFTHOOK_JSON_COMMAND, 2)}\n}`;
+const LEFTHOOK_JSON_KEY = `"pre-commit": {\n${indent(LEFTHOOK_JSON_COMMANDS, 2)}\n}`;
+
+const AFTER_A_MEMBER = ", with a comma after the member before it if there is one";
+
+const LEFTHOOK_JSON: Snippet = {
+  parts: [
+    { text: `{\n${indent(LEFTHOOK_JSON_KEY, 2)}\n}\n`, into: to },
+    { text: LEFTHOOK_JSON_KEY + "\n", into: (where) => `inside the top-level braces of ${where}${AFTER_A_MEMBER}` },
+    { text: LEFTHOOK_JSON_COMMANDS + "\n", into: (where) => `inside "pre-commit" in ${where}${AFTER_A_MEMBER}` },
+    { text: LEFTHOOK_JSON_COMMAND + "\n", into: (where) => `inside "commands" in "pre-commit" in ${where}${AFTER_A_MEMBER}` },
+  ],
+  level(config) {
+    if (!config.trim()) return 0;
+    const key = config.search(/"pre-commit"\s*:/);
+    return key < 0 ? 1 : /"commands"\s*:/.test(config.slice(key)) ? 3 : 2;
+  },
+};
+
+/** lefthook reads each of its config names in every format, and the extension picks the snippet. */
+const LEFTHOOK_FORMATS: Readonly<Record<string, Snippet>> = {
+  yml: LEFTHOOK_YAML, yaml: LEFTHOOK_YAML, toml: LEFTHOOK_TOML, json: LEFTHOOK_JSON, jsonc: LEFTHOOK_JSON,
+};
+const LEFTHOOK_FILES = Object.keys(LEFTHOOK_FORMATS).flatMap((ext) => ["lefthook", ".lefthook", ".config/lefthook"].map((name) => `${name}.${ext}`));
+
+/** pre-commit splits `entry` like a shell does and runs the words without one, so the guard goes through `sh -c`. */
+const PRE_COMMIT_REPO = `- repo: local
+  hooks:
+    - id: patchbook
+      name: patchbook
+      entry: |
+${indent(`sh -c '${GUARD.trimEnd().replaceAll("'", "'\\''")}'`, 8)}
+      language: system
+      pass_filenames: false
+      always_run: true
+`;
+
+const PRE_COMMIT: Snippet = {
+  parts: [
+    { text: `repos:\n${indent(PRE_COMMIT_REPO, 2)}`, into: to },
+    { text: indent(PRE_COMMIT_REPO, 2), into: (where) => `as the first item under repos in ${where}` },
+    { text: `repos:\n${indent(PRE_COMMIT_REPO, 2)}`, into: (where) => `to ${where} in place of repos: []` },
+  ],
+  level: (config) => (/^repos[ \t]*:[ \t]*\[[ \t]*\]/m.test(config) ? 2 : /^repos[ \t]*:/m.test(config) ? 1 : 0),
+};
+
+/** Git runs `<dir>/_/pre-commit`, which runs `<dir>/pre-commit`. */
+type ScriptManager = { name: string; dir: string };
+/** `dispatcher` marks the hook the manager installs in `.git/hooks`. `legacy` is what its migration mode appends to the name of the hook it replaced and still runs. */
+type ConfigManager = { name: string; files: readonly string[]; dispatcher: RegExp; legacy?: string; snippets: Readonly<Record<string, Snippet>>; note?: string };
+
+const SCRIPT_MANAGERS: readonly ScriptManager[] = [
+  { name: "Vite+", dir: ".vite-hooks" },
+  { name: "husky", dir: ".husky" },
+];
+// pre-commit comes first because its dispatcher marker is the more specific, and a pre-commit hook can name lefthook in a path.
+const CONFIG_MANAGERS: readonly ConfigManager[] = [
+  {
+    name: "the pre-commit framework", files: [".pre-commit-config.yaml"],
+    dispatcher: /File generated by pre-commit/, legacy: ".legacy",
+    snippets: { yaml: PRE_COMMIT },
+  },
+  {
+    name: "lefthook",
+    files: LEFTHOOK_FILES,
+    dispatcher: /\blefthook\b/,
+    snippets: LEFTHOOK_FORMATS,
+    note: "Leave parallel off: patchbook stages files, so it must run alone.",
+  },
+];
+
+type Hook =
+  | { kind: "git"; path: string; gitRunsIt: true }
+  | { kind: "foreign"; path: string; gitRunsIt: true }
+  | { kind: "script"; manager: ScriptManager; path: string; gitRunsIt: boolean }
+  | { kind: "config"; manager: ConfigManager; path: string; gitRunsIt: boolean };
+
+function hookPaths(root: string): { hooksPath: string | null; hookFile: string } {
+  const [common, hooks, hookFile] = git(["rev-parse", "--git-common-dir", "--git-path", "hooks", "--git-path", "hooks/pre-commit"], { cwd: root })
+    .split("\n").map((p) => (isAbsolute(p) ? p : join(root, p))) as [string, string, string];
+  return { hooksPath: resolve(hooks) === resolve(join(common, "hooks")) ? null : hooks, hookFile };
+}
+
+function ours(path: string): boolean {
+  if (!exists(path)) return false;
+  const text = readTextReplace(path);
+  return text === SCRIPT || PYTHON_HOOK.test(text);
+}
+
+const scriptHook = (manager: ScriptManager, dir: string, gitRunsIt: boolean): Hook => ({ kind: "script", manager, path: join(dir, "pre-commit"), gitRunsIt });
+
+const configFile = (root: string, manager: ConfigManager): string | undefined => manager.files.map((f) => join(root, f)).find(exists);
+
+function findHook(root: string): Hook {
+  const { hooksPath, hookFile } = hookPaths(root);
+  if (hooksPath !== null) {
+    const dir = dirname(hooksPath);
+    const script = basename(hooksPath) === "_" && under(dir, root) ? SCRIPT_MANAGERS.find((m) => basename(dir) === m.dir) : undefined;
+    return script ? scriptHook(script, dir, true) : { kind: "foreign", path: hookFile, gitRunsIt: true };
+  }
+  const text = exists(hookFile) ? readTextReplace(hookFile) : null;
+  const dispatcher = text === null ? undefined : CONFIG_MANAGERS.find((m) => m.dispatcher.test(text));
+  const legacyFile = dispatcher?.legacy ? hookFile + dispatcher.legacy : null;
+  const runner = ours(hookFile) ? hookFile : legacyFile !== null && ours(legacyFile) ? legacyFile : null;
+  const theirs = text !== null && runner === null;
+  if (!theirs) {
+    const script = SCRIPT_MANAGERS.find((m) => lexists(join(root, m.dir, "pre-commit")));
+    if (script) return scriptHook(script, join(root, script.dir), false);
+    for (const manager of dispatcher ? [dispatcher, ...CONFIG_MANAGERS] : CONFIG_MANAGERS) {
+      const file = configFile(root, manager);
+      if (file) return { kind: "config", manager, path: file, gitRunsIt: false };
+    }
+    return { kind: "git", path: runner ?? hookFile, gitRunsIt: true };
+  }
+  const file = dispatcher && configFile(root, dispatcher);
+  return dispatcher && file ? { kind: "config", manager: dispatcher, path: file, gitRunsIt: true } : { kind: "foreign", path: hookFile, gitRunsIt: true };
+}
+
+const runsPatchbook = (hook: Hook) => exists(hook.path) && CALLS_PATCHBOOK.test(readTextReplace(hook.path));
+
+function withPatchbook(data: Uint8Array): Uint8Array {
+  if (CALLS_PATCHBOOK.test(decodeReplace(data))) return data;
+  const end = data[0] === 0x23 && data[1] === 0x21 ? data.indexOf(0x0a) + 1 || data.length : 0;
+  const rest = data.subarray(end);
+  const newline = encode("\n");
+  return concat(data.subarray(0, end), end > 0 && data[end - 1] !== 0x0a ? newline : new Uint8Array(), encode(HOOK_LINES), rest.length ? newline : new Uint8Array(), rest);
+}
+
+function shown(root: string, path: string): string {
+  const inside = relative(root, resolve(path));
+  return inside === ".." || inside.startsWith("../") ? path : inside;
+}
+
+const hookIntent = (m: ScriptManager, where: string) =>
+  `Run patchbook first in ${where}, the pre-commit script ${m.name} runs, so commits keep recording hand edits to the build output.`;
+
+const PUT_FIRST = (m: ScriptManager, where: string) => `patchbook: put \`patchbook hook run\` first in ${where}, which ${m.name} runs on each commit`;
+
+const ADD_TO_CONFIG = (m: ConfigManager, where: string, config: string) => {
+  const snippet = m.snippets[extname(where).slice(1)]!;
+  const part = snippet.parts[snippet.level(config)]!;
+  return `patchbook: ${m.name} runs this repo's pre-commit hooks. `
+    + `Add this ${part.into(where)}, so ${m.name} runs patchbook first for everyone who commits here, and your checks see the rebuilt output:\n\n${part.text}${m.note ? `\n${m.note}\n` : ""}`;
+};
+
+const ADD_TO_FOREIGN = (where: string) =>
+  `patchbook: ${where} is another tool's hook; add \`patchbook hook run\` to it to record on commit. Put these lines at the top:\n\n${HOOK_LINES}`;
+
+const UNHOOKED = (where: string) =>
+  `patchbook: ${where} doesn't run \`patchbook hook run\`, so commits won't record hand edits to the build output. `
+  + "Run `patchbook hook install` to see what to add.\n";
+
+function writesThroughALink(book: Book, path: string): boolean {
+  const inside = relative(book.root, dirname(path));
+  return isSymlink(path) || inside === ".." || inside.startsWith("../") || resolve(dirname(path)) !== join(resolve(book.root), inside);
+}
+
+function isUnrecorded(book: Book, current: ReadonlyMap<string, File>, key: string): boolean {
+  if (!current.has(key)) return false;
+  const built = assemble(book).out.get(key);
+  return !built || !CALLS_PATCHBOOK.test(decodeReplace(built.data));
+}
+
+async function putFirst(book: Book, hook: Extract<Hook, { kind: "script" }>): Promise<void> {
+  const where = shown(book.root, hook.path);
+  if (writesThroughALink(book, hook.path)) {
+    process.stderr.write(ADD_TO_FOREIGN(where));
+    return;
+  }
+  const text = exists(hook.path) ? readBytes(hook.path) : null;
+  const edited = withPatchbook(text ?? new Uint8Array());
+  const wrote = text === null || !bytesEqual(edited, text);
+  if (wrote) {
+    if (text === null) mkdirs(dirname(hook.path));
+    writeBytes(hook.path, edited);
+    if (text === null) chmodSync(hook.path, 0o755);
+  }
+  const key = relative(book.root, hook.path);
+  const current = book.layout.kind === "fork" ? book.currentOutput() : null;
+  if (current === null || !isUnrecorded(book, current, key)) {
+    if (wrote) process.stderr.write(PUT_FIRST(hook.manager, where) + "\n");
+    return;
+  }
+  await recordAndStage(book, current, key, hookIntent(hook.manager, where));
+  process.stderr.write(`${PUT_FIRST(hook.manager, where)}, recorded the edit in the patchbook, and staged both\n`);
+}
+
+async function recordAndStage(book: Book, current: Map<string, File>, key: string, intent: string): Promise<void> {
+  const oids = (): Map<string, string | null> => new Map<string, string | null>([
+    ...unstaged(book.root, [PB]).map((p): [string, string | null] => [p, lexists(join(book.root, p)) ? blobOid(readDisk(join(book.root, p)).data) : null]),
+    ...ignoredInPatchbook(book.root),
+  ]);
+  const before = oids();
+  await cmdRecord({ change: HOOK_CHANGE, intent, current, edits: [key] });
+  const wrote = Array.from(oids()).filter(([p, oid]) => oid !== before.get(p)).map(([p]) => p);
+  git(["--literal-pathspecs", "add", "-A", "-f", "--", key, ...wrote], { cwd: book.root });
+}
+
+/** Install the pre-commit hook in git's own hooks folder, or rewrite the stock one the Python version wrote. Does nothing
+ * under `core.hooksPath`, where git doesn't read that folder. Never edits a tracked file or records, so `Book.find` can call it. */
+export function keepGitHook(root: string): void {
+  const { hooksPath, hookFile } = hookPaths(root);
+  if (hooksPath !== null) return;
+  if (!exists(hookFile)) {
+    writeHook(hookFile);
     process.stderr.write("patchbook: installed a pre-commit hook that records and builds on each commit\n");
     return;
   }
-  const text = readTextReplace(path);
-  if (PYTHON_HOOK.test(text)) {
-    writeHook(path);
-    process.stderr.write(`patchbook: updated ${path} to run patchbook from PATH\n`);
-  } else if (text !== SCRIPT && verbose) {
-    process.stderr.write(`patchbook: ${path} is another tool's hook; add \`patchbook hook run\` to it to record on commit.\n`);
+  if (PYTHON_HOOK.test(readTextReplace(hookFile))) {
+    writeHook(hookFile);
+    process.stderr.write(`patchbook: updated ${hookFile} to run patchbook from PATH\n`);
+  }
+}
+
+/** Make the hook git runs call patchbook, once `keepGitHook` has installed its own in `.git/hooks`. A config or foreign hook is printed every time, because patchbook can't check where its line sits. */
+export async function installHook(book: Book): Promise<void> {
+  const hook = findHook(book.root);
+  switch (hook.kind) {
+    case "git":
+      return;
+    case "script":
+      await putFirst(book, hook);
+      return;
+    case "config":
+      process.stderr.write(ADD_TO_CONFIG(hook.manager, shown(book.root, hook.path), readTextReplace(hook.path)));
+      return;
+    case "foreign":
+      process.stderr.write(ADD_TO_FOREIGN(shown(book.root, hook.path)));
+      return;
   }
 }
 
 /** Install the hook, or warn why not. Until it is installed, a commit doesn't record hand edits. */
 export function installHookOrWarn(root: string): void {
   try {
-    installHook(root);
+    keepGitHook(root);
   } catch (e) {
     if (!(e instanceof Error && "errno" in e)) throw e;
     process.stderr.write(`patchbook: couldn't install the pre-commit hook: ${e.message}\nUntil it is installed, a commit doesn't record hand edits to the build output in the patchbook.\n`);
   }
+}
+
+/** Warn on stderr when the hook git runs doesn't call patchbook. A script or config that git isn't running yet stays quiet. */
+export function warnUnhooked(book: Book): void {
+  if (!setting("hook.enabled", book)[0]) return;
+  const hook = findHook(book.root);
+  if (!hook.gitRunsIt || runsPatchbook(hook)) return;
+  process.stderr.write(UNHOOKED(shown(book.root, hook.path)));
 }
 
 function unstaged(root: string, paths: string[]): string[] {
@@ -143,9 +420,19 @@ function partialCommit(root: string): { lock: string | null } | null {
   return { lock: exists(lock) ? lock : null };
 }
 
+function refuseOtherRepo(book: Book): void {
+  const gitDir = (cwd: string) => resolve(git(["rev-parse", "--path-format=absolute", "--git-dir"], { cwd }));
+  if (gitDir(process.cwd()) === gitDir(book.root)) return;
+  throw new Fail(`${PB}/config.toml is in ${book.root}, which is another git repo than the one you're in, so no hook was installed. `
+    + `Run \`patchbook hook install\` in ${book.root}, or start a patchbook here with \`patchbook init\`.`);
+}
+
 export async function cmdHook(args: { action: "install" | "run" }) {
   if (args.action === "install") {
-    installHook(git(["rev-parse", "--show-toplevel"], { cwd: process.cwd() }), true);
+    const book = await Book.find();
+    refuseOtherRepo(book);
+    keepGitHook(book.root);
+    await installHook(book);
     return 0;
   }
   const undo = new Undo();

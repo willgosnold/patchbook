@@ -8,7 +8,7 @@ import { cmdBuild, cmdScaffold, cmdStatus, writeBuildLock } from "./assemble.ts"
 import { cmdBlocks } from "./blocks.ts";
 import { Book, noticeLeftOut, PB } from "./book.ts";
 import { cmdShow } from "./changes.ts";
-import { cmdHook, installHook, installHookOrWarn } from "./githook.ts";
+import { cmdHook, installHook, installHookOrWarn, keepGitHook } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, lexists, readText, resolve, writeText } from "./lib/fs.ts";
 import { git, redact } from "./lib/proc.ts";
@@ -67,7 +67,9 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   const book = await Book.open(dest);
   book.writeLock(name, commit, git(["rev-parse", "HEAD^{tree}"], { cwd: dest }));
   writeBuildLock(book, book.currentOutput());
-  installHook(dest);
+  keepGitHook(dest);
+  process.chdir(dest);
+  await installHook(book);
   if (installSkill(book)) await recordSkill(book);
   git(["add", "-A"], { cwd: dest });
   git(["commit", "--quiet", "-m", `Start a patchbook at upstream ${commit.slice(0, 7)}`], { cwd: dest, env: noHook() });
@@ -94,6 +96,7 @@ async function cmdInit(args: {
     installSkill(book);
     writeConfig(root, text);
     installHookOrWarn(root);
+    await installHook(book);
     process.stdout.write(`Next: patchbook build, then stage and commit.\n${SCHEDULE}\n`);
     return 0;
   }
@@ -110,6 +113,7 @@ async function cmdInit(args: {
   const installed = installSkill(book);
   writeConfig(root, text);
   installHookOrWarn(root);
+  await installHook(book);
   if (installed && (installed.changed.length || leftBehindSkill(book).length)) await recordSkill(book);
   process.stdout.write(`pinned upstream at ${base.slice(0, 7)}, where this repo branched from ${follows}.\n`
     + "Capture your existing changes with `patchbook record`, then `patchbook build`, stage, and commit.\n" + SCHEDULE + "\n");
