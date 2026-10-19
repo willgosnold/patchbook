@@ -4,7 +4,7 @@ import { existsSync, readFileSync, rmSync as remove, type RmOptions, type WriteF
 
 export {
   accessSync, appendFileSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync,
-  statSync, symlinkSync, unlinkSync,
+  rmdirSync, statSync, symlinkSync, unlinkSync,
 } from "node:fs";
 
 const endsIn = (path: string, variable: string): boolean => {

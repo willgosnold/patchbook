@@ -1953,7 +1953,7 @@ for (const layout of ["fork", "folder"]) {
   }, TIMEOUT);
 }
 
-test("test_no_skill_or_hook_failure_shows_a_raw_errno_code", () => {
+permissionTest("test_no_skill_or_hook_failure_shows_a_raw_errno_code", () => {
   const t = new Case();
   const locked: string[] = [];
   const noErrno = (stderr: string) => {
@@ -1992,7 +1992,7 @@ test("test_no_skill_or_hook_failure_shows_a_raw_errno_code", () => {
     for (const p of locked) if (existsSync(p)) chmodSync(p, 0o755);
     t.cleanup();
   }
-}, TIMEOUT);
+});
 
 test("test_skill_install_goes_ahead_when_a_sync_left_a_conflict", () => {
   const t = new Case();
