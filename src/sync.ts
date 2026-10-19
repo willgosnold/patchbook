@@ -2,13 +2,14 @@
 import { chmodSync, lstatSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
+import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
 import { Book } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, isSymlink, LINK, lexists, mkdirs, readDisk, readText, readTextReplace, sameFile, writeDisk, writeText } from "./lib/fs.ts";
-import { dumps, type Json, JsonError, loads } from "./lib/json.ts";
+import { dumps, JsonError, loads } from "./lib/json.ts";
 import { spawn } from "./lib/proc.ts";
 import { sorted } from "./lib/py.ts";
 import { bytesEqual, decodeReplace, isText } from "./lib/text.ts";
@@ -16,13 +17,18 @@ import { type Pin, pinned, type Upstream } from "./store.ts";
 
 export const EXIT_MOVED = 10;
 
+/** A document as it's written: `upstreams` a Map, so `dumps` keeps them in config order and not integer-like names first. */
+type Written<T extends { upstreams: Record<string, unknown> }> =
+  Omit<T, "upstreams"> & { upstreams: ReadonlyMap<string, T["upstreams"][string]> };
+
 export async function cmdCheck() {
   const book = await Book.find();
-  const result = { moved: false, upstreams: new Map<string, { pinned: string | null; head: string; moved: boolean; files: string[] }>() };
+  const upstreams = new Map<string, UpstreamCheck>();
+  let moved = false;
   for (const u of book.upstreams) {
     const pin = u.pin();
     const head = u.head();
-    const r = { pinned: pin.commit ?? null, head, moved: false, files: [] as string[] };
+    const r: UpstreamCheck = { pinned: pin.commit ?? null, head, moved: false, files: [] };
     const held = pin.commit ? u.healIfHeld(pin.commit) : false;
     if (head !== pin.commit) {
       u.fetch(head);
@@ -32,11 +38,12 @@ export async function cmdCheck() {
         r.files = upstreamDelta(old, book.buildable(u.mounted(u.files(head))));
       }
     }
-    result.upstreams.set(u.name, r);
-    result.moved = result.moved || r.moved;
+    upstreams.set(u.name, r);
+    moved = moved || r.moved;
   }
+  const result: Written<CheckJson> = { version: 1, moved, upstreams };
   process.stdout.write(dumps(result, 2) + "\n");
-  return result.moved ? EXIT_MOVED : 0;
+  return moved ? EXIT_MOVED : 0;
 }
 
 export function upstreamDelta(old: ReadonlyMap<string, File>, now: ReadonlyMap<string, File>): string[] {
@@ -66,16 +73,6 @@ function mergeFile(ours: Uint8Array, base: Uint8Array, theirs: Uint8Array): { me
   }
 }
 
-type Report = {
-  from: string | null;
-  to: string;
-  upstream: string[];
-  merged: { change: string; path: string }[];
-  conflicts: ({ change: string; path: string; count: number } | { change: string; path: string; detail: string })[];
-  gone: { change: string; path: string; maybe: string[] }[];
-  replaced_upstream_changed: string[];
-};
-
 export async function cmdSync(args: { name: string | null; ref: string | null }) {
   const book = await Book.find();
   installHookOrWarn(book);
@@ -86,12 +83,13 @@ export async function cmdSync(args: { name: string | null; ref: string | null })
   const path = join(book.dir, REPORT);
   const reports = savedReports(path);
   const save = () => {
-    const current = new Map<string, Json>();
+    const current = new Map<string, SyncReport>();
     for (const { name } of book.upstreams) {
       const kept = reports.get(name);
       if (kept) current.set(name, kept);
     }
-    writeText(path, dumps({ upstreams: current }, 2) + "\n");
+    const written: Written<LastSync> = { version: 1, upstreams: current };
+    writeText(path, dumps(written, 2) + "\n");
   };
   const stale = [...reports.keys()].some((name) => !book.upstreams.some((u) => u.name === name));
   let synced = false;
@@ -107,12 +105,13 @@ export async function cmdSync(args: { name: string | null; ref: string | null })
   return 0;
 }
 
-function savedReports(path: string): Map<string, Json> {
+/** The reports in `last-sync.json`, with or without `version`. Kept as read; nothing here reads their fields. */
+function savedReports(path: string): Map<string, SyncReport> {
   if (!exists(path)) return new Map();
   try {
     const root = loads(readTextReplace(path));
     const upstreams = root instanceof Map ? root.get("upstreams") : undefined;
-    return upstreams instanceof Map ? new Map(upstreams) : new Map();
+    return upstreams instanceof Map ? new Map(upstreams as unknown as ReadonlyMap<string, SyncReport>) : new Map();
   } catch (e) {
     if (e instanceof JsonError) return new Map();
     throw e;
@@ -120,7 +119,7 @@ function savedReports(path: string): Map<string, Json> {
 }
 
 /** Move one upstream's pin and carry every change on its files forward. Returns the report, or null. */
-export function syncUpstream(book: Book, u: Upstream, ref: string | null, changes: readonly Change[], beforePin?: (report: Report) => void): Report | null {
+export function syncUpstream(book: Book, u: Upstream, ref: string | null, changes: readonly Change[], beforePin?: (report: SyncReport) => void): SyncReport | null {
   recoverAll(book);
   const pin = u.pin();
   const commit = u.fetch(ref || u.branch);
@@ -132,7 +131,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   const raw = u.files(commit);
   const old = pin.tree ? book.buildable(u.mounted(u.files(u.heal(pinned(u, pin)))), false) : new Map<string, File>();
   const fresh = book.buildable(u.mounted(raw));
-  const report: Report = {
+  const report: SyncReport = {
     from: pin.commit ?? null, to: commit, upstream: upstreamDelta(old, fresh), merged: [], conflicts: [], gone: [],
     replaced_upstream_changed: [],
   };
