@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import type { LastSync, SyncReport } from "../src/api.ts";
 import { Fail } from "../src/lib/fail.ts";
 import {
   boolean, count, jsonText, list, named, nullable, object, oid, readJson, type Shape, string, table, versioned, writeJson,
 } from "../src/lib/shape.ts";
+import { lastSyncText, parseLastSync } from "../src/sync.ts";
 
 const refusal = (run: () => unknown): string => {
   try {
@@ -15,6 +17,7 @@ const refusal = (run: () => unknown): string => {
 };
 
 const ID = "a".repeat(40);
+const OTHER = "b".repeat(40);
 
 describe("jsonText", () => {
   test("indents by two, keeps non-ASCII as UTF-8 and ends with a newline", () => {
@@ -163,5 +166,109 @@ describe("writeJson", () => {
   test("writes a value through its shape, so keys come in the shape's order", () => {
     const Doc = versioned(1, { a: string, b: string });
     expect(writeJson(Doc, { b: "2", a: "1", version: 1 })).toBe('{\n  "version": 1,\n  "a": "1",\n  "b": "2"\n}\n');
+  });
+});
+
+describe("last-sync.json", () => {
+  const report = (name: string, from: string | null): SyncReport => ({
+    name, from, to: ID, upstream: ["changed café/é.txt"], merged: [{ change: "shout", path: "a.txt" }],
+    conflicts: [{ change: "shout", path: "b.txt", count: 2 }, { change: "shout", path: "c.bin", detail: "binary file changed upstream" }],
+    gone: [{ change: "shout", path: "d.txt", maybe: ["e.txt"] }], replacedUpstreamChanged: ["shout: f.txt"],
+  });
+  const doc: LastSync = { version: 2, upstreams: [report("lib", null), report("2", OTHER)] };
+  const entry = (name: string, from: string) => [
+    "    {",
+    `      "name": "${name}",`,
+    `      "from": ${from},`,
+    `      "to": "${ID}",`,
+    '      "upstream": [',
+    '        "changed café/é.txt"',
+    "      ],",
+    '      "merged": [',
+    "        {",
+    '          "change": "shout",',
+    '          "path": "a.txt"',
+    "        }",
+    "      ],",
+    '      "conflicts": [',
+    "        {",
+    '          "change": "shout",',
+    '          "path": "b.txt",',
+    '          "count": 2',
+    "        },",
+    "        {",
+    '          "change": "shout",',
+    '          "path": "c.bin",',
+    '          "detail": "binary file changed upstream"',
+    "        }",
+    "      ],",
+    '      "gone": [',
+    "        {",
+    '          "change": "shout",',
+    '          "path": "d.txt",',
+    '          "maybe": [',
+    '            "e.txt"',
+    "          ]",
+    "        }",
+    "      ],",
+    '      "replacedUpstreamChanged": [',
+    '        "shout: f.txt"',
+    "      ]",
+    "    }",
+  ].join("\n");
+
+  test("writes the reports in the order given, name first, as UTF-8", () => {
+    expect(lastSyncText(doc)).toBe(`{\n  "version": 2,\n  "upstreams": [\n${entry("lib", "null")},\n${entry("2", `"${OTHER}"`)}\n  ]\n}\n`);
+  });
+
+  test("reads back what it writes, both kinds of conflict included", () => {
+    expect(parseLastSync(lastSyncText(doc))).toEqual(doc);
+  });
+
+  const text = (change: (r: Record<string, unknown>) => void, version: unknown = 2): string => {
+    const r: Record<string, unknown> = JSON.parse(lastSyncText(doc)).upstreams[1];
+    change(r);
+    return JSON.stringify({ version, upstreams: [r] });
+  };
+  const what = ".patchbook/last-sync.json";
+  const fix = "It only reports past syncs: delete it, and the next patchbook sync writes a new one.";
+
+  test("refuses text that isn't JSON", () => {
+    expect(refusal(() => parseLastSync("{ not json"))).toStartWith(`${what} isn't JSON: `);
+    expect(refusal(() => parseLastSync('{"version": 2, "upstreams": [{"count": NaN}]}'))).toStartWith(`${what} isn't JSON: `);
+  });
+
+  test("refuses a field of the wrong type, naming its path, and says how to fix the file", () => {
+    expect(refusal(() => parseLastSync(text((r) => (r["merged"] = {}))))).toBe(`${what}: upstreams[0].merged must be a list, not an object. ${fix}`);
+    expect(refusal(() => parseLastSync(text((r) => (r["from"] = 7))))).toStartWith(`${what}: upstreams[0].from must be a full object id`);
+  });
+
+  test("refuses a missing field", () => {
+    expect(refusal(() => parseLastSync(text((r) => delete r["to"])))).toBe(`${what}: upstreams[0].to is missing. ${fix}`);
+  });
+
+  test("refuses a count that isn't a whole number", () => {
+    const bad = text((r) => (r["conflicts"] = [{ change: "x", path: "y", count: 0 }])).replace('"count":0', '"count":1e400');
+    expect(refusal(() => parseLastSync(bad))).toBe(`${what}: upstreams[0].conflicts[0].count must be a whole number from 0, not Infinity. ${fix}`);
+  });
+
+  test("refuses a conflict that is neither kind, naming the field it lacks", () => {
+    expect(refusal(() => parseLastSync(text((r) => (r["conflicts"] = [{ change: "x", path: "y" }]))))).toBe(`${what}: upstreams[0].conflicts[0].detail is missing. ${fix}`);
+  });
+
+  test("refuses a name twice", () => {
+    const twice = JSON.stringify({ version: 2, upstreams: [JSON.parse(lastSyncText(doc)).upstreams[0], JSON.parse(lastSyncText(doc)).upstreams[0]] });
+    expect(refusal(() => parseLastSync(twice))).toBe(`${what}: upstreams[1] names lib, as upstreams[0] does. ${fix}`);
+  });
+
+  test("refuses the first version and the report from before versions", () => {
+    expect(refusal(() => parseLastSync(text(() => {}, 1)))).toBe(`${what} is version 1, and this patchbook reads version 2. ${fix}`);
+    const unversioned = JSON.stringify({ upstreams: { upstream: { from: null, to: ID } } });
+    expect(refusal(() => parseLastSync(unversioned))).toBe(`${what} has no version, so an older patchbook wrote it. ${fix}`);
+  });
+
+  test("refuses the old snake_case key", () => {
+    expect(refusal(() => parseLastSync(text((r) => ((r["replaced_upstream_changed"] = r["replacedUpstreamChanged"]), delete r["replacedUpstreamChanged"])))))
+      .toBe(`${what}: upstreams[0].replacedUpstreamChanged is missing. ${fix}`);
   });
 });

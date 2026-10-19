@@ -5,12 +5,12 @@ import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
 import { Book, PB } from "./book.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, mkdirs, normMode, pjoin, readDisk, readText, relative, resolve, writeDisk } from "./lib/fs.ts";
+import { exists, type File, mkdirs, normMode, pjoin, readDisk, relative, resolve, writeDisk } from "./lib/fs.ts";
 import { sha1 } from "./lib/hash.ts";
-import { type JsonValue, loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
 import { byCodePoint, decode, decodeReplace, encode } from "./lib/text.ts";
 import { storeDir, type Table } from "./settings.ts";
+import { readLastSync } from "./sync.ts";
 
 export type Pin = { commit?: string; tree?: string };
 type Files = Map<string, File>;
@@ -343,12 +343,6 @@ export function indexFiles(root: string, rel: string): { files: Files; tree: str
   return { files, tree };
 }
 
-function get(value: JsonValue | undefined, key: string): JsonValue | undefined {
-  if (value === undefined) return undefined;
-  if (!(value instanceof Map)) throw new Fail(`last-sync.json: expected an object holding ${key}`);
-  return value.get(key);
-}
-
 /** Read an upstream at its pin, from the store: list its files, print one, export them, or diff the last sync. */
 export async function cmdUpstream(args: { name: string; path: string | null; diff: boolean; since: string | null; export: string | null }) {
   const book = await Book.find();
@@ -357,9 +351,7 @@ export async function cmdUpstream(args: { name: string; path: string | null; dif
   if (!pin.tree) throw new Fail(`upstream ${u.name} has no pin yet. Run: patchbook sync ${u.name}`);
   const commit = u.heal(pinned(u, pin));
   if (args.diff || args.since) {
-    const last = join(book.dir, "last-sync.json");
-    const from = exists(last) ? get(get(get(loads(readText(last)), "upstreams") ?? new Map(), u.name) ?? new Map(), "from") : undefined;
-    const old = args.since || (typeof from === "string" ? from : "");
+    const old = args.since || readLastSync(book)?.upstreams.find((r) => r.name === u.name)?.from || "";
     if (!old) throw new Fail(`no earlier pin of ${u.name} to compare with; pass --since <commit>`);
     if (args.since) u.have(old);
     else u.heal(old);

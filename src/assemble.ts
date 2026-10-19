@@ -14,10 +14,11 @@ import {
   exists, type File, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, nonFolders, readDisk, readText, relative, resolve, rglob, rmFolders, sameFile, writeDisk, writeText,
 } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
-import { dumps, type Json, loads } from "./lib/json.ts";
+import { dumps, type Json } from "./lib/json.ts";
 import { type Env, git, run, spawn } from "./lib/proc.ts";
 import { byCodePoint, bytesEqual, decode, encode, isText } from "./lib/text.ts";
 import { pinned, refuseMergedUpstream } from "./store.ts";
+import { readLastSync } from "./sync.ts";
 
 export function describe(p: Problem): string {
   let at = p.file + ("line" in p && p.line ? `:${p.line}` : "") + ("hash" in p && p.hash ? ` [${p.hash}]` : "");
@@ -435,11 +436,9 @@ export async function cmdStatus(args: { json: boolean }) {
   const book = await Book.find();
   warnUnhooked(book);
   const a = assemble(book);
-  const lastSync = join(book.dir, "last-sync.json");
-  const report = exists(lastSync) ? loads(readText(lastSync)) : null;
   if (args.json) {
     const status: Omit<StatusJson, "upstreams" | "last_sync"> & { upstreams: Json; last_sync: Json } = {
-      version: 1, upstreams: book.lock(), applied: a.applied, problems: a.problems, last_sync: report,
+      version: 1, upstreams: book.lock(), applied: a.applied, problems: a.problems, last_sync: readLastSync(book),
     };
     process.stdout.write(dumps(status, 2) + "\n");
   } else {

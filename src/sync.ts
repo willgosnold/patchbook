@@ -3,14 +3,15 @@ import { chmodSync, lstatSync, mkdtempSync, readdirSync, readFileSync, renameSyn
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
-import { Book } from "./book.ts";
+import { Book, PB } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, isSymlink, LINK, lexists, mkdirs, readDisk, readText, readTextReplace, sameFile, writeDisk, writeText } from "./lib/fs.ts";
-import { dumps, JsonError, loads } from "./lib/json.ts";
+import { dumps } from "./lib/json.ts";
 import { spawn } from "./lib/proc.ts";
+import { count, list, named, object, oid, nullable, readJson, type Shape, string, table, versioned, writeJson } from "./lib/shape.ts";
 import { byCodePoint, bytesEqual, decodeReplace, isText } from "./lib/text.ts";
 import { type Pin, pinned, type Upstream } from "./store.ts";
 
@@ -19,6 +20,21 @@ export const EXIT_MOVED = 10;
 /** A document as it's written: `upstreams` a Map, so `dumps` keeps them in config order and not integer-like names first. */
 type Written<T extends { upstreams: Record<string, unknown> }> =
   Omit<T, "upstreams"> & { upstreams: ReadonlyMap<string, T["upstreams"][string]> };
+
+const COUNTED = object({ change: string, path: string, count });
+const DETAILED = object({ change: string, path: string, detail: string });
+/** A conflict with a `count` is a text file's, any other a binary file's. */
+const CONFLICT: Shape<SyncReport["conflicts"][number]> = (v, at) => (Object.hasOwn(table(v, at), "count") ? COUNTED : DETAILED)(v, at);
+
+const SYNC_REPORT = object({
+  name: string, from: nullable(oid), to: oid, upstream: list(string),
+  merged: list(object({ change: string, path: string })),
+  conflicts: list(CONFLICT),
+  gone: list(object({ change: string, path: string, maybe: list(string) })),
+  replacedUpstreamChanged: list(string),
+});
+const LAST_SYNC: Shape<LastSync> = versioned(2, { upstreams: named(SYNC_REPORT) });
+const LAST_SYNC_FIX = "It only reports past syncs: delete it, and the next patchbook sync writes a new one.";
 
 export async function cmdCheck() {
   const book = await Book.find();
@@ -79,17 +95,8 @@ export async function cmdSync(args: { name: string | null; ref: string | null })
   const targets = args.name ? [book.upstream(args.name)] : book.upstreams;
   const changes = readChanges(book, []);
   recoverAll(book);
-  const path = join(book.dir, REPORT);
-  const reports = savedReports(path);
-  const save = () => {
-    const current = new Map<string, SyncReport>();
-    for (const { name } of book.upstreams) {
-      const kept = reports.get(name);
-      if (kept) current.set(name, kept);
-    }
-    const written: Written<LastSync> = { version: 1, upstreams: current };
-    writeText(path, dumps(written, 2) + "\n");
-  };
+  const reports = new Map(readLastSync(book)?.upstreams.map((r) => [r.name, r]));
+  const save = () => writeLastSync(book, reports);
   const stale = [...reports.keys()].some((name) => !book.upstreams.some((u) => u.name === name));
   let synced = false;
   for (const u of targets) {
@@ -104,17 +111,26 @@ export async function cmdSync(args: { name: string | null; ref: string | null })
   return 0;
 }
 
-/** The reports in `last-sync.json`, with or without `version`. Kept as read; nothing here reads their fields. */
-function savedReports(path: string): Map<string, SyncReport> {
-  if (!exists(path)) return new Map();
-  try {
-    const root = loads(readTextReplace(path));
-    const upstreams = root instanceof Map ? root.get("upstreams") : undefined;
-    return upstreams instanceof Map ? new Map(upstreams as unknown as ReadonlyMap<string, SyncReport>) : new Map();
-  } catch (e) {
-    if (e instanceof JsonError) return new Map();
-    throw e;
-  }
+/** `last-sync.json` read as the document it is. Refuses text that isn't version 2's shape. */
+export function parseLastSync(text: string): LastSync {
+  return readJson(text, LAST_SYNC, `${PB}/${REPORT}`, LAST_SYNC_FIX);
+}
+
+/** `last-sync.json` as patchbook writes it: the reports in the order given. */
+export function lastSyncText(doc: LastSync): string {
+  return writeJson(LAST_SYNC, doc);
+}
+
+/** The document in `last-sync.json`, or null when there is no file. Refuses a file it can't read. */
+export function readLastSync(book: Book): LastSync | null {
+  const path = join(book.dir, REPORT);
+  return exists(path) ? parseLastSync(readTextReplace(path)) : null;
+}
+
+/** Writes the reports of the upstreams in the config, in config order. */
+function writeLastSync(book: Book, reports: ReadonlyMap<string, SyncReport>): void {
+  const upstreams = book.upstreams.flatMap(({ name }) => reports.get(name) ?? []);
+  writeText(join(book.dir, REPORT), lastSyncText({ version: 2, upstreams }));
 }
 
 /** Move one upstream's pin and carry every change on its files forward. Returns the report, or null. */
@@ -131,8 +147,8 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   const old = pin.tree ? book.buildable(u.mounted(u.files(u.heal(pinned(u, pin)))), false) : new Map<string, File>();
   const fresh = book.buildable(u.mounted(raw));
   const report: SyncReport = {
-    from: pin.commit ?? null, to: commit, upstream: upstreamDelta(old, fresh), merged: [], conflicts: [], gone: [],
-    replaced_upstream_changed: [],
+    name: u.name, from: pin.commit ?? null, to: commit, upstream: upstreamDelta(old, fresh), merged: [], conflicts: [], gone: [],
+    replacedUpstreamChanged: [],
   };
 
   const writes: { c: Change; side: Side; path: string; data: Uint8Array }[] = [];
@@ -141,7 +157,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     for (const e of c.edits) {
       if (book.upstreamFor(e.path) !== u) continue;
       if (e.kind === "replace" && old.has(e.path) && !sameFile(old.get(e.path), fresh.get(e.path))) {
-        report.replaced_upstream_changed.push(`${c.name}: ${e.path}`);
+        report.replacedUpstreamChanged.push(`${c.name}: ${e.path}`);
       }
       if (e.kind !== "file") continue;
       const base = c.read("base", e.path);
