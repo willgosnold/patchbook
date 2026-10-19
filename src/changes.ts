@@ -20,12 +20,10 @@ export const CHANGE_NAME = /^[a-z0-9][a-z0-9-]*$/;
 export const notAChangeName = (name: string) =>
   `${JSON.stringify(name)} isn't a valid change name; use lowercase letters, digits and hyphens, starting with a letter or digit`;
 
-const NEEDS_QUOTES = /^\s|\s$|\p{Cc}|"|\\| -> /u;
 const ESCAPES: Record<string, number> = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, '"': 34, "\\": 92 };
 
-/** A path as an edit line holds it: bare, or in double quotes with git's C-style escapes when it starts or ends with whitespace or holds ` -> `, a quote, a backslash or a control character. */
+/** A path in double quotes, with git's C-style escapes: `\"`, `\\`, `\t`, `\n`, and `\ooo` for each UTF-8 byte of any other control character. */
 function quotePath(path: string): string {
-  if (!NEEDS_QUOTES.test(path)) return path;
   let out = '"';
   for (const ch of path) {
     if (ch === '"' || ch === "\\") out += "\\" + ch;
@@ -64,8 +62,19 @@ function readQuoted(text: string, start: number): { path: string; end: number } 
   return null;
 }
 
+/** A path as an edit line holds it at `place`: bare when `readPath` reads the bare text back as that path there, in double quotes otherwise. */
+function pathText(path: string, place: "single" | "source" | "dest"): string {
+  try {
+    const read = readPath(place === "source" ? path + ARROW : path, 0, "", place === "dest");
+    if (read.path === path && read.end === path.length) return path;
+  } catch (e) {
+    if (!(e instanceof Fail)) throw e;
+  }
+  return quotePath(path);
+}
+
 export function editText(e: Edit): string {
-  return `${e.kind} ${quotePath(e.path)}` + ("dest" in e && e.dest ? ` -> ${quotePath(e.dest)}` : "");
+  return "dest" in e ? `${e.kind} ${pathText(e.path, "source")} -> ${pathText(e.dest, "dest")}` : `${e.kind} ${pathText(e.path, "single")}`;
 }
 
 export type Side = "base" | "ours";
@@ -108,11 +117,10 @@ export class Change {
 
 const EDIT_START = /^- ([\p{L}\p{N}_]+) /u;
 const ARROW = " -> ";
-const OUTER_SLASHES = /^\/+|\/+$/g;
 
-function unsafePath(raw: string): string | null {
-  if (!raw.startsWith("/") && !raw.replace(OUTER_SLASHES, "").split("/").some((part) => part === "" || part === "." || part === "..")) return null;
-  return `${JSON.stringify(raw)} must be a path inside the tree: not absolute, with no empty, . or .. segment`;
+function unsafePath(path: string): string | null {
+  if (!path.split("/").some((part) => part === "" || part === "." || part === "..")) return null;
+  return `${JSON.stringify(path)} must be a path inside the tree: not absolute, with no empty, . or .. segment and no slash at the end`;
 }
 
 function isEditKind(kind: string): kind is EditKind {
@@ -122,7 +130,7 @@ function isEditKind(kind: string): kind is EditKind {
 const malformed = (where: string) =>
   new Fail(`${where}: a quoted path is malformed; close it with a quote, put nothing after it, and write only \\" \\\\ \\t \\n and \\ooo (three octal digits of a UTF-8 byte) after a backslash`);
 
-/** The path of an edit line that starts at `from` in `rest`: quoted if it starts with a quote, otherwise bare, which runs to the first ` -> ` or, for a destination, to the end. Nothing is trimmed, so a bare path with whitespace at either end is refused. */
+/** The path of an edit line that starts at `from` in `rest`: quoted if it starts with a quote, otherwise bare, which runs to the first ` -> ` or, for a destination, to the end. A bare path is taken as written, so one with whitespace at either end or a control character is refused. */
 function readPath(rest: string, from: number, where: string, isDest = false): { path: string; end: number } {
   if (rest[from] === '"') {
     const quoted = readQuoted(rest, from);
@@ -134,6 +142,7 @@ function readPath(rest: string, from: number, where: string, isDest = false): { 
   const path = rest.slice(from, end);
   if (path === "") throw new Fail(`${where}: expected \`- <${EDIT_KINDS.join("|")}> <path>\``);
   if (/^\s|\s$/.test(path)) throw new Fail(`${where}: the path ${JSON.stringify(path)} starts or ends with whitespace; write it in double quotes: ${quotePath(path)}`);
+  if (/\p{Cc}/u.test(path)) throw new Fail(`${where}: a bare path can't hold a control character; write it in double quotes: ${quotePath(path)}`);
   return { path, end };
 }
 
@@ -166,9 +175,7 @@ export function parseChange(path: string, reject: (edit: string, detail: string)
         change.held.push(line);
         reject(line.slice(2), unsafe);
       } else {
-        change.edits.push(
-          kind === "move" || kind === "copy" ? { kind, path: src.path.replace(OUTER_SLASHES, ""), dest: (dest?.path ?? "").replace(OUTER_SLASHES, "") } : { kind, path: src.path.replace(OUTER_SLASHES, "") },
-        );
+        change.edits.push(kind === "move" || kind === "copy" ? { kind, path: src.path, dest: dest?.path ?? "" } : { kind, path: src.path });
       }
     }
   }
