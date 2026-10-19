@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
-import { Book } from "./book.ts";
+import { Book, PB } from "./book.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, mkdirs, normMode, pjoin, readDisk, readText, relative, resolve, writeDisk } from "./lib/fs.ts";
 import { sha1 } from "./lib/hash.ts";
@@ -185,6 +185,30 @@ export class Upstream {
     return held;
   }
 
+  pastPins(): string[] {
+    const log = spawn(["git", "log", "-m", "--first-parent", "-p", "-U0", "--format=", "--", `${PB}/upstream.lock`], { cwd: this.book.root });
+    return log.code === 0 ? Array.from(decode(log.stdout).matchAll(/^[-+]\s*"commit": "([0-9a-f]{40})"/gm), (m) => m[1]!) : [];
+  }
+
+  mergedPastPin(): Merged[] {
+    const pin = this.pin();
+    if (!this.inRepo || !pin.commit || !this.has(pin.commit)) return [];
+    const root = this.book.root;
+    const walk = [`refs/remotes/upstream/${this.branch}`, `^${pin.commit}`, ...this.pastPins().map((c) => `^${c}`)];
+    const upstream = spawn(["git", "rev-list", "--stdin", "--ignore-missing"], { cwd: root, input: encode(walk.join("\n") + "\n") });
+    if (upstream.code !== 0) return [];
+    const newer = new Set(split(decode(upstream.stdout)));
+    const merging = spawn(["git", "rev-parse", "--quiet", "--verify", "MERGE_HEAD"], { cwd: root }).code === 0 ? ["MERGE_HEAD"] : [];
+    const held = spawn(["git", "log", "--topo-order", "--format=%H%x09%s", "HEAD", ...merging, `^${pin.commit}`], { cwd: root });
+    if (held.code !== 0) return [];
+    const merged = decode(held.stdout).split("\n").filter(Boolean).map((line) => {
+      const [commit = "", subject = ""] = line.split("\t");
+      return { commit, subject };
+    }).filter((m) => newer.has(m.commit));
+    const changesNothing = merged.length > 0 && this.treeOf(merged[0]!.commit) === pin.tree;
+    return changesNothing ? [] : merged;
+  }
+
   treeOf(commit: string): string {
     return git(["rev-parse", this.path ? `${commit}:${this.path}` : `${commit}^{tree}`], { cwd: this.gitDir() });
   }
@@ -239,6 +263,22 @@ export class Upstream {
       if (pin.commit) this.healIfHeld(pin.commit);
     } else files = this.files(this.heal(pinned(this, pin)));
     return this.mounted(files);
+  }
+}
+
+export type Merged = { commit: string; subject: string };
+
+export function refuseMergedUpstream(book: Book, by: "hook" | "build"): void {
+  for (const u of book.upstreams) {
+    const merged = u.mergedPastPin();
+    if (!merged.length) continue;
+    const shown = merged.slice(0, 3).map((m) => `${m.commit.slice(0, 7)} ${m.subject}`);
+    if (merged.length > shown.length) shown.push(`and ${merged.length - shown.length} more`);
+    const sync = `Undo the merge, or run \`patchbook sync ${u.name}\``;
+    const then = by === "hook" ? " and commit again with its changes staged, or skip the hook once with PATCHBOOK_HOOK=0."
+      : " and then `patchbook build`. If that refuses over unrecorded edits to the output, `patchbook build --force` drops them.";
+    throw new Fail(`${u.name} commits newer than the pin were merged in directly:\n  ${shown.join("\n  ")}\n`
+      + "A merge skips the patchbook, so they would be recorded as hand edits. " + sync + then);
   }
 }
 

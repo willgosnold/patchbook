@@ -12,6 +12,7 @@ import { git, run, spawn } from "./lib/proc.ts";
 import { quote, sorted, strip } from "./lib/py.ts";
 import { bytesEqual, concat, decode, decodeReplace, encode } from "./lib/text.ts";
 import { type Source, setting } from "./settings.ts";
+import { refuseMergedUpstream } from "./store.ts";
 import { linksUnder, Undo } from "./undo.ts";
 
 const SCRIPT = `#!/bin/sh
@@ -533,6 +534,7 @@ async function runHook(undo: Undo) {
   const book = await Book.find();
   if (!setting("hook.enabled", book)[0]) return 0;
   refuseLinkedInputs(book);
+  refuseMergedUpstream(book, "hook");
   const lock = readBuildLock(book);
   const readEdits = placeholderOutputs(book).filter((p) => !leftByLastBuild(book, lock, p)).map((p) => inRepo(book, p));
   const loose = unstaged(book.root, [...buildInputs(book), ...readEdits]);

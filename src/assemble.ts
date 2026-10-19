@@ -18,7 +18,7 @@ import { dumps, loads } from "./lib/json.ts";
 import { type Env, git, run, spawn } from "./lib/proc.ts";
 import { floatRepr, ljust, rstrip, sorted, sortedBy, strip } from "./lib/py.ts";
 import { bytesEqual, decode, encode, isText } from "./lib/text.ts";
-import { pinned } from "./store.ts";
+import { pinned, refuseMergedUpstream } from "./store.ts";
 
 export function describe(p: Problem): string {
   let at = p.file + ("line" in p && p.line ? `:${p.line}` : "") + ("hash" in p && p.hash ? ` [${p.hash}]` : "");
@@ -368,6 +368,7 @@ export function writeOutput(book: Book, out: ReadonlyMap<string, File>, changes:
 
 export async function cmdBuild(args: { force: boolean; commit: boolean }) {
   const book = await Book.find();
+  refuseMergedUpstream(book, "build");
   installHookOrWarn(book);
   const a = assemble(book);
   if (a.problems.length) {
