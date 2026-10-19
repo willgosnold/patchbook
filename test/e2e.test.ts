@@ -12904,12 +12904,10 @@ describe("ExecBitTest", () => {
   const porcelain = (t: ForkCase): string => git(t, "status", "--porcelain");
   const gitMode = (bit: Bit): string => (bit === 0o755 ? "100755" : "100644");
   const bitOf = (p: string): Bit => (isExecutable(p) ? 0o755 : 0o644);
-  /** HEAD's ours copy of an output: its git mode and its path. */
   const headCopy = (t: ForkCase, path: string): { mode: string; at: string } => {
     const line = git(t, "ls-tree", "-r", "HEAD", "--", ".patchbook/changes").split("\n").find((l) => l.endsWith(`/ours/${path}.pb`)) ?? "";
     return { mode: line.split(" ")[0]!, at: line.split("\t")[1] ?? "" };
   };
-  /** What a collaborator gets: a fresh clone of the fork, built with core.fileMode=true. */
   const freshBuild = (t: ForkCase): string => {
     const fresh = join(t.tmp, "fresh");
     sh(["git", "clone", "-q", t.fork.path, fresh], { cwd: t.tmp });

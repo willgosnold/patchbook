@@ -120,7 +120,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
 };
 
 /** Write `now` as a change's copy at `path`, at the copy modes recordedModes picks. Returns the copies whose mode it
- * picked, with that mode. A copy left at the mode it had isn't one: that mode was only read back from disk. */
+ * picked, with that mode. A copy left at the mode it had isn't one. */
 function writeCopy(c: Change, path: string, now: Seen, built: Mode | undefined, up: File | undefined): [string, Mode][] {
   const had = { ours: c.file("ours", path)?.mode ?? null, base: c.file("base", path)?.mode ?? null };
   const modes = recordedModes(now, built, up?.mode, had);

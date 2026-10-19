@@ -598,7 +598,6 @@ describe.skipIf(!inSandbox)("intentSettings", () => {
 describe("recordedModes", () => {
   const regular: Mode[] = [0o644, 0o755];
   const file = (mode: Mode) => ({ data: new Uint8Array(), mode });
-  // Every regular mode for the output, upstream and the copies a change may have, with the build those copies make.
   const worlds = regular.flatMap((now) => [true, false].flatMap((chosen) => [...regular, undefined].flatMap((up) =>
     ([null, ...regular] as (Mode | null)[]).flatMap((ours) => ([null, ...regular] as (Mode | null)[]).flatMap((base) => {
       if (ours === null && base !== null) return [];

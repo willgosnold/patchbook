@@ -23,7 +23,7 @@ export function normMode(mode: number): Mode {
 const GIT_MODES = new Map<string, Mode>([["100644", 0o644], ["100755", 0o755], ["120000", LINK]]);
 
 export const gitMode = (mode: Mode): string => Array.from(GIT_MODES).find(([, m]) => m === mode)![0];
-/** Whether a change's ours copy has a mode of its own, one that differs from its base copy's. Copy modes are the patchbook's data, so core.fileMode doesn't apply. */
+/** Whether a change's ours copy has a mode of its own, one that differs from its base copy's. */
 export const setsMode = (ours: File, base: File): boolean => ours.mode !== base.mode;
 
 /** The mode an output gets from a change's copy. It follows upstream's until the copy sets one of its own, which a base copy at upstream's mode marks. */

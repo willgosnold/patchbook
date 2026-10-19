@@ -631,8 +631,8 @@ export class Book {
     return out;
   }
 
-  /** The output from `source`, each file marked with whether its exec bit is the user's. The only place core.fileMode
-   * meets recording. Under core.fileMode=false a disk read takes the index's mode, which is what `git add -A` stages. */
+  /** The output from `source`, each file marked with whether its exec bit is the user's. Under core.fileMode=false a
+   * disk read takes the index's mode, which is what `git add -A` stages. */
   seen(source: OutputSource): Map<string, Seen> {
     const files = source === "index" ? this.stagedOutput() : this.currentOutput();
     if (this.tracksExecBit()) return new Map(Array.from(files, ([p, f]) => [p, { ...f, chosen: true }]));
