@@ -8,7 +8,7 @@ import { type Change, readChanges, type Side } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isRealDir, isSymlink, lexists, LINK, mkdirs, type Mode, nonFolders, pjoin, readDisk, readText, readTextReplace, resolve, sameFile, setsMode, writeDisk, writeText } from "./lib/fs.ts";
+import { exists, type File, isSymlink, lexists, LINK, mkdirs, type Mode, nonFolders, pjoin, readDisk, readText, readTextReplace, resolve, sameFile, setsMode, writeDisk, writeText } from "./lib/fs.ts";
 import { dumps, JsonError, loads } from "./lib/json.ts";
 import { spawn } from "./lib/proc.ts";
 import { sorted } from "./lib/py.ts";
@@ -379,39 +379,37 @@ function recoverAll(book: Book): void {
 }
 
 /**
- * Why a journal found on disk is not one a sync left, or would have recovery write outside the repo or into `.git`, or null. A journal can be committed, so it is anyone's data.
- * `old` is a link when the vendor path was one. Recovery writes the lock and the report back through whatever link is in place.
- * A sync that fails while it runs recovers its own journal without this check, so a link it moved aside goes back wherever it led.
+ * Why recovery must not trust a journal found on disk, or null: its `before/` holds what a sync never saves there, or recovery would read or write through a path outside the repo or in `.git`.
+ * A journal can be committed, so it is anyone's data. Recovery reads the lock and the report by their bytes and writes them back through whatever link is in place.
+ * A sync that fails as it runs recovers its own journal without this check, since what it puts back is what it found.
  */
 function misshapen(book: Book, u: Upstream): string | null {
   const j = journal(book, u);
   if (!exists(join(j, "pin"))) return null;
-  if (!isRealDir(j)) return "it is a link, not a folder";
-  for (const part of ["pin", "lock"]) {
-    const p = join(j, part);
-    if (lexists(p) && !lstatSync(p).isFile()) return `its ${part} is a ${isSymlink(p) ? "link" : "folder"}, not a file`;
-  }
-  const [lock, old, before] = [join(j, "lock"), join(j, "old"), join(j, "before")];
-  const oldLeads = isSymlink(old) && astray(book.root, old);
-  if (oldLeads) return `its old is a link that ${oldLeads}`;
-  if (lexists(old) && !isSymlink(old) && !isRealDir(old)) return "its old is a file, not a folder";
-  if (lexists(before) && !isRealDir(before)) return `its before is a ${isSymlink(before) ? "link" : "file"}, not a folder`;
-  const saved = lexists(before) ? nonFolders(before) : [];
-  for (const rel of saved) {
-    if (rel === REPORT ? isSymlink(join(before, rel)) : !rel.startsWith("changes/")) return `its before/${rel} is not one a sync saves`;
-    const folder = dirname(join(book.dir, rel));
-    const leads = astray(book.root, folder);
-    if (leads) return `${relative(book.root, folder)} ${leads}, so its before/${rel} can't be put back`;
-  }
-  const torn = lexists(lock) && locked(u) === null;
-  for (const [name, part, written] of [["upstream.lock", "lock", torn], [REPORT, `before/${REPORT}`, saved.includes(REPORT)]] as const) {
-    const leads = written && astray(book.root, join(book.dir, name));
-    if (leads) return `${relative(book.root, join(book.dir, name))} ${leads}, so its ${part} can't be put back`;
+  const [lock, before, upstreamLock, lastSync] = [join(j, "lock"), join(j, "before"), join(book.dir, "upstream.lock"), join(book.dir, REPORT)];
+  const saved = lexists(before) && !astray(book.root, before) ? nonFolders(before) : [];
+  const odd = saved.find((rel) => rel !== REPORT && !(rel.startsWith("changes/") && rel.endsWith(".pb")));
+  if (odd) return `its before/${odd} is not one a sync saves`;
+  const report = saved.includes(REPORT);
+  const paths: [string, string, boolean, string][] = [
+    ["its lock", lock, lexists(lock), "recovery would read it"],
+    ["its before", before, lexists(before), "recovery would read it"],
+    [`its before/${REPORT}`, join(before, REPORT), report, "recovery would read it"],
+    ...saved.filter((rel) => rel !== REPORT).map((rel): [string, string, boolean, string] => {
+      const folder = dirname(join(book.dir, rel));
+      return [relative(book.root, folder), folder, true, `recovery would put its before/${rel} back there`];
+    }),
+    [relative(book.root, upstreamLock), upstreamLock, lexists(lock) && locked(u) === null, "recovery would write its lock back through it"],
+    [relative(book.root, lastSync), lastSync, report, `recovery would write its before/${REPORT} back through it`],
+  ];
+  for (const [name, p, used, then] of paths) {
+    const leads = used && astray(book.root, p);
+    if (leads) return `${name} ${leads}, and ${then}`;
   }
   return null;
 }
 
-/** Where a write to `p` goes when it leaves the repo or reaches `.git`, once every link on the way is followed, `p` itself included, or null. A link to nothing counts, since a write through it makes the file it names. */
+/** Where `p` goes when it leaves the repo or reaches `.git`, once every link on the way is followed, `p` itself included, or null. A link to nothing counts, since a write through it makes the file it names. */
 function astray(root: string, p: string): string | null {
   if (lexists(p) && !exists(p)) return "leads nowhere";
   const rel = relative(resolve(root), resolve(p));

@@ -10066,37 +10066,23 @@ exec '${Bun.which("git")}' "$@"
     expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
   });
 
-  const killARewriteOfALink = (t: VendorCase, target: string): void => {
+  vendorTest("test_a_symlink_at_the_vendor_path_comes_back_as_a_link_when_its_rewrite_is_killed", (t) => {
     extraWithAChange(t, true);
     t.repo.commit("follow extra");
-    mkdirSync(target);
-    writeFileSync(join(target, "a.md"), "elsewhere\n");
+    const outside = join(t.tmp, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "a.md"), "outside\n");
     const vendor = join(t.repo.path, "vendor/extra");
     rmSync(vendor, { recursive: true });
-    symlinkSync(target, vendor);
+    symlinkSync(outside, vendor);
     killSync(t, "write-tree --prefix=vendor/extra/");
     expect(existsSync(join(t.repo.path, ".patchbook/sync-extra/pin"))).toBe(true);
-  };
 
-  vendorTest("test_a_symlink_at_the_vendor_path_to_a_folder_in_the_repo_comes_back_as_a_link_when_its_rewrite_is_killed", (t) => {
-    const target = join(t.repo.path, "elsewhere");
-    killARewriteOfALink(t, target);
     expect(t.pb(["sync", "extra"], { cwd: t.repo.path }).stdout).toContain("Rewrote the vendored copy, which did not.");
-    expect(lstatSync(join(t.repo.path, "vendor/extra")).isDirectory()).toBe(true);
-    expect(readdirSync(target)).toEqual(["a.md"]);
-    expect(readFileSync(join(target, "a.md"), "utf8")).toBe("elsewhere\n");
-    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
-  });
-
-  vendorTest("test_a_symlink_at_the_vendor_path_to_a_folder_outside_the_repo_is_left_in_the_journal_when_its_rewrite_is_killed", (t) => {
-    const outside = join(t.tmp, "outside");
-    killARewriteOfALink(t, outside);
-    const before = tree(t.repo.path);
-    expect(t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 }).stderr).toContain("its old is a link that leads outside the repo");
-    expect(tree(t.repo.path)).toEqual(before);
-    expect(readlinkSync(join(t.repo.path, ".patchbook/sync-extra/old"))).toBe(outside);
+    expect(lstatSync(vendor).isDirectory()).toBe(true);
     expect(readdirSync(outside)).toEqual(["a.md"]);
-    expect(readFileSync(join(outside, "a.md"), "utf8")).toBe("elsewhere\n");
+    expect(readFileSync(join(outside, "a.md"), "utf8")).toBe("outside\n");
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
   });
 
   const killARewrite = (t: VendorCase): Record<string, string> => {
@@ -11414,21 +11400,6 @@ exec '${Bun.which("git")}' "$@"
     expect(tree(t.repo.path)).toEqual(before);
     expect(out.stderr).toContain(".patchbook/sync-extra holds a sync of extra");
     expect(out.stderr).toContain("before/upstream.lock");
-  });
-
-  vendorTest("test_a_sync_journal_whose_old_is_a_link_out_of_the_repo_is_left_for_the_user_and_the_vendored_copy_stays_a_folder", (t) => {
-    const journal = plantJournal(t, "vendor/extra", true);
-    const outside = join(t.tmp, "outside");
-    mkdirSync(outside);
-    writeFileSync(join(outside, "keep.txt"), "precious\n");
-    symlinkSync(outside, join(journal, "old"));
-    const before = tree(t.repo.path);
-    const out = t.pb(["sync", "extra", "refs/heads/nope"], { cwd: t.repo.path, code: 1 });
-    expect(lstatSync(join(t.repo.path, "vendor/extra")).isDirectory()).toBe(true);
-    expect(tree(t.repo.path)).toEqual(before);
-    expect(readdirSync(outside)).toEqual(["keep.txt"]);
-    expect(out.stderr).toContain(".patchbook/sync-extra holds a sync of extra");
-    expect(out.stderr).toContain("its old ");
   });
 
   vendorTest("test_a_sync_journal_whose_lock_is_a_link_out_of_the_repo_is_left_for_the_user_and_its_target_is_not_read", (t) => {
