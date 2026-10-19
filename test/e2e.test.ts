@@ -5362,6 +5362,12 @@ describe("ForkTest", () => {
     expect(existsSync(join(t.tmp, "prompt.txt"))).toBe(false);
   });
 
+  /** `git diff --no-index` as git ships it: none of the user's config or GIT_ variables, and no repo around it. */
+  const gitDiff = (t: Case, args: string[]): string => {
+    const env = { PATH: process.env["PATH"]!, HOME: t.tmp, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CEILING_DIRECTORIES: dirname(t.tmp) };
+    return sh(["git", "diff", "--no-index", "--no-color", ...args], { cwd: t.tmp, check: false, env }).stdout;
+  };
+
   forkTest("show and the model prompt split lines where git diff does", (t) => {
     const before = "form\ffeed\nlone\rreturn\nline\u2028separator\ncrlf\r\nlast\n";
     const after = before.replace("return", "RETURN");
@@ -5374,7 +5380,7 @@ describe("ForkTest", () => {
     writeFileSync(join(t.tmp, "before.txt"), before);
     writeFileSync(join(t.tmp, "after.txt"), after);
     const files = [join(t.tmp, "before.txt"), join(t.tmp, "after.txt")];
-    const git = sh(["git", "diff", "--no-index", "--no-color", ...files], { cwd: t.fork.path, check: false }).stdout;
+    const git = gitDiff(t, files);
     const hunk = git.slice(git.indexOf("@@"));
     expect(hunk).toBe("@@ -1,5 +1,5 @@\n form\ffeed\n-lone\rreturn\n+lone\rRETURN\n line\u2028separator\n crlf\r\n last\n");
     const shown = t.pb(["show", "shout"], { cwd: t.fork.path }).stdout;
@@ -5387,7 +5393,7 @@ describe("ForkTest", () => {
       writeFileSync(join(t.tmp, "after.txt"), after);
       if (before !== null) writeFileSync(join(t.tmp, "before.txt"), before);
       const from = before === null ? "/dev/null" : join(t.tmp, "before.txt");
-      const out = sh(["git", "diff", "--no-index", "--no-color", "-U3", from, join(t.tmp, "after.txt")], { cwd: t.fork.path, check: false }).stdout;
+      const out = gitDiff(t, ["-U3", from, join(t.tmp, "after.txt")]);
       return out.slice(out.indexOf("@@"));
     };
     const tail = "one\ntwo\nthree\nfour\nlast line, no newline";
