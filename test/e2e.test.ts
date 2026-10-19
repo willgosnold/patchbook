@@ -6,9 +6,9 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import type { Nearest } from "../src/api.ts";
-import { CMD, Case, Repo, TOOL, type Run, dedent, lstrip, mkdirNew, partitionHead, replace, sh, shlexSplit, words } from "./helpers";
+import { carriesCrashInjection } from "./crash-build.ts";
+import { CMD, Case, Repo, TIMEOUT, type Run, crashCmd, dedent, isRoot, lstrip, mkdirNew, partitionHead, permissionTest, replace, sh, shlexSplit, words } from "./helpers";
 
-const TIMEOUT = 120_000;
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 const read = (p: string): string => readFileSync(p, "utf8");
@@ -658,7 +658,7 @@ test("test_init_keeps_an_uncommitted_file_at_the_skill_link_and_writes_no_skill"
   }
 }, TIMEOUT);
 
-test.skipIf(process.getuid?.() === 0)("test_init_finishes_with_a_note_when_the_skill_file_cannot_be_read", () => {
+permissionTest("test_init_finishes_with_a_note_when_the_skill_file_cannot_be_read", () => {
   for (const folder of [false, true]) {
     const t = new Case();
     let file = "";
@@ -693,7 +693,7 @@ test.skipIf(process.getuid?.() === 0)("test_init_finishes_with_a_note_when_the_s
       t.cleanup();
     }
   }
-}, TIMEOUT);
+});
 
 test("test_init_in_a_fork_records_nothing_for_a_skill_it_did_not_write", () => {
   const t = new Case();
@@ -818,7 +818,7 @@ test("test_skill_install_recreates_a_link_that_was_deleted", () => {
   }
 }, TIMEOUT);
 
-test.skipIf(process.getuid?.() === 0)("test_skill_install_that_cannot_make_the_link_leaves_the_stale_skill_alone", () => {
+permissionTest("test_skill_install_that_cannot_make_the_link_leaves_the_stale_skill_alone", () => {
   const t = new Case();
   const skills = join(t.tmp, "fork/.claude/skills");
   try {
@@ -846,9 +846,9 @@ test.skipIf(process.getuid?.() === 0)("test_skill_install_that_cannot_make_the_l
     if (existsSync(skills)) chmodSync(skills, 0o755);
     t.cleanup();
   }
-}, TIMEOUT);
+});
 
-test.skipIf(process.getuid?.() === 0)("test_skill_install_that_cannot_write_the_skill_takes_back_the_link_it_made", () => {
+permissionTest("test_skill_install_that_cannot_write_the_skill_takes_back_the_link_it_made", () => {
   const t = new Case();
   const file = join(t.tmp, "fork", SKILL_FILE);
   try {
@@ -878,7 +878,7 @@ test.skipIf(process.getuid?.() === 0)("test_skill_install_that_cannot_write_the_
     if (existsSync(file)) chmodSync(file, 0o644);
     t.cleanup();
   }
-}, TIMEOUT);
+});
 
 /** A folder-layout repo with the skill installed and committed. */
 function skillFolder(t: Case): Repo {
@@ -980,7 +980,7 @@ test("test_skill_install_in_the_folder_layout_refuses_to_replace_an_uncommitted_
   }
 }, TIMEOUT);
 
-test.skipIf(process.getuid?.() === 0)("test_skill_install_that_cannot_write_the_skill_puts_back_a_link_it_replaced", () => {
+permissionTest("test_skill_install_that_cannot_write_the_skill_puts_back_a_link_it_replaced", () => {
   const t = new Case();
   let file = "";
   try {
@@ -998,9 +998,9 @@ test.skipIf(process.getuid?.() === 0)("test_skill_install_that_cannot_write_the_
     if (file && existsSync(file)) chmodSync(file, 0o644);
     t.cleanup();
   }
-}, TIMEOUT);
+});
 
-test.skipIf(process.getuid?.() === 0)("test_skill_install_that_cannot_write_the_skill_puts_back_a_file_it_replaced", () => {
+permissionTest("test_skill_install_that_cannot_write_the_skill_puts_back_a_file_it_replaced", () => {
   const t = new Case();
   let file = "";
   try {
@@ -1020,9 +1020,9 @@ test.skipIf(process.getuid?.() === 0)("test_skill_install_that_cannot_write_the_
     if (file && existsSync(file)) chmodSync(file, 0o644);
     t.cleanup();
   }
-}, TIMEOUT);
+});
 
-test.skipIf(process.getuid?.() === 0)("test_skill_install_in_a_fork_puts_back_a_recorded_link_when_the_skill_cannot_be_written", () => {
+permissionTest("test_skill_install_in_a_fork_puts_back_a_recorded_link_when_the_skill_cannot_be_written", () => {
   const t = new Case();
   let file = "";
   try {
@@ -1042,7 +1042,7 @@ test.skipIf(process.getuid?.() === 0)("test_skill_install_in_a_fork_puts_back_a_
     if (file && existsSync(file)) chmodSync(file, 0o644);
     t.cleanup();
   }
-}, TIMEOUT);
+});
 
 test("test_skill_install_does_not_call_it_current_when_a_folder_is_in_the_way", () => {
   const t = new Case();
@@ -1455,7 +1455,7 @@ test("test_skill_install_in_the_folder_layout_writes_nothing_when_an_untracked_f
   }
 }, TIMEOUT);
 
-test.skipIf(process.getuid?.() === 0)("test_skill_install_that_cannot_write_the_skill_puts_back_the_mode_of_a_file_it_replaced", () => {
+permissionTest("test_skill_install_that_cannot_write_the_skill_puts_back_the_mode_of_a_file_it_replaced", () => {
   const t = new Case();
   const umask = process.umask(0o022);
   let file = "";
@@ -1475,7 +1475,7 @@ test.skipIf(process.getuid?.() === 0)("test_skill_install_that_cannot_write_the_
     if (file && existsSync(file)) chmodSync(file, 0o644);
     t.cleanup();
   }
-}, TIMEOUT);
+});
 
 test("test_skill_install_says_which_committed_skill_paths_it_replaced", () => {
   const t = new Case();
@@ -1953,7 +1953,7 @@ for (const layout of ["fork", "folder"]) {
   }, TIMEOUT);
 }
 
-test("test_no_skill_or_hook_failure_shows_a_raw_errno_code", () => {
+permissionTest("test_no_skill_or_hook_failure_shows_a_raw_errno_code", () => {
   const t = new Case();
   const locked: string[] = [];
   const noErrno = (stderr: string) => {
@@ -1992,7 +1992,7 @@ test("test_no_skill_or_hook_failure_shows_a_raw_errno_code", () => {
     for (const p of locked) if (existsSync(p)) chmodSync(p, 0o755);
     t.cleanup();
   }
-}, TIMEOUT);
+});
 
 test("test_skill_install_goes_ahead_when_a_sync_left_a_conflict", () => {
   const t = new Case();
@@ -3502,7 +3502,7 @@ for (const manager of ["git", "husky"]) {
 
 describe.skipIf(!!process.env["PATCHBOOK_CMD"])("init stopped by a preload, so only from source", () => {
   const preloaded = (t: Case, cwd: string, env: Record<string, string>, args: string[]): Run =>
-    sh([process.execPath, "--preload", join(import.meta.dir, "crash.ts"), TOOL, ...args], { cwd, env: { ...t.env, PATCHBOOK_HOOK: "", ...env }, check: false });
+    sh([...crashCmd(), ...args], { cwd, env: { ...t.env, PATCHBOOK_HOOK: "", ...env }, check: false });
 
   for (const [step, layouts, file] of [["its_series", ["fork", "folder"], "series"], ["retired_md", ["fork", "folder"], "retired.md"], ["its_config", ["fork", "folder"], "config.toml"]] as const) {
     for (const layout of layouts) {
@@ -3568,7 +3568,7 @@ describe.skipIf(!!process.env["PATCHBOOK_CMD"])("init stopped by a preload, so o
 });
 
 for (const layout of ["fork", "folder"]) {
-  test(`test_a_${layout}_init_that_cannot_install_the_hook_still_starts_the_patchbook`, () => {
+  permissionTest(`test_a_${layout}_init_that_cannot_install_the_hook_still_starts_the_patchbook`, () => {
     const t = new Case();
     try {
       const up = new Repo(join(t.tmp, "upstream"));
@@ -3590,10 +3590,10 @@ for (const layout of ["fork", "folder"]) {
     } finally {
       t.cleanup();
     }
-  }, TIMEOUT);
+  });
 }
 
-test("test_a_command_warns_and_runs_while_the_pre_commit_hook_cannot_be_installed", () => {
+permissionTest("test_a_command_warns_and_runs_while_the_pre_commit_hook_cannot_be_installed", () => {
   const t = new Case();
   try {
     const up = new Repo(join(t.tmp, "upstream"));
@@ -3616,7 +3616,7 @@ test("test_a_command_warns_and_runs_while_the_pre_commit_hook_cannot_be_installe
   } finally {
     t.cleanup();
   }
-}, TIMEOUT);
+});
 
 test("test_commit_through_vite_plus_records_when_it_is_installed_after_clone", () => {
   const t = new Case();
@@ -4793,7 +4793,7 @@ describe("ForkTest", () => {
     expect(JSON.parse(read(join(book, "upstream.lock"))).lib.commit).toBe(commit);
   });
 
-  forkTest("test_a_track_that_fails_writing_config_leaves_a_pin_nothing_reads", (t) => {
+  permissionTest("test_a_track_that_fails_writing_config_leaves_a_pin_nothing_reads", (t) => {
     const lib = new Repo(join(t.tmp, "lib"));
     lib.write("a.txt", "lib\n");
     lib.commit("lib");
@@ -4811,7 +4811,7 @@ describe("ForkTest", () => {
     expect(t.pb(["build"], { cwd: t.fork.path }).stdout).not.toContain("lib");
     t.pb(["track", "lib", other.path], { cwd: t.fork.path });
     expect(JSON.parse(read(join(t.fork.path, ".patchbook/upstream.lock"))).lib.commit).toBe(commit);
-  });
+  }, ForkCase);
 
   for (const [order, first, second] of [
     ["holding", "vendor/inner", "vendor"],
@@ -6447,7 +6447,7 @@ describe("ForkTest", () => {
     expect(read(join(t.fork.path, ".patchbook/changes/aa/ours/aa.txt.pb"))).toBe("A2\n");
   });
 
-  forkTest("test_record_that_cannot_write_a_later_edit_does_not_say_it_added_a_file_no_change_records", (t) => {
+  permissionTest("test_record_that_cannot_write_a_later_edit_does_not_say_it_added_a_file_no_change_records", (t) => {
     t.fork.write("bb.txt", "B\n");
     t.pb(["record", "bb", "--intent", "Bb."], { cwd: t.fork.path });
     t.fork.write("aa.txt", "new\n");
@@ -6462,7 +6462,7 @@ describe("ForkTest", () => {
       chmodSync(bb, 0o644);
     }
     expect(existsSync(join(t.fork.path, ".patchbook/changes/zz/CHANGE.md"))).toBe(false);
-  });
+  }, ForkCase);
 
   forkTest("test_commit_records_and_builds", (t) => {
     expect(read(join(t.fork.path, ".git/hooks/pre-commit"))).toContain("Installed by patchbook");
@@ -7613,11 +7613,9 @@ describe("ForkTest", () => {
     expect(porcelain(t)).toBe("");
   });
 
-  // Root ignores file modes, so a read-only build.lock cannot make the hook fail.
-  const readOnlyTest = process.getuid?.() === 0 ? (name: string, _: unknown) => test.skip(name, () => {}) : forkTest;
   const lockOf = (t: ForkCase) => join(t.fork.path, ".patchbook/build.lock");
 
-  readOnlyTest("test_failed_commit_leaves_the_patchbook_as_it_found_it", (t) => {
+  permissionTest("test_failed_commit_leaves_the_patchbook_as_it_found_it", (t) => {
     const series = read(join(t.fork.path, ".patchbook/series"));
     const lock = read(lockOf(t));
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
@@ -7631,9 +7629,9 @@ describe("ForkTest", () => {
     expect(read(join(t.fork.path, ".patchbook/series"))).toBe(series);
     expect(read(lockOf(t))).toBe(lock);
     expect(porcelain(t)).toBe("M  app.txt\n");
-  });
+  }, ForkCase);
 
-  readOnlyTest("test_commit_retried_after_a_failed_record_holds_the_output_and_its_record", (t) => {
+  permissionTest("test_commit_retried_after_a_failed_record_holds_the_output_and_its_record", (t) => {
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     chmodSync(lockOf(t), 0o444);
@@ -7646,9 +7644,9 @@ describe("ForkTest", () => {
     expect(files).toContain(".patchbook/changes/shout/CHANGE.md");
     expect(files).toContain(".patchbook/build.lock");
     expect(porcelain(t)).toBe("");
-  });
+  }, ForkCase);
 
-  readOnlyTest("test_failed_commit_leaves_the_output_as_it_found_it", (t) => {
+  permissionTest("test_failed_commit_leaves_the_output_as_it_found_it", (t) => {
     t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
     t.up.commit("shout five");
     t.pb(["sync"], { cwd: t.fork.path });
@@ -7664,7 +7662,7 @@ describe("ForkTest", () => {
     expect(committed(t)).toContain("app.txt");
     expect(t.fork.read("app.txt")).toContain("FIVE");
     expect(porcelain(t)).toBe("");
-  });
+  }, ForkCase);
 
   /** Replaces `.patchbook/<name>` with a committed link to a copy outside the repo, and returns what the copy holds. */
   const linkPatchbook = (t: ForkCase, name: string) => {
@@ -7968,7 +7966,7 @@ describe("ForkTest", () => {
     });
   }
 
-  readOnlyTest("test_failed_commit_puts_a_private_copy_back_with_its_own_mode_when_its_bytes_did_not_change", (t) => {
+  permissionTest("test_failed_commit_puts_a_private_copy_back_with_its_own_mode_when_its_bytes_did_not_change", (t) => {
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "one", "ONE"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "shout one"]);
@@ -7981,7 +7979,7 @@ describe("ForkTest", () => {
     chmodSync(lockOf(t), 0o444);
     expect(hookCommit(t, ["-m", "add new.md"], false).code).not.toBe(0);
     expect(statSync(copy).mode & 0o777).toBe(0o600);
-  });
+  }, ForkCase);
 
   for (const [where, target] of [["into the patchbook", ".patchbook"], ["to a folder beside it", "docs.bak"]] as const) {
     forkTest(`test_commit_refuses_an_output_folder_replaced_by_a_link_${where.replaceAll(" ", "_")}`, (t) => {
@@ -8166,7 +8164,7 @@ describe("ForkTest", () => {
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
 
-  readOnlyTest("test_failed_commit_reports_nothing_stuck_after_putting_back_nested_new_folders", (t) => {
+  permissionTest("test_failed_commit_reports_nothing_stuck_after_putting_back_nested_new_folders", (t) => {
     t.up.write("deep/er/one.txt", "one\n");
     t.up.write("deep/other/two.txt", "two\n");
     t.up.commit("add nested folders");
@@ -8177,9 +8175,9 @@ describe("ForkTest", () => {
     expect(commit.code).not.toBe(0);
     expect(commit.stderr).not.toContain("couldn't put these back");
     expect(existsSync(join(t.fork.path, "deep"))).toBe(false);
-  });
+  }, ForkCase);
 
-  readOnlyTest("test_commit_goes_through_when_a_folder_in_the_patchbook_cant_be_read", (t) => {
+  permissionTest("test_commit_goes_through_when_a_folder_in_the_patchbook_cant_be_read", (t) => {
     writeFileSync(join(t.fork.path, ".git/info/exclude"), "*.junk\n");
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
@@ -8196,9 +8194,9 @@ describe("ForkTest", () => {
     } finally {
       chmodSync(secret, 0o755);
     }
-  });
+  }, ForkCase);
 
-  readOnlyTest("test_failed_commit_puts_a_private_file_back_with_its_own_mode", (t) => {
+  permissionTest("test_failed_commit_puts_a_private_file_back_with_its_own_mode", (t) => {
     const series = join(t.fork.path, ".patchbook/series");
     chmodSync(series, 0o600);
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
@@ -8206,9 +8204,9 @@ describe("ForkTest", () => {
     chmodSync(lockOf(t), 0o444);
     expect(hookCommit(t, ["-m", "shout"], false).code).not.toBe(0);
     expect(statSync(series).mode & 0o777).toBe(0o600);
-  });
+  }, ForkCase);
 
-  readOnlyTest("test_failed_commit_lists_what_it_could_not_put_back", (t) => {
+  permissionTest("test_failed_commit_lists_what_it_could_not_put_back", (t) => {
     const patchbook = join(t.fork.path, ".patchbook");
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
@@ -8223,9 +8221,9 @@ describe("ForkTest", () => {
     } finally {
       chmodSync(patchbook, 0o755);
     }
-  });
+  }, ForkCase);
 
-  readOnlyTest("test_failed_commit_puts_a_private_folder_back_with_its_own_mode", (t) => {
+  permissionTest("test_failed_commit_puts_a_private_folder_back_with_its_own_mode", (t) => {
     t.fork.write("private/New.md", "new\n");
     sh(["git", "add", "private/New.md"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "add private"]);
@@ -8241,9 +8239,9 @@ describe("ForkTest", () => {
     expect(hookCommit(t, ["-m", "drop private"], false).code).not.toBe(0);
     expect(t.fork.read("private/New.md")).toBe("new\n");
     expect(statSync(folder).mode & 0o777).toBe(0o700);
-  });
+  }, ForkCase);
 
-  readOnlyTest("test_failed_commit_puts_back_the_lock_it_rebuilt_when_nothing_was_recorded", (t) => {
+  permissionTest("test_failed_commit_puts_back_the_lock_it_rebuilt_when_nothing_was_recorded", (t) => {
     t.up.write("app.txt", replace(t.up.read("app.txt"), "five", "FIVE"));
     t.up.commit("shout five");
     t.pb(["sync"], { cwd: t.fork.path });
@@ -8260,7 +8258,7 @@ describe("ForkTest", () => {
     }
     expect(read(lockOf(t))).toBe(lock);
     expect(t.fork.read("app.txt")).not.toContain("FIVE");
-  });
+  }, ForkCase);
 
   // What the Python version wrote, with the paths of the interpreter and script that installed it.
   const pythonHook = (extra = "") => `#!/bin/sh
@@ -9238,8 +9236,8 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(Object.keys(lastSync(t))).toEqual(["upstream"]);
   });
 
-  if (process.getuid?.() !== 0) {
-    forkTest("test_sync_keeps_the_pin_when_the_report_cannot_be_written", (t) => {
+  describe("where the OS refuses a write, so not as root", () => {
+    permissionTest("test_sync_keeps_the_pin_when_the_report_cannot_be_written", (t) => {
       const file = join(t.fork.path, ".patchbook/last-sync.json");
       const lock = (): string => t.fork.read(".patchbook/upstream.lock");
       t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
@@ -9260,7 +9258,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
       t.pb(["sync"], { cwd: t.fork.path });
       expect(lastSync(t).upstream.to).toBe(second);
       expect(lock()).not.toBe(pinned);
-    });
+    }, ForkCase);
 
     const secondEdits = [
       ["merge", "four", "FOUR", "1 of ours merged cleanly, 0 conflicts", { merged: [{ change: "feature", path: "app.txt" }], conflicts: [] }],
@@ -9268,7 +9266,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     ] as const;
     for (const blocked of ["last-sync.json", "upstream.lock"]) {
       for (const [kind, line, edited, summary, carried] of secondEdits) {
-        forkTest(`test_a_sync_that_cannot_write_${blocked}_after_a_${kind}_changes_nothing_and_reports_the_${kind}_when_run_again`, (t) => {
+        permissionTest(`test_a_sync_that_cannot_write_${blocked}_after_a_${kind}_changes_nothing_and_reports_the_${kind}_when_run_again`, (t) => {
           t.recordFeature();
           t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
           const first = t.up.commit("first edit");
@@ -9286,7 +9284,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
           expect(tree(t.fork.path)).toEqual(before);
           expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain(summary);
           expect(lastSync(t).upstream).toMatchObject({ from: first, to: second, ...carried });
-        });
+        }, ForkCase);
       }
     }
 
@@ -9363,12 +9361,12 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
         expect(read(kept)).toBe(was);
       });
     }
-  }
+  });
 
-  describe.skipIf(!!process.env["PATCHBOOK_CMD"])("killed by a preload, so only from source", () => {
+  describe("killed by crash injection", () => {
     const killedBeforeWriting = (t: ForkCase, path: string, args: string[]): void => {
       const env = { ...t.env, CRASH_BEFORE_WRITE: path };
-      sh([process.execPath, "--preload", join(import.meta.dir, "crash.ts"), TOOL, ...args], { cwd: t.fork.path, env, check: false });
+      sh([...crashCmd(), ...args], { cwd: t.fork.path, env, check: false });
     };
 
     forkTest("test_a_sync_of_one_upstream_first_undoes_a_killed_sync_of_another_and_its_report", (t) => {
@@ -10556,7 +10554,7 @@ describe("VendorTest", () => {
     expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
   });
 
-  vendorTest("test_record_that_cannot_save_the_delete_keeps_the_block_entries", (t) => {
+  permissionTest("test_record_that_cannot_save_the_delete_keeps_the_block_entries", (t) => {
     const entries = t.missingScaffoldPatchBuild();
     unlinkSync(join(t.repo.path, "skills/hello/SKILL.md"));
     const changes = join(t.repo.path, ".patchbook/changes");
@@ -10568,7 +10566,7 @@ describe("VendorTest", () => {
       chmodSync(changes, 0o755);
     }
     expect(existsSync(entries)).toBe(true);
-  });
+  }, VendorCase);
 
   vendorTest("test_record_of_a_paragraph_leaves_the_intent_empty_for_a_model_reply_whose_intent_is_not_a_string", (t) => {
     const entries = t.missingScaffoldPatchBuild();
@@ -10905,7 +10903,7 @@ exec '${Bun.which("git")}' "$@"
 
   for (const layout of ["folder", "vendored"]) {
     for (const before of [false, true]) {
-      vendorTest(`test_sync_keeps_no_new_ref_when_it_fails_after_the_keep_${layout}${before ? "_unless_it_was_there" : ""}`, (t) => {
+      permissionTest(`test_sync_keeps_no_new_ref_when_it_fails_after_the_keep_${layout}${before ? "_unless_it_was_there" : ""}`, (t) => {
         const extra = new Repo(join(t.tmp, "extra"));
         extra.write("a.md", "one\ntwo\nthree\nfour\nfive\n");
         extra.commit("a");
@@ -10935,7 +10933,7 @@ exec '${Bun.which("git")}' "$@"
         }
         expect(refOf()).toBe(before ? head : "");
         expect(read(join(t.repo.path, ".patchbook/upstream.lock"))).toBe(lock);
-      });
+      }, VendorCase);
     }
   }
 
@@ -11039,10 +11037,10 @@ exec '${Bun.which("git")}' "$@"
     expect(tree(t.repo.path)).toEqual(before);
   });
 
-  describe.skipIf(process.getuid?.() === 0)("where chmod blocks writes, so not as root", () => {
+  describe("where chmod blocks writes, so not as root", () => {
     for (const [what, blocked] of [["a_change_file", ".patchbook/changes/tweak/base"], ["the_lock", ".patchbook/upstream.lock"]] as const) {
       for (const layout of ["folder", "vendored"]) {
-        vendorTest(`test_a_failed_sync_leaves_the_changes_as_they_were_when_${what}_cannot_be_written_${layout}`, (t) => {
+        permissionTest(`test_a_failed_sync_leaves_the_changes_as_they_were_when_${what}_cannot_be_written_${layout}`, (t) => {
           const extra = extraWithAChange(t, layout === "vendored");
           extra.commit("v2");
           sh(["chmod", "-R", "a-w", blocked], { cwd: t.repo.path });
@@ -11054,11 +11052,11 @@ exec '${Bun.which("git")}' "$@"
           }
           expect(tree(t.repo.path)).toEqual(before);
           expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
-        });
+        }, VendorCase);
       }
     }
 
-    vendorTest("test_a_killed_sync_keeps_its_journal_while_a_saved_change_file_cannot_be_read", (t) => {
+    permissionTest("test_a_killed_sync_keeps_its_journal_while_a_saved_change_file_cannot_be_read", (t) => {
       const extra = extraWithAChange(t, true);
       extra.write("c.log", "hidden\n");
       extra.commit("v2");
@@ -11078,9 +11076,9 @@ exec '${Bun.which("git")}' "$@"
       }
       t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
       expect(tree(t.repo.path)).toEqual({ ...before, ".gitignore": "*.log\n" });
-    });
+    }, VendorCase);
 
-    forkTest("test_a_failed_sync_of_the_forks_own_upstream_drops_its_ref_though_an_upstream_on_that_remote_pins_the_commit", (t) => {
+    permissionTest("test_a_failed_sync_of_the_forks_own_upstream_drops_its_ref_though_an_upstream_on_that_remote_pins_the_commit", (t) => {
       t.pb(["track", "mirror", t.up.path], { cwd: t.fork.path });
       t.fork.commit("track mirror");
       t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
@@ -11095,7 +11093,7 @@ exec '${Bun.which("git")}' "$@"
       }
       expect(pinRefs(t, head)).toBe(1);
       expect(sh(["git", "rev-parse", "--verify", "--quiet", `refs/pins/${head}`], { cwd: t.fork.path, check: false }).code).not.toBe(0);
-    });
+    }, ForkCase);
   });
 
   for (const [when, call] of [["checks_the_new_copy", "write-tree --prefix=vendor/extra/"], ["keeps_the_new_commit", "update-ref refs/pins/"]] as const) {
@@ -11362,7 +11360,7 @@ exec '${Bun.which("git")}' "$@"
     expect(pinRefs(t, head)).toBe(0);
   });
 
-  describe.skipIf(!!process.env["PATCHBOOK_CMD"])("killed by a preload, so only from source", () => {
+  describe("killed by crash injection", () => {
     for (const file of ["pin", "lock"]) {
       vendorTest(`test_a_sync_killed_before_it_deletes_its_journal_${file}_keeps_its_ref_once_an_older_commit_is_checked_out`, (t) => {
         const extra = extraWithAChange(t, true);
@@ -11373,7 +11371,7 @@ exec '${Bun.which("git")}' "$@"
         extra.write("b.md", "b\n");
         const head = extra.commit("v3");
         const env = { ...t.env, CRASH_BEFORE_RM: `/.patchbook/sync-extra/${file}` };
-        sh([process.execPath, "--preload", join(import.meta.dir, "crash.ts"), TOOL, "sync", "extra"], { cwd: t.repo.path, env, check: false });
+        sh([...crashCmd(), "sync", "extra"], { cwd: t.repo.path, env, check: false });
         expect(t.repo.read(".patchbook/upstream.lock")).toContain(head);
         expect(existsSync(join(t.repo.path, ".patchbook/sync-extra", file))).toBe(true);
         t.repo.commit("sync extra to v3");
@@ -11960,7 +11958,7 @@ exec '${Bun.which("git")}' "$@"
   }
 
   for (const [what, below, named] of [["a_subfolder", "locked", "x/locked"], ["a_folder", "", "x"]] as const) {
-    test.skipIf(process.getuid?.() === 0)(`test_build_force_refuses_a_folder_with_${what}_it_cannot_read`, () => {
+    permissionTest(`test_build_force_refuses_a_folder_with_${what}_it_cannot_read`, () => {
       const t = new VendorCase();
       let locked = "";
       try {
@@ -11982,7 +11980,7 @@ exec '${Bun.which("git")}' "$@"
         if (locked) chmodSync(locked, 0o755);
         t.cleanup();
       }
-    }, TIMEOUT);
+    });
   }
 
   for (const to of ["skills/.git", "skills/.git/x", "a/.git", "a/b/.git/c"]) {
@@ -12642,7 +12640,7 @@ exec '${Bun.which("git")}' "$@"
     expect(out.stderr).toContain("its pin ");
   });
 
-  vendorTest("test_track_refuses_a_vendor_folder_that_holds_a_git_repo_before_it_drops_a_pin_an_earlier_track_left", (t) => {
+  permissionTest("test_track_refuses_a_vendor_folder_that_holds_a_git_repo_before_it_drops_a_pin_an_earlier_track_left", (t) => {
     const extra = new Repo(join(t.tmp, "extra"));
     extra.write("a.md", "a\n");
     extra.commit("a");
@@ -12661,7 +12659,7 @@ exec '${Bun.which("git")}' "$@"
     const out = t.pb(["track", "extra", extra.path, "--vendor", "lib"], { cwd: t.repo.path, code: 1 });
     expect(out.stderr).toContain("holds lib/.git");
     expect(read(lock)).toBe(pins);
-  });
+  }, VendorCase);
 
   const gitFile = "gitdir: ../elsewhere\n";
   const nestedGits: [string, string, string, (repo: { path: string }) => void][] = [
@@ -12935,7 +12933,7 @@ exec '${Bun.which("git")}' "$@"
       extra.write("b.md", "b\n");
       extra.commit("b");
       const env = { ...t.env, CRASH_BEFORE_WRITE: "/.patchbook/sync-extra/lock" };
-      sh([process.execPath, "--preload", join(import.meta.dir, "crash.ts"), TOOL, "sync", "extra"], { cwd: t.repo.path, env, check: false });
+      sh([...crashCmd(), "sync", "extra"], { cwd: t.repo.path, env, check: false });
       expect(existsSync(join(t.repo.path, ".patchbook/sync-extra/old"))).toBe(true);
       return extra;
     };
@@ -13833,7 +13831,8 @@ exec '${Bun.which("git")}' "$@"
     }
   };
 
-  test.skipIf(process.platform !== "linux" || !casefold())("test_init_refuses_a_patchbook_in_capitals_on_a_case_insensitive_folder", () => {
+  // As root, unshare -r maps no other user, so the namespace cannot reach the runner's bun.
+  test.skipIf(process.platform !== "linux" || isRoot || !casefold())("test_init_refuses_a_patchbook_in_capitals_on_a_case_insensitive_folder", () => {
     const t = new VendorCase();
     try {
       const mount = join(t.tmp, "cf");
@@ -14037,19 +14036,11 @@ exec '${Bun.which("git")}' "$@"
 });
 
 describe("ReadOnlyLockTest", () => {
-  const asRoot = process.getuid?.() === 0;
-  const lockTest = (name: string, body: (t: ForkCase, lock: string) => void) =>
-    test.skipIf(asRoot)(name, () => {
-      const t = new ForkCase();
-      try {
-        body(t, join(t.fork.path, ".patchbook/upstream.lock"));
-      } finally {
-        t.cleanup();
-      }
-    }, TIMEOUT);
+  const upstreamLock = (t: ForkCase) => join(t.fork.path, ".patchbook/upstream.lock");
   const refused = (lock: string) => `patchbook: couldn't write ${realpathSync(lock)}: permission denied\n`;
 
-  lockTest("test_sync_names_the_lock_when_it_cannot_write_it", (t, lock) => {
+  permissionTest("test_sync_names_the_lock_when_it_cannot_write_it", (t) => {
+    const lock = upstreamLock(t);
     t.up.write("app.txt", replace(t.up.read("app.txt"), "six", "SIX"));
     const head = t.up.commit("upstream edit");
     const before = read(lock);
@@ -14062,9 +14053,10 @@ describe("ReadOnlyLockTest", () => {
     expect(read(lock)).toBe(before);
     t.pb(["sync"], { cwd: t.fork.path });
     expect(JSON.parse(read(lock)).upstream.commit).toBe(head);
-  });
+  }, ForkCase);
 
-  lockTest("test_track_names_the_lock_when_it_cannot_write_it_and_can_be_retried", (t, lock) => {
+  permissionTest("test_track_names_the_lock_when_it_cannot_write_it_and_can_be_retried", (t) => {
+    const lock = upstreamLock(t);
     const lib = new Repo(join(t.tmp, "lib"));
     lib.write("a.txt", "lib\n");
     const commit = lib.commit("lib");
@@ -14079,9 +14071,9 @@ describe("ReadOnlyLockTest", () => {
     expect(read(config)).toBe(before);
     t.pb(["track", "lib", lib.path], { cwd: t.fork.path });
     expect(JSON.parse(read(lock)).lib.commit).toBe(commit);
-  });
+  }, ForkCase);
 
-  lockTest("test_init_names_the_lock_when_it_cannot_write_it_and_can_be_retried", (t) => {
+  permissionTest("test_init_names_the_lock_when_it_cannot_write_it_and_can_be_retried", (t) => {
     const repo = new Repo(join(t.tmp, "adapted"));
     repo.write("README.md", "mine\n");
     repo.commit("start");
@@ -14098,7 +14090,7 @@ describe("ReadOnlyLockTest", () => {
     expect(existsSync(join(repo.path, ".patchbook/config.toml"))).toBe(false);
     t.pb(init, { cwd: repo.path });
     expect(JSON.parse(read(lock)).upstream.commit).toMatch(/^[0-9a-f]{40}$/);
-  });
+  }, ForkCase);
 });
 
 describe("ModeTest", () => {
@@ -15481,4 +15473,24 @@ describe("RecordRollbackTest", () => {
     t.pb(["record", "extra"], { cwd: t.fork.path });
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
+});
+
+describe("CrashInjection", () => {
+  test("test_the_command_under_test_carries_no_crash_injection", () => {
+    const src = join(import.meta.dir, "..", "src");
+    const shipped = process.env["PATCHBOOK_CMD"] ? [CMD[0]!] : (readdirSync(src, { recursive: true }) as string[]).filter((p) => p.endsWith(".ts")).map((p) => join(src, p));
+    expect(shipped.length).toBeGreaterThan(0);
+    expect(shipped.filter(carriesCrashInjection)).toEqual([]);
+  });
+
+  test("test_a_crash_build_is_found_to_carry_crash_injection", () => {
+    const dir = mkdtempSync(join(tmpdir(), "crash"));
+    try {
+      const built = join(dir, "patchbook");
+      sh([process.execPath, join(import.meta.dir, "crash-build.ts"), "build", built], { cwd: dir });
+      expect(carriesCrashInjection(built)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, TIMEOUT);
 });

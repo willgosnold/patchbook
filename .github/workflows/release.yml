@@ -37,6 +37,8 @@ jobs:
         run: bun scripts/build-release.ts --version "$VERSION"
         env:
           VERSION: ${{ steps.version.outputs.version }}
+      - name: Check no binary carries crash-injection code
+        run: bun test/crash-build.ts check dist/release/patchbook-*
       - name: Check the binary reports the tag's version
         run: |
           reported=$(dist/release/patchbook-linux-x64 --version)

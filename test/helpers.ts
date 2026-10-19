@@ -1,3 +1,4 @@
+import { test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -5,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 type Env = Record<string, string>;
 
 export const TOOL = resolve(import.meta.dir, "..", "src", "cli.ts");
+export const TIMEOUT = 120_000;
 
 export function shlexSplit(line: string): string[] {
   const out: string[] = [];
@@ -52,6 +54,20 @@ export function shlexQuote(arg: string): string {
 
 // The implementation under test, as a command line. Defaults to the TypeScript one.
 export const CMD = shlexSplit(process.env["PATCHBOOK_CMD"] || [process.execPath, TOOL].map(shlexQuote).join(" "));
+
+let crashBinary: string | undefined;
+
+// Against a binary, this builds a second one, so the binary under test never carries crash.ts.
+export function crashCmd(): string[] {
+  if (!process.env["PATCHBOOK_CMD"]) return [process.execPath, "--preload", resolve(import.meta.dir, "crash-preload.ts"), TOOL];
+  if (!crashBinary) {
+    const dir = mkdtempSync(join(tmpdir(), "crash"));
+    process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+    crashBinary = join(dir, "patchbook");
+    sh([process.execPath, resolve(import.meta.dir, "crash-build.ts"), "build", crashBinary], { cwd: dir });
+  }
+  return [crashBinary];
+}
 
 // Python's textwrap.dedent: blank lines are emptied, then the common leading whitespace is removed.
 export function dedent(text: string): string {
@@ -128,8 +144,8 @@ function definedEnv(env: Record<string, string | undefined>): Env {
 }
 
 // The default environment for sh(): the caller's, plus a git identity, no global git config
-// (GIT_CONFIG_GLOBAL=/dev/null), and the commit hook and the skill install off (PATCHBOOK_HOOK=0,
-// PATCHBOOK_SKILL=0), so a test turns them on only when it means to.
+// (GIT_CONFIG_GLOBAL=/dev/null), git's messages in English (LC_ALL=C), and the commit hook and the skill
+// install off (PATCHBOOK_HOOK=0, PATCHBOOK_SKILL=0), so a test turns them on only when it means to.
 function baseEnv(): Env {
   return {
     ...definedEnv(process.env),
@@ -138,6 +154,7 @@ function baseEnv(): Env {
     GIT_COMMITTER_NAME: "t",
     GIT_COMMITTER_EMAIL: "t@t",
     GIT_CONFIG_GLOBAL: "/dev/null",
+    LC_ALL: "C",
     PATCHBOOK_HOOK: "0",
     PATCHBOOK_SKILL: "0",
   };
@@ -212,4 +229,24 @@ export class Case {
     }
     return r;
   }
+}
+
+export const isRoot = process.getuid?.() === 0;
+
+/**
+ * A test that needs the OS to refuse a read or write (chmod a-w, 0o444, 0o000). Root ignores file
+ * permissions, so it skips there. Pass the case class to get a fresh one, cleaned up after the body.
+ */
+export function permissionTest(name: string, body: () => void): void;
+export function permissionTest<C extends Case>(name: string, body: (t: C) => void, make: new () => C): void;
+export function permissionTest<C extends Case>(name: string, body: (t: C) => void, make?: new () => C): void {
+  test.skipIf(isRoot)(name, () => {
+    if (!make) return (body as () => void)();
+    const t = new make();
+    try {
+      body(t);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
 }
