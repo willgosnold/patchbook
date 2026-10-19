@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   test:
-    name: test (${{ matrix.os }})
+    name: test (${{ matrix.os }}, ${{ matrix.shard.name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -24,6 +24,14 @@ jobs:
         # requests test on Ubuntu only. Pushes to main (and manual runs, for
         # checking a branch on macOS before merging) test on both.
         os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
+        # The end-to-end tests are nearly all the run time, so they are split
+        # by top-level describe block across parallel jobs. The three patterns
+        # cover every test exactly once; a new top-level describe block lands
+        # in "rest".
+        shard:
+          - { name: fork, pattern: "^ForkTest " }
+          - { name: vendor, pattern: "^VendorTest " }
+          - { name: rest, pattern: "^(?!ForkTest |VendorTest )" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,10 +41,27 @@ jobs:
           bun-version: 1.4.3
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      # Each file gets a fresh module registry: units.test.ts needs settings.ts loaded under its own sandbox.
-      - run: bun test --isolate
+      # Every test file except e2e, which runs below against the compiled
+      # binary that ships. Each file gets a fresh module registry:
+      # units.test.ts needs settings.ts loaded under its own sandbox.
+      - name: Unit tests
+        if: matrix.shard.name == 'rest'
+        run: bun test --isolate $(ls test/*.test.ts | grep -v '/e2e\.test\.ts$')
       - run: bun run build
       - name: End-to-end tests against the compiled binary
-        run: bun test test/e2e.test.ts
+        run: bun test test/e2e.test.ts --test-name-pattern "$PATTERN"
         env:
           PATCHBOOK_CMD: ${{ github.workspace }}/dist/patchbook
+          PATTERN: ${{ matrix.shard.pattern }}
+
+  # main's ruleset requires a check named "test (ubuntu-latest)". This job
+  # gives that name one result for the whole matrix above.
+  required:
+    name: test (ubuntu-latest)
+    if: always()
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "$RESULT" = success
+        env:
+          RESULT: ${{ needs.test.result }}
