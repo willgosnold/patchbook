@@ -29,7 +29,7 @@ export function describe(p: Problem): string {
     case "leak":
       return `leak      ${at} still says ${p.terms.join(", ")}`;
     case "orphan": {
-      const near = p.nearest.map((n) => `line ${n.line} [${n.hash}] ${n.similarity}`).join(", ") || "none";
+      const near = p.nearest.map((n) => `line ${n.line} [${n.hash}] ${Math.round(n.similarity * 100)}%`).join(", ") || "none";
       return `orphan    ${p.file} [${p.hash}] intent: ${p.intent}\n          nearest new blocks: ${near}`;
     }
     case "invalid":

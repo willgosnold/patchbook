@@ -13,7 +13,7 @@ const ambientConfigHome = process.env["XDG_CONFIG_HOME"];
 process.env["XDG_CONFIG_HOME"] = join(sandbox, "config");
 
 const { applyStructure } = await import("../src/assemble.ts");
-const { blockSpans, formatEntry, nearest, readEntries } = await import("../src/blocks.ts");
+const { blockSpans, formatEntry, nearest, readEntries, similarity } = await import("../src/blocks.ts");
 const { Book, globRe } = await import("../src/book.ts");
 const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
 const { intentSettings, pendingDiff, PROVIDERS, writeIntent } = await import("../src/intent.ts");
@@ -318,10 +318,44 @@ describe("entries", () => {
   });
 });
 
-describe("nearest", () => {
-  test("rounds the similarity to two places, and a half up", () => {
+describe("similarity", () => {
+  test("is twice the matching code points over both lengths, to two places, a half up", () => {
     expect(new SequenceMatcher<string>("abcdefgh", "abcdeXYZ").ratio()).toBe(0.625);
+    expect(similarity("abcdefgh", "abcdeXYZ")).toBe(0.63);
+  });
+
+  test("rounds a half up where rounding the float would round it down", () => {
+    const a = "x".repeat(113) + "a".repeat(88);
+    const b = "x".repeat(113) + "b".repeat(86);
+    expect(new SequenceMatcher<string>(a, b).ratio()).toBe(0.565);
+    expect(similarity(a, b)).toBe(0.57);
+  });
+
+  test("counts a code point once, as SequenceMatcher does", () => {
+    expect(similarity("😀😀", "😀😁")).toBe(0.5);
+  });
+
+  test("is 1 for two empty texts and for equal ones, and 0 when nothing matches", () => {
+    expect(similarity("", "")).toBe(1);
+    expect(similarity("same", "same")).toBe(1);
+    expect(similarity("abc", "xyz")).toBe(0);
+  });
+});
+
+describe("nearest", () => {
+  test("gives the similarity as similarity rounds it", () => {
     expect(nearest("abcdefgh", [{ line: 3, hash: "h", upstream: "abcdeXYZ" }])).toEqual([{ line: 3, hash: "h", similarity: 0.63 }]);
+  });
+
+  test("keeps the two most alike from 0.4, ties in the order of the candidates", () => {
+    const candidates = [
+      { line: 1, hash: "far", upstream: "zzzzzzzz" },
+      { line: 2, hash: "tie-a", upstream: "abcdXXXX" },
+      { line: 3, hash: "close", upstream: "abcdefgX" },
+      { line: 4, hash: "tie-b", upstream: "XXXXefgh" },
+    ];
+    expect(nearest("abcdefgh", candidates).map((n) => [n.hash, n.similarity])).toEqual([["close", 0.88], ["tie-a", 0.5]]);
+    expect(nearest("abcdefgh", candidates, 3).map((n) => n.hash)).toEqual(["close", "tie-a", "tie-b"]);
   });
 });
 

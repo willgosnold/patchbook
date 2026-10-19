@@ -5267,6 +5267,7 @@ describe("ForkTest", () => {
     const first: Nearest = { line: 7, hash: orphan.nearest[0].hash, similarity: 0.9 };
     expect(orphan.nearest[0]).toEqual(first);
     expect(out).toContain('"similarity": 0.9\n');
+    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout).toContain(`nearest new blocks: line 7 [${orphan.nearest[0].hash}] 90%\n`);
   });
 
   vendorTest("test_a_check_hook_may_return_an_orphan", (t) => {
@@ -5278,7 +5279,7 @@ describe("ForkTest", () => {
         }];
       }
     `));
-    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout).toContain("nearest new blocks: line 1 [h] 0.5\n");
+    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout).toContain("nearest new blocks: line 1 [h] 50%\n");
     const out = t.pb(["status", "--json"], { cwd: t.repo.path, code: 1 }).stdout;
     const orphan = JSON.parse(out).problems.find((p: { hash: string }) => p.hash === "abc");
     expect(orphan.nearest).toEqual([{ line: 1, hash: "h", similarity: 0.5 }]);
@@ -7725,7 +7726,7 @@ describe("VendorTest", () => {
     const status = t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout;
     expect(status).toContain("orphan");
     expect(status).toContain("missing");
-    expect(status).toMatch(/nearest new blocks: line 7 \[[0-9a-f]{12}\] 0\.9/);
+    expect(status).toMatch(/nearest new blocks: line 7 \[[0-9a-f]{12}\] 90%/);
   });
 
   vendorTest("test_no_copy_of_upstream_in_the_repo", (t) => {

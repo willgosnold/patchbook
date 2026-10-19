@@ -110,11 +110,23 @@ export function checkEntry(e: Entry): string | null {
   return null;
 }
 
+/**
+ * How alike two blocks are: twice the matching code points over both lengths, to two places, a half rounded up.
+ * Rounded on whole numbers, floor((400 * matches + total) / (2 * total)) / 100, so 0.565 is 0.57,
+ * where Math.round(r * 100) / 100 gives 0.56.
+ */
+export function similarity(a: string, b: string): number {
+  const total = Array.from(a).length + Array.from(b).length;
+  if (total === 0) return 1;
+  const matches = new SequenceMatcher<string>(a, b).getMatchingBlocks().reduce((sum, m) => sum + m[2], 0);
+  return Math.floor((400 * matches + total) / (2 * total)) / 100;
+}
+
 export function nearest(text: string, candidates: readonly Unmatched[], limit = 2): Nearest[] {
   const scored = candidates
-    .map((c) => [new SequenceMatcher<string>(text, c.upstream).ratio(), c] as const)
+    .map((c) => [similarity(text, c.upstream), c] as const)
     .sort((x, y) => y[0] - x[0]);
-  return scored.slice(0, limit).filter(([r]) => r >= 0.4).map(([r, c]) => ({ line: c.line, hash: c.hash, similarity: Math.round(r * 100) / 100 }));
+  return scored.slice(0, limit).filter(([s]) => s >= 0.4).map(([s, c]) => ({ line: c.line, hash: c.hash, similarity: s }));
 }
 
 export function orphan(rel: string, entry: Entry, candidates: readonly Unmatched[]): Problem {
