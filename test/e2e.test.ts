@@ -269,6 +269,28 @@ test("test_version", () => {
   }
 }, TIMEOUT);
 
+test("test_help_prints_to_stdout_and_exits_0", () => {
+  const t = new Case();
+  try {
+    const out = t.pb(["sync", "--help"], { cwd: t.tmp });
+    expect(out.stdout).toStartWith("usage: patchbook sync ");
+    expect(out.stderr).toBe("");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("test_a_usage_error_prints_two_lines_to_stderr_and_exits_2", () => {
+  const t = new Case();
+  try {
+    const out = t.pb(["sync", "--forse"], { cwd: t.tmp, code: 2 });
+    expect(out.stdout).toBe("");
+    expect(out.stderr).toBe('patchbook sync: unknown option "--forse"\nRun `patchbook sync --help` for its arguments and options.\n');
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("test_clone_keeps_the_destination_it_was_given", () => {
   const t = new Case();
   try {
@@ -2810,6 +2832,14 @@ for (const [layout, hasRemote] of [["fork", true], ["folder", false]] as const) 
     }
   }, TIMEOUT);
 }
+
+forkTest("test_a_message_escapes_the_control_and_format_characters_in_a_config_value", (t) => {
+  const config = join(t.fork.path, ".patchbook/config.toml");
+  writeFileSync(config, read(config).replace(/^layout = .*$/m, 'layout = "x\\u009b2Jy\\u202ez\\u007f\\u0085"'));
+  const refused = t.pb(["status"], { cwd: t.fork.path, code: 1 });
+  expect(refused.stderr).toContain('layout must be folder or fork, not "x\\u009b2Jy\\u202ez\\u007f\\u0085"');
+  expect(refused.stderr.replace(/\n$/, "")).not.toMatch(/[\p{Cc}\p{Cf}]/u);
+});
 
 test("test_a_refused_fork_init_does_not_print_the_password_in_a_remote", () => {
   const t = new Case();
@@ -6114,6 +6144,21 @@ describe("ForkTest", () => {
     t.pb(["upstream", "upstream", "--since", sh(["git", "rev-parse", "HEAD"], { cwd: t.up.path }).stdout.trim()], { cwd: t.fork.path });
   });
 
+  forkTest("test_upstream_refuses_options_it_cannot_apply_together_and_writes_nothing", (t) => {
+    const out = join(t.tmp, "out");
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.up.path }).stdout.trim();
+    for (const [args, problem] of [
+      [["--diff", "--export", out], "--export can't go with --diff"],
+      [["app.txt", "--export", out], "--export can't go with <path>"],
+      [["--since", head, "--diff"], "--diff can't go with --since"],
+    ] as const) {
+      const r = t.pb(["upstream", "upstream", ...args], { cwd: t.fork.path, code: 2 });
+      expect(r.stdout).toBe("");
+      expect(r.stderr).toBe(`patchbook upstream: ${problem}\nRun \`patchbook upstream --help\` for its arguments and options.\n`);
+    }
+    expect(existsSync(out)).toBe(false);
+  });
+
   describe("a json placeholder file", () => {
     const useJson = (t: VendorCase, json: string): string => {
       const entries = t.missingScaffoldPatchBuild();
@@ -6240,6 +6285,16 @@ describe("ForkTest", () => {
     expect(prompt).toContain(`--- built/tail.txt\n+++ disk/tail.txt\n${hunks.tail}`);
     expect(prompt).toContain(`--- built/middle.txt\n+++ disk/middle.txt\n${hunks.middle}`);
     expect(prompt).toContain(`--- /dev/null\n+++ disk/added.txt\n${hunks.added}`);
+  });
+
+  forkTest("test_show_says_when_a_change_has_no_intent_yet", (t) => {
+    mkdirSync(join(t.fork.path, ".patchbook/changes/noted"), { recursive: true });
+    writeFileSync(join(t.fork.path, ".patchbook/changes/noted/CHANGE.md"), "# noted\n\nintent:\n\nedits:\n");
+    appendFileSync(join(t.fork.path, ".patchbook/series"), "noted\n");
+    const shown = t.pb(["show", "noted"], { cwd: t.fork.path }).stdout;
+    expect(shown).toStartWith("noted: (no intent yet)\n");
+    expect(shown).not.toContain("None");
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("it has no intent");
   });
 
   forkTest("test_record_keeps_a_given_intent_when_no_name_is_given", (t) => {
@@ -8157,7 +8212,7 @@ describe("ForkTest", () => {
       appendFileSync(join(t.fork.path, ".patchbook/config.toml"), `\n[placeholders.term]\nfile = "${file}"\n`);
       commitWithoutHook(t, "a placeholder file outside the repo");
       const out = t.pb(["build", "--force"], { cwd: t.fork.path, code: 1 });
-      expect(out.stderr).toContain(`[placeholders.term] file '${file}' is outside the repo`);
+      expect(out.stderr).toContain(`[placeholders.term] file "${file}" is outside the repo`);
       expect(t.fork.read("note.md")).not.toContain("OUTSIDE");
     });
   }
@@ -11855,9 +11910,9 @@ exec '${Bun.which("git")}' "$@"
   vendorTest("test_a_mistyped_hook_gets_did_you_mean_from_similarity_0_6_and_the_list_of_hooks_below_it", (t) => {
     const hooks = join(t.repo.path, ".patchbook/hooks.ts");
     writeFileSync(hooks, "export function chexy() {}\n");
-    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stderr).toContain("`chexy` isn't a hook; did you mean `check`?\n");
+    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stderr).toContain("\"chexy\" isn't a hook; did you mean `check`?\n");
     writeFileSync(hooks, "export function cqhqeqcqkqqq() {}\n");
-    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stderr).toContain("`cqhqeqcqkqqq` isn't a hook. The hooks are placeholder, blockTerms, finish, check.\n");
+    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stderr).toContain("\"cqhqeqcqkqqq\" isn't a hook. The hooks are placeholder, blockTerms, finish, check.\n");
   });
 
   vendorTest("test_check_may_return_any_kind_of_problem", (t) => {
@@ -12431,7 +12486,7 @@ exec '${Bun.which("git")}' "$@"
       const before = tree(t.repo.path);
       for (const args of [["build", "--force"], ["status"]]) {
         const out = t.pb(args, { cwd: t.repo.path, code: 1 });
-        expect(out.stderr).toContain(`[output] to ${JSON.stringify(to).replaceAll('"', "'")} is inside .patchbook`);
+        expect(out.stderr).toContain(`[output] to ${JSON.stringify(to)} is inside .patchbook`);
         expect(tree(t.repo.path)).toEqual(before);
       }
     });
@@ -15070,7 +15125,7 @@ describe("PendingIntentTest", () => {
   const committed = (t: ForkCase): string => sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.fork.path }).stdout;
 
   const expectPending = (t: ForkCase, name: string): void => {
-    expect(changeText(t, name)).toContain("\nintent: \n");
+    expect(changeText(t, name)).toContain("\nintent:\n");
     expect(read(join(t.fork.path, ".patchbook/series")).split("\n")).toContain(name);
     const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
     expect(status).toContain(`changes/${name}: it has no intent; fill it with \`patchbook intent ${name}\``);
@@ -15261,10 +15316,10 @@ describe("PendingIntentTest", () => {
 
     forkTest("test_a_timeout_that_is_not_a_positive_number_of_seconds_is_refused", (t) => {
       for (const bad of ["abc", "0", "-3", ""]) {
-        if (bad) expect(t.pb(["config", "intent.timeout", bad], { cwd: t.fork.path, code: 1 }).stderr).toContain("intent.timeout is a positive number of seconds");
+        if (bad) expect(t.pb(["config", "intent.timeout", "--", bad], { cwd: t.fork.path, code: 1 }).stderr).toContain("intent.timeout is a positive number of seconds");
       }
       t.env["PATCHBOOK_INTENT_TIMEOUT"] = "soon";
-      expect(t.pb(["config", "intent.timeout"], { cwd: t.fork.path, code: 1 }).stderr).toContain("intent.timeout is a positive number of seconds, not 'soon'");
+      expect(t.pb(["config", "intent.timeout"], { cwd: t.fork.path, code: 1 }).stderr).toContain('intent.timeout is a positive number of seconds, not "soon"');
     });
 
     forkTest("test_a_timeout_that_is_not_a_whole_number_of_milliseconds_still_calls_the_model", (t) => {
@@ -15387,7 +15442,7 @@ describe("PendingIntentTest", () => {
     forkTest("test_intent_help_describes_the_command", (t) => {
       expect(t.pb(["--help"], { cwd: t.fork.path }).stdout).toContain("fill the empty intents");
       const help = t.pb(["intent", "--help"], { cwd: t.fork.path }).stdout;
-      expect(help).toContain("usage: patchbook intent [-h] [--intent INTENT] [change]");
+      expect(help).toContain("usage: patchbook intent [<change>] [options]");
     });
   });
 
@@ -15433,7 +15488,7 @@ describe("PendingIntentTest", () => {
       const restore = breakModel(t, "exit");
       const run = t.pb(["record"], { cwd: t.repo.path });
       expect(run.stdout).toContain("no intent yet for pending and the new entries (claude failed: fake claude: offline). To fill it: patchbook intent\n");
-      expect(read(join(t.repo.path, ".patchbook/changes/pending/CHANGE.md"))).toContain("\nintent: \n");
+      expect(read(join(t.repo.path, ".patchbook/changes/pending/CHANGE.md"))).toContain("\nintent:\n");
       restore();
       const fill = t.pb(["intent"], { cwd: t.repo.path });
       expect(fill.stdout).toBe("intent   pending: Shout the second line.\nentries  skills/hello/SKILL.md: Shout the second line.\n");

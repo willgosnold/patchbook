@@ -48,3 +48,13 @@ export function byCodePoint(a: string, b: string): number {
   }
   return a.length - b.length;
 }
+
+/** What a message writes for a value that came from outside: JSON, with every control and format character escaped too.
+ * JSON.stringify leaves DEL, U+0080 to U+009F and format characters such as U+202E raw, and a terminal can act on them. */
+export function quote(value: unknown): string {
+  const json = JSON.stringify(value) as string | undefined;
+  return (json ?? String(value)).replace(/[\p{Cc}\p{Cf}]/gu, (c) => {
+    const code = c.codePointAt(0)!;
+    return code > 0xffff ? `\\u{${code.toString(16)}}` : `\\u${code.toString(16).padStart(4, "0")}`;
+  });
+}

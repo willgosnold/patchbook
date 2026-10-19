@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TomlDocument } from "@decimalturn/toml-patch";
@@ -7,14 +7,44 @@ import { unifiedDiff } from "../src/lib/diff.ts";
 import { nonFolders, rmFolders } from "../src/lib/fs.ts";
 import { lineChanges, similarity } from "../src/lib/match.ts";
 import { git, shellQuote } from "../src/lib/proc.ts";
-import { strRepr } from "../src/lib/repr.ts";
-import { byCodePoint, encode, withoutFinalNewline } from "../src/lib/text.ts";
+import { byCodePoint, encode, quote, withoutFinalNewline } from "../src/lib/text.ts";
 
-type Fixture = {
-  repr: { s: string; repr: string }[];
-};
+describe("quote", () => {
+  test.each([
+    ["plain", '"plain"'],
+    ["a b ", '"a b "'],
+    ["", '""'],
+    ['say "hi"', '"say \\"hi\\""'],
+    ["a\\b", '"a\\\\b"'],
+    ["a\tb", '"a\\tb"'],
+    ["a\nb", '"a\\nb"'],
+    ["a\x1bb", '"a\\u001bb"'],
+    ["a\x7fb", '"a\\u007fb"'],
+    ["a\u0085b", '"a\\u0085b"'],
+    ["a\u009bb", '"a\\u009bb"'],
+    ["a\u202eb", '"a\\u202eb"'],
+    ["a\u200bb", '"a\\u200bb"'],
+    ["a\ufeffb", '"a\\ufeffb"'],
+    ["a\u{e0001}b", '"a\\u{e0001}b"'],
+    ["a\ud800b", '"a\\ud800b"'],
+    ["a\udc00", '"a\\udc00"'],
+    ["é\u{1f600}", '"é\u{1f600}"'],
+  ])("writes %j as %s", (value, written) => {
+    expect(quote(value)).toBe(written);
+  });
 
-const cases: Fixture = JSON.parse(readFileSync(new URL("fixtures/cpython.json", import.meta.url), "utf8"));
+  test("writes a value that is not text as JSON, with the same escapes inside", () => {
+    expect(quote(3)).toBe("3");
+    expect(quote(null)).toBe("null");
+    expect(quote(undefined)).toBe("undefined");
+    expect(quote({ "a\u009b": ["\u202e"] })).toBe('{"a\\u009b":["\\u202e"]}');
+  });
+
+  test("leaves no control or format character, and no lone surrogate, in what it writes", () => {
+    const everything = Array.from({ length: 0x3000 }, (_, i) => String.fromCharCode(i)).join("") + "\u{e0001}\u{1d173}";
+    expect(quote(everything)).not.toMatch(/[\p{Cc}\p{Cf}\p{Cs}]/u);
+  });
+});
 
 describe("byCodePoint", () => {
   test("puts a character above U+FFFF after U+E000 to U+FFFF, where sort() alone puts it before them", () => {
@@ -350,10 +380,6 @@ describe("unifiedDiff", () => {
       }
     });
   });
-});
-
-test("repr(str)", () => {
-  for (const c of cases.repr) expect(strRepr(c.s)).toBe(c.repr);
 });
 
 describe("the TOML library's syntax tree", () => {

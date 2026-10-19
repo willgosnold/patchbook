@@ -13,8 +13,8 @@ const sandbox = mkdtempSync(join(tmpdir(), "units"));
 const ambientConfigHome = process.env["XDG_CONFIG_HOME"];
 process.env["XDG_CONFIG_HOME"] = join(sandbox, "config");
 
-const { applyStructure } = await import("../src/assemble.ts");
-const { blockSpans, formatEntry, nearest, parsePlaceholders, readEntries } = await import("../src/blocks.ts");
+const { applyStructure, describe: describeProblem } = await import("../src/assemble.ts");
+const { blockHash, blockSpans, checkEntry, formatEntry, nearest, parsePlaceholders, readEntries, Rules } = await import("../src/blocks.ts");
 const { Book, globRe, lockText, parseLock } = await import("../src/book.ts");
 const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
 const { intentSettings, pendingDiff, PROVIDERS, writeIntent } = await import("../src/intent.ts");
@@ -22,8 +22,8 @@ const { Fail } = await import("../src/lib/fail.ts");
 const { meantMode, outputMode, recordedModes } = await import("../src/lib/fs.ts");
 const { redact, refuseCredentials } = await import("../src/lib/proc.ts");
 const { classify, needOf } = await import("../src/record.ts");
-const { bytesEqual, encode } = await import("../src/lib/text.ts");
-const { setToml, USER_CONFIG } = await import("../src/settings.ts");
+const { bytesEqual, encode, quote } = await import("../src/lib/text.ts");
+const { setting, setToml, USER_CONFIG } = await import("../src/settings.ts");
 const { lastSyncText, parseLastSync } = await import("../src/sync.ts");
 
 type Entry = ReturnType<typeof readEntries> extends Map<string, infer E> ? E : never;
@@ -365,6 +365,22 @@ describe("entries", () => {
   test("the fields can come in any order", () => {
     const path = put(join(scratch(), "x.entries"), "=== entry 0123456789ab\nintent: I\nrules: r\nkind: translation\n--- upstream\nu\n--- patched\np\n");
     expect(readEntries(path).get("0123456789ab")).toEqual(entry({ intent: "I", rules: "r", upstream: "u", patched: "p" }));
+  });
+
+  test("an entry with an empty intent reads back empty, and checkEntry says it has none", () => {
+    const upstream = "Open Cursor.";
+    const e = entry({ hash: blockHash(upstream), upstream, intent: "" });
+    const written = formatEntry(e);
+    expect(written).toContain("\nintent: \n");
+    expect(written).not.toContain("None");
+    const [read] = roundTrip(e);
+    expect(read?.intent).toBe("");
+    expect(checkEntry(read!)).toBe("it has no intent; fill it with `patchbook intent`");
+  });
+
+  test("status shows an orphan entry with no intent as (no intent yet)", () => {
+    const orphan: Problem = { problem: "orphan", file: "a.md", hash: "0123456789ab", kind: "policy", rules: "", intent: "", upstream: "u", patched: "p", nearest: [] };
+    expect(describeProblem(orphan)).toStartWith("orphan    a.md [0123456789ab] intent: (no intent yet)\n");
   });
 
   test("an empty file has no entries", () => {
@@ -922,7 +938,14 @@ describe.skipIf(!inSandbox)("intentSettings", () => {
   test("an unknown provider is refused", () => {
     process.env["PATCHBOOK_PROVIDER"] = "gemini";
     expect(() => intentSettings(null, true)).toThrow(Fail);
-    expect(() => intentSettings(null, true)).toThrow("intent.provider is one of claude, codex, none, not 'gemini'");
+    expect(() => intentSettings(null, true)).toThrow('intent.provider is one of claude, codex, none, not "gemini"');
+  });
+
+  test("an unknown provider is quoted as written, whatever it holds", () => {
+    process.env["PATCHBOOK_PROVIDER"] = "a'b";
+    expect(() => intentSettings(null, true)).toThrow('intent.provider is one of claude, codex, none, not "a\'b"');
+    process.env["PATCHBOOK_PROVIDER"] = "gem ini ";
+    expect(() => intentSettings(null, true)).toThrow('intent.provider is one of claude, codex, none, not "gem ini "');
   });
 
   test("a setting of the wrong type is refused, naming the file", async () => {
@@ -984,6 +1007,97 @@ describe.skipIf(!inSandbox)("writeIntent", () => {
   test("shows the first 500 characters of an unusable reply without splitting one", async () => {
     const book = await answering(`printf '!${"😀".repeat(600)}'`);
     expect(() => writeIntent(book, new Map(), "", "x", true)).toThrow(`.\n!${"😀".repeat(499)}\nPass a name and --intent instead.`);
+  });
+
+  test("lists a change with no intent as (no intent yet) in the prompt, never None or nothing", async () => {
+    const book = await answering("true");
+    const prompt = join(scratch(), "prompt.txt");
+    PROVIDERS.set("sh", { model: "m", effort: "e", command: () => ["sh", "-c", `cat >${prompt}; echo '{"change": "x", "intent": "Do x."}'`] });
+    const changes = new Map([
+      ["blank", new Change("blank", "", "")],
+      ["said", new Change("said", "", "Say it.")],
+    ]);
+    writeIntent(book, changes, "", "x", true);
+    const text = readFileSync(prompt, "utf8");
+    expect(text).toContain("blank: (no intent yet)\nsaid: Say it.");
+    expect(text).not.toContain("None");
+  });
+});
+
+describe("a message quotes a value from outside in double quotes", () => {
+  const refusal = (fn: () => unknown): string => {
+    try {
+      fn();
+    } catch (e) {
+      if (e instanceof Fail) return e.message;
+      throw e;
+    }
+    throw new Error("expected a refusal");
+  };
+  const book = async (config: string, hooks?: string): Promise<Opened> => {
+    const root = scratch();
+    put(join(root, ".patchbook", "config.toml"), `${config}[[upstream]]\nremote = "https://example.com/x.git"\nmount = ""\n`);
+    if (hooks !== undefined) put(join(root, ".patchbook", "hooks.ts"), hooks);
+    return Book.open(root);
+  };
+
+  describe.skipIf(!inSandbox)("a setting's env var", () => {
+    const ambient = process.env["PATCHBOOK_HOOK"];
+    afterEach(() => {
+      if (ambient === undefined) delete process.env["PATCHBOOK_HOOK"];
+      else process.env["PATCHBOOK_HOOK"] = ambient;
+    });
+
+    test("that is not true or false is quoted as written", () => {
+      for (const [raw, shown] of [["maybe", '"maybe"'], ["a'b", `"a'b"`], ["maybe ", '"maybe "']] as const) {
+        process.env["PATCHBOOK_HOOK"] = raw;
+        expect(refusal(() => setting("hook.enabled"))).toBe(`hook.enabled is true or false, not ${shown}`);
+      }
+    });
+  });
+
+  test("a placeholder no source holds is quoted", async () => {
+    const b = await book('[placeholders.snip]\nfile = ".patchbook/snip.json"\nformat = "json"\n');
+    put(join(b.root, ".patchbook", "snip.json"), "{}");
+    const unknown: string[] = [];
+    new Rules(b, new Set()).expand("{{snip:a'b}} {{snip:greet }}", (detail) => unknown.push(detail));
+    expect(unknown).toEqual([`unknown snip "a'b"`, 'unknown snip "greet "']);
+  });
+
+  test("a placeholder hook's answer that is not a string names the kind and the key in quotes", async () => {
+    const b = await book("", "export const placeholder = () => 1;\n");
+    expect(refusal(() => b.hooks.placeholder!("a'b", "n"))).toContain(`placeholder("a'b", "n") returned number, not a string`);
+  });
+
+  test("an export of hooks.ts that is not a hook is quoted", async () => {
+    await expect(book("", "export const blockterms = () => [];\n")).rejects.toThrow('"blockterms" isn\'t a hook; did you mean `blockTerms`?');
+    await expect(book("", 'const x = 1;\nexport { x as "a\'b " };\n')).rejects.toThrow(`"a'b " isn't a hook.`);
+  });
+
+  test("a layout that is neither folder nor fork is quoted, or shown as JSON when it is not text", async () => {
+    for (const [value, shown] of [['"bogus"', '"bogus"'], [`"a'b"`, `"a'b"`], ['"fork "', '"fork "'], ["3", "3"]] as const) {
+      await expect(book(`layout = ${value}\n`)).rejects.toThrow(`layout must be folder or fork, not ${shown}`);
+    }
+  });
+
+  test("an [output] folder is quoted as written in what is wrong with it", async () => {
+    for (const [to, shown, why] of [
+      ["../a'b", `"../a'b"`, "is outside the repo."],
+      ["../out ", '"../out "', "is outside the repo."],
+      [".", '"."', "is the repo root."],
+      [".patchbook/o'ut", `".patchbook/o'ut"`, "is inside .patchbook."],
+    ] as const) {
+      await expect(book(`layout = "folder"\n[output]\nto = ${JSON.stringify(to)}\n`)).rejects.toThrow(`[output] to ${shown} ${why}`);
+    }
+  });
+});
+
+describe("formatChange", () => {
+  test("writes a change with no intent as an empty intent line that reads back empty, never None", () => {
+    const text = formatChange(new Change("c", "", ""));
+    expect(text).toBe("# c\n\nintent:\n\nedits:\n");
+    const path = put(join(scratch(), "c", "CHANGE.md"), text);
+    expect(parseChange(path, () => {}).intent).toBe("");
   });
 });
 
@@ -1055,7 +1169,7 @@ describe("parseChange", () => {
     for (const ws of [" ", "\t", "\uFEFF", "\u00A0", "\u3000"]) {
       for (const kind of KINDS) {
         const quoted = editText({ kind: "add", path: `a${ws}` }).slice("add ".length);
-        expect(() => parse([`- ${kind} a${ws}`])).toThrow(`CHANGE.md:6: the path ${JSON.stringify(`a${ws}`)} starts or ends with whitespace; write it in double quotes: ${quoted}`);
+        expect(() => parse([`- ${kind} a${ws}`])).toThrow(`CHANGE.md:6: the path ${quote(`a${ws}`)} starts or ends with whitespace; write it in double quotes: ${quoted}`);
         expect(() => parse([`- ${kind} ${ws}a`])).toThrow("CHANGE.md:6: the path ");
       }
       for (const kind of ["move", "copy"] as const) {

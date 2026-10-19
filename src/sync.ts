@@ -12,7 +12,7 @@ import { similarity } from "./lib/match.ts";
 import { spawn } from "./lib/proc.ts";
 import { boolean, count, jsonText, list, named, nullable, object, oid, readJson, type Shape, string, table, versioned } from "./lib/shape.ts";
 import { say, verbatim, warn } from "./lib/term.ts";
-import { byCodePoint, bytesEqual, decodeReplace, isText } from "./lib/text.ts";
+import { byCodePoint, bytesEqual, decodeReplace, isText, quote } from "./lib/text.ts";
 import { type Pin, pinned, type Upstream } from "./store.ts";
 
 export const EXIT_MOVED = 10;
@@ -442,9 +442,9 @@ function recover(book: Book, u: Upstream): void {
     const { from, to, rewrite, added, vendor: path, copy, made } = record;
     const vendor = path ? pjoin(book.root, path) : null;
     const unsafe = vendor && unsafeVendor(book.root, vendor);
-    if (unsafe) throw stuck(book, u, `its record names the vendor folder ${JSON.stringify(path)}, which ${unsafe}`);
+    if (unsafe) throw stuck(book, u, `its record names the vendor folder ${quote(path)}, which ${unsafe}`);
     if (vendor && vendor !== u.vendor) {
-      throw stuck(book, u, `its record names the vendor folder ${JSON.stringify(path)}, and config.toml ${u.vendor ? `sets ${JSON.stringify(relative(book.root, u.vendor))}` : "sets no vendor folder"} for ${u.name}`);
+      throw stuck(book, u, `its record names the vendor folder ${quote(path)}, and config.toml ${u.vendor ? `sets ${quote(relative(book.root, u.vendor))}` : "sets no vendor folder"} for ${u.name}`);
     }
     const old = join(j, "old");
     const newCopy = lexists(old) || !copy;

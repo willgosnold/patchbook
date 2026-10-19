@@ -218,7 +218,7 @@ describe("the codex provider", () => {
     const out = t.record().stdout;
     expect(out).toContain("pending  no intent yet for pending (codex failed: codex: not logged in). To fill it: patchbook intent pending");
     expect(t.changes()).toEqual(["pending"]);
-    expect(t.fork.read(".patchbook/changes/pending/CHANGE.md")).toContain("\nintent: \n");
+    expect(t.fork.read(".patchbook/changes/pending/CHANGE.md")).toContain("\nintent:\n");
     expect(t.changeText()).not.toContain("codex-shout");
     expect(t.changeText()).not.toContain("Shout.");
   });
@@ -239,7 +239,7 @@ describe("the codex provider", () => {
       expect(out).toContain("pending  no intent yet for pending (codex didn't return a usable name and intent). To fill it: patchbook intent pending");
       expect(t.called("codex")).toBe(true);
       expect(t.changes()).toEqual(["pending"]);
-      expect(t.fork.read(".patchbook/changes/pending/CHANGE.md")).toContain("\nintent: \n");
+      expect(t.fork.read(".patchbook/changes/pending/CHANGE.md")).toContain("\nintent:\n");
       for (const taken of ["Not Kebab Case", "not-kebab-case", "codex-shout", "Shout."]) expect(t.changeText()).not.toContain(taken);
     });
   }
@@ -503,6 +503,18 @@ describe("planning paragraph edits", () => {
     expect(read(t.entries)).toContain("kind: policy\nrules: \nintent: Shout the second line.\n--- upstream\nThen wave.\n--- patched\nThen wave twice.\n");
     expect(read(join(t.tmp, "prompt.txt"))).toContain("upstream/guide.md");
     expect(t.changes()).toEqual([]);
+  });
+
+  docTest("an edit recorded into a change with no intent writes an empty intent, never None, and status reports it missing", (t) => {
+    mkdirSync(join(t.repo.path, ".patchbook/changes/mine"), { recursive: true });
+    writeFileSync(join(t.repo.path, ".patchbook/changes/mine/CHANGE.md"), "# mine\n\nintent:\n\nedits:\n");
+    appendFileSync(join(t.repo.path, ".patchbook/series"), "mine\n");
+    t.edit("Then wave.", "Then wave twice.");
+    t.record(["mine"]);
+    const entries = read(t.entries);
+    expect(entries).toContain("kind: policy\nrules: \nintent: \n--- upstream\nThen wave.\n--- patched\nThen wave twice.\n");
+    expect(entries).not.toContain("None");
+    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout).toContain("it has no intent");
   });
 
   docTest("a paragraph put back as upstream wrote it loses its entry", (t) => {
