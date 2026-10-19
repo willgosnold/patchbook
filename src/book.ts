@@ -249,16 +249,19 @@ export class Book {
     return Book.fromText(root, readText(join(root, PB, "config.toml")));
   }
 
-  static async find(start?: string): Promise<Book> {
-    const here = resolve(start ?? process.cwd());
-    for (let d = here; ; d = join(d, "..")) {
-      if (exists(join(d, PB, "config.toml"))) {
-        installHookOrWarn(d);
-        return Book.open(d);
-      }
-      if (d === "/") break;
+  /** The folder with the nearest `.patchbook/config.toml`, here or above, without loading it. */
+  static root(start?: string): string | null {
+    for (let d = resolve(start ?? process.cwd()); ; d = join(d, "..")) {
+      if (exists(join(d, PB, "config.toml"))) return d;
+      if (d === "/") return null;
     }
-    throw new NoBook(`no ${PB}/config.toml here or above. Start one with \`patchbook clone\` or \`patchbook init\`.`);
+  }
+
+  static async find(start?: string): Promise<Book> {
+    const root = Book.root(start);
+    if (root === null) throw new NoBook(`no ${PB}/config.toml here or above. Start one with \`patchbook clone\` or \`patchbook init\`.`);
+    installHookOrWarn(root);
+    return Book.open(root);
   }
 
   private checkMounts(): void {

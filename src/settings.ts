@@ -2,6 +2,7 @@
 import { homedir } from "node:os";
 import { dirname } from "node:path";
 import { Book, NoBook } from "./book.ts";
+import { installHookOrWarn } from "./githook.ts";
 import { intentSettings, PROVIDERS } from "./intent.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, mkdirs, pjoin, readText, writeText } from "./lib/fs.ts";
@@ -193,6 +194,9 @@ export async function cmdConfig(args: { name: string | null; value: string | nul
       if (!(e instanceof Fail)) throw e;
       if (!(e instanceof NoBook)) broken = e;
     }
+  } else {
+    const root = Book.root();
+    if (root !== null) installHookOrWarn(root);
   }
   const name = args.name || null;
   if (name !== null && !isName(name)) throw new Fail(`no setting ${name}. Settings: ${NAMES.join(", ")}`);
