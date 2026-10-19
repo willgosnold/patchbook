@@ -12,6 +12,7 @@ import { git, run, spawn } from "./lib/proc.ts";
 import { quote, sorted, strip } from "./lib/py.ts";
 import { bytesEqual, decode, decodeReplace, encode } from "./lib/text.ts";
 import { setting } from "./settings.ts";
+import { linksUnder, Undo } from "./undo.ts";
 
 const SCRIPT = `#!/bin/sh
 # Installed by patchbook v2. On each commit, it records hand edits to the build output in the
@@ -147,8 +148,44 @@ export async function cmdHook(args: { action: "install" | "run" }) {
     installHook(git(["rev-parse", "--show-toplevel"], { cwd: process.cwd() }), true);
     return 0;
   }
+  const undo = new Undo();
+  try {
+    return await runHook(undo);
+  } catch (e) {
+    const stuck = undo.restore();
+    if (stuck.length) {
+      process.stderr.write("patchbook: couldn't put these back as they were:\n  " + stuck.join("\n  ")
+        + "\nCheck that you can write to them, then compare them with `git diff` before you commit again.\n");
+    }
+    throw e;
+  }
+}
+
+/** A recorded symlink is stored as one, at `changes/<name>/<side>/<path>.pb`, and the record replaces it. A link to a folder is
+ * not one, since the record writes into it. The walk reaches `p` only through real folders, so none above it is a link. */
+const isRecordedLink = (changes: string, p: string) => {
+  const [, side, ...path] = relative(changes, p).split("/");
+  return (side === "base" || side === "ours") && path.length > 0 && p.endsWith(".pb") && !isDir(p);
+};
+
+/** The record writes through a link and git can't see what lands behind it, so a failed run couldn't put that back.
+ * Only what the hook writes counts: it never writes `config.toml` or `upstream.lock`. */
+function refuseLinkedInputs(book: Book): void {
+  const inPatchbook = (name: string) => join(book.root, PB, name);
+  const linked = [
+    ...["blocks", "changes", "series", "build.lock"].map(inPatchbook).filter(isSymlink),
+    ...linksUnder(inPatchbook("blocks")),
+    ...linksUnder(inPatchbook("changes")).filter((p) => !isRecordedLink(inPatchbook("changes"), p)),
+  ].map((p) => relative(book.root, p));
+  if (linked.length) {
+    throw new Fail(linked.map((p) => `${p} is a link`).join(", ") + ". The hook records into it, so replace the link with a copy of what it points to, or skip the hook once with PATCHBOOK_HOOK=0.");
+  }
+}
+
+async function runHook(undo: Undo) {
   const book = await Book.find();
   if (!setting("hook.enabled", book)[0]) return 0;
+  refuseLinkedInputs(book);
   const lock = readBuildLock(book);
   const readEdits = placeholderOutputs(book).filter((p) => !leftByLastBuild(book, lock, p)).map((p) => inRepo(book, p));
   const loose = unstaged(book.root, [...buildInputs(book), ...readEdits]);
@@ -222,6 +259,7 @@ export async function cmdHook(args: { action: "install" | "run" }) {
   }
   if (edited.length) {
     if (!a.problems.length) plan(asRecorded(a.out, edited));
+    for (const p of buildInputs(book)) undo.hold(join(book.root, p));
     await cmdRecord({ change: null, intent: process.env["PATCHBOOK_INTENT"] ?? null, current: staged, edits: edited });
     a = assemble(book);
   }
@@ -237,7 +275,11 @@ export async function cmdHook(args: { action: "install" | "run" }) {
     const { stage, disk } = plan(a.out);
     built = stage;
     const written = [...disk.stale, ...disk.changed];
-    if (written.length) writeOutput(book, a.out, disk);
+    if (written.length) {
+      for (const p of buildInputs(book)) undo.hold(join(book.root, p));
+      for (const p of written) undo.hold(join(book.outputRoot(), p));
+      writeOutput(book, a.out, disk);
+    }
     if (built.length || written.length) process.stderr.write(`patchbook: built from ${book.pins()}\n`);
   }
   const wrote = [...unstaged(book.root, buildInputs(book)), ...built.map((p) => inRepo(book, p))];
