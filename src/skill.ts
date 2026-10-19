@@ -16,7 +16,7 @@ import { Undo } from "./undo.ts";
 
 const NAME = "patchbook-update";
 const CHANGE = "patchbook-update-skill";
-export const SCHEDULE = 'To keep up with upstream, add a daily T3 scheduled task in this project: "Use the patchbook-update skill."';
+export const SCHEDULE = 'To keep up with upstream, have an agent run "Use the patchbook-update skill." in this repo every day. https://github.com/willgosnold/patchbook#scheduled-updates shows how, with T3 Code, cron or CI.';
 
 /** Each agent reads the skill from .agents/skills, or from a folder that links there. */
 const AGENTS: ReadonlyMap<string, { link: string | null }> = new Map([

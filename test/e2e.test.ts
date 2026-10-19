@@ -294,6 +294,29 @@ test("test_clone_finishes_when_the_skill_cannot_be_installed", () => {
   }
 }, TIMEOUT);
 
+test("test_clone_and_init_point_to_the_scheduled_updates_section", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\ntwo\n");
+    up.commit("start");
+    const cloned = t.pb(["clone", up.path, "fork"], { cwd: t.tmp }).stdout;
+    sh(["git", "clone", "-q", up.path, join(t.tmp, "mine")], { cwd: t.tmp });
+    const forked = t.pb(["init", "--upstream", up.path], { cwd: join(t.tmp, "mine") }).stdout;
+    const adapted = new Repo(join(t.tmp, "adapted"));
+    adapted.write("README.md", "mine\n");
+    adapted.commit("start");
+    const folder = t.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: adapted.path }).stdout;
+    for (const out of [cloned, forked, folder]) {
+      expect(out).toContain("https://github.com/willgosnold/patchbook#scheduled-updates");
+      expect(out).toContain('"Use the patchbook-update skill."');
+      expect(out).not.toContain("T3 scheduled task");
+    }
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 const SKILL_FILE = ".agents/skills/patchbook-update/SKILL.md";
 const SKILL_LINK = ".claude/skills/patchbook-update";
 const SKILL_COPY = read(join(import.meta.dir, "../skills/patchbook-update/SKILL.md"));
