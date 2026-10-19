@@ -10764,7 +10764,7 @@ exec '${Bun.which("git")}' "$@"
       evil.commit("a");
       t.pb(["track", "evil", evil.path], { cwd: repo.path });
       if (path !== null) {
-        withBlobAt(evil, path);
+        withBlobAt(t, evil, path);
         t.pb(["check"], { cwd: repo.path, code: null });
         const [commit, treeId] = sh(["git", "rev-parse", "HEAD", "HEAD^{tree}"], { cwd: evil.path }).stdout.split("\n");
         const lock = join(repo.path, ".patchbook/upstream.lock");
