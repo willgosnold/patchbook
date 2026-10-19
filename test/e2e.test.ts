@@ -11140,6 +11140,31 @@ exec '${Bun.which("git")}' "$@"
       }
     }, TIMEOUT);
 
+    test("test_a_fork_init_refuses_a_merge_base_that_holds_a_climbing_path_and_writes_nothing", () => {
+      const t = new Case();
+      try {
+        const up = new Repo(join(t.tmp, "upstream"));
+        up.write("a.md", "a\n");
+        up.commit("a");
+        withBlobAt(up, path);
+        const mine = new Repo(join(t.tmp, "mine"));
+        mine.write("README.md", "mine\n");
+        mine.commit("mine");
+        sh(["git", "fetch", "-q", up.path, "main"], { cwd: mine.path });
+        const bad = sh(["git", "rev-parse", "FETCH_HEAD"], { cwd: mine.path }).stdout.trim();
+        const onBad = sh(["git", "commit-tree", "HEAD^{tree}", "-p", bad, "-m", "mine on upstream"], { cwd: mine.path }).stdout.trim();
+        sh(["git", "update-ref", "refs/heads/main", onBad], { cwd: mine.path });
+        const before = tree(mine.path);
+        const out = t.pb(["init", "--upstream", up.path], { cwd: mine.path, code: 1 });
+        expect(out.stderr).toContain(refusedPath(path, part, "upstream"));
+        expect(existsSync(join(mine.path, ".patchbook"))).toBe(false);
+        expect(tree(mine.path)).toEqual(before);
+        expect(sh(["git", "remote"], { cwd: mine.path }).stdout).not.toContain("upstream");
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+
     test("test_an_upstream_with_dots_in_its_names_still_tracks_builds_and_exports", () => {
       const { t, repo } = exportCase(null);
       try {
