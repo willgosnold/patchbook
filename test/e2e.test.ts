@@ -5833,13 +5833,15 @@ describe("ForkTest", () => {
     t.pb(["sync"], { cwd: t.fork.path });
     hookCommit(t, ["-am", "Sync upstream"]);
     expect(committed(t)).toContain(".patchbook/upstream.lock");
+    expect(committed(t)).not.toContain(".patchbook/last-sync.json");
     expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("ONE");
-    expect(porcelain(t)).toBe("?? .patchbook/last-sync.json\n");
+    expect(porcelain(t)).toBe("");
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "shout"]);
     expect(committed(t)).toContain(".patchbook/changes/shout/CHANGE.md");
-    expect(porcelain(t)).toBe("?? .patchbook/last-sync.json\n");
+    expect(committed(t)).not.toContain(".patchbook/last-sync.json");
+    expect(porcelain(t)).toBe("");
   });
 
   forkTest("test_commit_leaves_out_an_untracked_file_in_the_patchbook_folder", (t) => {
@@ -5864,7 +5866,8 @@ describe("ForkTest", () => {
     for (const p of [".patchbook/build.lock", ".patchbook/notes.md", ".patchbook/upstream.lock"]) expect(committed(t)).toContain(p);
     expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("deux");
     expect(committed(t)).not.toContain(".patchbook/scratch.txt");
-    expect(porcelain(t)).toBe("?? .patchbook/last-sync.json\n?? .patchbook/scratch.txt\n");
+    expect(committed(t)).not.toContain(".patchbook/last-sync.json");
+    expect(porcelain(t)).toBe("?? .patchbook/scratch.txt\n");
   });
 
   forkTest("test_partial_commit_says_the_patchbook_changes_are_not_in_it", (t) => {
@@ -6288,7 +6291,7 @@ describe("ForkTest", () => {
       expect(t.fork.read("keep.log")).toBe("kept\n");
     }
     expect(sh(["git", "ls-files", "keep.log"], { cwd: t.fork.path }).stdout).toBe("");
-    expect(porcelain(t)).toBe("?? .patchbook/last-sync.json\n");
+    expect(porcelain(t)).toBe("");
   });
 
   forkTest("test_commit_takes_a_mode_change_from_upstream", (t) => {
@@ -7166,6 +7169,112 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     t.up.commit("another edit");
     t.pb(["sync"], { cwd: t.fork.path });
     expect(Object.keys(lastSync(t))).toEqual(["upstream"]);
+  });
+
+  describe("the report stays out of git", () => {
+    const untracked = (t: ForkCase): string[] => sh(["git", "status", "--porcelain", "--untracked-files=all"], { cwd: t.fork.path }).stdout.split("\n").filter((l) => l.startsWith("??"));
+    const moveUpstream = (t: ForkCase, old: string, repl: string): void => {
+      t.up.write("app.txt", replace(t.up.read("app.txt"), old, repl));
+      t.up.commit(`${old} to ${repl}`);
+    };
+
+    forkTest("test_sync_leaves_the_report_untracked_and_ignored", (t) => {
+      t.recordFeature();
+      moveUpstream(t, "six", "SIX");
+      t.pb(["sync"], { cwd: t.fork.path });
+      expect(lastSync(t).upstream.to).toBeString();
+      expect(untracked(t)).toEqual([]);
+      sh(["git", "add", "-A"], { cwd: t.fork.path });
+      expect(sh(["git", "diff", "--cached", "--name-only"], { cwd: t.fork.path }).stdout).not.toContain("last-sync.json");
+    });
+
+    forkTest("test_sync_ignores_the_report_of_a_repo_made_before_the_ignore_existed", (t) => {
+      t.recordFeature();
+      moveUpstream(t, "six", "SIX");
+      t.pb(["sync"], { cwd: t.fork.path });
+      rmSync(join(t.fork.path, ".patchbook/.gitignore"), { force: true });
+      expect(untracked(t)).toContain("?? .patchbook/last-sync.json");
+      expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("Nothing to do");
+      expect(untracked(t)).toEqual([]);
+      rmSync(join(t.fork.path, ".patchbook/.gitignore"));
+      moveUpstream(t, "five", "FIVE");
+      t.pb(["sync"], { cwd: t.fork.path });
+      expect(untracked(t)).toEqual([]);
+      expect(Object.keys(lastSync(t))).toEqual(["upstream"]);
+    });
+
+    forkTest("test_sync_keeps_the_rules_a_user_put_in_the_patchbook_gitignore", (t) => {
+      const rules = join(t.fork.path, ".patchbook/.gitignore");
+      writeFileSync(rules, "scratch/\n");
+      for (const [old, repl] of [["six", "SIX"], ["five", "FIVE"]] as const) {
+        moveUpstream(t, old, repl);
+        t.pb(["sync"], { cwd: t.fork.path });
+      }
+      const lines = read(rules).split("\n");
+      expect(lines[0]).toBe("scratch/");
+      expect(lines.filter((l) => l === "last-sync.json")).toHaveLength(1);
+      expect(untracked(t)).toEqual([]);
+    });
+
+    forkTest("test_status_and_upstream_diff_cope_without_the_report_in_a_fresh_clone", (t) => {
+      t.recordFeature();
+      moveUpstream(t, "six", "SIX");
+      t.pb(["sync"], { cwd: t.fork.path });
+      t.pb(["build", "--commit"], { cwd: t.fork.path });
+      const clone = join(t.tmp, "clone");
+      sh(["git", "clone", "-q", t.fork.path, clone], { cwd: t.tmp });
+      expect(existsSync(join(clone, ".patchbook/last-sync.json"))).toBe(false);
+      expect(JSON.parse(t.pb(["status", "--json"], { cwd: clone }).stdout).last_sync).toBeNull();
+      expect(t.pb(["upstream", "upstream", "--diff"], { cwd: t.fork.path }).stdout).toContain("+SIX");
+      expect(t.pb(["upstream", "upstream", "--diff"], { cwd: clone, code: 1 }).stderr).toContain("pass --since <commit>");
+    });
+
+    const folderAtRules = (t: ForkCase): void => {
+      t.recordFeature();
+      moveUpstream(t, "six", "SIX");
+      t.pb(["sync"], { cwd: t.fork.path });
+      const rules = join(t.fork.path, ".patchbook/.gitignore");
+      rmSync(rules);
+      mkdirSync(rules);
+    };
+
+    forkTest("test_a_sync_with_nothing_to_do_still_exits_0_and_warns_when_the_rule_file_cannot_be_used", (t) => {
+      folderAtRules(t);
+      const out = t.pb(["sync"], { cwd: t.fork.path });
+      expect(out.stdout).toContain("Nothing to do");
+      const lines = out.stderr.trim().split("\n");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toStartWith("patchbook: ");
+      expect(lines[0]).toContain(".patchbook/.gitignore");
+      expect(lines[0]).toContain("last-sync.json stays untracked");
+    });
+
+    forkTest("test_a_sync_that_fails_shows_its_own_error_when_the_rule_file_cannot_be_used", (t) => {
+      folderAtRules(t);
+      renameSync(t.up.path, `${t.up.path}.gone`);
+      const out = t.pb(["sync"], { cwd: t.fork.path, code: 1 });
+      expect(out.stderr).toContain("patchbook: git fetch");
+      expect(out.stderr).toContain("failed");
+      expect(out.stderr).toContain("last-sync.json stays untracked");
+      expect(out.stderr).not.toContain("ignoreReport");
+    });
+
+    forkTest("test_sync_appends_to_the_patchbook_gitignore_without_changing_the_bytes_there", (t) => {
+      t.recordFeature();
+      moveUpstream(t, "six", "SIX");
+      t.pb(["sync"], { cwd: t.fork.path });
+      const rules = join(t.fork.path, ".patchbook/.gitignore");
+      const mine = Buffer.concat([Buffer.from("caf"), Buffer.from([0xe9]), Buffer.from(".txt\r\nscratch/\r\n")]);
+      writeFileSync(rules, mine);
+      moveUpstream(t, "five", "FIVE");
+      t.pb(["sync"], { cwd: t.fork.path });
+      const after = readFileSync(rules);
+      expect(after.subarray(0, mine.length).equals(mine)).toBe(true);
+      expect(after.subarray(mine.length).toString()).toBe("last-sync.json\n.gitignore\n");
+      const asked = Buffer.concat([Buffer.from(".patchbook/caf"), Buffer.from([0xe9]), Buffer.from(".txt\0.patchbook/scratch/x\0.patchbook/last-sync.json\0")]);
+      const checked = Bun.spawnSync(["git", "check-ignore", "--stdin", "-z"], { cwd: t.fork.path, stdin: asked });
+      expect(checked.stdout.equals(asked)).toBe(true);
+    });
   });
 
   forkTest("test_sync_drops_the_report_of_a_removed_upstream_when_nothing_moved", (t) => {
@@ -8732,7 +8841,7 @@ exec '${Bun.which("git")}' "$@"
       expect(t.repo.read("vendor/extra/c.log")).toBe("hidden\n");
       expect(t.repo.read(".patchbook/changes/tweak/ours/extra/a.md.pb")).toBe("ONE\ntwo\nthree\nfour\nFIVE\n");
       const ignored = sh(["git", "status", "--porcelain", "--ignored", "--untracked-files=all"], { cwd: t.repo.path }).stdout;
-      expect(ignored.split("\n").filter((line) => line.startsWith("!!"))).toEqual([]);
+      expect(ignored.split("\n").filter((line) => line.startsWith("!!"))).toEqual(["!! .patchbook/.gitignore", "!! .patchbook/last-sync.json"]);
       expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
     });
   }
