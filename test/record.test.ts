@@ -19,6 +19,8 @@ const change = (name: string, edits: Edit[], copies: Record<string, string> = {}
 };
 const added = change("added", [{ kind: "add", path: "skills/new.md" }], { "skills/new.md": "new\n" });
 const replaced = change("replaced", [{ kind: "replace", path: "skills/rep.md" }], { "skills/rep.md": "rep\n" });
+const edited = change("edited", [{ kind: "add", path: "skills/copied.md" }], { "skills/copied.md": "new\n" });
+const moved = change("moved", [{ kind: "add", path: "skills/orig-new.md" }, { kind: "move", path: "skills/orig-new.md", dest: "skills/moved-new.md" }], { "skills/orig-new.md": "new\n" });
 const templated = change("templated", [{ kind: "add", path: "skills/tpl.md" }], { "skills/tpl.md": "Uses {{snippet:v}}.\n" });
 const owner = change("owner", [{ kind: "file", path: "skills/owned.md" }]);
 const up = (path: string): Source => ({ kind: "up", path });
@@ -38,8 +40,9 @@ const cases: [path: string, built: string | null, disk: string | null, source: S
   ["gone.md", "up", null, up("skills/gone.md"), { kind: "delete-upstream", staged: "skills/gone.md", entries: null }, true],
   ["gone-para.md", "up", null, up("skills/gone-para.md"), { kind: "delete-upstream", staged: "skills/gone-para.md", entries: "blocks/skills/gone-para.md.entries" }, true],
   ["new.md", "new", null, ours(added, "skills/new.md"), { kind: "unadd", change: added, staged: "skills/new.md" }, false],
-  ["rep.md", "rep", null, ours(replaced, "skills/rep.md"), { kind: "unreplace", change: replaced, staged: "skills/rep.md" }, false],
-  ["copied.md", "new", "edited", ours(added, "skills/new.md"), { kind: "update-ours", change: added, staged: "skills/new.md" }, false],
+  ["rep.md", "rep", null, ours(replaced, "skills/rep.md"), { kind: "unreplace", change: replaced, staged: "skills/rep.md" }, true],
+  ["moved-new.md", "new", null, ours(moved, "skills/orig-new.md"), { kind: "delete-upstream", staged: "skills/moved-new.md", entries: null }, true],
+  ["copied.md", "new", "edited", ours(edited, "skills/copied.md"), { kind: "update-ours", change: edited, staged: "skills/copied.md" }, false],
   ["tpl.md", "Uses v.", "Uses w.", ours(templated, "skills/tpl.md"),
     { kind: "skip", reason: "its copy in templated uses placeholders; edit that copy directly" }, false],
   ["owned.md", "up", "edited", up("skills/owned.md"), { kind: "file-edit", rel: "skills/owned.md", to: { kind: "owned", change: owner } }, false],
@@ -54,7 +57,7 @@ const world: Snapshot = {
   current: pick(2),
   sources: new Map(cases.flatMap(([p, , , s]) => (s ? [[p, s] as const] : []))),
   upstream: new Map(cases.flatMap(([, , , s]) => (s?.kind === "up" ? [[s.path, f("upstream")] as const] : []))),
-  changes: new Map([added, replaced, templated, owner].map((c) => [c.name, c])),
+  changes: new Map([added, replaced, edited, moved, templated, owner].map((c) => [c.name, c])),
   owners: new Map([["skills/owned.md", owner]]),
   blocks: new Set(["skills/dropped.md", "skills/gone-para.md", "skills/para.md", "skills/para-new.md", "skills/unplanned.md"]),
   entriesAt: (rel) => `blocks/${rel}.entries`,
@@ -102,6 +105,14 @@ test("outputs built from one ours copy are all skipped when more than one is edi
     { kind: "skip", path: "new2.md", reason: "its copy in added also builds new.md, which this record changes too; edit added directly, or to give them different text, remove the copy edit and record the destination again" },
   ]);
   expect(classify(w, ["new.md"])).toMatchObject([{ kind: "update-ours", path: "new.md" }]);
+});
+
+test("deleting an output of an ours copy that a copy edit reads deletes it instead of dropping the copy", () => {
+  const copier = change("copier", [{ kind: "copy", path: "skills/new.md", dest: "skills/new2.md" }]);
+  const w = { ...twins([["new.md", ours(added, "skills/new.md")]], { "new.md": null }), changes: new Map([added, copier].map((c) => [c.name, c])) };
+  expect(classify(w, ["new.md"])).toMatchObject([{ kind: "delete-upstream", path: "new.md", staged: "skills/new.md" }]);
+  const alone = twins([["new.md", ours(added, "skills/new.md")]], { "new.md": null });
+  expect(classify(alone, ["new.md"])).toMatchObject([{ kind: "unadd", path: "new.md" }]);
 });
 
 test("outputs built from one upstream file are all skipped when more than one is edited, but a delete stands alone", () => {
