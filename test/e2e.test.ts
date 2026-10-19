@@ -10706,6 +10706,7 @@ exec '${Bun.which("git")}' "$@"
             expect(r.stderr).toContain(refused("good"));
             expect(r.stderr).not.toMatch(/^\s+at /m);
           }
+          sh(["git", "add", ".patchbook"], { cwd: repo.path });
           const hooked = sh(["git", "commit", "-q", "--allow-empty", "-m", "hook"], { cwd: repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1" }, check: false });
           expect(hooked.code).not.toBe(0);
           expect(hooked.stderr).toContain(refused("good"));
