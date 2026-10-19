@@ -676,7 +676,7 @@ describe.skipIf(!inSandbox)("writeIntent", () => {
 
   test("shows the first 500 characters of an unusable reply without splitting one", async () => {
     const book = await answering(`printf '!${"😀".repeat(600)}'`);
-    expect(() => writeIntent(book, new Map(), "", "x", true)).toThrow(`:\n!${"😀".repeat(499)}\nPass a name and --intent instead.`);
+    expect(() => writeIntent(book, new Map(), "", "x", true)).toThrow(`.\n!${"😀".repeat(499)}\nPass a name and --intent instead.`);
   });
 });
 

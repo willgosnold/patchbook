@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Assembly } from "./assemble.ts";
 import type { Book } from "./book.ts";
-import { CHANGE_NAME, type Change } from "./changes.ts";
+import { CHANGE_NAME, type Change, notAChangeName } from "./changes.ts";
 import { unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import type { File } from "./lib/fs.ts";
-import { JsonError, type JsonValue, loads } from "./lib/json.ts";
 import { spawn, which } from "./lib/proc.ts";
-import { str, strRepr } from "./lib/repr.ts";
+import { strRepr } from "./lib/repr.ts";
+import { object, readJson, string } from "./lib/shape.ts";
 import { decode, decodeReplace, encode, isText, lines } from "./lib/text.ts";
 import { configured, readToml, type Source, setting, SETTINGS, type Table, USER_CONFIG } from "./settings.ts";
 
@@ -114,6 +114,8 @@ function askModel(provider: string, spec: Provider, model: string, effort: strin
 
 const NAME_LENGTH = 40;
 
+const REPLY = object({ change: string, intent: string });
+
 /** An intent on one line, with each run of whitespace a single space. */
 export const oneLine = (text: string): string => text.trim().replace(/\s+/g, " ");
 
@@ -149,19 +151,18 @@ export function writeIntent(
   }
   const reply = askModel(provider, PROVIDERS.get(provider)!, model, effort, intentPrompt(listed, instruction, diff));
   const m = /\{.*\}/s.exec(reply);
-  let answer: JsonValue = new Map();
+  const excerpt = `\n${Array.from(reply.trim()).slice(0, 500).join("")}\nPass a name and --intent instead.`;
+  if (!m) throw new Fail(`${provider}'s reply has no JSON object.${excerpt}`);
+  let answer;
   try {
-    if (m) answer = loads(m[0]);
+    answer = readJson(m[0], REPLY, `${provider}'s reply`);
   } catch (e) {
-    if (!(e instanceof JsonError)) throw e;
+    throw e instanceof Fail ? new Fail(e.message + excerpt) : e;
   }
-  const fields = answer instanceof Map ? answer : new Map<string, JsonValue>();
-  const given = fields.get("change") ?? "";
-  let chosen = typeof given === "string" ? given : "";
-  let intent: string | null = oneLine(str(fields.has("intent") ? fields.get("intent")! : ""));
-  if (!CHANGE_NAME.test(chosen) || !intent) {
-    throw new Fail(`${provider} didn't return a usable name and intent:\n${Array.from(reply.trim()).slice(0, 500).join("")}\nPass a name and --intent instead.`);
-  }
+  let chosen = answer.change;
+  let intent: string | null = oneLine(answer.intent);
+  if (!CHANGE_NAME.test(chosen)) throw new Fail(`${provider}'s reply: ${notAChangeName(chosen)}.${excerpt}`);
+  if (!intent) throw new Fail(`${provider}'s reply: intent is blank.${excerpt}`);
   if (name && chosen !== name) chosen = name;
   const known = changes.get(chosen);
   if (known && named) intent = known.intent;

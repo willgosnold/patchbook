@@ -5376,6 +5376,29 @@ describe("ForkTest", () => {
 
   const changeNames = (t: ForkCase): string[] => readdirSync(join(t.fork.path, ".patchbook/changes"));
 
+  const unusableReplies: [string, string, string][] = [
+    ["has_no_json_object", "I could not decide.", "claude's reply has no JSON object.\n"],
+    ["is_not_json", '{"change": "shout", "intent": }', "claude's reply isn't JSON: "],
+    ["has_a_second_object", '{"change": "shout", "intent": "x"} {"y"}', "claude's reply isn't JSON: "],
+    ["has_no_intent", '{"change": "shout"}', "claude's reply: intent is missing.\n"],
+    ["has_a_change_that_is_not_a_string", '{"change": 1, "intent": "Shout."}', "claude's reply: change must be a string, not 1.\n"],
+    ["has_an_intent_that_is_null", '{"change": "shout", "intent": null}', "claude's reply: intent must be a string, not null.\n"],
+    ["has_a_name_that_is_not_a_change_name", '{"change": "Not A Name", "intent": "Shout."}',
+      `claude's reply: ${JSON.stringify("Not A Name")} isn't a valid change name; use lowercase letters, digits and hyphens, starting with a letter or digit.\n`],
+    ["has_a_blank_intent", '{"change": "shout", "intent": "  "}', "claude's reply: intent is blank.\n"],
+  ];
+  for (const [what, reply, says] of unusableReplies) {
+    forkTest(`test_record_refuses_a_model_reply_that_${what}_and_records_nothing`, (t) => {
+      writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '${reply}'\n`, { mode: 0o755 });
+      t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+      const before = tree(t.fork.path);
+      const { stderr } = t.pb(["record"], { cwd: t.fork.path, code: 1 });
+      expect(stderr.startsWith(`patchbook: ${says}`)).toBe(true);
+      expect(stderr.endsWith(`${reply}\nPass a name and --intent instead.\n`)).toBe(true);
+      expect(tree(t.fork.path)).toEqual(before);
+    });
+  }
+
   forkTest("test_record_names_a_change_from_an_intent_with_one_very_long_word", (t) => {
     const intent = "a".repeat(300);
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
