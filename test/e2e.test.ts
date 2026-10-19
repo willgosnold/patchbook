@@ -8192,16 +8192,23 @@ exec '${Bun.which("git")}' "$@"
     });
   }
 
-  const lockChanges: [string, (t: VendorCase) => void, boolean][] = [
-    ["the_lock_has_changed_since", (t) => sh(["git", "checkout", "HEAD~1", "--", ".patchbook/upstream.lock"], { cwd: t.repo.path }), false],
+  const changed = "upstream.lock has changed since";
+  const unreadable = "its record can't be read";
+  const lockChanges: [string, (t: VendorCase) => void, boolean, string][] = [
+    ["the_lock_has_changed_since", (t) => sh(["git", "checkout", "HEAD~1", "--", ".patchbook/upstream.lock"], { cwd: t.repo.path }), false, changed],
     ["the_lock_has_changed_since_the_sync_wrote_it", (t) => {
       t.repo.write(".patchbook/sync-extra/lock", t.repo.read(".patchbook/upstream.lock"));
       sh(["git", "checkout", "HEAD~1", "--", ".patchbook/upstream.lock"], { cwd: t.repo.path });
-    }, true],
-    ["the_lock_no_longer_parses", (t) => t.repo.write(".patchbook/upstream.lock", "<<<<<<< HEAD\n"), true],
-    ["its_record_cannot_be_read", (t) => t.repo.write(".patchbook/sync-extra/pin", ""), true],
+    }, true, changed],
+    ["the_lock_no_longer_parses", (t) => t.repo.write(".patchbook/upstream.lock", "<<<<<<< HEAD\n"), true, changed],
+    ["its_record_cannot_be_read", (t) => t.repo.write(".patchbook/sync-extra/pin", ""), true, unreadable],
+    ["its_record_has_no_to", (t) => t.repo.write(".patchbook/sync-extra/pin", '{"from": "x"}'), true, unreadable],
+    ["its_record_has_a_copy_that_is_not_true_or_false", (t) => {
+      t.repo.write(".patchbook/sync-extra/pin", '{"from": "x", "to": "y", "added": "", "vendor": "", "copy": "yes"}');
+    }, true, unreadable],
+    ["its_record_is_a_list", (t) => t.repo.write(".patchbook/sync-extra/pin", "[]"), true, unreadable],
   ];
-  for (const [how, change, refLeft] of lockChanges) {
+  for (const [how, change, refLeft, why] of lockChanges) {
     vendorTest(`test_a_killed_sync_is_left_for_the_user_when_${how}`, (t) => {
       const extra = extraWithAChange(t, true);
       extra.commit("v2");
@@ -8214,7 +8221,7 @@ exec '${Bun.which("git")}' "$@"
       change(t);
       const before = tree(t.repo.path);
       const { stderr } = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
-      expect(stderr).toContain(".patchbook/sync-extra holds a sync of extra");
+      expect(stderr).toContain(`.patchbook/sync-extra holds a sync of extra that stopped partway, but ${why}.`);
       expect(stderr).toContain("old/ holds the vendored copy as it was");
       expect(stderr).not.toContain("before/");
       expect(tree(t.repo.path)).toEqual(before);

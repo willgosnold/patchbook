@@ -10,7 +10,7 @@ import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, isSymlink, LINK, lexists, mkdirs, readDisk, readText, readTextReplace, sameFile, writeDisk, writeText } from "./lib/fs.ts";
 import { spawn } from "./lib/proc.ts";
-import { count, jsonText, list, named, nullable, object, oid, readJson, type Shape, string, table, versioned, writeJson } from "./lib/shape.ts";
+import { boolean, count, jsonText, list, named, nullable, object, oid, readJson, type Shape, string, table, versioned, writeJson } from "./lib/shape.ts";
 import { byCodePoint, bytesEqual, decodeReplace, isText } from "./lib/text.ts";
 import { type Pin, pinned, type Upstream } from "./store.ts";
 
@@ -212,6 +212,7 @@ const journal = (book: Book, u: Upstream) => join(book.dir, `sync-${encodeURICom
 const spell = (pin: Pin) => `${pin.commit ?? ""} ${pin.tree ?? ""}`;
 
 type Journal = { from: string; to: string; added: string; vendor: string; copy: boolean };
+const JOURNAL: Shape<Journal> = object({ from: string, to: string, added: string, vendor: string, copy: boolean });
 
 function begin(book: Book, u: Upstream, from: Pin, to: Required<Pin>): void {
   const j = journal(book, u);
@@ -224,7 +225,7 @@ function begin(book: Book, u: Upstream, from: Pin, to: Required<Pin>): void {
     vendor: u.vendor ? relative(book.root, u.vendor) : "",
     copy: u.vendor !== null && lexists(u.vendor),
   };
-  writeText(join(j, "pin.tmp"), JSON.stringify(record));
+  writeText(join(j, "pin.tmp"), jsonText(record));
   renameSync(join(j, "pin.tmp"), join(j, "pin"));
 }
 
@@ -262,7 +263,7 @@ function recover(book: Book, u: Upstream): void {
   if (exists(pin)) {
     let record: Journal;
     try {
-      record = JSON.parse(readText(pin));
+      record = readJson(readText(pin), JOURNAL, "its record");
     } catch {
       throw stuck(book, u, "its record can't be read");
     }
