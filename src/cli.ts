@@ -10,7 +10,7 @@ import { Book, noticeLeftOut, PB, refuseNestedGit } from "./book.ts";
 import { cmdShow } from "./changes.ts";
 import { cmdHook, commitAdvice, installHook, installHookOrWarn, keepGitHook } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, lexists, readText, resolve, writeText } from "./lib/fs.ts";
+import { exists, isSymlink, lexists, readText, resolve, writeText } from "./lib/fs.ts";
 import { git, redact } from "./lib/proc.ts";
 import { rstrip, split, strRepr } from "./lib/py.ts";
 import { quoteToml } from "./lib/toml.ts";
@@ -81,11 +81,21 @@ async function cmdClone(args: { url: string; dir: string | null; branch: string 
   return 0;
 }
 
+/** A link that points nowhere, where init writes, would take the write out of the repo. */
+function refuseDanglingLinks(root: string): void {
+  for (const p of [PB, ...["config.toml", "series", "retired.md", "upstream.lock"].map((f) => `${PB}/${f}`)]) {
+    if (isSymlink(join(root, p)) && !exists(join(root, p))) {
+      throw new Fail(`${p} is a symlink to a missing ${p === PB ? "folder" : "file"}. Remove the link, or put back what it points to.`);
+    }
+  }
+}
+
 async function cmdInit(args: {
   upstream: string; name: string | null; branch: string; path: string; outputTo: string | null; outputFrom: string; vendor: string | null;
 }) {
   const root = git(["rev-parse", "--show-toplevel"], { cwd: process.cwd() });
-  if (exists(join(root, PB, "config.toml"))) throw new Fail(`${root} already has a patchbook. To follow another upstream: patchbook track`);
+  refuseDanglingLinks(root);
+  if (lexists(join(root, PB, "config.toml"))) throw new Fail(`${root} already has a patchbook. To follow another upstream: patchbook track`);
   const name = args.name || defaultName(redact(args.upstream), args.path);
   if (args.outputTo !== null) {
     const text = configText("folder", upstreamToml(name, args.upstream, args.path, args.branch, "", args.vendor), [args.outputFrom, args.outputTo]);
