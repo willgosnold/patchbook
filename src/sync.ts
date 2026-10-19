@@ -10,16 +10,15 @@ import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, isSymlink, LINK, lexists, mkdirs, readDisk, readText, readTextReplace, sameFile, writeDisk, writeText } from "./lib/fs.ts";
 import { spawn } from "./lib/proc.ts";
-import { boolean, count, jsonText, list, named, nullable, object, oid, readJson, type Shape, string, table, versioned, writeJson } from "./lib/shape.ts";
+import { boolean, count, jsonText, list, named, nullable, object, oid, readJson, type Shape, string, table, versioned } from "./lib/shape.ts";
 import { byCodePoint, bytesEqual, decodeReplace, isText } from "./lib/text.ts";
 import { type Pin, pinned, type Upstream } from "./store.ts";
 
 export const EXIT_MOVED = 10;
 
-const COUNTED = object({ change: string, path: string, count });
-const DETAILED = object({ change: string, path: string, detail: string });
-/** A conflict with a `count` is a text file's, any other a binary file's. */
-const CONFLICT: Shape<SyncReport["conflicts"][number]> = (v, at) => (Object.hasOwn(table(v, at), "count") ? COUNTED : DETAILED)(v, at);
+const TEXT_CONFLICT = object({ change: string, path: string, count });
+const BINARY_CONFLICT = object({ change: string, path: string, detail: string });
+const CONFLICT: Shape<SyncReport["conflicts"][number]> = (v, at) => (Object.hasOwn(table(v, at), "count") ? TEXT_CONFLICT : BINARY_CONFLICT)(v, at);
 
 const SYNC_REPORT = object({
   name: string, from: nullable(oid), to: oid, upstream: list(string),
@@ -106,23 +105,19 @@ export async function cmdSync(args: { name: string | null; ref: string | null })
   return 0;
 }
 
-/** `last-sync.json` read as the document it is. Refuses text that isn't version 2's shape. */
 export function parseLastSync(text: string): LastSync {
   return readJson(text, LAST_SYNC, `${PB}/${REPORT}`, LAST_SYNC_FIX);
 }
 
-/** `last-sync.json` as patchbook writes it: the reports in the order given. */
 export function lastSyncText(doc: LastSync): string {
-  return writeJson(LAST_SYNC, doc);
+  return jsonText(LAST_SYNC(doc, ""));
 }
 
-/** The document in `last-sync.json`, or null when there is no file. Refuses a file it can't read. */
 export function readLastSync(book: Book): LastSync | null {
   const path = join(book.dir, REPORT);
   return exists(path) ? parseLastSync(readTextReplace(path)) : null;
 }
 
-/** Writes the reports of the upstreams in the config, in config order. */
 function writeLastSync(book: Book, reports: ReadonlyMap<string, SyncReport>): void {
   const upstreams = book.upstreams.flatMap(({ name }) => reports.get(name) ?? []);
   writeText(join(book.dir, REPORT), lastSyncText({ version: 2, upstreams }));

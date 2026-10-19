@@ -97,6 +97,6 @@ export type StatusJson = {
   /** Edits that apply at the pins. */
   applied: number;
   problems: Problem[];
-  /** `last-sync.json` as the file has it, or null if no sync wrote one. */
+  /** The document in `last-sync.json`, or null if no sync wrote one. */
   lastSync: LastSync | null;
 };

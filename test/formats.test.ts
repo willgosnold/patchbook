@@ -5,7 +5,7 @@ import { lockText, parseLock } from "../src/book.ts";
 import { parsePlaceholders } from "../src/blocks.ts";
 import { Fail } from "../src/lib/fail.ts";
 import {
-  boolean, count, jsonText, list, named, nullable, object, oid, readJson, type Shape, string, table, versioned, writeJson,
+  boolean, count, jsonText, list, named, nullable, object, oid, readJson, type Shape, string, table, versioned,
 } from "../src/lib/shape.ts";
 import { lastSyncText, parseLastSync } from "../src/sync.ts";
 
@@ -166,10 +166,10 @@ describe("table", () => {
   });
 });
 
-describe("writeJson", () => {
-  test("writes a value through its shape, so keys come in the shape's order", () => {
+describe("a shape", () => {
+  test("gives a new object in its own key order, which jsonText then writes", () => {
     const Doc = versioned(1, { a: string, b: string });
-    expect(writeJson(Doc, { b: "2", a: "1", version: 1 })).toBe('{\n  "version": 1,\n  "a": "1",\n  "b": "2"\n}\n');
+    expect(jsonText(Doc({ b: "2", a: "1", version: 1 }, ""))).toBe('{\n  "version": 1,\n  "a": "1",\n  "b": "2"\n}\n');
   });
 });
 

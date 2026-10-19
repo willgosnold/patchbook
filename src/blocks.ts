@@ -110,11 +110,7 @@ export function checkEntry(e: Entry): string | null {
   return null;
 }
 
-/**
- * How alike two blocks are: twice the matching code points over both lengths, to two places, a half rounded up.
- * Rounded on whole numbers, floor((400 * matches + total) / (2 * total)) / 100, so 0.565 is 0.57,
- * where Math.round(r * 100) / 100 gives 0.56.
- */
+/** Rounded in whole numbers: as a double, 0.565 * 100 is 56.49999999999999, so Math.round(r * 100) / 100 gives 0.56. */
 export function similarity(a: string, b: string): number {
   const total = Array.from(a).length + Array.from(b).length;
   if (total === 0) return 1;
@@ -136,7 +132,6 @@ export function orphan(rel: string, entry: Entry, candidates: readonly Unmatched
   };
 }
 
-/** A placeholder's value: a string, or a list of strings joined with ", ". */
 const VALUE: Shape<string> = (v, at) => {
   if (Array.isArray(v)) return list(string)(v, at).join(", ");
   if (typeof v === "string") return v;
@@ -146,7 +141,6 @@ const VALUE: Shape<string> = (v, at) => {
 const PLACEHOLDERS: Shape<Map<string, string>> = (v, at) =>
   new Map(Object.entries(table(v, at)).filter(([k]) => !k.startsWith("_")).map(([k, x]) => [k, VALUE(x, JSON.stringify(k))]));
 
-/** A placeholder file with format = "json": each key not starting with _ to a string, or a list of strings joined with ", ". */
 export function parsePlaceholders(text: string, file: string): Map<string, string> {
   return readJson(text, PLACEHOLDERS, file);
 }

@@ -7,7 +7,7 @@ import { Fail } from "./lib/fail.ts";
 import { exists, type File, GITLINK, isDir, isMode, isSymlink, lexists, mkdirs, type Mode, normMode, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
 import { git, run, spawn } from "./lib/proc.ts";
 import { strRepr } from "./lib/repr.ts";
-import { named, object, oid, readJson, type Shape, string, versioned, writeJson } from "./lib/shape.ts";
+import { jsonText, named, object, oid, readJson, type Shape, string, versioned } from "./lib/shape.ts";
 import { byCodePoint, decode } from "./lib/text.ts";
 import { isTable, parseToml, type Table } from "./settings.ts";
 import { stagedFolder, treeFiles, Upstream } from "./store.ts";
@@ -222,14 +222,12 @@ function text(table: Table, key: string, fallback: string, what: string): string
 const LOCK: Shape<UpstreamLock> = versioned(1, { upstreams: named(object({ name: string, commit: oid, tree: oid })) });
 const LOCK_FIX = 'It holds {"version": 1, "upstreams": [{"name": ..., "commit": ..., "tree": ...}]}, one entry per upstream, sorted by name.';
 
-/** The pins in an upstream.lock, in the file's order. Refuses a file that isn't version 1's shape. */
 export function parseLock(text: string): UpstreamPin[] {
   return readJson(text, LOCK, `${PB}/upstream.lock`, LOCK_FIX).upstreams;
 }
 
-/** upstream.lock as patchbook writes it: the pins sorted by name by code point. */
 export function lockText(pins: readonly UpstreamPin[]): string {
-  return writeJson(LOCK, { version: 1, upstreams: pins.toSorted((a, b) => byCodePoint(a.name, b.name)) });
+  return jsonText(LOCK({ version: 1, upstreams: pins.toSorted((a, b) => byCodePoint(a.name, b.name)) }, ""));
 }
 
 export class Book {
@@ -444,7 +442,6 @@ export class Book {
     return best;
   }
 
-  /** The pins of the upstreams in the config, sorted by name by code point. */
   lock(): UpstreamPin[] {
     const path = join(this.dir, "upstream.lock");
     if (!exists(path)) return [];
