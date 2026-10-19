@@ -7224,6 +7224,53 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
       expect(JSON.parse(t.pb(["status", "--json"], { cwd: clone }).stdout).last_sync).toBeNull();
       expect(t.pb(["upstream", "upstream", "--diff"], { cwd: t.fork.path }).stdout).toContain("+SIX");
     });
+
+    const folderAtRules = (t: ForkCase): void => {
+      t.recordFeature();
+      moveUpstream(t, "six", "SIX");
+      t.pb(["sync"], { cwd: t.fork.path });
+      const rules = join(t.fork.path, ".patchbook/.gitignore");
+      rmSync(rules);
+      mkdirSync(rules);
+    };
+
+    forkTest("test_a_sync_with_nothing_to_do_still_exits_0_and_warns_when_the_rule_file_cannot_be_used", (t) => {
+      folderAtRules(t);
+      const out = t.pb(["sync"], { cwd: t.fork.path });
+      expect(out.stdout).toContain("Nothing to do");
+      const lines = out.stderr.trim().split("\n");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toStartWith("patchbook: ");
+      expect(lines[0]).toContain(".patchbook/.gitignore");
+      expect(lines[0]).toContain("last-sync.json stays untracked");
+    });
+
+    forkTest("test_a_sync_that_fails_shows_its_own_error_when_the_rule_file_cannot_be_used", (t) => {
+      folderAtRules(t);
+      renameSync(t.up.path, `${t.up.path}.gone`);
+      const out = t.pb(["sync"], { cwd: t.fork.path, code: 1 });
+      expect(out.stderr).toContain("patchbook: git fetch");
+      expect(out.stderr).toContain("failed");
+      expect(out.stderr).toContain("last-sync.json stays untracked");
+      expect(out.stderr).not.toContain("ignoreReport");
+    });
+
+    forkTest("test_sync_appends_to_the_patchbook_gitignore_without_changing_the_bytes_there", (t) => {
+      t.recordFeature();
+      moveUpstream(t, "six", "SIX");
+      t.pb(["sync"], { cwd: t.fork.path });
+      const rules = join(t.fork.path, ".patchbook/.gitignore");
+      const mine = Buffer.concat([Buffer.from("caf"), Buffer.from([0xe9]), Buffer.from(".txt\r\nscratch/\r\n")]);
+      writeFileSync(rules, mine);
+      moveUpstream(t, "five", "FIVE");
+      t.pb(["sync"], { cwd: t.fork.path });
+      const after = readFileSync(rules);
+      expect(after.subarray(0, mine.length).equals(mine)).toBe(true);
+      expect(after.subarray(mine.length).toString()).toBe("last-sync.json\n.gitignore\n");
+      const asked = Buffer.concat([Buffer.from(".patchbook/caf"), Buffer.from([0xe9]), Buffer.from(".txt\0.patchbook/scratch/x\0.patchbook/last-sync.json\0")]);
+      const checked = Bun.spawnSync(["git", "check-ignore", "--stdin", "-z"], { cwd: t.fork.path, stdin: asked });
+      expect(checked.stdout.equals(asked)).toBe(true);
+    });
   });
 
   forkTest("test_sync_drops_the_report_of_a_removed_upstream_when_nothing_moved", (t) => {
