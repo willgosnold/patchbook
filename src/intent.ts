@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Assembly } from "./assemble.ts";
 import type { Book } from "./book.ts";
-import { CHANGE_NAME, type Change } from "./changes.ts";
+import { CHANGE_NAME, type Change, type Roster } from "./changes.ts";
 import { unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import type { File } from "./lib/fs.ts";
@@ -117,18 +117,15 @@ const NAME_LENGTH = 40;
 /** An intent on one line, with each run of whitespace a single space. */
 export const oneLine = (text: string): string => split(text).join(" ");
 
-/** A kebab-case change name from at most the first four words of an intent, kept within `NAME_LENGTH`, unique among the existing changes. */
-export function nameFromIntent(intent: string, changes: ReadonlyMap<string, Change>): string {
+/** A kebab-case change name from at most the first four words of an intent, kept within `NAME_LENGTH`, that nothing in `changes/` already uses. */
+export function nameFromIntent(intent: string, roster: Roster): string {
   let base = "";
   for (const word of intent.toLowerCase().match(/[a-z0-9]+/g)?.slice(0, 4) ?? []) {
     const next = base ? `${base}-${word}` : word;
     if (next.length > NAME_LENGTH) break;
     base = next;
   }
-  base ||= "change";
-  let name = base;
-  for (let n = 2; changes.has(name); n++) name = `${base}-${n}`;
-  return name;
+  return roster.free(base || "change");
 }
 
 /** Ask the chosen model for the change's name and intent. Returns the name (null if not named) and the intent. */
