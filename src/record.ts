@@ -12,7 +12,6 @@ import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, LINK, type Mode, rglob, sameFile, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
-import { replace } from "./lib/py.ts";
 import { bytesEqual, decode, decodeReplace, encode, isText, lines } from "./lib/text.ts";
 
 /** An entry a recording makes. A null intent means it still needs one. */
@@ -241,7 +240,8 @@ function planParagraphs(
       if (entry) { // keep its placeholders where their values still appear
         for (const [hint] of entry.patched.matchAll(PLACEHOLDER_HINT)) {
           const value = rules.expand(hint, () => {});
-          if (value !== hint && piece.includes(value)) piece = replace(piece, value, hint);
+          if (value === "") return `its block entry uses ${hint}, which is empty, so the edit can't show where it goes; edit its block entries directly`;
+          if (value !== hint) piece = piece.split(value).join(hint);
         }
       }
       if (piece === upstream && (!entry || entry.kind !== "keep")) {

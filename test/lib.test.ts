@@ -10,7 +10,7 @@ import { nonFolders, rmFolders } from "../src/lib/fs.ts";
 import { dumps, loads } from "../src/lib/json.ts";
 import { shellQuote } from "../src/lib/proc.ts";
 import {
-  floatRepr, replace, round2, str, strRepr,
+  floatRepr, round2, str, strRepr,
 } from "../src/lib/py.ts";
 import { byCodePoint, lines } from "../src/lib/text.ts";
 
@@ -21,7 +21,6 @@ type Fixture = {
   floats: { x: number; repr: string }[];
   json: { text: string; dumps: string; indent: string; str: string }[];
   repr: { s: string; repr: string }[];
-  replace: { s: string; old: string; new: string; out: string }[];
 };
 
 const cases: Fixture = JSON.parse(readFileSync(new URL("fixtures/cpython.json", import.meta.url), "utf8"));
@@ -165,10 +164,6 @@ test.each(cases.json)("json loads, dumps and str %#", (c) => {
 
 test("repr(str)", () => {
   for (const c of cases.repr) expect(strRepr(c.s)).toBe(c.repr);
-});
-
-test("str.replace", () => {
-  for (const c of cases.replace) expect(replace(c.s, c.old, c.new)).toBe(c.out);
 });
 
 describe("the TOML library's syntax tree", () => {

@@ -7511,6 +7511,20 @@ describe("VendorTest", () => {
     expect(read(join(t.tmp, "prompt.txt"))).toContain("@@ -1 +1 @@\n-Then wave.\n+Then\fwave\u2028twice.\n");
   });
 
+  vendorTest("test_record_skips_a_paragraph_edit_whose_entry_uses_a_placeholder_that_is_empty", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    t.repo.write(".patchbook/snippets.md", "## none\n\n## greet\n\nSay hello in T3.\n");
+    writeFileSync(entries, replace(read(entries), "--- patched\n{{snippet:greet}}", "--- patched\n{{snippet:none}}{{snippet:greet}}"));
+    t.pb(["build"], { cwd: t.repo.path });
+    const recorded = read(entries);
+    const skill = "skills/hello/SKILL.md";
+    t.repo.write(skill, replace(t.repo.read(skill), "Say hello in T3.", "Say hello in T3. Smile."));
+    const out = t.pb(["record", "--intent", "Smile."], { cwd: t.repo.path }).stdout;
+    expect(out).toContain("skipped  hello/SKILL.md: its block entry uses {{snippet:none}}, which is empty, so the edit can't show where it goes; edit its block entries directly");
+    expect(read(entries)).toBe(recorded);
+    expect(t.repo.read(skill)).toContain("Say hello in T3. Smile.");
+  });
+
   vendorTest("test_record_paragraph_edit_with_an_intent_keeps_the_intent_of_a_change_named_unnamed", (t) => {
     const entries = t.missingScaffoldPatchBuild();
     t.repo.write("skills/hello/notes.txt", "added by hand\n");

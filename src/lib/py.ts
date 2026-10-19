@@ -1,12 +1,6 @@
 // Python's str and number semantics where JavaScript's differ. Python strings index code points,
 // JavaScript strings UTF-16 code units, so anything that counts, slices or orders characters is here.
 
-/** `str.replace(old, new)`, including Python's insertion around every character when `old` is empty. */
-export function replace(s: string, old: string, by: string): string {
-  if (old === "") return by + Array.from(s).map((ch) => ch + by).join("");
-  return s.split(old).join(by);
-}
-
 export const length = (s: string) => {
   let n = 0;
   for (const _ of s) n++;
