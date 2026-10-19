@@ -10588,18 +10588,23 @@ exec '${Bun.which("git")}' "$@"
     expect(t.repo.read("vendor/extra/b.md")).toBe("b\n");
   });
 
-  /** A commit whose tree holds a `.git` blob, which `git add` refuses to stage and only `git mktree` can store. */
-  const upstreamWithDotGit = (t: VendorCase, name: string): Repo => {
-    const up = new Repo(join(t.tmp, name));
-    up.write("a.md", "a\n");
-    up.commit("a");
+  /** A commit on top of upstream's head whose tree also holds a blob at `path`, which `git add` refuses to stage for a `.git` and only `git mktree` can store. */
+  const withBlobAt = (t: Case, up: Repo, path: string): void => {
     const git = (args: string[], input = ""): string => {
       const r = Bun.spawnSync(["git", ...args], { cwd: up.path, env: t.env, stdin: Buffer.from(input), stdout: "pipe" });
       return r.stdout.toString().trim();
     };
-    const blob = git(["hash-object", "-w", "a.md"]);
-    const treeId = git(["mktree"], `100644 blob ${blob}\t.git\n100644 blob ${blob}\ta.md\n`);
-    git(["update-ref", "refs/heads/main", git(["commit-tree", treeId, "-p", "HEAD", "-m", "with .git"])]);
+    const blob = git(["hash-object", "-w", "--stdin"], "a\n");
+    const entry = (parts: string[]): string =>
+      parts.length === 1 ? `100644 blob ${blob}\t${parts[0]}` : `040000 tree ${git(["mktree"], entry(parts.slice(1)) + "\n")}\t${parts[0]}`;
+    const treeId = git(["mktree"], `${git(["ls-tree", "HEAD"])}\n${entry(path.split("/"))}\n`);
+    git(["update-ref", "refs/heads/main", git(["commit-tree", treeId, "-p", "HEAD", "-m", `with ${path}`])]);
+  };
+  const upstreamWithDotGit = (t: Case, name: string, path = ".git"): Repo => {
+    const up = new Repo(join(t.tmp, name));
+    up.write("a.md", "a\n");
+    up.commit("a");
+    withBlobAt(t, up, path);
     return up;
   };
 
@@ -10628,16 +10633,157 @@ exec '${Bun.which("git")}' "$@"
     expect(t.repo.read("vendor/other/b.md")).toBe("b\n");
   });
 
+  vendorTest("test_a_refused_track_vendor_leaves_no_upstream_block_and_status_as_it_was", (t) => {
+    const config = join(t.repo.path, ".patchbook/config.toml");
+    const kept = readFileSync(config);
+    const status = t.pb(["status"], { cwd: t.repo.path, code: null });
+    const evil = upstreamWithDotGit(t, "evil", ".git/config");
+    const out = t.pb(["track", "evil", evil.path, "--vendor", "vendor/evil"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("upstream evil holds .git/config, which git reads as .git, so it can't be vendored into vendor/evil. Nothing was changed.");
+    expect(readFileSync(config)).toEqual(kept);
+    expect(t.pb(["status"], { cwd: t.repo.path, code: null })).toEqual(status);
+  });
+
   vendorTest("test_an_upstream_that_holds_a_dot_git_is_refused_when_a_sync_would_only_rewrite_the_copy", (t) => {
-    const gentry = upstreamWithDotGit(t, "gentry");
+    const gentry = extraAt(t);
     t.pb(["track", "gentry", gentry.path], { cwd: t.repo.path });
+    withBlobAt(t, gentry, ".git");
+    t.pb(["check"], { cwd: t.repo.path, code: 1 }); // fetches the commit; no patchbook can pin it now, so the lock is the one an older patchbook wrote
+    const [commit, treeId] = sh(["git", "rev-parse", "HEAD", "HEAD^{tree}"], { cwd: gentry.path }).stdout.split("\n");
+    const lock = join(t.repo.path, ".patchbook/upstream.lock");
+    writeFileSync(lock, JSON.stringify({ ...JSON.parse(read(lock)), gentry: { commit, tree: treeId } }, null, 2) + "\n");
     const config = join(t.repo.path, ".patchbook/config.toml");
     writeFileSync(config, replace(read(config), 'name = "gentry"', 'name = "gentry"\nvendor = "vendor/gentry"'));
     const before = tree(t.repo.path);
     const out = t.pb(["sync", "gentry"], { cwd: t.repo.path, code: 1 });
-    expect(out.stderr).toContain("upstream gentry holds .git");
+    expect(out.stderr).toContain("upstream gentry holds .git, which git reads as .git, so it can't be vendored");
     expect(tree(t.repo.path)).toEqual(before);
   });
+
+  describe("an upstream that is not vendored and holds a path git reads as .git", () => {
+    const spellings = [".git/config", "GIT~1/config", ".git./config", ".g‌it/config"];
+
+    const dotGitCase = (): { t: Case; repo: Repo; out: string; good: Repo } => {
+      const t = new Case();
+      const up = new Repo(join(t.tmp, "up"));
+      up.write("README.md", "up\n");
+      up.commit("start");
+      const repo = new Repo(join(t.tmp, "mine"));
+      repo.write("README.md", "mine\n");
+      repo.commit("start");
+      t.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: repo.path });
+      repo.commit("init");
+      const good = new Repo(join(t.tmp, "good"));
+      good.write("g.md", "g\n");
+      good.commit("g");
+      t.pb(["track", "good", good.path], { cwd: repo.path });
+      t.pb(["build"], { cwd: repo.path });
+      return { t, repo, out: join(repo.path, "out"), good };
+    };
+
+    for (const path of spellings) {
+      const refused = (name: string): string => `upstream ${name} holds ${path}, which git reads as .git, so a build would put a git repo of its own in your tree. Nothing was changed.`;
+
+      test(`test_track_refuses_an_upstream_that_holds_${path}_before_it_pins_and_builds_nothing`, () => {
+        const { t, repo, out } = dotGitCase();
+        try {
+          const evil = upstreamWithDotGit(t, "evil", path);
+          const before = tree(repo.path);
+          const tracked = t.pb(["track", "evil", evil.path], { cwd: repo.path, code: 1 });
+          expect(tracked.stderr).toContain(refused("evil"));
+          expect(tree(repo.path)).toEqual(before);
+          t.pb(["build"], { cwd: repo.path });
+          expect(existsSync(join(out, "evil"))).toBe(false);
+          expect(tree(repo.path)).toEqual(before);
+        } finally {
+          t.cleanup();
+        }
+      }, TIMEOUT);
+
+      test(`test_every_command_that_builds_refuses_a_pin_that_holds_${path}`, () => {
+        const { t, repo, out, good } = dotGitCase();
+        try {
+          withBlobAt(t, good, path);
+          expect(t.pb(["check"], { cwd: repo.path, code: 1 }).stderr).toContain(refused("good"));
+          expect(t.pb(["sync"], { cwd: repo.path, code: 1 }).stderr).toContain(refused("good"));
+          const lockPath = join(repo.path, ".patchbook/upstream.lock");
+          const good1 = JSON.parse(read(lockPath));
+          const head = sh(["git", "rev-parse", "HEAD", "HEAD^{tree}"], { cwd: good.path }).stdout.split("\n");
+          writeFileSync(lockPath, JSON.stringify({ ...good1, good: { commit: head[0], tree: head[1] } }, null, 2) + "\n");
+          const built = tree(out);
+          const lock = read(lockPath);
+          for (const args of [["build"], ["build", "--force"], ["status"], ["status", "--json"], ["scaffold"]]) {
+            const r = t.pb(args, { cwd: repo.path, code: 1 });
+            expect(r.stderr).toContain(refused("good"));
+            expect(r.stderr).not.toMatch(/^\s+at /m);
+          }
+          sh(["git", "add", ".patchbook"], { cwd: repo.path });
+          const hooked = sh(["git", "commit", "-q", "--allow-empty", "-m", "hook"], { cwd: repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1" }, check: false });
+          expect(hooked.code).not.toBe(0);
+          expect(hooked.stderr).toContain(refused("good"));
+          expect(existsSync(join(out, "good", path.split("/")[0]!))).toBe(false);
+          expect(tree(out)).toEqual(built);
+          expect(read(lockPath)).toBe(lock);
+        } finally {
+          t.cleanup();
+        }
+      }, TIMEOUT);
+    }
+
+    test("test_a_refused_track_leaves_a_crlf_config_byte_for_byte_and_status_as_it_was", () => {
+      const { t, repo } = dotGitCase();
+      try {
+        const config = join(repo.path, ".patchbook/config.toml");
+        writeFileSync(config, read(config).replaceAll("\n", "\r\n"));
+        const kept = readFileSync(config);
+        const status = t.pb(["status"], { cwd: repo.path, code: null });
+        const evil = upstreamWithDotGit(t, "evil", ".git/config");
+        const out = t.pb(["track", "evil", evil.path], { cwd: repo.path, code: 1 });
+        expect(out.stderr).toContain("upstream evil holds .git/config, which git reads as .git, so a build would put a git repo of its own in your tree. Nothing was changed.");
+        expect(readFileSync(config)).toEqual(kept);
+        expect(t.pb(["status"], { cwd: repo.path, code: null })).toEqual(status);
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+  });
+
+  test("test_init_refuses_an_upstream_that_holds_a_dot_git_and_leaves_no_patchbook", () => {
+    const t = new Case();
+    try {
+      const evil = upstreamWithDotGit(t, "evil");
+      const repo = new Repo(join(t.tmp, "mine"));
+      repo.write("README.md", "mine\n");
+      repo.commit("start");
+      const before = tree(repo.path);
+      const out = t.pb(["init", "--upstream", evil.path, "--output-to", "out"], { cwd: repo.path, code: 1 });
+      expect(out.stderr).toContain("upstream evil holds .git, which git reads as .git");
+      expect(tree(repo.path)).toEqual(before);
+      expect(existsSync(join(repo.path, ".patchbook"))).toBe(false);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+
+  test("test_init_refused_in_a_patchbook_folder_with_no_config_leaves_every_file_in_it", () => {
+    const t = new Case();
+    try {
+      const evil = upstreamWithDotGit(t, "evil", "GIT~1/config");
+      const repo = new Repo(join(t.tmp, "mine"));
+      repo.write("README.md", "mine\n");
+      repo.commit("start");
+      repo.write(".patchbook/series", "my-change\n");
+      repo.write(".patchbook/retired.md", "my retired notes\n");
+      repo.write(".patchbook/notes.txt", "keep me\n");
+      const before = tree(repo.path);
+      const out = t.pb(["init", "--upstream", evil.path, "--output-to", "out"], { cwd: repo.path, code: 1 });
+      expect(out.stderr).toContain("upstream evil holds GIT~1/config, which git reads as .git, so a build would put a git repo of its own in your tree. Nothing was changed.");
+      expect(tree(repo.path)).toEqual(before);
+      expect(existsSync(join(repo.path, ".patchbook/config.toml"))).toBe(false);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
 
   const brokenLinks: [string, string, (t: Case, repo: Repo) => string][] = [
     ["out_of_the_repo", "lnk/copy", (t, repo) => (symlinkSync(join(t.tmp, "gone/missing/deep"), join(repo.path, "lnk")), "lnk")],

@@ -37,7 +37,7 @@ export async function cmdCheck() {
         const now = u.mounted(u.files(head));
         const own = (files: ReadonlyMap<string, File>) => new Map([...files].filter(([p]) => !book.isPatchbook(p)));
         r.moved = !pin.tree || upstreamDelta(own(old), own(now)).length > 0;
-        if (r.moved) r.files = upstreamDelta(book.buildable(old, false), book.buildable(now));
+        if (r.moved) r.files = upstreamDelta(book.buildable(u, old, false), book.buildable(u, now));
       }
     }
     upstreams.set(u.name, r);
@@ -155,8 +155,8 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   }
   const raw = u.files(commit);
   if (u.vendor) refuseUpstreamGit(u.name, relative(book.root, u.vendor), raw.keys());
-  const old = pin.tree ? book.buildable(u.mounted(u.files(u.heal(pinned(u, pin)))), false) : new Map<string, File>();
-  const fresh = book.buildable(u.mounted(raw));
+  const old = pin.tree ? book.buildable(u, u.mounted(u.files(u.heal(pinned(u, pin)))), false) : new Map<string, File>();
+  const fresh = book.buildable(u, u.mounted(raw));
   const report: SyncReport = {
     from: pin.commit ?? null, to: commit, upstream: upstreamDelta(old, fresh), merged: [], conflicts: [], gone: [],
     replaced_upstream_changed: [],
