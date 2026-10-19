@@ -386,6 +386,10 @@ function recoverAll(book: Book): void {
 function misshapen(book: Book, u: Upstream): string | null {
   const j = journal(book, u);
   if (!exists(join(j, "pin"))) return null;
+  const strayed = astray(book.root, j);
+  if (strayed) return `it ${strayed}, and recovery would read it and move what it holds`;
+  const pinStrayed = astray(book.root, join(j, "pin"));
+  if (pinStrayed) return `its pin ${pinStrayed}, and recovery would read it`;
   const [lock, before, upstreamLock, lastSync] = [join(j, "lock"), join(j, "before"), join(book.dir, "upstream.lock"), join(book.dir, REPORT)];
   const saved = lexists(before) && !astray(book.root, before) ? nonFolders(before) : [];
   const odd = saved.find((rel) => rel !== REPORT && !(rel.startsWith("changes/") && rel.endsWith(".pb")));
