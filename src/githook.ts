@@ -542,6 +542,18 @@ function refuseBehindLinks(book: Book, paths: string[]): void {
     + "\nPatchbook can't record a folder turned into a link. Put the folder back, or skip the hook once with PATCHBOOK_HOOK=0.");
 }
 
+function refuseFolderToFile(book: Book, staged: ReadonlyMap<string, File>, removed: string[]): void {
+  const turned = new Map<string, string[]>();
+  for (const p of removed) {
+    const parts = p.split("/");
+    const file = parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join("/")).find((folder) => staged.has(folder));
+    if (file !== undefined) turned.set(file, [...(turned.get(file) ?? []), inRepo(book, p)]);
+  }
+  if (!turned.size) return;
+  throw new Fail(Array.from(turned, ([file, gone]) => `${inRepo(book, file)} is a file now, and these paths under it are gone:\n  ${gone.join("\n  ")}`).join("\n")
+    + "\nPatchbook can't record a folder turned into a file. Put the folder back, or skip the hook once with PATCHBOOK_HOOK=0.");
+}
+
 function committable(book: Book, staged: ReadonlyMap<string, File>, paths: string[]): string[] {
   const missing = paths.filter((p) => !staged.has(p));
   if (!missing.length) return paths;
@@ -741,6 +753,7 @@ async function runHook(undo: Undo) {
   const stagedEdits = (out: ReadonlyMap<string, File>) => {
     const removed = removedFromIndex(out);
     refuseBehindLinks(book, removed);
+    refuseFolderToFile(book, staged, removed);
     return sorted(new Set([...committable(book, staged, handEdits(book, out, staged, [lock, committed])), ...removed]));
   };
   const plan = (out: ReadonlyMap<string, File>) => {

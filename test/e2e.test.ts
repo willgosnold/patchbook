@@ -7686,6 +7686,98 @@ describe("ForkTest", () => {
     expect(inHead(t, "docs")).toBe("docs/guide.md\n");
   });
 
+  const FOLDER_TO_FILE = "can't record a folder turned into a file";
+
+  forkTest("test_commit_refuses_an_output_folder_replaced_by_a_file", (t) => {
+    rmSync(join(t.fork.path, "docs"), { recursive: true });
+    t.fork.write("docs", "x\n");
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    const before = { files: tree(t.fork.path), staged: porcelain(t), head: sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout };
+    const commit = hookCommit(t, ["-m", "docs is a file"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("docs");
+    expect(commit.stderr).toContain(FOLDER_TO_FILE);
+    expect(commit.stderr).toContain("PATCHBOOK_HOOK=0");
+    expect(commit.stderr).not.toContain("fatal");
+    expect(tree(t.fork.path)).toEqual(before.files);
+    expect(porcelain(t)).toBe(before.staged);
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(before.head);
+  });
+
+  forkTest("test_commit_refuses_a_nested_output_folder_replaced_by_a_file", (t) => {
+    t.up.write("deep/er/one.txt", "one\n");
+    t.up.commit("add a nested folder");
+    t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "take upstream"]);
+    rmSync(join(t.fork.path, "deep/er"), { recursive: true });
+    t.fork.write("deep/er", "x\n");
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    const before = { files: tree(t.fork.path), staged: porcelain(t) };
+    const commit = hookCommit(t, ["-m", "deep/er is a file"], false);
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("deep/er");
+    expect(commit.stderr).toContain(FOLDER_TO_FILE);
+    expect(tree(t.fork.path)).toEqual(before.files);
+    expect(porcelain(t)).toBe(before.staged);
+  });
+
+  forkTest("test_commit_ignores_an_output_folder_replaced_by_a_file_that_is_not_staged", (t) => {
+    rmSync(join(t.fork.path, "docs"), { recursive: true });
+    t.fork.write("docs", "x\n");
+    hookCommit(t, ["--allow-empty", "-m", "nothing staged"]);
+    expect(inHead(t, "docs")).toBe("docs/guide.md\n");
+  });
+
+  forkTest("test_commit_records_an_output_folder_that_is_only_deleted", (t) => {
+    sh(["git", "rm", "-rq", "docs"], { cwd: t.fork.path });
+    const commit = hookCommit(t, ["-m", "drop the docs"], false);
+    expect(commit.code).toBe(0);
+    expect(commit.stderr).not.toContain(FOLDER_TO_FILE);
+    expect(inHead(t, "docs")).toBe("");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_commit_records_an_output_folder_deleted_while_a_file_of_its_name_is_only_marked_with_add_n", (t) => {
+    rmSync(join(t.fork.path, "docs"), { recursive: true });
+    t.fork.write("docs", "x\n");
+    sh(["git", "add", "-u"], { cwd: t.fork.path });
+    sh(["git", "add", "-N", "docs"], { cwd: t.fork.path });
+    rmSync(join(t.fork.path, "docs"));
+    mkdirSync(join(t.fork.path, "docs"));
+    const commit = hookCommit(t, ["-m", "drop the guide"], false);
+    expect(commit.stderr).not.toContain(FOLDER_TO_FILE);
+    expect(commit.code).toBe(0);
+    expect(inHead(t, "docs")).toBe("");
+  });
+
+  forkTest("test_commit_takes_a_folder_that_upstream_turned_into_a_file", (t) => {
+    t.up.write("deep/er/one.txt", "one\n");
+    t.up.commit("add a nested folder");
+    t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
+    hookCommit(t, ["-m", "take upstream"]);
+    rmSync(join(t.up.path, "deep/er"), { recursive: true });
+    t.up.write("deep/er", "now a file\n");
+    t.up.commit("deep/er is a file");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    const commit = hookCommit(t, ["-m", "take upstream again"], false);
+    expect(commit.stderr).not.toContain(FOLDER_TO_FILE);
+    expect(commit.code).toBe(0);
+    expect(inHead(t, "deep")).toBe("deep/er\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_commit_records_an_edit_to_a_file_that_was_always_a_file", (t) => {
+    const commit = shoutTwo(t);
+    expect(commit.code).toBe(0);
+    expect(commit.stderr).not.toContain(FOLDER_TO_FILE);
+    expect(committed(t)).toContain("app.txt");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
   readOnlyTest("test_failed_commit_reports_nothing_stuck_after_putting_back_nested_new_folders", (t) => {
     t.up.write("deep/er/one.txt", "one\n");
     t.up.write("deep/other/two.txt", "two\n");
@@ -9838,6 +9930,40 @@ describe("VendorTest", () => {
     expect(sh(["git", "show", "HEAD:skills/hello/SKILL.md"], { cwd: t.repo.path }).stdout).toContain("Say hello in T3.");
     expect(existsSync(join(t.repo.path, ".patchbook/changes/shout"))).toBe(false);
     expect(sh(["git", "status", "--porcelain"], { cwd: t.repo.path }).stdout).toBe("");
+  });
+
+  const builtAndCommitted = (t: VendorCase): void => {
+    t.missingScaffoldPatchBuild();
+    sh(["git", "add", ".patchbook"], { cwd: t.repo.path });
+    sh(["git", "commit", "-qm", "built"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+  };
+
+  vendorTest("test_commit_refuses_an_output_folder_replaced_by_a_file", (t) => {
+    builtAndCommitted(t);
+    rmSync(join(t.repo.path, "skills/hello"), { recursive: true });
+    t.repo.write("skills/hello", "x\n");
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+    const before = { files: tree(t.repo.path), staged: sh(["git", "status", "--porcelain"], { cwd: t.repo.path }).stdout };
+    const commit = sh(["git", "commit", "-qm", "hello is a file"], { cwd: t.repo.path, check: false, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("skills/hello");
+    expect(commit.stderr).toContain("can't record a folder turned into a file");
+    expect(commit.stderr).toContain("PATCHBOOK_HOOK=0");
+    expect(commit.stderr).not.toContain("fatal");
+    expect(tree(t.repo.path)).toEqual(before.files);
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.repo.path }).stdout).toBe(before.staged);
+  });
+
+  vendorTest("test_commit_ignores_an_output_folder_replaced_by_a_file_that_is_not_staged", (t) => {
+    builtAndCommitted(t);
+    rmSync(join(t.repo.path, "skills/hello"), { recursive: true });
+    t.repo.write("skills/hello", "x\n");
+    t.repo.write("README.md", "mine, edited\n");
+    sh(["git", "add", "README.md"], { cwd: t.repo.path });
+    const commit = sh(["git", "commit", "-qm", "readme"], { cwd: t.repo.path, check: false, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    expect(commit.code).toBe(0);
+    expect(sh(["git", "ls-tree", "-r", "--name-only", "HEAD", "--", "skills"], { cwd: t.repo.path }).stdout).toBe("skills/hello/SKILL.md\n");
+    expect(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.repo.path }).stdout).toBe("README.md\n");
   });
 
   vendorTest("test_build_commit_with_nothing_in_the_output", (t) => {
