@@ -41,6 +41,9 @@ export function lines(text: string): string[] {
 /** text without the one `\n` that ends it, if it has one. A path may start or end with whitespace, so nothing else comes off. */
 export const withoutFinalNewline = (text: string): string => (text.endsWith("\n") ? text.slice(0, -1) : text);
 
+/** text padded with spaces on the right to width code points, which is how wide a terminal shows it. `padEnd` counts UTF-16 units. */
+export const padEndCodePoints = (text: string, width: number): string => text + " ".repeat(Math.max(0, width - Array.from(text).length));
+
 /** Orders strings by code point, the same in every locale. That is the order of their UTF-8 bytes, which
  * git sorts paths in. `sort()` alone compares UTF-16 code units, which puts characters above U+FFFF
  * before U+E000 to U+FFFF. */

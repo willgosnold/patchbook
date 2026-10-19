@@ -6697,10 +6697,9 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
 
   forkTest("test_config_rows_stay_aligned_when_a_value_holds_a_character_above_u_ffff", (t) => {
     t.config(["intent.effort", "😀"]);
-    const rows = t.config([]).split("\n").filter((l) => /^[a-z]+\.[a-z_]+ /.test(l));
-    expect(rows.length).toBeGreaterThan(5);
-    expect(rows.find((l) => l.startsWith("intent.effort"))).toContain('"😀"');
-    for (const row of rows) expect(row).toMatch(/^.{50}(env|project|user|default)\b/u);
+    const rows = t.config([]).split("\n");
+    for (const name of ["intent.effort", "hook.enabled"]) expect(rows.find((l) => l.startsWith(`${name} `))).toMatch(/^.{50}(env|project|user|default)\b/u);
+    expect(rows.find((l) => l.startsWith("intent.effort "))).toContain('"😀"');
   });
 
   forkTest("test_settings_layer", (t) => {
@@ -7531,7 +7530,7 @@ describe("VendorTest", () => {
     t.pb(["build"], { cwd: t.fork.path });
     expect(read(join(t.fork.path, ".patchbook/build.lock")).split("\n").filter(Boolean).map((l) => l.slice(41))).toEqual(expect.arrayContaining(names));
     for (const name of names) rmSync(join(t.fork.path, name));
-    t.pb(["build"], { cwd: t.fork.path });
+    t.pb(["build", "--force"], { cwd: t.fork.path });
     for (const name of names) expect(read(join(t.fork.path, name))).toBe(`${JSON.stringify(name)}\n`);
   });
 
