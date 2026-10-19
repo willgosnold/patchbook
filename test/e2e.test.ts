@@ -10369,6 +10369,197 @@ exec '${Bun.which("git")}' "$@"
   };
   const lockOf = (t: VendorCase): string => t.repo.read(".patchbook/upstream.lock");
 
+  // A vendor folder is replaced by upstream's files, so what it holds that upstream's tree doesn't is the user's.
+  const userFiles: [string, string, (repo: Repo) => void][] = [
+    ["a_file_of_your_own", "vendor/extra/new.md", (repo) => repo.write("vendor/extra/new.md", "my notes\n")],
+    ["a_file_in_a_folder_of_your_own", "vendor/extra/deep/er/n.md", (repo) => repo.write("vendor/extra/deep/er/n.md", "nested\n")],
+    ["a_file_git_ignores", "vendor/extra/.env", (repo) => {
+      appendFileSync(join(repo.path, ".gitignore"), ".env\n");
+      repo.write("vendor/extra/.env", "SECRET=1\n");
+    }],
+    ["a_link_of_your_own", "vendor/extra/link", (repo) => {
+      mkdirSync(join(repo.path, "vendor/extra"), { recursive: true });
+      symlinkSync("../../README.md", join(repo.path, "vendor/extra/link"));
+    }],
+    ["a_file_at_a_path_upstream_has_with_other_bytes", "vendor/extra/a.md", (repo) => repo.write("vendor/extra/a.md", "mine, not upstream's\n")],
+  ];
+
+  /** The fixture's own problems show in `status`, so a refusal is checked by `status` saying what it said before. */
+  const statusOf = (t: VendorCase): string => {
+    const r = t.pb(["status"], { cwd: t.repo.path, code: null });
+    return `${r.code}\n${r.stdout}${r.stderr}`;
+  };
+
+  const noJournal = (t: VendorCase): void => {
+    expect(existsSync(join(t.repo.path, ".patchbook/sync-extra"))).toBe(false);
+  };
+
+  for (const [what, found, make] of userFiles) {
+    vendorTest(`test_track_refuses_a_vendor_folder_that_holds_${what}_and_keeps_it`, (t) => {
+      const extra = extraAt(t);
+      make(t.repo);
+      const config = join(t.repo.path, ".patchbook/config.toml");
+      const configBefore = read(config);
+      const lock = lockOf(t);
+      const status = statusOf(t);
+      const before = tree(t.repo.path);
+      const out = t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path, code: 1 });
+      expect(out.stderr).toContain("upstream extra");
+      expect(out.stderr).toContain("vendor/extra");
+      expect(out.stderr).toContain(found);
+      expect(out.stderr).toContain("Nothing was changed.");
+      expect(read(config)).toBe(configBefore);
+      expect(read(config)).not.toContain("extra");
+      expect(lockOf(t)).toBe(lock);
+      expect(tree(t.repo.path)).toEqual(before);
+      noJournal(t);
+      expect(statusOf(t)).toBe(status);
+    });
+
+    test(`test_init_refuses_a_vendor_folder_that_holds_${what}_and_writes_nothing`, () => {
+      const t = new VendorCase();
+      try {
+        const repo = new Repo(join(t.tmp, "fresh"));
+        repo.write("README.md", "mine\n");
+        repo.commit("start");
+        const extra = extraAt(t);
+        make(repo);
+        const before = tree(repo.path);
+        const out = t.pb(["init", "--upstream", extra.path, "--name", "extra", "--output-to", "out", "--vendor", "vendor/extra"], { cwd: repo.path, code: 1 });
+        expect(out.stderr).toContain(found);
+        expect(out.stderr).toContain("Nothing was changed.");
+        expect(existsSync(join(repo.path, ".patchbook"))).toBe(false);
+        expect(tree(repo.path)).toEqual(before);
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+
+    // On a sync, a path upstream has is its own, even edited: that is the copy to put right, not a file of the user's.
+    if (!what.endsWith("other_bytes")) {
+      // The upstream moves its pin, then the user's file lands in the folder.
+      vendorTest(`test_sync_refuses_to_replace_a_vendored_copy_that_holds_${what}`, (t) => {
+        const extra = extraAt(t);
+        t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+        extra.write("b.md", "b\n");
+        extra.commit("b");
+        make(t.repo);
+        const lock = lockOf(t);
+        const before = tree(t.repo.path);
+        const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+        expect(out.stderr).toContain("upstream extra");
+        expect(out.stderr).toContain(found);
+        expect(out.stderr).toContain("Nothing was changed.");
+        expect(lockOf(t)).toBe(lock);
+        expect(tree(t.repo.path)).toEqual(before);
+        noJournal(t);
+      });
+
+      // Upstream has not moved, so the sync would only rewrite the copy. Git never sees an ignored file, so the copy still hashes to the pin and nothing is rewritten.
+      vendorTest(`test_sync_${what === "a_file_git_ignores" ? "leaves" : "refuses_to_rewrite"}_a_vendored_copy_that_holds_${what}`, (t) => {
+        const extra = extraAt(t);
+        t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+        make(t.repo);
+        const lock = lockOf(t);
+        const before = tree(t.repo.path);
+        if (what === "a_file_git_ignores") {
+          expect(t.pb(["sync", "extra"], { cwd: t.repo.path }).stdout).toContain("Nothing to do.");
+          expect(tree(t.repo.path)).toEqual(before);
+          return;
+        }
+        const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+        expect(out.stderr).toContain("upstream extra");
+        expect(out.stderr).toContain(found);
+        expect(out.stderr).toContain("Nothing was changed.");
+        expect(lockOf(t)).toBe(lock);
+        expect(tree(t.repo.path)).toEqual(before);
+        noJournal(t);
+      });
+    }
+  }
+
+  vendorTest("test_track_refuses_a_vendor_path_that_is_a_file_of_yours_and_keeps_it", (t) => {
+    const extra = extraAt(t);
+    t.repo.write("vendor/extra", "my file\n");
+    const config = join(t.repo.path, ".patchbook/config.toml");
+    const configBefore = read(config);
+    const before = tree(t.repo.path);
+    const out = t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("upstream extra");
+    expect(out.stderr).toContain("vendor/extra");
+    expect(out.stderr).toContain("Nothing was changed.");
+    expect(read(config)).toBe(configBefore);
+    expect(tree(t.repo.path)).toEqual(before);
+  });
+
+  vendorTest("test_a_refusal_names_a_few_files_and_counts_the_rest", (t) => {
+    const extra = extraAt(t);
+    for (let i = 1; i <= 8; i++) t.repo.write(`vendor/extra/mine${i}.md`, `${i}\n`);
+    const before = tree(t.repo.path);
+    const out = t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("holds 8 files");
+    expect(out.stderr).toContain("vendor/extra/mine1.md");
+    expect(out.stderr).toContain("vendor/extra/mine5.md");
+    expect(out.stderr).not.toContain("vendor/extra/mine6.md");
+    expect(out.stderr).toContain("and 3 more");
+    expect(tree(t.repo.path)).toEqual(before);
+  });
+
+  vendorTest("test_a_refused_sync_goes_through_once_the_file_is_moved_out", (t) => {
+    const extra = extraAt(t);
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    extra.write("b.md", "b\n");
+    extra.commit("b");
+    t.repo.write("vendor/extra/new.md", "my notes\n");
+    t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    renameSync(join(t.repo.path, "vendor/extra/new.md"), join(t.repo.path, "new.md"));
+    t.pb(["sync", "extra"], { cwd: t.repo.path });
+    expect(t.repo.read("vendor/extra/b.md")).toBe("b\n");
+    expect(t.repo.read("new.md")).toBe("my notes\n");
+    expect(statusOf(t)).not.toContain("Never edit the vendored copy");
+  });
+
+  vendorTest("test_track_into_an_empty_or_missing_vendor_folder_still_works", (t) => {
+    const extra = extraAt(t);
+    mkdirSync(join(t.repo.path, "vendor/empty"), { recursive: true });
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/empty"], { cwd: t.repo.path });
+    expect(t.repo.read("vendor/empty/a.md")).toBe("a\n");
+    t.pb(["track", "other", extra.path, "--vendor", "vendor/missing"], { cwd: t.repo.path });
+    expect(t.repo.read("vendor/missing/a.md")).toBe("a\n");
+    expect(statusOf(t)).not.toContain("differs from the pin");
+  });
+
+  vendorTest("test_track_into_a_folder_that_holds_exactly_upstreams_files_still_works", (t) => {
+    const extra = extraAt(t);
+    t.repo.write("vendor/extra/a.md", "a\n");
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    expect(t.repo.read("vendor/extra/a.md")).toBe("a\n");
+    expect(statusOf(t)).not.toContain("differs from the pin");
+  });
+
+  vendorTest("test_sync_of_an_untouched_vendored_copy_still_works", (t) => {
+    const extra = extraAt(t);
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    extra.write("b.md", "b\n");
+    extra.commit("b");
+    t.pb(["sync", "extra"], { cwd: t.repo.path });
+    expect(t.repo.read("vendor/extra/b.md")).toBe("b\n");
+    rmSync(join(t.repo.path, "vendor/extra/a.md"));
+    t.pb(["sync", "extra"], { cwd: t.repo.path });
+    expect(t.repo.read("vendor/extra/a.md")).toBe("a\n");
+  });
+
+  // The hook and status already refuse a copy edited by hand, and sync is how it is put right, so those bytes are not a file of the user's.
+  vendorTest("test_sync_still_rewrites_an_upstream_path_edited_by_hand", (t) => {
+    const extra = extraAt(t);
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    extra.write("b.md", "b\n");
+    extra.commit("b");
+    t.repo.write("vendor/extra/a.md", "edited by hand\n");
+    t.pb(["sync", "extra"], { cwd: t.repo.path });
+    expect(t.repo.read("vendor/extra/a.md")).toBe("a\n");
+  });
+
   describe.skipIf(process.getuid?.() === 0)("where chmod hides a folder, so not as root", () => {
     const unhide = (t: Case): void => {
       sh(["chmod", "-R", "u+rwx", t.tmp], { cwd: t.tmp });
