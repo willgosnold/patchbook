@@ -338,7 +338,7 @@ Each setting can be set in three places, and the most specific wins: an env var,
 | `start.agents` | | `["claude-code", "codex"]` |
 | `store.path` (user only) | `PATCHBOOK_HOME` | `~/.local/share/patchbook` |
 
-A model or effort set beside a different provider belongs to that provider, so it's skipped when another layer picks a different one.
+A model or effort set beside a different provider belongs to that provider, so it's skipped when another layer picks a different one. An env var has no provider beside it, so `PATCHBOOK_MODEL` and `PATCHBOOK_EFFORT` apply to whichever provider is chosen, even one a config file picks.
 
 Problem kinds: missing, orphan, conflict, gone, stale, invalid, placeholder, leak, check.
 

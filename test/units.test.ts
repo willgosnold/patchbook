@@ -848,6 +848,16 @@ describe.skipIf(!inSandbox)("intentSettings", () => {
     expect(sources(null).chosen).toEqual(["claude", claude.model, "low"]);
   });
 
+  test("an env model applies to the provider a config file picks, though a config value beside another provider does not", async () => {
+    user('[intent]\nprovider = "claude"\neffort = "claude-effort"\n');
+    const book = await project('[intent]\nprovider = "codex"\n');
+    process.env["PATCHBOOK_MODEL"] = "any-model";
+    expect(sources(book)).toEqual({
+      chosen: ["codex", "any-model", codex.effort],
+      map: { "intent.provider": "project", "intent.model": "env" },
+    });
+  });
+
   test("an empty env var counts as unset", async () => {
     const book = await project('[intent]\nmodel = "from-project"\n');
     process.env["PATCHBOOK_PROVIDER"] = "claude";

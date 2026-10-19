@@ -2011,6 +2011,42 @@ test("a fork init writes awkward values so they read back as given", () => {
   }
 }, TIMEOUT);
 
+test("init in the folder layout on a clean repo pins upstream and writes the config and the hook, but no output", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("a.txt", "a\n");
+    up.write("docs/b.md", "b\n");
+    const head = up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    repo.write("README.md", "mine\n");
+    repo.commit("start");
+    const init = t.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: repo.path });
+    expect(init.stdout).toBe(`upstream: pinned ${head.slice(0, 7)}. 2 upstream files changed, 0 of ours merged cleanly, 0 conflicts, 0 gone.\n`
+      + "Next: patchbook build, then stage and commit.\n"
+      + 'To keep up with upstream, add a daily T3 scheduled task in this project: "Use the patchbook-update skill."\n');
+    expect(init.stderr).toBe("patchbook: installed a pre-commit hook that records and builds on each commit\n");
+    expect(sh(["git", "status", "--porcelain", "--untracked-files=all"], { cwd: repo.path }).stdout)
+      .toBe("?? .patchbook/config.toml\n?? .patchbook/retired.md\n?? .patchbook/series\n?? .patchbook/upstream.lock\n");
+    expect(repo.read(".patchbook/config.toml"))
+      .toBe(`layout = "folder"\n\n[[upstream]]\nname = "upstream"\nremote = ${JSON.stringify(up.path)}\nbranch = "main"\nmount = ""\n\n[output]\nfrom = ""\nto = "out"\n`);
+    const tree = sh(["git", "rev-parse", `${head}^{tree}`], { cwd: up.path }).stdout.trim();
+    expect(lockPin(repo.read(".patchbook/upstream.lock"), "upstream")).toEqual({ name: "upstream", commit: head, tree });
+    expect(repo.read(".patchbook/series")).toBe("");
+    expect(existsSync(join(repo.path, "out"))).toBe(false);
+    const hook = join(repo.path, ".git/hooks/pre-commit");
+    expect(isExecutable(hook)).toBe(true);
+    expect(read(hook)).toContain("patchbook hook run");
+    const store = join(t.tmp, "store/upstreams", readdirSync(join(t.tmp, "store/upstreams"))[0]!);
+    expect(sh(["git", "rev-parse", "--verify", `refs/pins/${head}`], { cwd: store }).stdout.trim()).toBe(head);
+    t.pb(["build"], { cwd: repo.path });
+    expect([repo.read("out/a.txt"), repo.read("out/docs/b.md")]).toEqual(["a\n", "b\n"]);
+    expect(t.pb(["status"], { cwd: repo.path }).stdout).toContain("no problems");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("init into patchbook names output to not mount", () => {
   const t = new Case();
   try {
@@ -7527,6 +7563,22 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
       expect(existsSync(report)).toBe(false);
       expect(t.fork.read(".patchbook/upstream.lock")).toBe(lock);
     });
+  });
+
+  forkTest("status, build and sync refuse an upstream.lock a merge left conflict markers in, and change nothing", (t) => {
+    const path = join(t.fork.path, ".patchbook/upstream.lock");
+    const lock = read(path);
+    writeFileSync(path, `<<<<<<< HEAD\n${lock}=======\n${lock}>>>>>>> theirs\n`);
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
+    t.up.commit("upstream edit");
+    const before = tree(t.fork.path);
+    for (const args of [["status"], ["build"], ["sync"]]) {
+      const { stderr } = t.pb(args, { cwd: t.fork.path, code: 1 });
+      expect(stderr).toContain("patchbook: .patchbook/upstream.lock isn't JSON: ");
+      expect(stderr).toEndWith(' It holds {"version": 1, "upstreams": [{"name": ..., "commit": ..., "tree": ...}]}, one entry per upstream, sorted by name.\n');
+      expect(stderr).not.toContain("    at ");
+    }
+    expect(tree(t.fork.path)).toEqual(before);
   });
 
   forkTest("sync refuses a last-sync.json that does not parse and changes nothing", (t) => {
