@@ -10,7 +10,7 @@ import { Fail } from "./lib/fail.ts";
 import type { File } from "./lib/fs.ts";
 import { JsonError, loads } from "./lib/json.ts";
 import { spawn, which } from "./lib/proc.ts";
-import { length, type PyValue, slice, split, splitlines, str, strip, strRepr } from "./lib/py.ts";
+import { length, type PyValue, slice, split, splitlines, strip, strRepr } from "./lib/py.ts";
 import { decode, decodeReplace, encode, isText } from "./lib/text.ts";
 import { configured, readToml, type Source, setting, SETTINGS, type Table, USER_CONFIG } from "./settings.ts";
 
@@ -128,12 +128,12 @@ export function nameFromIntent(intent: string, roster: Roster): string {
   return roster.free(base || "change");
 }
 
-/** Ask the chosen model for the change's name and intent. Returns the name (null if not named) and the intent. */
+/** Ask the chosen model for the change's name and intent. Returns the name and the intent; the name means nothing when `named` is false. */
 export function writeIntent(
   book: Book, changes: ReadonlyMap<string, Change>, diff: string, name: string | null, named: boolean,
-): [string | null, string | null] {
+): [string, string] {
   const [provider, model, effort] = intentSettings(book);
-  const listed = Array.from(changes.values(), (c) => `${c.name}: ${c.intent ?? "None"}`).join("\n") || "(none yet)";
+  const listed = Array.from(changes.values(), (c) => `${c.name}: ${c.intent}`).join("\n") || "(none yet)";
   let instruction: string;
   if (!named) {
     name = "paragraphs";
@@ -155,12 +155,13 @@ export function writeIntent(
   const fields = answer instanceof Map ? answer : new Map<string, PyValue>();
   const given = fields.get("change") ?? "";
   let chosen = typeof given === "string" ? given : "";
-  let intent: string | null = oneLine(str(fields.has("intent") ? fields.get("intent")! : ""));
+  const said = fields.get("intent");
+  let intent = typeof said === "string" ? oneLine(said) : "";
   if (!CHANGE_NAME.test(chosen) || !intent) {
     throw new Fail(`${provider} didn't return a usable name and intent:\n${slice(strip(reply), 0, 500)}\nPass a name and --intent instead.`);
   }
   if (name && chosen !== name) chosen = name;
   const known = changes.get(chosen);
   if (known && named) intent = known.intent;
-  return [named ? chosen : null, intent];
+  return [chosen, intent];
 }

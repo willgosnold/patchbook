@@ -5427,6 +5427,18 @@ describe("ForkTest", () => {
     });
   }
 
+  forkTest("test_record_refuses_a_model_reply_whose_intent_is_not_a_string", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    for (const intent of ["null", "7", "true", '{"a": 1}', "[]"]) {
+      writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "model-name", "intent": ${intent}}'\n`);
+      const run = t.pb(["record"], { cwd: t.fork.path, code: 1 });
+      expect(run.stdout).toBe("");
+      expect(run.stderr).toContain("didn't return a usable name and intent");
+      expect(existsSync(join(t.fork.path, ".patchbook/changes/model-name"))).toBe(false);
+      expect(existsSync(join(t.fork.path, ".patchbook/series")) ? read(join(t.fork.path, ".patchbook/series")) : "").not.toContain("model-name");
+    }
+  });
+
   forkTest("test_record_lets_the_model_pick_a_name_the_series_lists_without_a_folder", (t) => {
     writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "ghost", "intent": "Ghost intent."}'\n`);
     writeFileSync(join(t.fork.path, ".patchbook/series"), "ghost\n");
@@ -8694,6 +8706,96 @@ describe("VendorTest", () => {
     const dropped = read(join(t.repo.path, ".patchbook/changes/drop-the-skill/CHANGE.md"));
     expect(dropped).toContain("intent: Drop the skill.");
     expect(dropped).toContain("- delete skills/hello/SKILL.md");
+  });
+
+  vendorTest("test_record_deleting_a_file_with_block_entries_removes_its_block_entries", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    unlinkSync(join(t.repo.path, "skills/hello/SKILL.md"));
+    expect(t.pb(["record", "--intent", "Drop the skill."], { cwd: t.repo.path }).stdout).toBe("drop-the-skill: Drop the skill.\ndelete   hello/SKILL.md\n");
+    expect(existsSync(entries)).toBe(false);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.repo.path });
+    expect(existsSync(join(t.repo.path, "skills/hello/SKILL.md"))).toBe(false);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  vendorTest("test_record_deleting_one_file_keeps_the_block_entries_of_another", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    t.up.write("plugin/skills/bye/SKILL.md", "# Bye\n\nOpen Cursor and say bye.\n");
+    t.up.commit("more");
+    t.pb(["sync"], { cwd: t.repo.path });
+    t.pb(["scaffold"], { cwd: t.repo.path });
+    const kept = join(t.repo.path, ".patchbook/blocks/skills/bye/SKILL.md.entries");
+    expect(existsSync(kept)).toBe(true);
+    unlinkSync(join(t.repo.path, "skills/hello/SKILL.md"));
+    t.pb(["record", "--intent", "Drop the skill."], { cwd: t.repo.path });
+    expect(existsSync(entries)).toBe(false);
+    expect(existsSync(kept)).toBe(true);
+  });
+
+  vendorTest("test_hook_recording_a_delete_removes_the_block_entries_from_the_tree", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    t.pb(["hook", "install"], { cwd: t.repo.path });
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+    sh(["git", "commit", "-qm", "built"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Built it." } });
+    unlinkSync(join(t.repo.path, "skills/hello/SKILL.md"));
+    sh(["git", "commit", "-qam", "drop"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Drop the skill." }, check: false });
+    expect(read(join(t.repo.path, ".patchbook/changes/drop-the-skill/CHANGE.md"))).toContain("- delete skills/hello/SKILL.md");
+    expect(existsSync(entries)).toBe(false);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  const copyOfHello = (t: VendorCase): void => {
+    mkdirSync(join(t.repo.path, ".patchbook/changes/dup"), { recursive: true });
+    writeFileSync(join(t.repo.path, ".patchbook/changes/dup/CHANGE.md"), "# dup\n\nintent: Copy the skill.\n\nedits:\n- copy skills/hello/SKILL.md -> skills/copy/SKILL.md\n");
+    writeFileSync(join(t.repo.path, ".patchbook/series"), "dup\n");
+    t.pb(["build"], { cwd: t.repo.path });
+    expect(read(join(t.repo.path, "skills/copy/SKILL.md"))).toContain("Say hello in T3.");
+  };
+
+  vendorTest("test_record_deleting_one_output_keeps_the_block_entries_another_output_still_uses", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    copyOfHello(t);
+    unlinkSync(join(t.repo.path, "skills/copy/SKILL.md"));
+    t.pb(["record", "--intent", "Drop the copy."], { cwd: t.repo.path });
+    expect(existsSync(entries)).toBe(true);
+    t.pb(["build"], { cwd: t.repo.path });
+    expect(read(join(t.repo.path, "skills/hello/SKILL.md"))).toContain("Say hello in T3.");
+  });
+
+  vendorTest("test_record_deleting_every_output_of_one_file_removes_its_block_entries", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    copyOfHello(t);
+    unlinkSync(join(t.repo.path, "skills/hello/SKILL.md"));
+    unlinkSync(join(t.repo.path, "skills/copy/SKILL.md"));
+    t.pb(["record", "--intent", "Drop both."], { cwd: t.repo.path });
+    expect(existsSync(entries)).toBe(false);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  vendorTest("test_record_that_cannot_save_the_delete_keeps_the_block_entries", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    unlinkSync(join(t.repo.path, "skills/hello/SKILL.md"));
+    const changes = join(t.repo.path, ".patchbook/changes");
+    mkdirSync(changes, { recursive: true });
+    chmodSync(changes, 0o555);
+    try {
+      expect(t.pb(["record", "--intent", "Drop the skill."], { cwd: t.repo.path, code: 1 }).stdout).toBe("drop-the-skill: Drop the skill.\n");
+    } finally {
+      chmodSync(changes, 0o755);
+    }
+    expect(existsSync(entries)).toBe(true);
+  });
+
+  vendorTest("test_record_of_a_paragraph_refuses_a_model_reply_whose_intent_is_not_a_string", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    const before = read(entries);
+    t.repo.write("skills/hello/SKILL.md", replace(t.repo.read("skills/hello/SKILL.md"), "Then wave.", "Then wave twice."));
+    writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "paragraphs", "intent": null}'\n`);
+    const run = t.pb(["record"], { cwd: t.repo.path, code: 1 });
+    expect(run.stdout).toBe("");
+    expect(run.stderr).toContain("didn't return a usable name and intent");
+    expect(read(entries)).toBe(before);
   });
 
   vendorTest("test_record_notes_come_in_path_order", (t) => {

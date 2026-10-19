@@ -31,7 +31,7 @@ type Destination = { kind: "owned"; change: Change } | { kind: "recorded"; base:
 
 type Data = {
   "add": { staged: string; now: File };
-  "delete-upstream": { staged: string };
+  "delete-upstream": { staged: string; entries: string | null };
   "unadd": Copy;
   "unreplace": Copy;
   "update-ours": Copy & { now: File; built: File };
@@ -48,7 +48,7 @@ const NOTHING: Need = { named: false, drafts: [] };
 const NAMED: Need = { named: true, drafts: [] };
 
 type Recording = { target: Change | null; intent: string | null };
-type Done = { touched: Change | null; notes: readonly string[]; waitsForSave?: true };
+type Done = { touched: Change | null; notes: readonly string[]; waitsForSave?: true; afterSave?: () => void };
 
 type Row<K extends Kind> = { needs(e: Edited<K>): Need; apply(e: Edited<K>, r: Recording): Done };
 
@@ -67,7 +67,9 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     apply: (e, r) => {
       const c = r.target!;
       c.edits.push({ kind: "delete", path: e.staged });
-      return { touched: c, notes: [`delete   ${e.path}`], waitsForSave: true };
+      const entries = e.entries;
+      const afterSave = () => { if (entries !== null && exists(entries)) unlinkSync(entries); };
+      return { touched: c, notes: [`delete   ${e.path}`], waitsForSave: true, afterSave };
     },
   },
   "unadd": { needs: () => NOTHING, apply: unadd },
@@ -97,8 +99,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
   "paragraph-edit": {
     needs: (e) => ({ named: false, drafts: Array.from(e.plan.entries.values()).filter((d) => d.intent === null) }),
     apply: (e, r) => {
-      for (const d of e.plan.entries.values()) d.intent ??= r.intent;
-      saveParagraphs(e.plan);
+      saveParagraphs(e.plan.path, withIntent(e.plan, r.intent));
       return { touched: null, notes: e.plan.notes.map(([h, what]) => `entry    ${e.path} [${h}] ${what}`) };
     },
   },
@@ -123,6 +124,7 @@ export type Snapshot = {
   changes: ReadonlyMap<string, Change>;
   owners: ReadonlyMap<string, Change>;
   blocks: ReadonlySet<string>;
+  entriesAt(rel: string): string;
   prefix: string;
   plan(rel: string, path: string, built: File, now: File): Plan | string;
 };
@@ -146,6 +148,9 @@ function sharedSource(s: Snapshot, path: string): Source | null {
   return src && (src.kind === "ours" || !deleted) ? src : null;
 }
 
+const stillBuilt = (s: Snapshot, rel: string): boolean =>
+  Array.from(s.sources).some(([p, src]) => src.kind === "up" && src.path === rel && s.current.has(p));
+
 const unitKey = (src: Source) => JSON.stringify(src.kind === "ours" ? ["ours", src.change, src.path] : ["up", src.path]);
 
 function classifyOne(s: Snapshot, path: string): Edited {
@@ -167,7 +172,7 @@ function classifyOne(s: Snapshot, path: string): Edited {
     }
     return { kind: "update-ours", ...copy, now, built };
   }
-  if (now === undefined) return { kind: "delete-upstream", path, staged: s.prefix + path };
+  if (now === undefined) return { kind: "delete-upstream", path, staged: s.prefix + path, entries: s.blocks.has(src.path) && !stillBuilt(s, src.path) ? s.entriesAt(src.path) : null };
   if (s.blocks.has(src.path)) {
     const plan = s.plan(src.path, path, built, now);
     return typeof plan === "string" ? { kind: "skip", path, reason: plan } : { kind: "paragraph-edit", path, plan };
@@ -184,6 +189,7 @@ function snapshot(book: Book, a: Assembly, current: ReadonlyMap<string, File>, c
   return {
     out: a.out, sources: a.sources, upstream: a.upstream, current, changes, owners,
     blocks: new Set(blockFiles(book)),
+    entriesAt: (rel) => entriesPath(book, rel),
     prefix: book.layout.kind === "folder" && book.layout.from ? book.layout.from + "/" : "",
     plan: (rel, path, built, now) => planParagraphs(book, rules, rel, path, decode(a.upstream.get(rel)!.data), built.data, now.data),
   };
@@ -201,11 +207,11 @@ function asked(edits: readonly Edited[]): Asked {
   return ask;
 }
 
-type Naming = { name: string | null; intent: string | null; said: string | null };
+type Naming = { name: string; intent: string; said: string | null } | { name: null; intent: string | null; said: string | null };
 
 function nameAndIntent(
   ask: Asked, name: string | null, given: string | null, roster: Roster,
-  model: (name: string | null, named: boolean) => [string | null, string | null],
+  model: (name: string | null, named: boolean) => [string, string],
 ): Naming {
   if (name && !CHANGE_NAME.test(name)) throw new Fail(notAChangeName(name));
   const changes = roster.parsed;
@@ -217,17 +223,18 @@ function nameAndIntent(
   if (stray) throw new Fail(`${PB}/changes/${name} is not a change folder: move it out of ${PB}/changes`);
   const named = ask.named.length > 0;
   if (given) {
-    if (!named || name) return { name, intent: given, said: null };
+    if (name) return { name, intent: given, said: null };
+    if (!named) return { name: null, intent: given, said: null };
     const derived = nameFromIntent(given, roster);
     return { name: derived, intent: given, said: `${derived}: ${given}` };
   }
   const known = name === null ? undefined : changes.get(name);
   if (known) return { name, intent: known.intent, said: null };
-  if (!named && !ask.drafts.length) return { name, intent: null, said: null };
+  if (!named && !ask.drafts.length) return { name: null, intent: null, said: null };
   const [picked, intent] = model(name, named);
   if (!named) return { name: null, intent, said: `intent: ${intent}` };
-  const chosen = picked === null || roster.known(picked) ? picked : roster.free(picked);
-  return { name: chosen, intent, said: chosen !== null && changes.has(chosen) ? `adding to ${chosen}` : `${chosen}: ${intent}` };
+  const chosen = roster.known(picked) ? picked : roster.free(picked);
+  return { name: chosen, intent, said: changes.has(chosen) ? `adding to ${chosen}` : `${chosen}: ${intent}` };
 }
 
 function modelDiff(a: Assembly, current: ReadonlyMap<string, File>, ask: Asked): string {
@@ -267,21 +274,27 @@ export function record(book: Book, change: string | null, intent: string | null,
   if (target && given) target.intent = given;
 
   const touched = new Map<string, Change>(target ? [[target.name, target]] : []);
-  const notes: { text: string; waits: Change | null }[] = [];
+  const notes: { text: string; waits: Change | null; after: (() => void) | null }[] = [];
   const saved = new Set<Change>();
+  const finished = new Set<() => void>();
   const printed = () => (naming.said !== null ? naming.said + "\n" : "")
-    + notes.filter((n) => n.waits === null || saved.has(n.waits)).map((n) => n.text + "\n").join("");
+    + notes.filter((n) => (n.waits === null || saved.has(n.waits)) && (n.after === null || finished.has(n.after))).map((n) => n.text + "\n").join("");
   try {
     for (const e of edits) {
       const done = row(e).apply(e, { target, intent: naming.intent });
       if (done.touched) touched.set(done.touched.name, done.touched);
-      for (const text of done.notes) notes.push({ text, waits: done.waitsForSave ? done.touched : null });
+      for (const text of done.notes) notes.push({ text, waits: done.waitsForSave ? done.touched : null, after: done.afterSave ?? null });
     }
     for (const c of touched.values()) {
       if (c.edits.length || c !== target) saveChange(c);
       saved.add(c);
     }
     if (target?.edits.length && !readSeries(book).includes(target.name)) appendSeries(book, target.name);
+    for (const n of notes) {
+      if (n.after === null || finished.has(n.after)) continue;
+      n.after();
+      finished.add(n.after);
+    }
     // The recorded output is now what the patchbook builds, so it no longer counts as a hand edit.
     const lock = readBuildLock(book);
     if (lock !== null) {
@@ -408,8 +421,15 @@ function mapLine(ops: readonly Opcode[], i: number, end: number): number {
   return end;
 }
 
-function saveParagraphs(plan: Plan): void {
-  if (plan.entries.size) {
-    writeText(plan.path, Array.from(plan.entries.values(), (e) => formatEntry({ ...e, intent: e.intent ?? "None" })).join("\n"));
-  } else if (exists(plan.path)) unlinkSync(plan.path);
+function withIntent(plan: Plan, intent: string | null): Map<string, Entry> {
+  return new Map(Array.from(plan.entries, ([h, d]) => {
+    const own = d.intent ?? intent;
+    if (own === null) throw new Fail(`${plan.path}: the entry [${h}] has no intent`);
+    return [h, { ...d, intent: own }];
+  }));
+}
+
+function saveParagraphs(path: string, entries: ReadonlyMap<string, Entry>): void {
+  if (entries.size) writeText(path, Array.from(entries.values(), formatEntry).join("\n"));
+  else if (exists(path)) unlinkSync(path);
 }

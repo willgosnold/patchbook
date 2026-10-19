@@ -35,8 +35,8 @@ const plans = new Map([
 const cases: [path: string, built: string | null, disk: string | null, source: Source | null, is: Partial<Edited>, needsName: boolean][] = [
   ["fresh.md", null, "new", null, { kind: "add", staged: "skills/fresh.md" }, true],
   ["dropped.md", null, "back", up("skills/dropped.md"), { kind: "skip", reason: "a hook leaves it out of the build; change the hook to keep it" }, false],
-  ["gone.md", "up", null, up("skills/gone.md"), { kind: "delete-upstream", staged: "skills/gone.md" }, true],
-  ["gone-para.md", "up", null, up("skills/gone-para.md"), { kind: "delete-upstream", staged: "skills/gone-para.md" }, true],
+  ["gone.md", "up", null, up("skills/gone.md"), { kind: "delete-upstream", staged: "skills/gone.md", entries: null }, true],
+  ["gone-para.md", "up", null, up("skills/gone-para.md"), { kind: "delete-upstream", staged: "skills/gone-para.md", entries: "blocks/skills/gone-para.md.entries" }, true],
   ["new.md", "new", null, ours(added, "skills/new.md"), { kind: "unadd", change: added, staged: "skills/new.md" }, false],
   ["rep.md", "rep", null, ours(replaced, "skills/rep.md"), { kind: "unreplace", change: replaced, staged: "skills/rep.md" }, false],
   ["copied.md", "new", "edited", ours(added, "skills/new.md"), { kind: "update-ours", change: added, staged: "skills/new.md" }, false],
@@ -57,6 +57,7 @@ const world: Snapshot = {
   changes: new Map([added, replaced, templated, owner].map((c) => [c.name, c])),
   owners: new Map([["skills/owned.md", owner]]),
   blocks: new Set(["skills/dropped.md", "skills/gone-para.md", "skills/para.md", "skills/para-new.md", "skills/unplanned.md"]),
+  entriesAt: (rel) => `blocks/${rel}.entries`,
   prefix: "skills/",
   plan: (rel) => plans.get(rel) ?? "no plan",
 };

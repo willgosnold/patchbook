@@ -31,7 +31,7 @@ export class Change {
   constructor(
     readonly name: string,
     readonly dir: string,
-    public intent: string | null = "",
+    public intent: string = "",
     public edits: Edit[] = [],
     readonly held: string[] = [],
   ) {}
@@ -108,7 +108,7 @@ export function parseChange(path: string, reject: (edit: string, detail: string)
 
 export function formatChange(change: Change): string {
   const edits = change.edits.map((e) => `- ${editText(e)}\n`).join("") + change.held.map((l) => `${l}\n`).join("");
-  return `# ${change.name}\n\nintent: ${change.intent ?? "None"}\n\nedits:\n${edits}`;
+  return `# ${change.name}\n\nintent: ${change.intent}\n\nedits:\n${edits}`;
 }
 
 export function saveChange(change: Change): void {
