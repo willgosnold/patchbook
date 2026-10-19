@@ -3,12 +3,12 @@ import { appendFileSync, chmodSync, lstatSync, mkdtempSync, readdirSync, readFil
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
-import { Book, refuseNestedGit, refuseUpstreamGit, unsafeVendor } from "./book.ts";
+import { Book, GIT, refuseNestedGit, refuseUpstreamGit, segmentNamesGit, under, unsafeVendor } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isSymlink, LINK, lexists, mkdirs, type Mode, pjoin, readDisk, readText, readTextReplace, sameFile, setsMode, writeDisk, writeText } from "./lib/fs.ts";
+import { exists, type File, isRealDir, isSymlink, lexists, LINK, mkdirs, type Mode, nonFolders, pjoin, readDisk, readText, readTextReplace, resolve, sameFile, setsMode, writeDisk, writeText } from "./lib/fs.ts";
 import { dumps, JsonError, loads } from "./lib/json.ts";
 import { spawn } from "./lib/proc.ts";
 import { sorted } from "./lib/py.ts";
@@ -371,7 +371,53 @@ function takeVendor(vendor: string | null, to: string | null): void {
 /** Recover every upstream, torn locks first. Each journal saves last-sync.json, so none may start while another is pending. */
 function recoverAll(book: Book): void {
   const tore = (u: Upstream) => lexists(join(journal(book, u), "lock"));
-  for (const u of [...book.upstreams.filter(tore), ...book.upstreams.filter((u) => !tore(u))]) recover(book, u);
+  for (const u of [...book.upstreams.filter(tore), ...book.upstreams.filter((u) => !tore(u))]) {
+    const odd = misshapen(book, u);
+    if (odd) throw stuck(book, u, odd);
+    recover(book, u);
+  }
+}
+
+/**
+ * Why a journal found on disk is not one a sync left, or would have recovery write outside the repo or into `.git`, or null. A journal can be committed, so it is anyone's data.
+ * `old` is a link when the vendor path was one. Recovery writes the lock and the report back through whatever link is in place.
+ * A sync that fails while it runs recovers its own journal without this check, so a link it moved aside goes back wherever it led.
+ */
+function misshapen(book: Book, u: Upstream): string | null {
+  const j = journal(book, u);
+  if (!exists(join(j, "pin"))) return null;
+  if (!isRealDir(j)) return "it is a link, not a folder";
+  for (const part of ["pin", "lock"]) {
+    const p = join(j, part);
+    if (lexists(p) && !lstatSync(p).isFile()) return `its ${part} is a ${isSymlink(p) ? "link" : "folder"}, not a file`;
+  }
+  const [lock, old, before] = [join(j, "lock"), join(j, "old"), join(j, "before")];
+  const oldLeads = isSymlink(old) && astray(book.root, old);
+  if (oldLeads) return `its old is a link that ${oldLeads}`;
+  if (lexists(old) && !isSymlink(old) && !isRealDir(old)) return "its old is a file, not a folder";
+  if (lexists(before) && !isRealDir(before)) return `its before is a ${isSymlink(before) ? "link" : "file"}, not a folder`;
+  const saved = lexists(before) ? nonFolders(before) : [];
+  for (const rel of saved) {
+    if (rel === REPORT ? isSymlink(join(before, rel)) : !rel.startsWith("changes/")) return `its before/${rel} is not one a sync saves`;
+    const folder = dirname(join(book.dir, rel));
+    const leads = astray(book.root, folder);
+    if (leads) return `${relative(book.root, folder)} ${leads}, so its before/${rel} can't be put back`;
+  }
+  const torn = lexists(lock) && locked(u) === null;
+  for (const [name, part, written] of [["upstream.lock", "lock", torn], [REPORT, `before/${REPORT}`, saved.includes(REPORT)]] as const) {
+    const leads = written && astray(book.root, join(book.dir, name));
+    if (leads) return `${relative(book.root, join(book.dir, name))} ${leads}, so its ${part} can't be put back`;
+  }
+  return null;
+}
+
+/** Where a write to `p` goes when it leaves the repo or reaches `.git`, once every link on the way is followed, `p` itself included, or null. A link to nothing counts, since a write through it makes the file it names. */
+function astray(root: string, p: string): string | null {
+  if (lexists(p) && !exists(p)) return "leads nowhere";
+  const rel = relative(resolve(root), resolve(p));
+  if (under(rel, "..")) return "leads outside the repo";
+  if (rel.split("/").some(segmentNamesGit)) return `leads into ${GIT}`;
+  return null;
 }
 
 function recover(book: Book, u: Upstream): void {
@@ -404,10 +450,10 @@ function recover(book: Book, u: Upstream): void {
     }
     if (vendor && newCopy) refuseUserFilesInCopy(book, u, vendor, j, rewrite ? from : to);
     const before = join(j, "before");
-    const saved = lexists(before) ? readdirSync(before, { recursive: true, encoding: "utf8" }) : [];
-    for (const rel of saved.filter((rel) => rel !== REPORT)) {
-      if (!lstatSync(join(before, rel)).isDirectory()) putBack(join(book.dir, rel), readDisk(join(before, rel)));
-    }
+    const unreadable: string[] = [];
+    const saved = lexists(before) ? nonFolders(before, unreadable) : [];
+    if (unreadable.length) throw stuck(book, u, `${relative(book.root, join(before, unreadable[0]!))} can't be read`);
+    for (const rel of saved.filter((rel) => rel !== REPORT)) putBack(join(book.dir, rel), readDisk(join(before, rel)));
     if (lexists(before)) putReport(join(book.dir, REPORT), join(before, REPORT));
     if (torn) {
       const was = readFileSync(join(j, "lock"));
