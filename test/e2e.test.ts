@@ -5666,7 +5666,8 @@ describe("ForkTest", () => {
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
 
-  forkTest("test_record_that_cannot_write_a_later_edit_still_says_what_it_wrote_before", (t) => {
+  forkTest("test_record_that_cannot_write_a_later_edit_puts_back_the_edits_it_wrote_before", (t) => {
+    if (process.getuid?.() === 0) return;
     t.fork.write("aa.txt", "A\n");
     t.pb(["record", "aa", "--intent", "Aa."], { cwd: t.fork.path });
     t.fork.write("bb.txt", "B\n");
@@ -5677,11 +5678,13 @@ describe("ForkTest", () => {
     chmodSync(bb, 0o444);
     try {
       const r = t.pb(["record"], { cwd: t.fork.path, code: 1 });
-      expect(r.stdout).toBe("update   aa.txt (in aa)\n");
+      expect(r.stdout).toBe("");
       expect(r.stderr).toContain("permission denied");
+      expect(read(join(t.fork.path, ".patchbook/changes/aa/ours/aa.txt.pb"))).toBe("A\n");
     } finally {
       chmodSync(bb, 0o644);
     }
+    expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe("update   aa.txt (in aa)\nupdate   bb.txt (in bb)\n");
     expect(read(join(t.fork.path, ".patchbook/changes/aa/ours/aa.txt.pb"))).toBe("A2\n");
   });
 
@@ -9188,7 +9191,7 @@ describe("VendorTest", () => {
     mkdirSync(changes, { recursive: true });
     chmodSync(changes, 0o555);
     try {
-      expect(t.pb(["record", "--intent", "Drop the skill."], { cwd: t.repo.path, code: 1 }).stdout).toBe("drop-the-skill: Drop the skill.\n");
+      expect(t.pb(["record", "--intent", "Drop the skill."], { cwd: t.repo.path, code: 1 }).stdout).toBe("");
     } finally {
       chmodSync(changes, 0o755);
     }
@@ -9278,18 +9281,21 @@ describe("VendorTest", () => {
     expect(read(join(t.repo.path, ".patchbook/changes/holder/CHANGE.md"))).toContain("- add skills/hello/tpl.md");
   });
 
-  vendorTest("test_record_that_cannot_update_the_build_lock_still_says_what_it_saved", (t) => {
+  vendorTest("test_record_that_cannot_update_the_build_lock_saves_nothing", (t) => {
+    if (process.getuid?.() === 0) return;
     t.missingScaffoldPatchBuild();
     t.repo.write("skills/hello/notes.txt", "added by hand\n");
     const lock = join(t.repo.path, ".patchbook/build.lock");
     chmodSync(lock, 0o444);
     try {
       const r = t.pb(["record", "--intent", "Add notes."], { cwd: t.repo.path, code: 1 });
-      expect(r.stdout).toBe("add-notes: Add notes.\nadd      hello/notes.txt\n");
+      expect(r.stdout).toBe("");
       expect(r.stderr).toContain("permission denied");
+      expect(existsSync(join(t.repo.path, ".patchbook/changes/add-notes"))).toBe(false);
     } finally {
       chmodSync(lock, 0o644);
     }
+    t.pb(["record", "--intent", "Add notes."], { cwd: t.repo.path });
     expect(read(join(t.repo.path, ".patchbook/changes/add-notes/CHANGE.md"))).toContain("- add skills/hello/notes.txt");
   });
 
@@ -13519,12 +13525,12 @@ describe("RecordRollbackTest", () => {
     readOnly(changeFile(t, "shout"), () => {
       const failed = hookCommit(t);
       expect(failed.code).not.toBe(0);
-      expect(failed.stdout).not.toContain("app.txt");
+      expect(failed.stderr).not.toContain("file     app.txt");
       expect(book(t)).toEqual(before.map((line) => (line.startsWith("changes/shout/CHANGE.md ") ? line.replace(" 644 ", " 444 ") : line)));
     });
     const retried = hookCommit(t);
     expect(retried.code).toBe(0);
-    expect(retried.stdout).toContain("file     app.txt (in shout)");
+    expect(retried.stderr).toContain("file     app.txt");
     expect(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.fork.path }).stdout).toContain(".patchbook/changes/shout/ours/app.txt.pb");
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
