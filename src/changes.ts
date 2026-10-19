@@ -6,8 +6,8 @@ import { Book } from "./book.ts";
 import { unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, foldersWith, isSymlink, LINK, lexists, mkdirs, type Mode, readDisk, readText, writeDisk, writeText } from "./lib/fs.ts";
-import { splitlines, strip, W } from "./lib/py.ts";
-import { decodeReplace } from "./lib/text.ts";
+import { strip, W } from "./lib/py.ts";
+import { decodeReplace, lines } from "./lib/text.ts";
 
 export const EDIT_KINDS = ["file", "add", "replace", "delete", "move", "copy"] as const;
 type EditKind = (typeof EDIT_KINDS)[number];
@@ -166,8 +166,8 @@ export async function cmdShow(args: { change: string }) {
   process.stdout.write(rejected.join(""));
   for (const e of c.edits) {
     if (e.kind === "file") {
-      const base = splitlines(decodeReplace(c.read("base", e.path) ?? new Uint8Array()), true);
-      const ours = splitlines(decodeReplace(c.read("ours", e.path) ?? new Uint8Array()), true);
+      const base = lines(decodeReplace(c.read("base", e.path) ?? new Uint8Array()));
+      const ours = lines(decodeReplace(c.read("ours", e.path) ?? new Uint8Array()));
       process.stdout.write(unifiedDiff(base, ours, `upstream/${e.path}`, `ours/${e.path}`));
     } else if (e.kind === "add" || e.kind === "replace") {
       process.stdout.write(`${editText(e)} (${(c.read("ours", e.path) ?? new Uint8Array()).length} bytes)\n`);

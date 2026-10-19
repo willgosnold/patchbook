@@ -1,4 +1,5 @@
-// src/lib against what CPython gives on the same cases. Regenerate with: python3 test/fixtures/generate.py
+// src/lib: patchbook's text rules, and the parts still checked against what CPython gives on the same
+// cases (test/fixtures/cpython.json). Regenerate those with: python3 test/fixtures/generate.py
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,14 +9,13 @@ import { type Opcode, SequenceMatcher, unifiedDiff } from "../src/lib/difflib.ts
 import { nonFolders, rmFolders } from "../src/lib/fs.ts";
 import { dumps, loads } from "../src/lib/json.ts";
 import {
-  floatRepr, lstrip, quote, replace, round2, rstrip, split, splitlines, str, strip, strRepr,
+  floatRepr, lstrip, quote, replace, round2, rstrip, split, str, strip, strRepr,
 } from "../src/lib/py.ts";
-import { byCodePoint } from "../src/lib/text.ts";
+import { byCodePoint, lines } from "../src/lib/text.ts";
 
 type Fixture = {
   matcher: { a: string | string[]; b: string | string[]; autojunk: boolean; ratio: number; opcodes: Opcode[] }[];
   unified: { a: string; b: string; fromfile: string; tofile: string; diff: string }[];
-  splitlines: { s: string; keep: string[]; drop: string[] }[];
   strip: { s: string; strip: string; lstrip: string; rstrip: string; split: string[] }[];
   round: { x: number; round: string }[];
   floats: { x: number; repr: string }[];
@@ -26,6 +26,47 @@ type Fixture = {
 };
 
 const cases: Fixture = JSON.parse(readFileSync(new URL("fixtures/cpython.json", import.meta.url), "utf8"));
+
+describe("lines", () => {
+  test("ends each line after its \\n, which the line keeps", () => {
+    expect(lines("one\ntwo\n")).toEqual(["one\n", "two\n"]);
+  });
+
+  test("keeps the \\r of a \\r\\n in the line, as git does", () => {
+    expect(lines("one\r\ntwo\r\n")).toEqual(["one\r\n", "two\r\n"]);
+  });
+
+  test("breaks only at \\n, so a lone \\r, \\f, \\v, \\x1c, U+0085, U+2028 and U+2029 stay inside a line", () => {
+    expect(lines("a\rb\fc\vd\x1ce\x85f\u2028g\u2029h\n")).toEqual(["a\rb\fc\vd\x1ce\x85f\u2028g\u2029h\n"]);
+  });
+
+  test("a last line with no \\n is still a line", () => {
+    expect(lines("one\ntwo")).toEqual(["one\n", "two"]);
+  });
+
+  test("an empty text has no lines, and a lone \\n is one empty line", () => {
+    expect(lines("")).toEqual([]);
+    expect(lines("\n")).toEqual(["\n"]);
+  });
+
+  test("the lines join back into the text", () => {
+    for (const text of ["", "\n\n", "a\r\nb\rc", "x\u2028y\n\nz"]) expect(lines(text).join("")).toBe(text);
+  });
+
+  test("counts the lines git counts", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lines"));
+    try {
+      for (const text of ["a\rb\fc\u2028d\ne", "one\r\ntwo\r\n", "\n\n\n", "no newline"]) {
+        const file = join(dir, "file");
+        writeFileSync(file, text);
+        const r = Bun.spawnSync(["git", "diff", "--no-index", "--numstat", "/dev/null", file], { cwd: import.meta.dir });
+        expect([text, Number(r.stdout.toString().split("\t")[0])]).toEqual([text, lines(text).length]);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("byCodePoint", () => {
   test("puts a character above U+FFFF after U+E000 to U+FFFF, where sort() alone puts it before them", () => {
@@ -80,13 +121,12 @@ describe("SequenceMatcher", () => {
   });
 });
 
-test.each(cases.unified)("unified_diff %#", (c) => {
-  expect(unifiedDiff(splitlines(c.a, true), splitlines(c.b, true), c.fromfile, c.tofile)).toBe(c.diff);
-});
+// generate.py cut these texts with Python's str.splitlines, which also breaks at \r, \v, \f, \x1c-\x1e, \x85, U+2028 and U+2029.
+const pythonLines = (s: string): string[] =>
+  s.match(/[^\n\r\v\f\x1c-\x1e\x85\u2028\u2029]*(?:\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029])|[^\n\r\v\f\x1c-\x1e\x85\u2028\u2029]+$/gu) ?? [];
 
-test.each(cases.splitlines)("splitlines %#", (c) => {
-  expect(splitlines(c.s, true)).toEqual(c.keep);
-  expect(splitlines(c.s)).toEqual(c.drop);
+test.each(cases.unified)("unified_diff %#", (c) => {
+  expect(unifiedDiff(pythonLines(c.a), pythonLines(c.b), c.fromfile, c.tofile)).toBe(c.diff);
 });
 
 test.each(cases.strip)("strip and split %#", (c) => {

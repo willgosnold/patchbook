@@ -10,7 +10,6 @@ const SPACE = new Set(
   [0x9, 0xa, 0xb, 0xc, 0xd, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x85, 0xa0, 0x1680, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000]
     .concat(Array.from({ length: 11 }, (_, i) => 0x2000 + i)),
 );
-const LINE_BREAKS = new Set([0xa, 0xb, 0xc, 0xd, 0x1c, 0x1d, 0x1e, 0x85, 0x2028, 0x2029]);
 
 export function isSpace(ch: string): boolean {
   return ch.length === 1 && SPACE.has(ch.charCodeAt(0));
@@ -41,26 +40,6 @@ export const rstrip = (s: string, chars?: string) => trim(s, chars, false, true)
 /** `str.split()` with no separator: runs of whitespace, no empty strings. */
 export function split(s: string): string[] {
   return s.split(new RegExp(`[${S}]+`, "u")).filter((w) => w !== "");
-}
-
-/** `str.splitlines(keepends)`, which also breaks on `\v`, `\f`, `\x1c`-`\x1e`, `\x85`, ` ` and ` `. */
-export function splitlines(s: string, keepends = false): string[] {
-  const out: string[] = [];
-  let start = 0;
-  let i = 0;
-  while (i < s.length) {
-    const c = s.charCodeAt(i);
-    if (!LINE_BREAKS.has(c)) {
-      i++;
-      continue;
-    }
-    let end = i + 1;
-    if (c === 0xd && s.charCodeAt(end) === 0xa) end++;
-    out.push(s.slice(start, keepends ? end : i));
-    start = i = end;
-  }
-  if (start < s.length) out.push(s.slice(start));
-  return out;
 }
 
 /** `str.replace(old, new)`, including Python's insertion around every character when `old` is empty. */

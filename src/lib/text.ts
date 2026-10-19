@@ -1,5 +1,5 @@
-// UTF-8 bytes as text and back, and patchbook's rules for text: its lines, its order and its shell
-// words. TextDecoder drops a leading BOM unless told not to, which would strip it from built files.
+// UTF-8 bytes as text and back, and patchbook's rules for text: its lines and its order. TextDecoder
+// drops a leading BOM unless told not to, which would strip it from built files.
 const strict = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const lenient = new TextDecoder("utf-8", { ignoreBOM: true });
 const encoder = new TextEncoder();
@@ -31,6 +31,12 @@ export function concat(...parts: Uint8Array[]): Uint8Array {
     at += part.length;
   }
   return joined;
+}
+
+/** The lines of text as git counts them. Each ends after a `\n` and keeps it, and the last may have none.
+ * Nothing else ends a line, so a `\r`, `\f` or U+2028 stays inside one. */
+export function lines(text: string): string[] {
+  return text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
 }
 
 /** Orders strings by code point, the same in every locale. That is the order of their UTF-8 bytes, which

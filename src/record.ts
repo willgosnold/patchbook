@@ -12,8 +12,8 @@ import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, LINK, type Mode, rglob, sameFile, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
-import { replace, splitlines, strip } from "./lib/py.ts";
-import { bytesEqual, decode, decodeReplace, encode, isText } from "./lib/text.ts";
+import { replace, strip } from "./lib/py.ts";
+import { bytesEqual, decode, decodeReplace, encode, isText, lines } from "./lib/text.ts";
 
 /** An entry a recording makes. A null intent means it still needs one. */
 type Draft = Omit<Entry, "intent"> & { intent: string | null };
@@ -85,7 +85,7 @@ export async function cmdRecord(args: { change: string | null; intent: string | 
   }
   if ((named && (!name || (!changes.has(name) && !intent))) || (needsIntent && !intent && !(name !== null && changes.has(name)))) {
     const diff = pendingDiff(a, current, fresh) + pending
-      .map(([p, e]) => unifiedDiff(splitlines(e.upstream + "\n", true), splitlines(e.patched + "\n", true), `upstream/${p}`, `disk/${p}`))
+      .map(([p, e]) => unifiedDiff(lines(e.upstream + "\n"), lines(e.patched + "\n"), `upstream/${p}`, `disk/${p}`))
       .join("");
     [name, intent] = writeIntent(book, changes, diff, name, named);
     const known = name !== null && changes.has(name);

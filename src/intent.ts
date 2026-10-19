@@ -10,8 +10,8 @@ import { Fail } from "./lib/fail.ts";
 import type { File } from "./lib/fs.ts";
 import { JsonError, loads } from "./lib/json.ts";
 import { spawn, which } from "./lib/proc.ts";
-import { length, type PyValue, slice, split, splitlines, str, strip, strRepr } from "./lib/py.ts";
-import { decode, decodeReplace, encode, isText } from "./lib/text.ts";
+import { length, type PyValue, slice, split, str, strip, strRepr } from "./lib/py.ts";
+import { decode, decodeReplace, encode, isText, lines } from "./lib/text.ts";
 import { configured, readToml, type Source, setting, SETTINGS, type Table, USER_CONFIG } from "./settings.ts";
 
 type Provider = { model: string; effort: string; command(model: string, effort: string, tmp: string): string[] };
@@ -54,7 +54,7 @@ export function pendingDiff(a: Assembly, current: ReadonlyMap<string, File>, pat
       parts.push(`binary file ${p} ${!built ? "added" : !now ? "deleted" : "changed"}\n`);
       continue;
     }
-    parts.push(unifiedDiff(splitlines(decode(old), true), splitlines(decode(fresh), true), built ? `built/${p}` : "/dev/null",
+    parts.push(unifiedDiff(lines(decode(old)), lines(decode(fresh)), built ? `built/${p}` : "/dev/null",
       now ? `disk/${p}` : "/dev/null"));
   }
   const text = parts.join("");

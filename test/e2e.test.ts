@@ -5222,6 +5222,26 @@ describe("ForkTest", () => {
     expect(existsSync(join(t.tmp, "prompt.txt"))).toBe(false);
   });
 
+  forkTest("test_show_and_the_model_prompt_split_lines_where_git_diff_does", (t) => {
+    const before = "form\ffeed\nlone\rreturn\nline\u2028separator\ncrlf\r\nlast\n";
+    const after = before.replace("return", "RETURN");
+    writeFileSync(join(t.up.path, "lines.txt"), before);
+    t.up.commit("add lines.txt");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    writeFileSync(join(t.fork.path, "lines.txt"), after);
+    t.pb(["record"], { cwd: t.fork.path });
+    writeFileSync(join(t.tmp, "before.txt"), before);
+    writeFileSync(join(t.tmp, "after.txt"), after);
+    const files = [join(t.tmp, "before.txt"), join(t.tmp, "after.txt")];
+    const git = sh(["git", "diff", "--no-index", "--no-color", ...files], { cwd: t.fork.path, check: false }).stdout;
+    const hunk = git.slice(git.indexOf("@@"));
+    expect(hunk).toBe("@@ -1,5 +1,5 @@\n form\ffeed\n-lone\rreturn\n+lone\rRETURN\n line\u2028separator\n crlf\r\n last\n");
+    const shown = t.pb(["show", "shout"], { cwd: t.fork.path }).stdout;
+    expect(shown.slice(shown.indexOf("@@"))).toBe(hunk);
+    expect(read(join(t.tmp, "prompt.txt"))).toContain(`+++ disk/lines.txt\n${hunk}`);
+  });
+
   forkTest("test_record_keeps_a_given_intent_when_no_name_is_given", (t) => {
     const prompt = join(t.tmp, "prompt.txt");
     const intent = "Make the second line loud so it stands out.";
@@ -7483,6 +7503,12 @@ describe("VendorTest", () => {
     expect(read(entries)).toContain("--- upstream\nThen wave.\n--- patched\n\n");
     t.recordEdit("# Hello\n\nHi first.\n", "# Hello\n");
     expect(read(entries)).not.toContain("Hi first.");
+  });
+
+  vendorTest("test_record_prompt_breaks_a_paragraph_edit_into_lines_only_at_newlines", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.recordEdit("Then wave.", "Then\fwave\u2028twice.");
+    expect(read(join(t.tmp, "prompt.txt"))).toContain("@@ -1 +1 @@\n-Then wave.\n+Then\fwave\u2028twice.\n");
   });
 
   vendorTest("test_record_paragraph_edit_with_an_intent_keeps_the_intent_of_a_change_named_unnamed", (t) => {
