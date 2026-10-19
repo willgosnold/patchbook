@@ -367,6 +367,10 @@ export function record(
   if (!edited.length) return { text: "no hand edits to the output since the last build; nothing to record\n", copies: new Map() };
   refuseLinkTurnedFile(a, current, edited);
   const s = snapshot(book, a, current, changes);
+  const backslashed = edited.flatMap((p) => [s.prefix + p, a.sources.get(p)?.path ?? p]).find((p) => p.includes("\\"));
+  if (backslashed) throw new Fail(`refusing to record: ${backslashed} has a backslash in its name, and an edit path can't have one. Rename it first.`);
+  const readAsPatchbook = edited.find((p) => book.reservedOutput(p)?.place === PB);
+  if (readAsPatchbook) throw new Fail(`refusing to record: ${readAsPatchbook} is ${PB} on macOS and Windows, and a change can't write into ${PB}. Move it out of there.`);
   const edits = classify(s, edited);
 
   const given = intent === null ? null : oneLine(intent) || null;

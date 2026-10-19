@@ -790,7 +790,7 @@ async function runHook(undo: Undo) {
   for (const p of edited.filter((p) => !a.out.has(p))) {
     const reserved = book.reservedOutput(p);
     if (reserved?.refuse) {
-      throw new Fail(`refusing this commit: ${p} is new, but a change can't write into ${reserved.place}.\n`
+      throw new Fail(`refusing this commit: ${p} ${sinceHead.get(p)?.head ? "is in HEAD" : "is new"}, but a change can't write into ${reserved.place}.\n`
         + `Move ${p} out of there, or skip the hook once with PATCHBOOK_HOOK=0.`);
     }
   }
