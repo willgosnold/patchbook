@@ -9977,6 +9977,27 @@ exec '${Bun.which("git")}' "$@"
     });
   }
 
+  vendorTest("test_track_refuses_a_vendor_folder_that_holds_a_git_repo_before_it_drops_a_pin_an_earlier_track_left", (t) => {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("a.md", "a\n");
+    extra.commit("a");
+    const config = join(t.repo.path, ".patchbook/config.toml");
+    sh(["chmod", "a-w", config], { cwd: t.repo.path });
+    try {
+      t.pb(["track", "extra", extra.path], { cwd: t.repo.path, code: 1 });
+    } finally {
+      sh(["chmod", "u+w", config], { cwd: t.repo.path });
+    }
+    const lock = join(t.repo.path, ".patchbook/upstream.lock");
+    const pins = read(lock);
+    expect(JSON.parse(pins).extra).toBeDefined();
+    mkdirSync(join(t.repo.path, "lib"));
+    sh(["git", "init", "-q", "-b", "main", join(t.repo.path, "lib")], { cwd: t.repo.path });
+    const out = t.pb(["track", "extra", extra.path, "--vendor", "lib"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("holds lib/.git");
+    expect(read(lock)).toBe(pins);
+  });
+
   const gitFile = "gitdir: ../elsewhere\n";
   const nestedGits: [string, string, string, (repo: { path: string }) => void][] = [
     ["a_repo_of_its_own", "lib", "lib/.git", (repo) => {

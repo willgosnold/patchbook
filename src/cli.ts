@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import pkg from "../package.json" with { type: "json" };
 import { cmdBuild, cmdScaffold, cmdStatus, writeBuildLock } from "./assemble.ts";
 import { cmdBlocks } from "./blocks.ts";
-import { Book, noticeLeftOut, PB } from "./book.ts";
+import { Book, noticeLeftOut, PB, refuseNestedGit } from "./book.ts";
 import { cmdShow } from "./changes.ts";
 import { cmdHook, commitAdvice, installHook, installHookOrWarn, keepGitHook } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
@@ -90,6 +90,7 @@ async function cmdInit(args: {
   if (args.outputTo !== null) {
     const text = configText("folder", upstreamToml(name, args.upstream, args.path, args.branch, "", args.vendor), [args.outputFrom, args.outputTo]);
     const book = await Book.fromText(root, text);
+    for (const u of book.upstreams) if (u.vendor) refuseNestedGit(root, u.name, u.vendor);
     notThisRepo(root, args.upstream);
     book.dropPin(name);
     syncUpstream(book, book.upstreams[0]!, args.branch, []);
@@ -132,6 +133,7 @@ async function cmdTrack(args: { name: string; url: string; branch: string; path:
   const mount = args.mount ?? args.name;
   const text = rstrip(readText(config), "\n") + "\n\n" + upstreamToml(args.name, args.url, args.path, args.branch, mount, args.vendor);
   const candidate = await Book.fromText(book.root, text);
+  for (const u of candidate.upstreams) if (u.vendor) refuseNestedGit(book.root, u.name, u.vendor);
   candidate.dropPin(args.name);
   syncUpstream(candidate, candidate.upstream(args.name), args.branch, []);
   writeText(config, text);
