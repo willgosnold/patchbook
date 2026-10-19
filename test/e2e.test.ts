@@ -2278,14 +2278,14 @@ for (const bad of ["no-such-repo", "unrelated"]) {
 }
 
 for (const [how, leave] of [
-  ["left_by_a_failed_init", (t: Case, fork: Repo, up: Repo) => {
+  ["left by a failed init", (t: Case, fork: Repo, up: Repo) => {
     mkdirSync(join(fork.path, ".patchbook"));
     symlinkSync(join(t.tmp, "missing/config.toml"), join(fork.path, ".patchbook/config.toml"));
     t.pb(["init", "--upstream", up.path], { cwd: fork.path, code: 1 });
     rmSync(join(fork.path, ".patchbook/config.toml"));
   }],
-  ["added_by_the_user", (_: Case, fork: Repo, up: Repo) => void sh(["git", "remote", "add", "upstream", up.path], { cwd: fork.path })],
-  ["listing_the_given_url_second", (t: Case, fork: Repo, up: Repo) => {
+  ["added by the user", (_: Case, fork: Repo, up: Repo) => void sh(["git", "remote", "add", "upstream", up.path], { cwd: fork.path })],
+  ["listing the given url second", (t: Case, fork: Repo, up: Repo) => {
     sh(["git", "remote", "add", "upstream", up.path], { cwd: fork.path });
     sh(["git", "config", "--add", "remote.upstream.url", join(t.tmp, "moved")], { cwd: fork.path });
   }],
@@ -2317,12 +2317,12 @@ for (const [how, leave] of [
 }
 
 for (const [how, remote, given] of [
-  ["an_insteadof_alias", () => "alias:upstream", (up: string) => up],
-  ["a_trailing_slash_on_the_remote", (up: string) => up + "/", (up: string) => up],
-  ["a_trailing_slash_on_the_given_url", (up: string) => up, (up: string) => up + "/"],
-  ["a_file_url", (up: string) => `file://${up}`, (up: string) => up],
-  ["a_relative_remote", () => "../upstream", (up: string) => up],
-  ["a_relative_given_url", (up: string) => up, () => "../upstream"],
+  ["an insteadOf alias", () => "alias:upstream", (up: string) => up],
+  ["a trailing slash on the remote", (up: string) => up + "/", (up: string) => up],
+  ["a trailing slash on the given url", (up: string) => up, (up: string) => up + "/"],
+  ["a file url", (up: string) => `file://${up}`, (up: string) => up],
+  ["a relative remote", () => "../upstream", (up: string) => up],
+  ["a relative given url", (up: string) => up, () => "../upstream"],
 ] as const) {
   test(`test_a_fork_init_accepts_an_upstream_remote_spelled_with_${how}`, () => {
     const t = new Case();
@@ -2401,10 +2401,10 @@ const fakeSsh = (t: Case): string => {
 };
 
 for (const [how, repoName, remote, given] of [
-  ["a_dot_git_suffix", "upstream", (up: string) => `ssh://git@fake${up}.git`, (up: string) => `ssh://git@fake${up}`],
-  ["a_percent_encoded_file_url", "my up", (up: string) => `file://${up.replace(" ", "%20")}`, (up: string) => up],
-  ["scp_against_ssh", "upstream", (up: string) => `git@fake:${up}`, (up: string) => `ssh://git@fake${up}`],
-  ["ssh_against_scp", "upstream", (up: string) => `ssh://git@fake${up}`, (up: string) => `git@fake:${up}`],
+  ["a .git suffix", "upstream", (up: string) => `ssh://git@fake${up}.git`, (up: string) => `ssh://git@fake${up}`],
+  ["a percent encoded file url", "my up", (up: string) => `file://${up.replace(" ", "%20")}`, (up: string) => up],
+  ["scp against ssh", "upstream", (up: string) => `git@fake:${up}`, (up: string) => `ssh://git@fake${up}`],
+  ["ssh against scp", "upstream", (up: string) => `ssh://git@fake${up}`, (up: string) => `git@fake:${up}`],
 ] as const) {
   test(`test_a_fork_init_accepts_an_upstream_remote_that_serves_the_same_repo_as_${how}`, () => {
     const t = new Case();
@@ -2413,7 +2413,7 @@ for (const [how, repoName, remote, given] of [
       const up = new Repo(join(t.tmp, repoName));
       up.write("app.txt", "one\n");
       const base = up.commit("start");
-      if (how === "a_dot_git_suffix") symlinkSync(up.path, up.path + ".git");
+      if (how === "a .git suffix") symlinkSync(up.path, up.path + ".git");
       const fork = forkOf(t, up);
       sh(["git", "remote", "add", "upstream", remote(up.path)], { cwd: fork.path });
       const init = t.pb(["init", "--upstream", given(up.path)], { cwd: fork.path });
@@ -2446,7 +2446,7 @@ test("test_a_fork_init_refuses_an_upstream_remote_that_serves_a_different_tip_th
   }
 }, TIMEOUT);
 
-for (const [which, how] of [["remote", "the_upstream_remote"], ["given", "the_given_url"]] as const) {
+for (const [which, how] of [["remote", "the upstream remote"], ["given", "the given url"]] as const) {
   test(`test_a_fork_init_names_${how}_when_git_cannot_read_it`, () => {
     const t = new Case();
     try {
@@ -2563,7 +2563,7 @@ test("test_a_refused_fork_init_does_not_print_the_password_in_a_remote", () => {
   }
 }, TIMEOUT);
 
-for (const [how, hasRemote] of [["unreachable_remote", true], ["unreachable_given_url", false]] as const) {
+for (const [how, hasRemote] of [["unreachable remote", true], ["unreachable given url", false]] as const) {
   test(`test_a_fork_init_with_an_${how}_does_not_print_the_password`, () => {
     const t = new Case();
     try {
@@ -2605,7 +2605,7 @@ for (const hasRemote of [true, false]) {
   }, TIMEOUT);
 }
 
-for (const [how, branch] of [["a_stale_mirror", "main"], ["a_branch_only_the_given_url_has", "feature"]] as const) {
+for (const [how, branch] of [["a stale mirror", "main"], ["a branch only the given url has", "feature"]] as const) {
   test(`test_a_fork_init_says_the_remote_serves_different_commits_for_${how}`, () => {
     const t = new Case();
     try {
@@ -2667,7 +2667,7 @@ test("test_clone_and_init_do_not_name_the_upstream_after_the_password_of_a_url_w
   }
 }, TIMEOUT);
 
-for (const [how, hasRemote] of [["remote", true], ["given_url", false]] as const) {
+for (const [how, hasRemote] of [["remote", true], ["given url", false]] as const) {
   test(`test_a_fork_init_does_not_print_a_password_with_an_at_sign_hash_or_question_mark_in_the_${how}`, () => {
     const t = new Case();
     try {
@@ -2717,16 +2717,16 @@ test("test_a_refused_fork_init_says_to_add_back_the_password_it_does_not_print",
 }, TIMEOUT);
 
 for (const [how, dir, given] of [
-  ["dot_dot_from_a_subfolder", "sub", () => ".."],
-  ["dot_at_the_root", "", () => "."],
-  ["a_file_url_of_the_root", "", (fork: string) => `file://${fork}`],
-  ["a_file_url_with_a_host", "", (fork: string) => `file://example.invalid${fork}`],
-  ["a_file_url_with_an_encoded_slash_after_the_host", "", (fork: string) => `file://example.invalid%2F${fork.slice(1)}`],
-  ["a_file_url_whose_host_is_not_utf_8", "", (fork: string) => `file://%ff${fork}`],
-  ["a_path_that_git_reads_from_its_closing_bracket", "", () => "x@[y]"],
-  ["a_path_that_git_finds_with_dot_git_added", "", (fork: string) => `${fork}-self`],
-  ["a_linked_worktree", "", () => "../worktree"],
-  ["an_insteadof_alias", "", () => "self:"],
+  ["\"..\" from a subfolder", "sub", () => ".."],
+  ["\".\" at the root", "", () => "."],
+  ["a file url of the root", "", (fork: string) => `file://${fork}`],
+  ["a file url with a host", "", (fork: string) => `file://example.invalid${fork}`],
+  ["a file url with an encoded slash after the host", "", (fork: string) => `file://example.invalid%2F${fork.slice(1)}`],
+  ["a file url whose host is not UTF-8", "", (fork: string) => `file://%ff${fork}`],
+  ["a path that git reads from its closing bracket", "", () => "x@[y]"],
+  ["a path that git finds with .git added", "", (fork: string) => `${fork}-self`],
+  ["a linked worktree", "", () => "../worktree"],
+  ["an insteadOf alias", "", () => "self:"],
 ] as const) {
   test(`test_a_fork_init_refuses_an_upstream_that_is_the_repo_itself_given_as_${how}`, () => {
     const t = new Case();
@@ -2752,10 +2752,10 @@ for (const [how, dir, given] of [
 
 for (const [how, remote] of [
   ["dot", () => "."],
-  ["an_alias_that_another_insteadof_would_rewrite", () => "self:"],
-  ["a_file_url_with_a_host", (fork: string) => `file://example.invalid${fork}`],
-  ["a_file_url_with_an_encoded_slash_after_the_host", (fork: string) => `file://example.invalid%2F${fork.slice(1)}`],
-  ["a_file_url_whose_host_is_not_utf_8", (fork: string) => `file://%ff${fork}`],
+  ["an alias that another insteadOf would rewrite", () => "self:"],
+  ["a file url with a host", (fork: string) => `file://example.invalid${fork}`],
+  ["a file url with an encoded slash after the host", (fork: string) => `file://example.invalid%2F${fork.slice(1)}`],
+  ["a file url whose host is not UTF-8", (fork: string) => `file://%ff${fork}`],
 ] as const) {
   test(`test_a_fork_init_refuses_an_upstream_remote_that_fetches_the_repo_itself_as_${how}`, () => {
     const t = new Case();
@@ -2798,7 +2798,7 @@ test("test_a_fork_init_records_a_remote_url_that_ends_in_a_space_as_it_is", () =
   }
 }, TIMEOUT);
 
-for (const [how, stale] of [["a_url_before_it", true], ["nothing_before_it", false]] as const) {
+for (const [how, stale] of [["a url before it", true], ["nothing before it", false]] as const) {
   test(`test_a_fork_init_records_the_remote_url_after_an_empty_one_with_${how}`, () => {
     const t = new Case();
     try {
@@ -3221,7 +3221,7 @@ const LEFTHOOK_PAIRS: [string, string, string][] = [
 ];
 
 for (const [first, second, read] of LEFTHOOK_PAIRS) {
-  test(`test_hook_install_refuses_when_both_${first}_and_${second}_exist`.replaceAll("/", "_"), () => {
+  test(`test_hook_install_refuses_when_both_${first}_and_${second}_exist`, () => {
     const t = new Case();
     try {
       const up = new Repo(join(t.tmp, "upstream"));
@@ -4230,7 +4230,7 @@ describe("ForkTest", () => {
   for (const [order, first, second] of [
     ["holding", "vendor/inner", "vendor"],
     ["inside", "vendor", "vendor/inner"],
-    ["equal_to", "vendor", "vendor"],
+    ["equal to", "vendor", "vendor"],
   ] as const) {
     forkTest(`test_a_vendor_folder_${order}_another_upstreams_vendor_folder_is_rejected`, (t) => {
       const one = new Repo(join(t.tmp, "one"));
@@ -4423,18 +4423,18 @@ describe("ForkTest", () => {
   }
 
   const intoKept = [
-    ["copy_into_the_patchbook_config", "copy app.txt -> .patchbook/config.toml", ".patchbook/config.toml", ".patchbook"],
-    ["copy_into_the_patchbook", "copy app.txt -> .patchbook/notes.txt", ".patchbook/notes.txt", ".patchbook"],
-    ["add_into_the_patchbook", "add .patchbook/new.md", ".patchbook/new.md", ".patchbook"],
-    ["move_into_the_patchbook", "move docs/guide.md -> .patchbook/guide.md", ".patchbook/guide.md", ".patchbook"],
-    ["copy_into_dot_PATCHBOOK_config", "copy app.txt -> .PATCHBOOK/config.toml", ".PATCHBOOK/config.toml", ".patchbook"],
-    ["add_into_dot_PatchBook", "add .PatchBook/new.md", ".PatchBook/new.md", ".patchbook"],
-    ["copy_into_git", "copy app.txt -> .git/x", ".git/x", ".git"],
-    ["add_into_git", "add .git/new.md", ".git/new.md", ".git"],
-    ["move_into_git", "move docs/guide.md -> .git/guide.md", ".git/guide.md", ".git"],
-    ["copy_into_dot_GIT", "copy app.txt -> .GIT/x", ".GIT/x", ".git"],
-    ["copy_into_dot_git_dot", "copy app.txt -> .git./x", ".git./x", ".git"],
-    ["copy_into_a_nested_git", "copy app.txt -> a/.git/x", "a/.git/x", ".git"],
+    ["copy into .patchbook/config.toml", "copy app.txt -> .patchbook/config.toml", ".patchbook/config.toml", ".patchbook"],
+    ["copy into .patchbook", "copy app.txt -> .patchbook/notes.txt", ".patchbook/notes.txt", ".patchbook"],
+    ["add into .patchbook", "add .patchbook/new.md", ".patchbook/new.md", ".patchbook"],
+    ["move into .patchbook", "move docs/guide.md -> .patchbook/guide.md", ".patchbook/guide.md", ".patchbook"],
+    ["copy into .PATCHBOOK/config.toml", "copy app.txt -> .PATCHBOOK/config.toml", ".PATCHBOOK/config.toml", ".patchbook"],
+    ["add into .PatchBook", "add .PatchBook/new.md", ".PatchBook/new.md", ".patchbook"],
+    ["copy into .git", "copy app.txt -> .git/x", ".git/x", ".git"],
+    ["add into .git", "add .git/new.md", ".git/new.md", ".git"],
+    ["move into .git", "move docs/guide.md -> .git/guide.md", ".git/guide.md", ".git"],
+    ["copy into .GIT", "copy app.txt -> .GIT/x", ".GIT/x", ".git"],
+    ["copy into .git.", "copy app.txt -> .git./x", ".git./x", ".git"],
+    ["copy into a nested .git", "copy app.txt -> a/.git/x", "a/.git/x", ".git"],
   ] as const;
   for (const [name, edit, dest, place] of intoKept) {
     forkTest(`test_${name}_is_invalid_and_nothing_is_written`, (t) => {
@@ -4472,11 +4472,11 @@ describe("ForkTest", () => {
   const fixHint = "Edit or remove that line in the change's CHANGE.md, or skip the hook once with PATCHBOOK_HOOK=0.";
 
   const hookRefuses = [
-    ["copy_into_the_patchbook", "copy app.txt -> .patchbook/config.toml", ".patchbook/config.toml", ".patchbook"],
-    ["add_into_the_patchbook", "add .patchbook/new.md", ".patchbook/new.md", ".patchbook"],
-    ["move_into_dot_PATCHBOOK", "move docs/guide.md -> .PATCHBOOK/guide.md", ".PATCHBOOK/guide.md", ".patchbook"],
-    ["copy_into_git", "copy app.txt -> .git/x", ".git/x", ".git"],
-    ["copy_into_dot_GIT", "copy app.txt -> .GIT/x", ".GIT/x", ".git"],
+    ["copy into .patchbook/config.toml", "copy app.txt -> .patchbook/config.toml", ".patchbook/config.toml", ".patchbook"],
+    ["add into .patchbook", "add .patchbook/new.md", ".patchbook/new.md", ".patchbook"],
+    ["move into .PATCHBOOK", "move docs/guide.md -> .PATCHBOOK/guide.md", ".PATCHBOOK/guide.md", ".patchbook"],
+    ["copy into .git", "copy app.txt -> .git/x", ".git/x", ".git"],
+    ["copy into .GIT", "copy app.txt -> .GIT/x", ".GIT/x", ".git"],
   ] as const;
   for (const [name, edit, dest, place] of hookRefuses) {
     for (const pending of [false, true]) {
@@ -4533,14 +4533,14 @@ describe("ForkTest", () => {
   });
 
   const hookRefusesUnsafe = [
-    ["add_climbing_out", "add ../outside.txt"],
-    ["add_dot_slash", "add ./new.md"],
-    ["add_absolute", "add /outside.txt"],
-    ["delete_double_slash", "delete docs//guide.md"],
-    ["copy_dest_climbing_out", "copy app.txt -> ../copied.txt"],
-    ["copy_dest_dot_slash_patchbook_config", "copy app.txt -> ./.patchbook/config.toml"],
-    ["copy_dest_double_slash_patchbook_config", "copy app.txt -> .//.patchbook/config.toml"],
-    ["file_climbing_out", "file ../app.txt"],
+    ["add climbing out", "add ../outside.txt"],
+    ["add ./new.md", "add ./new.md"],
+    ["add absolute", "add /outside.txt"],
+    ["delete docs//guide.md", "delete docs//guide.md"],
+    ["copy dest climbing out", "copy app.txt -> ../copied.txt"],
+    ["copy dest ./.patchbook/config.toml", "copy app.txt -> ./.patchbook/config.toml"],
+    ["copy dest .//.patchbook/config.toml", "copy app.txt -> .//.patchbook/config.toml"],
+    ["file climbing out", "file ../app.txt"],
   ] as const;
   for (const [name, edit] of hookRefusesUnsafe) {
     for (const pending of [false, true]) {
@@ -4585,26 +4585,26 @@ describe("ForkTest", () => {
   });
 
   const escaping = [
-    ["add_climbing_out", "add ../outside.txt"],
-    ["add_climbing_out_in_the_middle", "add docs/../../outside.txt"],
-    ["add_absolute", "add /outside.txt"],
-    ["replace_climbing_out", "replace ../app.txt"],
-    ["delete_climbing_out", "delete ../app.txt"],
-    ["file_climbing_out", "file ../app.txt"],
-    ["file_absolute", "file /app.txt"],
-    ["copy_dest_climbing_out", "copy app.txt -> ../copied.txt"],
-    ["copy_dest_absolute", "copy app.txt -> /copied.txt"],
-    ["copy_source_climbing_out", "copy ../app.txt -> copied.txt"],
-    ["move_dest_climbing_out", "move docs/guide.md -> ../guide.md"],
-    ["move_source_absolute", "move /docs/guide.md -> guide.md"],
-    ["copy_dest_dot_slash_patchbook_config", "copy app.txt -> ./.patchbook/config.toml"],
-    ["copy_dest_double_slash_patchbook_config", "copy app.txt -> .//.patchbook/config.toml"],
-    ["add_dot_slash_patchbook", "add ./.patchbook/new.md"],
-    ["add_dot_slash", "add ./new.md"],
-    ["add_inner_dot", "add docs/./new.md"],
-    ["delete_double_slash", "delete docs//guide.md"],
-    ["delete_dot", "delete ."],
-    ["move_source_dot_slash", "move ./docs/guide.md -> guide.md"],
+    ["add climbing out", "add ../outside.txt"],
+    ["add climbing out in the middle", "add docs/../../outside.txt"],
+    ["add absolute", "add /outside.txt"],
+    ["replace climbing out", "replace ../app.txt"],
+    ["delete climbing out", "delete ../app.txt"],
+    ["file climbing out", "file ../app.txt"],
+    ["file absolute", "file /app.txt"],
+    ["copy dest climbing out", "copy app.txt -> ../copied.txt"],
+    ["copy dest absolute", "copy app.txt -> /copied.txt"],
+    ["copy source climbing out", "copy ../app.txt -> copied.txt"],
+    ["move dest climbing out", "move docs/guide.md -> ../guide.md"],
+    ["move source absolute", "move /docs/guide.md -> guide.md"],
+    ["copy dest ./.patchbook/config.toml", "copy app.txt -> ./.patchbook/config.toml"],
+    ["copy dest .//.patchbook/config.toml", "copy app.txt -> .//.patchbook/config.toml"],
+    ["add ./.patchbook/new.md", "add ./.patchbook/new.md"],
+    ["add ./new.md", "add ./new.md"],
+    ["add docs/./new.md", "add docs/./new.md"],
+    ["delete docs//guide.md", "delete docs//guide.md"],
+    ["delete .", "delete ."],
+    ["move source ./docs/guide.md", "move ./docs/guide.md -> guide.md"],
   ] as const;
   for (const [name, edit] of escaping) {
     forkTest(`test_${name}_is_invalid_and_nothing_is_read_or_written_outside`, (t) => {
@@ -4635,8 +4635,8 @@ describe("ForkTest", () => {
   }
 
   for (const [label, name] of [
-    ["climbing_out", "../x"], ["nested", "a/b"], ["absolute", "/abs"], ["capitalised", "Shout"],
-    ["leading_dot", ".x"], ["with_a_space", "a b"], ["with_an_underscore", "a_b"],
+    ["climbing out", "../x"], ["nested", "a/b"], ["absolute", "/abs"], ["capitalised", "Shout"],
+    ["leading dot", ".x"], ["with a space", "a b"], ["with an underscore", "a_b"],
   ] as const) {
     forkTest(`test_record_refuses_a_${label}_change_name_and_writes_nothing`, (t) => {
       t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
@@ -4680,9 +4680,9 @@ describe("ForkTest", () => {
   });
 
   const badNames = [
-    ["a_series_line", "My_Fix", true],
-    ["a_folder_that_is_not_in_the_series", "My_Fix", false],
-    ["a_folder_with_a_backslash_that_is_not_in_the_series", "we\\ird", false],
+    ["a series line", "My_Fix", true],
+    ["a folder that is not in the series", "My_Fix", false],
+    ["a folder with a backslash that is not in the series", "we\\ird", false],
   ] as const;
   const badName = (t: ForkCase, name: string, listed: boolean): void => {
     t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
@@ -5282,8 +5282,8 @@ describe("ForkTest", () => {
   });
 
   for (const [what, version, says] of [
-    ["before_versions", undefined, "has no version, so an older patchbook wrote it."],
-    ["the_first_version", 1, "is version 1, and this patchbook reads version 2."],
+    ["before versions", undefined, "has no version, so an older patchbook wrote it."],
+    ["the first version", 1, "is version 1, and this patchbook reads version 2."],
   ] as const) {
     forkTest(`test_a_last_sync_from_${what}_is_refused_by_every_command_that_reads_it`, (t) => {
       t.recordFeature();
@@ -5493,15 +5493,15 @@ describe("ForkTest", () => {
   const changeNames = (t: ForkCase): string[] => readdirSync(join(t.fork.path, ".patchbook/changes"));
 
   const unusableReplies: [string, string, string][] = [
-    ["has_no_json_object", "I could not decide.", "claude's reply has no JSON object.\n"],
-    ["is_not_json", '{"change": "shout", "intent": }', "claude's reply isn't JSON: "],
-    ["has_a_second_object", '{"change": "shout", "intent": "x"} {"y"}', "claude's reply isn't JSON: "],
-    ["has_no_intent", '{"change": "shout"}', "claude's reply: intent is missing.\n"],
-    ["has_a_change_that_is_not_a_string", '{"change": 1, "intent": "Shout."}', "claude's reply: change must be a string, not 1.\n"],
-    ["has_an_intent_that_is_null", '{"change": "shout", "intent": null}', "claude's reply: intent must be a string, not null.\n"],
-    ["has_a_name_that_is_not_a_change_name", '{"change": "Not A Name", "intent": "Shout."}',
+    ["has no JSON object", "I could not decide.", "claude's reply has no JSON object.\n"],
+    ["is not JSON", '{"change": "shout", "intent": }', "claude's reply isn't JSON: "],
+    ["has a second object", '{"change": "shout", "intent": "x"} {"y"}', "claude's reply isn't JSON: "],
+    ["has no intent", '{"change": "shout"}', "claude's reply: intent is missing.\n"],
+    ["has a change that is not a string", '{"change": 1, "intent": "Shout."}', "claude's reply: change must be a string, not 1.\n"],
+    ["has an intent that is null", '{"change": "shout", "intent": null}', "claude's reply: intent must be a string, not null.\n"],
+    ["has a name that is not a change name", '{"change": "Not A Name", "intent": "Shout."}',
       `claude's reply: ${JSON.stringify("Not A Name")} isn't a valid change name; use lowercase letters, digits and hyphens, starting with a letter or digit.\n`],
-    ["has_a_blank_intent", '{"change": "shout", "intent": "  "}', "claude's reply: intent is blank.\n"],
+    ["has a blank intent", '{"change": "shout", "intent": "  "}', "claude's reply: intent is blank.\n"],
   ];
   for (const [what, reply, says] of unusableReplies) {
     forkTest(`test_record_refuses_a_model_reply_that_${what}_and_records_nothing`, (t) => {
@@ -5596,7 +5596,7 @@ describe("ForkTest", () => {
   const committed = (t: ForkCase): string[] => words(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.fork.path }).stdout);
   const porcelain = (t: ForkCase): string => sh(["git", "status", "--porcelain"], { cwd: t.fork.path }).stdout;
 
-  for (const [where, path] of [["inside_the_book_tree", (t: ForkCase) => join(t.fork.path, ".scratch-wt")], ["outside_the_book_tree", (t: ForkCase) => join(t.tmp, "scratch-wt")]] as const) {
+  for (const [where, path] of [["inside the book tree", (t: ForkCase) => join(t.fork.path, ".scratch-wt")], ["outside the book tree", (t: ForkCase) => join(t.tmp, "scratch-wt")]] as const) {
     forkTest(`test_commit_from_a_linked_worktree_${where}_with_no_patchbook_goes_through`, (t) => {
       const wt = path(t);
       sh(["git", "worktree", "add", "-q", "--detach", wt, "HEAD~1"], { cwd: t.fork.path });
@@ -6653,7 +6653,7 @@ describe("ForkTest", () => {
     });
   }
 
-  for (const [what, path] of [["change_folder", "changes/shout"], ["CHANGE_md", "changes/shout/CHANGE.md"], ["side_folder", "changes/shout/ours"]] as const) {
+  for (const [what, path] of [["change folder", "changes/shout"], ["CHANGE.md", "changes/shout/CHANGE.md"], ["side folder", "changes/shout/ours"]] as const) {
     forkTest(`test_commit_refuses_a_${what}_that_is_a_link`, (t) => {
       const { held, before } = linkPatchbook(t, path);
       const commit = shoutTwo(t);
@@ -8176,18 +8176,18 @@ exec '${Bun.which("git")}' "$@"
     .length;
 
   const failedSyncs: [string, (t: VendorCase, extra: Repo) => void][] = [
-    ["the_repos_gitignore_hides_an_upstream_file", (t, extra) => {
+    ["the repo's .gitignore hides an upstream file", (t, extra) => {
       t.repo.write(".gitignore", "*.log\n");
       extra.write("c.log", "hidden\n");
       extra.commit("v2");
     }],
-    ["upstreams_own_gitignore_hides_one_of_its_files", (_, extra) => {
+    ["the upstream's own .gitignore hides one of its files", (_, extra) => {
       extra.write(".gitignore", "*.log\n");
       extra.write("x.log", "kept\n");
       sh(["git", "add", "-f", "x.log"], { cwd: extra.path });
       extra.commit("v2");
     }],
-    ["a_file_name_is_too_long_to_write", (_, extra) => {
+    ["a file name is too long to write", (_, extra) => {
       const blob = sh(["git", "hash-object", "-w", "a.md"], { cwd: extra.path }).stdout.trim();
       sh(["git", "add", "a.md"], { cwd: extra.path });
       sh(["git", "update-index", "--add", "--cacheinfo", `100644,${blob},z${"x".repeat(300)}`], { cwd: extra.path });
@@ -8223,7 +8223,7 @@ exec '${Bun.which("git")}' "$@"
   });
 
   describe.skipIf(process.getuid?.() === 0)("where chmod blocks writes, so not as root", () => {
-    for (const [what, blocked] of [["a_change_file", ".patchbook/changes/tweak/base"], ["the_lock", ".patchbook/upstream.lock"]] as const) {
+    for (const [what, blocked] of [["a change file", ".patchbook/changes/tweak/base"], ["the lock", ".patchbook/upstream.lock"]] as const) {
       for (const layout of ["folder", "vendored"]) {
         vendorTest(`test_a_failed_sync_leaves_the_changes_as_they_were_when_${what}_cannot_be_written_${layout}`, (t) => {
           const extra = extraWithAChange(t, layout === "vendored");
@@ -8281,7 +8281,7 @@ exec '${Bun.which("git")}' "$@"
     });
   });
 
-  for (const [when, call] of [["checks_the_new_copy", "write-tree --prefix=vendor/extra/"], ["keeps_the_new_commit", "update-ref refs/pins/"]] as const) {
+  for (const [when, call] of [["checks the new copy", "write-tree --prefix=vendor/extra/"], ["keeps the new commit", "update-ref refs/pins/"]] as const) {
     vendorTest(`test_a_sync_killed_while_it_${when}_is_put_right_by_the_next_sync`, (t) => {
       const extra = extraWithAChange(t, true);
       extra.write("c.log", "hidden\n");
@@ -8310,18 +8310,18 @@ exec '${Bun.which("git")}' "$@"
   const changed = "upstream.lock has changed since";
   const unreadable = "its record can't be read";
   const lockChanges: [string, (t: VendorCase) => void, boolean, string][] = [
-    ["the_lock_has_changed_since", (t) => sh(["git", "checkout", "HEAD~1", "--", ".patchbook/upstream.lock"], { cwd: t.repo.path }), false, changed],
-    ["the_lock_has_changed_since_the_sync_wrote_it", (t) => {
+    ["the lock has changed since", (t) => sh(["git", "checkout", "HEAD~1", "--", ".patchbook/upstream.lock"], { cwd: t.repo.path }), false, changed],
+    ["the lock has changed since the sync wrote it", (t) => {
       t.repo.write(".patchbook/sync-extra/lock", t.repo.read(".patchbook/upstream.lock"));
       sh(["git", "checkout", "HEAD~1", "--", ".patchbook/upstream.lock"], { cwd: t.repo.path });
     }, true, changed],
-    ["the_lock_no_longer_parses", (t) => t.repo.write(".patchbook/upstream.lock", "<<<<<<< HEAD\n"), true, changed],
-    ["its_record_cannot_be_read", (t) => t.repo.write(".patchbook/sync-extra/pin", ""), true, unreadable],
-    ["its_record_has_no_to", (t) => t.repo.write(".patchbook/sync-extra/pin", '{"from": "x"}'), true, unreadable],
-    ["its_record_has_a_copy_that_is_not_true_or_false", (t) => {
+    ["the lock no longer parses", (t) => t.repo.write(".patchbook/upstream.lock", "<<<<<<< HEAD\n"), true, changed],
+    ["its record cannot be read", (t) => t.repo.write(".patchbook/sync-extra/pin", ""), true, unreadable],
+    ["its record has no to", (t) => t.repo.write(".patchbook/sync-extra/pin", '{"from": "x"}'), true, unreadable],
+    ["its record has a copy that is not true or false", (t) => {
       t.repo.write(".patchbook/sync-extra/pin", '{"from": "x", "to": "y", "added": "", "vendor": "", "copy": "yes"}');
     }, true, unreadable],
-    ["its_record_is_a_list", (t) => t.repo.write(".patchbook/sync-extra/pin", "[]"), true, unreadable],
+    ["its record is a list", (t) => t.repo.write(".patchbook/sync-extra/pin", "[]"), true, unreadable],
   ];
   for (const [how, change, refLeft, why] of lockChanges) {
     vendorTest(`test_a_killed_sync_is_left_for_the_user_when_${how}`, (t) => {
@@ -8358,7 +8358,7 @@ exec '${Bun.which("git")}' "$@"
     }
   });
 
-  for (const [by, args] of [["the_next_sync", ["sync", "extra"]], ["a_plain_sync_that_reaches_another_upstream_first", ["sync"]]] as const) {
+  for (const [by, args] of [["the next sync", ["sync", "extra"]], ["a plain sync that reaches another upstream first", ["sync"]]] as const) {
     vendorTest(`test_a_lock_torn_by_a_killed_sync_is_put_back_by_${by}`, (t) => {
       const extra = extraWithAChange(t, true);
       extra.write("c.log", "hidden\n");
@@ -8376,8 +8376,8 @@ exec '${Bun.which("git")}' "$@"
   }
 
   const killedThenChanged: [string, (t: VendorCase) => void][] = [
-    ["its_vendor_folders_parent_was_removed", (t) => rmSync(join(t.repo.path, "vendor"), { recursive: true })],
-    ["a_change_file_was_replaced_by_a_link", (t) => {
+    ["its vendor folder's parent was removed", (t) => rmSync(join(t.repo.path, "vendor"), { recursive: true })],
+    ["a change file was replaced by a link", (t) => {
       const ours = ".patchbook/changes/tweak/ours/extra/a.md.pb";
       t.repo.write(".patchbook/sync-extra/before/changes/tweak/ours/extra/a.md.pb", t.repo.read(ours));
       rmSync(join(t.repo.path, ours));
@@ -9010,7 +9010,7 @@ exec '${Bun.which("git")}' "$@"
     });
   }
 
-  for (const [what, below, named] of [["a_subfolder", "locked", "x/locked"], ["a_folder", "", "x"]] as const) {
+  for (const [what, below, named] of [["a subfolder", "locked", "x/locked"], ["a folder", "", "x"]] as const) {
     test.skipIf(process.getuid?.() === 0)(`test_build_force_refuses_a_folder_with_${what}_it_cannot_read`, () => {
       const t = new VendorCase();
       let locked = "";
@@ -9080,9 +9080,9 @@ exec '${Bun.which("git")}' "$@"
 
   const spellings: [string, (t: VendorCase, to: string) => string][] = [
     ["", (_, to) => to],
-    ["_spelled_from_the_physical_repo_path", (t, to) => join(realpathSync(t.repo.path), to)],
-    ["_spelled_through_a_link_above_the_repo", (t, to) => join(t.tmp, "via/adapted", to)],
-    ["_spelled_through_a_link_to_the_repo", (t, to) => join(t.tmp, "alias", to)],
+    [" spelled from the physical repo path", (t, to) => join(realpathSync(t.repo.path), to)],
+    [" spelled through a link above the repo", (t, to) => join(t.tmp, "via/adapted", to)],
+    [" spelled through a link to the repo", (t, to) => join(t.tmp, "alias", to)],
   ];
 
   for (const [spelled, spell] of spellings) {
@@ -9171,16 +9171,16 @@ exec '${Bun.which("git")}' "$@"
   }
 
   const gitReadsAsDotGit = [
-    ["dot_git_dot", ".git."],
-    ["dot_git_space", ".git "],
-    ["GIT_tilde_1", "GIT~1"],
-    ["git_tilde_1_dot_space", "out/git~1. /y"],
-    ["dot_git_colon", "out/.git:x"],
-    ["backslash_dot_git", "out/a\\.git"],
-    ["dot_g_zero_width_non_joiner_it", ".g\u200cit"],
-    ["byte_order_mark_dot_GIT", "out/\ufeff.GIT/y"],
-    ["dot_git_noncharacter_fffe", ".git\ufffe"],
-    ["dot_GIT_zero_width_non_joiner_noncharacter_ffff", "out/.GIT\u200c\uffffx/y"],
+    [".git.", ".git."],
+    [".git and a space", ".git "],
+    ["GIT~1", "GIT~1"],
+    ["git~1. ", "out/git~1. /y"],
+    [".git:x", "out/.git:x"],
+    ["a backslash before .git", "out/a\\.git"],
+    ["a zero-width non-joiner inside .git", ".g\u200cit"],
+    ["a byte order mark before .GIT", "out/\ufeff.GIT/y"],
+    [".git then the noncharacter U+FFFE", ".git\ufffe"],
+    [".GIT with a zero-width non-joiner and U+FFFF", "out/.GIT\u200c\uffffx/y"],
   ] as const;
 
   for (const [what, to] of gitReadsAsDotGit) {
