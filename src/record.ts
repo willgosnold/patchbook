@@ -308,7 +308,7 @@ function modelDiff(a: Assembly, current: ReadonlyMap<string, File>, ask: Asked):
 
 export type RecordResult = { text: string };
 
-export async function cmdRecord(args: { change: string | null; intent: string | null; current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean }) {
+export async function cmdRecord(args: { change: string | null; intent: string | null; current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean; undo?: Undo }) {
   const book = await Book.find();
   if (args.current === undefined) installHookOrWarn(book);
   process.stdout.write(record(book, args.change, args.intent, args).text);
@@ -350,7 +350,7 @@ export function fill(book: Book, change: string | null, intent: string | null): 
   return filled.map(([c, text]) => `intent   ${c.name}: ${text}\n`).join("") + files.map((f) => `entries  ${f.rel}: ${f.intent}\n`).join("");
 }
 
-export function record(book: Book, change: string | null, intent: string | null, opts: { current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean } = {}): RecordResult {
+export function record(book: Book, change: string | null, intent: string | null, opts: { current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean; undo?: Undo } = {}): RecordResult {
   if (change && !CHANGE_NAME.test(change)) throw new Fail(notAChangeName(change));
   const problems: Problem[] = [];
   const roster = Roster.read(book, problems);
@@ -376,7 +376,7 @@ export function record(book: Book, change: string | null, intent: string | null,
   const touched = new Map<string, Change>();
   const notes: string[] = [];
   const afterSave: (() => void)[] = [];
-  const undo = new Undo();
+  const undo = opts.undo ?? new Undo();
   undo.hold(book.dir);
   try {
     for (const e of edits) {
@@ -401,6 +401,8 @@ export function record(book: Book, change: string | null, intent: string | null,
       writeBuildLines(book, lock);
     }
   } catch (error) {
+    // An Undo passed in belongs to the caller, which puts everything back and names what it couldn't, once.
+    if (opts.undo) throw error;
     const stuck = undo.restore();
     if (stuck.length) {
       process.stderr.write("patchbook: couldn't put these back as they were:\n  " + stuck.join("\n  ")

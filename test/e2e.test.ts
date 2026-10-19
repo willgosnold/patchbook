@@ -13601,6 +13601,23 @@ describe("RecordRollbackTest", () => {
     }
   });
 
+  forkTest("test_hook_names_the_files_it_cannot_put_back_once", (t) => {
+    if (process.getuid?.() === 0) return;
+    t.fork.write("extra.txt", "ours\n");
+    const book = join(t.fork.path, ".patchbook");
+    mkdirSync(join(book, "changes"), { recursive: true });
+    chmodSync(join(book, "build.lock"), READ_ONLY);
+    chmodSync(book, 0o555);
+    try {
+      const failed = hookCommit(t, { PATCHBOOK_INTENT: "Add extra." });
+      expect(failed.code).not.toBe(0);
+      expect(failed.stderr.match(/couldn't put these back as they were:\n {2}\S+\/\.patchbook\/series\n/g)).toHaveLength(1);
+      expect(failed.stderr).toContain("permission denied");
+    } finally {
+      chmodSync(book, 0o755);
+    }
+  });
+
   forkTest("test_record_puts_back_a_copy_it_deleted_when_the_build_lock_cannot_be_written", (t) => {
     if (process.getuid?.() === 0) return;
     t.fork.write("extra.txt", "ours\n");

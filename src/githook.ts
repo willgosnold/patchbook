@@ -760,7 +760,7 @@ async function runHook(undo: Undo) {
   if (edited.length) {
     if (!a.problems.length) plan(asRecorded(a.out, edited));
     for (const p of buildInputs(book)) undo.hold(join(book.root, p));
-    await cmdRecord({ change: null, intent: process.env["PATCHBOOK_INTENT"] ?? null, current: staged, edits: edited });
+    await cmdRecord({ change: null, intent: process.env["PATCHBOOK_INTENT"] ?? null, current: staged, edits: edited, undo });
     a = assemble(book);
   }
   let built: string[] = [];
