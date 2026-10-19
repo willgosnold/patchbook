@@ -98,6 +98,7 @@ async function loadHooks(dir: string): Promise<Hooks> {
       case "blockTerms":
         hooks.blockTerms = (file, block, outputs) => {
           const found = call(file, block, outputs);
+          if (typeof found === "string") throw hookFail(path, "blockTerms must return an array or iterable of strings, not a string");
           const terms = isIterable(found) ? Array.from(found) : null;
           if (terms === null || !terms.every((t) => typeof t === "string")) throw hookFail(path, "blockTerms must return strings");
           return terms;
@@ -132,9 +133,8 @@ async function loadHooks(dir: string): Promise<Hooks> {
   return hooks;
 }
 
-/** Strings count: a string is read as its characters. */
 function isIterable(value: unknown): value is Iterable<unknown> {
-  return typeof value === "string" || (typeof value === "object" && value !== null && Symbol.iterator in value);
+  return typeof value === "object" && value !== null && Symbol.iterator in value;
 }
 
 /** Only the `problem` kind is checked. The rest of the fields are the hook's to get right. */

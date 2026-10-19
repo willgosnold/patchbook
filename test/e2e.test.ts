@@ -8649,14 +8649,21 @@ exec '${Bun.which("git")}' "$@"
     expect(t.repo.read("skills/tool/SKILL.md")).toContain("Use the new tool.");
   });
 
-  vendorTest("blockTerms may return a string, which counts as its characters", (t) => {
-    // A string is read as its characters, and a set of them is what the block needs entries for.
-    writeFileSync(join(t.repo.path, ".patchbook/hooks.ts"), dedent(`
+  vendorTest("a blockTerms hook that returns a string is refused, not read as its characters", (t) => {
+    const hooks = join(t.repo.path, ".patchbook/hooks.ts");
+    writeFileSync(hooks, dedent(`
       export function blockTerms(path: string, block: string) {
         return block.includes("wave") ? "ba" : [];
       }
     `));
-    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout).toContain("needs an entry (a, b)");
+    const status = t.pb(["status"], { cwd: t.repo.path, code: 1 });
+    expect(status.stderr).toContain(`${hooks}: blockTerms must return an array or iterable of strings, not a string`);
+    expect(status.stdout).not.toContain("needs an entry");
+  });
+
+  vendorTest("a check hook that returns a string is refused as not a list of problems", (t) => {
+    writeFileSync(join(t.repo.path, ".patchbook/hooks.ts"), 'export function check() {\n  return "problem";\n}\n');
+    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stderr).toContain("check must return a list of problems");
   });
 
   vendorTest("a mistyped hook gets did you mean from a similarity of 0.6, and the list of hooks below it", (t) => {

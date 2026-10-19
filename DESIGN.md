@@ -113,7 +113,7 @@ An upstream block that matches a check and has no entry is **missing**. Output t
 | Hook | Called | Returns |
 | --- | --- | --- |
 | `placeholder(kind, name)` | For each `{{kind:name}}` in the output, for a `kind` that has a `[placeholders.<kind>]` table. | The text to put there, or null to look it up in that table's `file`. |
-| `blockTerms(path, block, outputs)` | For each upstream paragraph, with its output path and the set of all output paths. | Terms in the paragraph that need an entry, as if a `[[check]]` pattern had matched them. |
+| `blockTerms(path, block, outputs)` | For each upstream paragraph, with its output path and the set of all output paths. | An array, or another iterable, of the terms in the paragraph that need an entry, as if a `[[check]]` pattern had matched them. A string is refused, not read as its characters. |
 | `finish(out)` | After placeholders, before the checks. | Nothing. It changes `out`, a map from path to `{ data, mode }`, in place. |
 | `check(outputs)` | After the `[[check]]` patterns. | A list of `{ problem: "check", file, detail }`. |
 
