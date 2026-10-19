@@ -15,7 +15,19 @@ import { type Source, setting } from "./settings.ts";
 import { refuseMergedUpstream } from "./store.ts";
 import { linksUnder, Undo } from "./undo.ts";
 
+/** Git runs hooks from the top of the checkout. A linked worktree shares the hooks folder of its repo, and may hold a commit with no patchbook. */
+const HAS_PATCHBOOK = "[ -f .patchbook/config.toml ]";
+
 const SCRIPT = `#!/bin/sh
+# Installed by patchbook v2. On each commit, it records hand edits to the build output in the
+# patchbook, rebuilds, and stages both. Skip it once with: PATCHBOOK_HOOK=0 git commit
+[ "$PATCHBOOK_HOOK" = 0 ] && exit 0
+${HAS_PATCHBOOK} || exit 0
+if command -v patchbook >/dev/null; then exec patchbook hook run; fi
+echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
+`;
+
+const UNGUARDED_SCRIPT = `#!/bin/sh
 # Installed by patchbook v2. On each commit, it records hand edits to the build output in the
 # patchbook, rebuilds, and stages both. Skip it once with: PATCHBOOK_HOOK=0 git commit
 [ "$PATCHBOOK_HOOK" = 0 ] && exit 0
@@ -41,7 +53,7 @@ function writeHook(path: string): void {
   chmodSync(path, 0o755);
 }
 
-const GUARD = `if [ "$PATCHBOOK_HOOK" != 0 ] && [ -f .patchbook/config.toml ]; then
+const GUARD = `if [ "$PATCHBOOK_HOOK" != 0 ] && ${HAS_PATCHBOOK}; then
   if ! command -v patchbook >/dev/null; then
     echo "patchbook isn't installed, so this commit can't record hand edits to the build output." >&2
     echo "Install it with npm install -g patchbook, or skip it once with PATCHBOOK_HOOK=0 git commit" >&2
@@ -181,7 +193,7 @@ function hookPaths(root: string): { hooksPath: string | null; hookFile: string }
 function ours(path: string): boolean {
   if (!exists(path)) return false;
   const text = readTextReplace(path);
-  return text === SCRIPT || PYTHON_HOOK.test(text);
+  return text === SCRIPT || text === UNGUARDED_SCRIPT || PYTHON_HOOK.test(text);
 }
 
 const scriptHook = (manager: ScriptManager, dir: string, gitRunsIt: boolean): Hook => ({ kind: "script", manager, path: join(dir, "pre-commit"), gitRunsIt });
@@ -334,6 +346,15 @@ export function commitAdvice(book: Book): string {
 
 const isExecutable = (path: string) => (statSync(path).mode & 0o111) !== 0;
 
+function updateScript(path: string): boolean {
+  const text = readTextReplace(path);
+  const change = PYTHON_HOOK.test(text) ? "to run patchbook from PATH" : text === UNGUARDED_SCRIPT ? "to skip a checkout with no patchbook" : null;
+  if (change === null) return false;
+  writeHook(path);
+  process.stderr.write(`patchbook: updated ${path} ${change}\n`);
+  return true;
+}
+
 export function keepGitHook(book: Book): void {
   const { hooksPath, hookFile } = hookPaths(book.root);
   if (hooksPath !== null || !hookEnabled(book) || !inBookRepo(book)) return;
@@ -342,13 +363,16 @@ export function keepGitHook(book: Book): void {
     process.stderr.write("patchbook: installed a pre-commit hook that records and builds on each commit\n");
     return;
   }
-  if (PYTHON_HOOK.test(readTextReplace(hookFile))) {
-    writeHook(hookFile);
-    process.stderr.write(`patchbook: updated ${hookFile} to run patchbook from PATH\n`);
-  } else if (ours(hookFile) && !isExecutable(hookFile)) {
-    chmodSync(hookFile, 0o755);
-    process.stderr.write(`patchbook: made ${shown(book.root, hookFile)} executable, so git runs it\n`);
+  if (updateScript(hookFile)) return;
+  if (ours(hookFile)) {
+    if (!isExecutable(hookFile)) {
+      chmodSync(hookFile, 0o755);
+      process.stderr.write(`patchbook: made ${shown(book.root, hookFile)} executable, so git runs it\n`);
+    }
+    return;
   }
+  const migrated = CONFIG_MANAGERS.find((m) => m.legacy && m.dispatcher.test(readTextReplace(hookFile)))?.legacy;
+  if (migrated !== undefined && exists(hookFile + migrated)) updateScript(hookFile + migrated);
 }
 
 /** Make the hook git runs call patchbook, once `keepGitHook` has installed its own in `.git/hooks`. A config or foreign hook is printed every time, because patchbook can't check where its line sits. */
