@@ -7,7 +7,6 @@ import { Fail } from "./lib/fail.ts";
 import { pjoin, readText } from "./lib/fs.ts";
 import { sha256 } from "./lib/hash.ts";
 import { similarity } from "./lib/match.ts";
-import { strRepr } from "./lib/repr.ts";
 import { list, readJson, type Shape, ShapeError, shown, string, table } from "./lib/shape.ts";
 import { byCodePoint, decode } from "./lib/text.ts";
 
@@ -188,7 +187,7 @@ export class Rules {
     return text.replace(this.placeholder, (m: string, kind: string, name: string) => {
       const value = (hook ? hook(kind, name) : null) ?? this.source(kind).get(name);
       if (value === undefined) {
-        report(`unknown ${kind} ${strRepr(name)}`);
+        report(`unknown ${kind} ${JSON.stringify(name)}`);
         return m;
       }
       return value;

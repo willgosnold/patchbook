@@ -7,7 +7,6 @@ import { Book, NoBook } from "./book.ts";
 import { intentSettings, PROVIDERS } from "./intent.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, mkdirs, pjoin, readBytes, readText, writeText } from "./lib/fs.ts";
-import { strRepr } from "./lib/repr.ts";
 import { decode } from "./lib/text.ts";
 import { quoteToml } from "./lib/toml.ts";
 
@@ -52,7 +51,7 @@ const flag: Kind<boolean> = {
   parse(name, raw) {
     const word = raw.toLowerCase();
     if (!["1", "0", "true", "false", "yes", "no", "on", "off"].includes(word)) {
-      throw new Fail(`${name} is true or false, not ${strRepr(raw)}`);
+      throw new Fail(`${name} is true or false, not ${JSON.stringify(raw)}`);
     }
     return ["1", "true", "yes", "on"].includes(word);
   },

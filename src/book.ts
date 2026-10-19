@@ -6,7 +6,6 @@ import { Fail } from "./lib/fail.ts";
 import { exists, type File, GITLINK, isDir, isMode, isSymlink, lexists, mkdirs, type Mode, normMode, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
 import { similarity } from "./lib/match.ts";
 import { git, run, spawn } from "./lib/proc.ts";
-import { strRepr } from "./lib/repr.ts";
 import { jsonText, named, object, oid, readJson, type Shape, string, versioned } from "./lib/shape.ts";
 import { byCodePoint, decode } from "./lib/text.ts";
 import { isTable, parseToml, type Table } from "./settings.ts";
@@ -90,7 +89,7 @@ async function loadHooks(dir: string): Promise<Hooks> {
   const hooks: Hooks = {};
   if (typeof module !== "object" || module === null) return hooks;
   for (const [name, fn] of Object.entries(module)) {
-    if (!isHookName(name)) throw hookFail(path, `\`${name}\` isn't a hook${suggest(name)}`);
+    if (!isHookName(name)) throw hookFail(path, `${JSON.stringify(name)} isn't a hook${suggest(name)}`);
     if (typeof fn !== "function") throw hookFail(path, `\`${name}\` must be a function`);
     const call = (...args: unknown[]): unknown => fn(...args);
     switch (name) {
@@ -98,7 +97,7 @@ async function loadHooks(dir: string): Promise<Hooks> {
         hooks.placeholder = (kind, key) => {
           const value = call(kind, key);
           if (value === null || value === undefined || typeof value === "string") return value;
-          throw hookFail(path, `placeholder(${strRepr(kind)}, ${strRepr(key)}) returned ${typeof value}, not a string`);
+          throw hookFail(path, `placeholder(${JSON.stringify(kind)}, ${JSON.stringify(key)}) returned ${typeof value}, not a string`);
         };
         break;
       case "blockTerms":
@@ -168,7 +167,7 @@ function repoAsSpelled(realRoot: string, path: string): string | null {
 function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly string[]): string {
   const dir = pjoin(root, to);
   const rel = relative(resolve(root), resolve(dir));
-  const shown = strRepr(to);
+  const shown = JSON.stringify(to);
   if (rel === ".") throw new Fail(`[output] to ${shown} is the repo root. Name a folder inside the repo.`);
   if (under(rel, "..")) throw new Fail(`[output] to ${shown} is outside the repo. Name a folder inside it.`);
   if (under(rel, PB)) throw new Fail(`[output] to ${shown} is inside ${PB}. patchbook never builds into ${PB}, so those files would never land. Change [output] to.`);
@@ -247,7 +246,7 @@ export class Book {
     this.config = parseToml(config, join(this.dir, "config.toml"));
     const kind = Object.hasOwn(this.config, "layout") ? this.config["layout"] : "fork";
     if (kind !== "folder" && kind !== "fork") {
-      throw new Fail(`layout must be folder or fork, not ${typeof kind === "string" ? strRepr(kind) : JSON.stringify(kind)}`);
+      throw new Fail(`layout must be folder or fork, not ${JSON.stringify(kind)}`);
     }
     const raw = this.config["upstream"];
     if (isTable(raw)) throw new Fail("config.toml has a single [upstream] table. Use [[upstream]] with a name instead.");
