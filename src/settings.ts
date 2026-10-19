@@ -7,9 +7,8 @@ import { Book, NoBook } from "./book.ts";
 import { intentSettings, NO_MODEL, PROVIDERS } from "./intent.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, mkdirs, pjoin, readBytes, readText, writeText } from "./lib/fs.ts";
-import { strRepr } from "./lib/repr.ts";
 import { say } from "./lib/term.ts";
-import { decode } from "./lib/text.ts";
+import { decode, quote } from "./lib/text.ts";
 import { quoteToml } from "./lib/toml.ts";
 
 /** A parsed TOML table. Values stay unknown until a setting or the book's config reads them. */
@@ -52,7 +51,7 @@ const text: Kind<string> = {
 const seconds: Kind<number> = {
   parse(name, raw) {
     const value = Number(raw);
-    if (!raw.trim() || !Number.isFinite(value) || value <= 0) throw new Fail(`${name} is a positive number of seconds, not ${strRepr(raw)}`);
+    if (!raw.trim() || !Number.isFinite(value) || value <= 0) throw new Fail(`${name} is a positive number of seconds, not ${quote(raw)}`);
     return value;
   },
   accept: (v) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined),
@@ -63,7 +62,7 @@ const flag: Kind<boolean> = {
   parse(name, raw) {
     const word = raw.toLowerCase();
     if (!["1", "0", "true", "false", "yes", "no", "on", "off"].includes(word)) {
-      throw new Fail(`${name} is true or false, not ${strRepr(raw)}`);
+      throw new Fail(`${name} is true or false, not ${quote(raw)}`);
     }
     return ["1", "true", "yes", "on"].includes(word);
   },
@@ -127,7 +126,7 @@ export function configured<N extends Name>(name: N, config: Table, path: string)
   if (raw === undefined) return undefined;
   const kind: Kind<NonNullable<Values[N]>> = SETTINGS[name].kind;
   const value = kind.accept(raw);
-  if (value === undefined) throw new Fail(`${name} in ${path} can't be ${JSON.stringify(raw)}`);
+  if (value === undefined) throw new Fail(`${name} in ${path} can't be ${quote(raw)}`);
   return value;
 }
 
@@ -266,7 +265,7 @@ function withoutSetting(text: string, name: Name, refuse: (cause: string) => Fai
   for (const comment of commentsOf(out)) left.set(comment, (left.get(comment) ?? 0) + 1);
   for (const comment of commentsOf(text)) {
     const n = left.get(comment) ?? 0;
-    if (n === 0) throw refuse(`the TOML library would drop the comment ${JSON.stringify(comment)}`);
+    if (n === 0) throw refuse(`the TOML library would drop the comment ${quote(comment)}`);
     left.set(comment, n - 1);
   }
   return out;
@@ -327,7 +326,7 @@ function firstDifference(want: unknown, got: unknown, at: string): string | null
   if (isDeepStrictEqual(want, got)) return null;
   if (got === undefined) return `drop ${at}`;
   if (want === undefined) return `add ${at}`;
-  return `turn ${at} into ${JSON.stringify(got)}, not ${JSON.stringify(want)}`;
+  return `turn ${at} into ${quote(got)}, not ${quote(want)}`;
 }
 
 function withSetting(config: Table, name: Name, value: unknown): Table {

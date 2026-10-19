@@ -1,4 +1,5 @@
 import { Fail } from "./fail.ts";
+import { quote } from "./text.ts";
 
 /** A value JSON.stringify writes as it is. No Map (written as {}), no undefined (dropped), no class instances. */
 export type Json = null | boolean | number | string | readonly Json[] | { readonly [key: string]: Json };
@@ -18,7 +19,7 @@ type Read<F extends Fields> = { [K in keyof F]: F[K] extends Shape<infer T> ? T 
 export function shown(value: unknown): string {
   if (Array.isArray(value)) return "a list";
   if (typeof value === "object" && value !== null) return "an object";
-  return typeof value === "string" ? JSON.stringify(value) : String(value);
+  return typeof value === "string" ? quote(value) : String(value);
 }
 
 const wrong = (at: At, want: string, value: unknown) => new ShapeError(at, `must be ${want}, not ${shown(value)}`);

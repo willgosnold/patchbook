@@ -9,9 +9,8 @@ import { unifiedDiff } from "./lib/diff.ts";
 import { Fail } from "./lib/fail.ts";
 import type { File } from "./lib/fs.ts";
 import { spawn, which } from "./lib/proc.ts";
-import { strRepr } from "./lib/repr.ts";
 import { object, readJson, string } from "./lib/shape.ts";
-import { decodeReplace, encode, isText } from "./lib/text.ts";
+import { decodeReplace, encode, isText, quote } from "./lib/text.ts";
 import { configured, readToml, type Source, setting, SETTINGS, type Table, USER_CONFIG } from "./settings.ts";
 
 export const NO_MODEL = "none";
@@ -103,7 +102,7 @@ export function intentSettings(book: Book | null, quiet = false, sources?: Map<s
   }
   if (provider === NO_MODEL) return [NO_MODEL, "", ""];
   const spec = PROVIDERS.get(provider);
-  if (!spec) throw new Fail(`intent.provider is one of ${[...PROVIDERS.keys(), NO_MODEL].join(", ")}, not ${strRepr(provider)}`);
+  if (!spec) throw new Fail(`intent.provider is one of ${[...PROVIDERS.keys(), NO_MODEL].join(", ")}, not ${quote(provider)}`);
   const layers: [Source, Table | null, string][] = [
     ["env", null, ""],
     ...(book ? [["project", book.config, join(book.dir, "config.toml")] as [Source, Table, string]] : []),
@@ -182,7 +181,7 @@ export function writeIntent(
 ): [string, string] {
   const [provider, model, effort] = intentSettings(book);
   if (provider === NO_MODEL) throw new ModelFailed("intent.provider is none", "intent.provider is none, so no model writes intents. Pass --intent.");
-  const listed = Array.from(changes.values(), (c) => `${c.name}: ${c.intent}`).join("\n") || "(none yet)";
+  const listed = Array.from(changes.values(), (c) => `${c.name}: ${c.intent || "(no intent yet)"}`).join("\n") || "(none yet)";
   let instruction: string;
   if (!named) {
     name = "paragraphs";
