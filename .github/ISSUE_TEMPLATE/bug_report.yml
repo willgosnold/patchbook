@@ -1,5 +1,5 @@
 name: Bug report
-description: Patchbook did something wrong, printed something wrong, or crashed.
+description: Patchbook did something wrong, printed something wrong or crashed, or the docs are wrong.
 labels: [bug]
 body:
   - type: markdown

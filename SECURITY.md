@@ -4,7 +4,7 @@
 
 Report it privately through [GitHub's vulnerability reporting](https://github.com/willgosnold/patchbook/security/advisories/new). Don't open a public issue, pull request or discussion about it.
 
-Include the patchbook version (`patchbook --version`), your OS, and the steps or a script that shows the problem. I'll reply within a week and keep you updated until it's fixed. Once a fix is released, I'll publish the advisory and credit you, unless you'd rather not be named.
+Include the patchbook version (`patchbook --version`), your OS, and the steps or a script that shows the problem. Either I or my agent will aim to reply within 48 hours, and I'll keep you updated until it's fixed. Once a fix is released, I'll publish the advisory and credit you, unless you'd rather not be named.
 
 ## Supported versions
 

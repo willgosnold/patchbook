@@ -71,6 +71,8 @@ Patchbook is built with coding agents, and you're welcome to use them too. The r
 
 ## Issues
 
+Ask how to do something in [Discussions](https://github.com/willgosnold/patchbook/discussions/categories/q-a), and use issues for bugs, wrong docs and proposals.
+
 - Search open and closed issues first.
 - Check that the bug happens on the latest release (`patchbook --version`).
 - For a bug, give the commands that reproduce it in a new repo and what each one printed. The bug form asks for the rest.
@@ -80,7 +82,7 @@ Report security problems privately. See [SECURITY.md](SECURITY.md).
 
 ## What to expect
 
-I try to reply to issues and PRs within a week. I may ask for changes, rewrite part of a PR before merging it, or close it if it doesn't fit the project. If that happens, I'll say why.
+Either I or my agent will aim to reply within 48 hours. I may ask for changes, rewrite part of a PR before merging it, or close it if it doesn't fit the project. If that happens, I'll say why.
 
 ## License
 
