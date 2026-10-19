@@ -1,3 +1,4 @@
+import { test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -5,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 type Env = Record<string, string>;
 
 export const TOOL = resolve(import.meta.dir, "..", "src", "cli.ts");
+export const TIMEOUT = 120_000;
 
 export function shlexSplit(line: string): string[] {
   const out: string[] = [];
@@ -213,4 +215,24 @@ export class Case {
     }
     return r;
   }
+}
+
+export const isRoot = process.getuid?.() === 0;
+
+/**
+ * A test that needs the OS to refuse a read or write (chmod a-w, 0o444, 0o000). Root ignores file
+ * permissions, so it skips there. Pass the case class to get a fresh one, cleaned up after the body.
+ */
+export function permissionTest(name: string, body: () => void): void;
+export function permissionTest<C extends Case>(name: string, body: (t: C) => void, make: new () => C): void;
+export function permissionTest<C extends Case>(name: string, body: (t: C) => void, make?: new () => C): void {
+  test.skipIf(isRoot)(name, () => {
+    if (!make) return (body as () => void)();
+    const t = new make();
+    try {
+      body(t);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
 }
