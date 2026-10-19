@@ -3032,6 +3032,26 @@ for (const path of [".patchbook", ".patchbook/config.toml", ".patchbook/series",
   }, TIMEOUT);
 }
 
+for (const layout of ["fork", "folder"]) {
+  test(`test_a_${layout}_init_refuses_a_patchbook_folder_without_a_config_that_holds_series_or_retired_md`, () => {
+    for (const [held, named] of [[["series", "retired.md"], "series"], [["retired.md"], "retired.md"]] as const) {
+      const t = new Case();
+      try {
+        const { up, repo, output } = startingRepo(t, layout);
+        const files = { series: "keep-me\n", "retired.md": "my own retired notes\n" };
+        for (const file of held) repo.write(`.patchbook/${file}`, files[file as keyof typeof files]);
+        const before = repoState(repo.path);
+        const init = t.pb(["init", "--upstream", up.path, ...output], { cwd: repo.path, code: 1 });
+        expect(init.stderr).toContain(`patchbook: .patchbook/${named} already exists. Move it away, or restore .patchbook/config.toml, then run init again.`);
+        for (const file of held) expect(repo.read(`.patchbook/${file}`)).toBe(files[file as keyof typeof files]);
+        expect(repoState(repo.path)).toEqual(before);
+      } finally {
+        t.cleanup();
+      }
+    }
+  }, TIMEOUT);
+}
+
 const INIT_STEPS: [string, string[], string, (repo: Repo) => string[]][] = [
   ["its_pin", ["fork", "folder"], ".patchbook/upstream.lock: permission denied", (repo) => (repo.write(".patchbook/upstream.lock", "{}\n", 0o444), [])],
   ["the_upstream_remote", ["fork"], "could not lock config file", (repo) => (writeFileSync(join(repo.path, ".git/config.lock"), ""), [])],
