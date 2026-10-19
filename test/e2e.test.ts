@@ -10361,12 +10361,16 @@ exec '${Bun.which("git")}' "$@"
     t.pb(["track", "other", other.path, "--vendor", "vendor/other"], { cwd: t.repo.path });
     const gentry = upstreamWithDotGit(t, "gentry");
     const refused = "upstream gentry holds .git";
+    const config = join(t.repo.path, ".patchbook/config.toml");
+    const kept = read(config);
     const out = t.pb(["track", "gentry", gentry.path, "--vendor", "vendor/gentry"], { cwd: t.repo.path, code: 1 });
     expect(out.stderr).toContain(refused);
     expect(out.stderr).toContain("vendor/gentry");
-    const before = tree(t.repo.path);
+    expect(read(config)).toBe(kept);
     expect(readdirSync(join(t.repo.path, ".patchbook")).filter((n) => n.startsWith("sync-"))).toEqual([]);
     expect(existsSync(join(t.repo.path, "vendor/gentry/a.md"))).toBe(false);
+    writeFileSync(config, `${kept}\n[[upstream]]\nname = "gentry"\nremote = ${JSON.stringify(gentry.path)}\nbranch = "main"\nmount = "gentry"\nvendor = "vendor/gentry"\n`);
+    const before = tree(t.repo.path);
     const again = t.pb(["sync", "gentry"], { cwd: t.repo.path, code: 1 });
     expect(again.stderr).toContain(refused);
     expect(readdirSync(join(t.repo.path, ".patchbook")).filter((n) => n.startsWith("sync-"))).toEqual([]);
