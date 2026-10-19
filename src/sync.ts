@@ -1,5 +1,5 @@
 // Has an upstream moved, and moving the pins: carrying every change forward with git merge-file.
-import { chmodSync, lstatSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, lstatSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
@@ -109,12 +109,18 @@ export async function cmdSync(args: { name: string | null; ref: string | null })
   return 0;
 }
 
-/** The report is this checkout's state, so git is told to leave it alone. Every sync checks the rule, which gives a repo made before it the same one. The rule file ignores itself, so a sync leaves nothing to commit. */
+/** The report is this checkout's state, so git is told to leave it alone. Every sync checks the rule, which gives a repo made before it the same one. The rule file ignores itself, so a sync leaves nothing to commit while it is untracked. The file is the user's: lines are only appended, byte for byte, and a failure is a warning that never changes how the sync ends. */
 function ignoreReport(book: Book): void {
   const p = join(book.dir, ".gitignore");
-  const rules = exists(p) ? readTextReplace(p) : "";
-  const missing = [REPORT, ".gitignore"].filter((rule) => !rules.split("\n").includes(rule));
-  if (missing.length) writeText(p, rules + (rules && !rules.endsWith("\n") ? "\n" : "") + missing.join("\n") + "\n");
+  try {
+    const kept = exists(p) ? readFileSync(p) : new Uint8Array();
+    const lines = decodeReplace(kept).split("\n").map((line) => line.replace(/\r$/, ""));
+    const missing = [REPORT, ".gitignore"].filter((rule) => !lines.includes(rule));
+    if (missing.length) appendFileSync(p, (kept.length && kept[kept.length - 1] !== 0x0a ? "\n" : "") + missing.join("\n") + "\n");
+  } catch (e) {
+    if (!(e instanceof Error && "errno" in e)) throw e;
+    process.stderr.write(`patchbook: couldn't add ${REPORT} to ${relative(book.root, p)} (${e.message}), so ${REPORT} stays untracked\n`);
+  }
 }
 
 /** The reports in `last-sync.json`, with or without `version`. Kept as read; nothing here reads their fields. */
