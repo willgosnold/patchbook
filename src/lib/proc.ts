@@ -23,11 +23,18 @@ export function spawn(args: readonly string[], { cwd, input, env, capture = true
   return { code: result.exitCode, stdout: result.stdout ?? empty, stderr: result.stderr ?? empty };
 }
 
+const WEB_SCHEMES = /^(https?|ftps?)$/i;
+
+export function redact(text: string): string {
+  return text.replace(/\b([a-z][a-z0-9+.-]*):\/\/([^\s/]*)@/gi, (_, scheme: string, userinfo: string) =>
+    WEB_SCHEMES.test(scheme) ? `${scheme}://` : `${scheme}://${userinfo.split(":")[0]}@`);
+}
+
 /** Run a command and return its stdout, failing if it exits non-zero. */
 export function run(args: readonly string[], options: SpawnOptions & { check?: boolean } = {}): Uint8Array {
   const result = spawn(args, options);
   if ((options.check ?? true) && result.code !== 0) {
-    throw new Fail(`${args.join(" ")} failed:\n${strip(decodeReplace(result.stderr))}`);
+    throw new Fail(redact(`${args.join(" ")} failed:\n${strip(decodeReplace(result.stderr))}`));
   }
   return result.stdout;
 }
