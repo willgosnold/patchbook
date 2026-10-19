@@ -2,7 +2,7 @@
 import { unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { Problem } from "./api.ts";
-import { assemble, type Assembly, blockFiles, describe, handEdits, readBuildLock, type Source, stampOf, writeBuildLines } from "./assemble.ts";
+import { assemble, type Assembly, blockFiles, describe, handEdits, readBuildLock, refuseFolderToFile, type Source, stampOf, writeBuildLines } from "./assemble.ts";
 import { blockHash, blockSpans, type Entry, entriesPath, formatEntry, patchBlocks, PLACEHOLDER_HINT, readEntries, Rules } from "./blocks.ts";
 import { Book, PB, under } from "./book.ts";
 import { appendSeries, CHANGE_NAME, Change, notAChangeName, readSeries, Roster, saveChange } from "./changes.ts";
@@ -366,6 +366,7 @@ export function record(
   const edited = (opts.edits ?? handEdits(book, a.out, current)).filter(opts.only ?? (() => true));
   if (!edited.length) return { text: "no hand edits to the output since the last build; nothing to record\n", copies: new Map() };
   refuseLinkTurnedFile(a, current, edited);
+  refuseFolderToFile(book, a.out, current, edited);
   const s = snapshot(book, a, current, changes);
   const backslashed = edited.flatMap((p) => [s.prefix + p, a.sources.get(p)?.path ?? p]).find((p) => p.includes("\\"));
   if (backslashed) throw new Fail(`refusing to record: ${backslashed} has a backslash in its name, and an edit path can't have one. Rename it first.`);

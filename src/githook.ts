@@ -2,7 +2,9 @@
 import { chmodSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join } from "node:path";
 import type { Problem } from "./api.ts";
-import { assemble, type Assembly, buildLockPath, type BuildLock, builtAs, type Changes, changesOf, describe, handEdits, parseBuildLock, readBuildLock, writeOutput } from "./assemble.ts";
+import {
+  assemble, type Assembly, buildLockPath, type BuildLock, builtAs, type Changes, changesOf, describe, handEdits, inRepo, parseBuildLock, readBuildLock, refuseFolderToFile, writeOutput,
+} from "./assemble.ts";
 import { Book, buildInputs, PB, placeholderOutputs, under } from "./book.ts";
 import { type Change, readChanges } from "./changes.ts";
 import { record } from "./record.ts";
@@ -528,8 +530,6 @@ function ignoredInPatchbook(root: string): Map<string, string> {
   return new Map(listed.filter(Boolean).map((p) => [p, blobOid(readDisk(join(root, p)).data)]));
 }
 
-const inRepo = (book: Book, p: string) => relative(book.root, join(book.outputRoot(), p));
-
 function refuseBehindLinks(book: Book, paths: string[]): void {
   const behind = new Map<string, string[]>();
   for (const p of paths) {
@@ -540,18 +540,6 @@ function refuseBehindLinks(book: Book, paths: string[]): void {
   if (!behind.size) return;
   throw new Fail(Array.from(behind, ([link, files]) => `${inRepo(book, link)} is a link. Git can't stage these paths behind it:\n  ${files.join("\n  ")}`).join("\n")
     + "\nPatchbook can't record a folder turned into a link. Put the folder back, or skip the hook once with PATCHBOOK_HOOK=0.");
-}
-
-function refuseFolderToFile(book: Book, staged: ReadonlyMap<string, File>, removed: string[]): void {
-  const turned = new Map<string, string[]>();
-  for (const p of removed) {
-    const parts = p.split("/");
-    const file = parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join("/")).find((folder) => staged.has(folder));
-    if (file !== undefined) turned.set(file, [...(turned.get(file) ?? []), inRepo(book, p)]);
-  }
-  if (!turned.size) return;
-  throw new Fail(Array.from(turned, ([file, gone]) => `${inRepo(book, file)} is a file now, and these paths under it are gone:\n  ${gone.join("\n  ")}`).join("\n")
-    + "\nPatchbook can't record a folder turned into a file. Put the folder back, or skip the hook once with PATCHBOOK_HOOK=0.");
 }
 
 function committable(book: Book, staged: ReadonlyMap<string, File>, paths: string[]): string[] {
@@ -753,8 +741,9 @@ async function runHook(undo: Undo) {
   const stagedEdits = (out: ReadonlyMap<string, File>) => {
     const removed = removedFromIndex(out);
     refuseBehindLinks(book, removed);
-    refuseFolderToFile(book, staged, removed);
-    return sorted(new Set([...committable(book, staged, handEdits(book, out, staged, [lock, committed])), ...removed]));
+    const hand = handEdits(book, out, staged, [lock, committed]);
+    refuseFolderToFile(book, out, staged, hand, ", or skip the hook once with PATCHBOOK_HOOK=0");
+    return sorted(new Set([...committable(book, staged, hand), ...removed]));
   };
   const plan = (out: ReadonlyMap<string, File>) => {
     const { stale, changed } = changesOf(staged, out, book.tracksExecBit());
