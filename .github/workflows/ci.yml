@@ -33,7 +33,8 @@ jobs:
           bun-version: 1.4.3
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - run: bun test
+      # Each file gets a fresh module registry: units.test.ts needs settings.ts loaded under its own sandbox.
+      - run: bun test --isolate
       - run: bun run build
       - name: End-to-end tests against the compiled binary
         run: bun test test/e2e.test.ts

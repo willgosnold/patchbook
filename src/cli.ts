@@ -9,7 +9,7 @@ import { cmdBlocks } from "./blocks.ts";
 import { Book, noticeLeftOut, PB, refuseNestedGit } from "./book.ts";
 import { cmdShow } from "./changes.ts";
 import { cmdHook, commitAdvice, installHook, installHookOrWarn, keepGitHook } from "./githook.ts";
-import { Fail } from "./lib/fail.ts";
+import { Fail, Partway } from "./lib/fail.ts";
 import { exists, lexists, readText, resolve, writeText } from "./lib/fs.ts";
 import { git, redact } from "./lib/proc.ts";
 import { rstrip, split, strRepr } from "./lib/py.ts";
@@ -571,7 +571,9 @@ async function main(argv: readonly string[]): Promise<number> {
 
 try {
   process.exitCode = await main(process.argv.slice(2));
-} catch (e) {
+} catch (thrown) {
+  if (thrown instanceof Partway) process.stdout.write(thrown.stdout);
+  const e = thrown instanceof Partway ? thrown.cause : thrown;
   if (e instanceof Exit) {
     (e.code === 0 ? process.stdout : process.stderr).write(e.text);
     process.exitCode = e.code;

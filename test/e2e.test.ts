@@ -5389,6 +5389,85 @@ describe("ForkTest", () => {
     expect(read(join(t.fork.path, ".patchbook/changes/unnamed/CHANGE.md"))).not.toContain("second line too");
   });
 
+  forkTest("test_record_with_no_name_does_not_default_to_a_change_named_unnamed", (t) => {
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
+    t.fork.write("extra.txt", "ours\n");
+    t.pb(["record", "unnamed", "--intent", "Shout and add extra.txt."], { cwd: t.fork.path });
+    t.fork.write("app.txt", replace(t.fork.read("app.txt"), "three", "THREE"));
+    t.fork.rm("extra.txt");
+    expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe("file     app.txt (in unnamed)\nunadd    extra.txt (from unnamed)\n");
+    const change = read(join(t.fork.path, ".patchbook/changes/unnamed/CHANGE.md"));
+    expect(change).toContain("- file app.txt");
+    expect(change).not.toContain("- add extra.txt");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_skips_a_file_that_a_hook_leaves_out_and_was_put_back", (t) => {
+    writeFileSync(join(t.fork.path, ".patchbook/hooks.ts"), dedent(`
+      export const finish = (out: Map<string, { data: Uint8Array; mode: number }>) => {
+        out.delete("docs/guide.md");
+      };
+    `));
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(existsSync(join(t.fork.path, "docs/guide.md"))).toBe(false);
+    t.fork.write("docs/guide.md", "a guide\n");
+    expect(t.pb(["record", "--intent", "Keep the guide."], { cwd: t.fork.path }).stdout)
+      .toBe("skipped  docs/guide.md: a hook leaves it out of the build; change the hook to keep it\n");
+    expect(existsSync(join(t.fork.path, ".patchbook/changes/keep-the-guide"))).toBe(false);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_skips_two_outputs_that_share_one_upstream_file_when_both_are_edited", (t) => {
+    mkdirSync(join(t.fork.path, ".patchbook/changes/twin"), { recursive: true });
+    writeFileSync(join(t.fork.path, ".patchbook/changes/twin/CHANGE.md"), "# twin\n\nintent: Two guides.\n\nedits:\n- copy docs/guide.md -> docs/guide2.md\n");
+    const series = join(t.fork.path, ".patchbook/series");
+    writeFileSync(series, (existsSync(series) ? read(series) : "") + "twin\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.write("docs/guide.md", "a guide!\n");
+    t.fork.write("docs/guide2.md", "a second guide\n");
+    const skip = (path: string, other: string) =>
+      `skipped  ${path}: upstream's docs/guide.md also builds ${other}, which this record changes too; edit only one of them, or to give them different text, remove the copy edit and record the destination again\n`;
+    expect(t.pb(["record", "--intent", "Shout."], { cwd: t.fork.path }).stdout)
+      .toBe(skip("docs/guide.md", "docs/guide2.md") + skip("docs/guide2.md", "docs/guide.md"));
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("test_record_that_cannot_write_a_later_edit_still_says_what_it_wrote_before", (t) => {
+    t.fork.write("aa.txt", "A\n");
+    t.pb(["record", "aa", "--intent", "Aa."], { cwd: t.fork.path });
+    t.fork.write("bb.txt", "B\n");
+    t.pb(["record", "bb", "--intent", "Bb."], { cwd: t.fork.path });
+    t.fork.write("aa.txt", "A2\n");
+    t.fork.write("bb.txt", "B2\n");
+    const bb = join(t.fork.path, ".patchbook/changes/bb/ours/bb.txt.pb");
+    chmodSync(bb, 0o444);
+    try {
+      const r = t.pb(["record"], { cwd: t.fork.path, code: 1 });
+      expect(r.stdout).toBe("update   aa.txt (in aa)\n");
+      expect(r.stderr).toContain("permission denied");
+    } finally {
+      chmodSync(bb, 0o644);
+    }
+    expect(read(join(t.fork.path, ".patchbook/changes/aa/ours/aa.txt.pb"))).toBe("A2\n");
+  });
+
+  forkTest("test_record_that_cannot_write_a_later_edit_does_not_say_it_added_a_file_no_change_records", (t) => {
+    t.fork.write("bb.txt", "B\n");
+    t.pb(["record", "bb", "--intent", "Bb."], { cwd: t.fork.path });
+    t.fork.write("aa.txt", "new\n");
+    t.fork.write("bb.txt", "B2\n");
+    const bb = join(t.fork.path, ".patchbook/changes/bb/ours/bb.txt.pb");
+    chmodSync(bb, 0o444);
+    try {
+      const r = t.pb(["record", "zz", "--intent", "Zz."], { cwd: t.fork.path, code: 1 });
+      expect(r.stdout).toBe("");
+      expect(r.stderr).toContain("permission denied");
+    } finally {
+      chmodSync(bb, 0o644);
+    }
+    expect(existsSync(join(t.fork.path, ".patchbook/changes/zz/CHANGE.md"))).toBe(false);
+  });
+
   forkTest("test_commit_records_and_builds", (t) => {
     expect(read(join(t.fork.path, ".git/hooks/pre-commit"))).toContain("Installed by patchbook");
     t.fork.write("app.txt", replace(t.fork.read("app.txt"), "two", "TWO"));
@@ -8463,20 +8542,20 @@ describe("VendorTest", () => {
     expect(read(join(t.repo.path, ".patchbook/changes/unnamed/CHANGE.md"))).not.toContain("Wave twice.");
   });
 
-  vendorTest("test_record_with_no_name_or_intent_adds_to_the_change_named_unnamed", (t) => {
+  vendorTest("test_record_deleting_a_file_with_block_entries_with_no_name_or_intent_asks_the_model", (t) => {
     t.missingScaffoldPatchBuild();
     t.repo.write("skills/hello/notes.txt", "added by hand\n");
     t.pb(["record", "unnamed", "--intent", "Add notes."], { cwd: t.repo.path });
     unlinkSync(join(t.repo.path, "skills/hello/SKILL.md"));
-    t.pb(["record"], { cwd: t.repo.path });
+    expect(t.pb(["record"], { cwd: t.repo.path }).stdout).toBe("shout: Shout the second line.\ndelete   hello/SKILL.md\n");
+    expect(read(join(t.tmp, "prompt.txt"))).toContain("hello/SKILL.md");
+    expect(read(join(t.repo.path, ".patchbook/changes/shout/CHANGE.md"))).toContain("- delete skills/hello/SKILL.md");
     const kept = read(join(t.repo.path, ".patchbook/changes/unnamed/CHANGE.md"));
     expect(kept).toContain("intent: Add notes.");
-    expect(kept).toContain("- add skills/hello/notes.txt");
-    expect(kept).toContain("- delete skills/hello/SKILL.md");
-    expect(readdirSync(join(t.repo.path, ".patchbook/changes"))).toEqual(["unnamed"]);
+    expect(kept).not.toContain("delete");
   });
 
-  vendorTest("test_record_deleting_a_file_with_block_entries_keeps_the_change_named_unnamed", (t) => {
+  vendorTest("test_record_deleting_a_file_with_block_entries_names_the_change_from_the_intent", (t) => {
     t.missingScaffoldPatchBuild();
     t.repo.write("skills/hello/notes.txt", "added by hand\n");
     t.pb(["record", "unnamed", "--intent", "Add notes."], { cwd: t.repo.path });
@@ -8485,7 +8564,97 @@ describe("VendorTest", () => {
     const kept = read(join(t.repo.path, ".patchbook/changes/unnamed/CHANGE.md"));
     expect(kept).toContain("intent: Add notes.");
     expect(kept).toContain("- add skills/hello/notes.txt");
-    expect(read(join(t.repo.path, ".patchbook/changes/unnamed-2/CHANGE.md"))).toContain("- delete skills/hello/SKILL.md");
+    const dropped = read(join(t.repo.path, ".patchbook/changes/drop-the-skill/CHANGE.md"));
+    expect(dropped).toContain("intent: Drop the skill.");
+    expect(dropped).toContain("- delete skills/hello/SKILL.md");
+  });
+
+  vendorTest("test_record_notes_come_in_path_order", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.repo.write("skills/hello/AGENTS.md", "added by hand\n");
+    const out = t.recordEdit("Then wave.", "Then wave twice.", "--intent", "Wave twice.");
+    expect(out).toMatch(/^wave-twice: Wave twice\.\nadd {6}hello\/AGENTS\.md\nentry {4}hello\/SKILL\.md \[[0-9a-f]{12}\] added\n$/);
+  });
+
+  vendorTest("test_record_of_a_file_a_hook_made_fails_before_writing_block_entries", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    writeFileSync(join(t.repo.path, ".patchbook/hooks.ts"), dedent(`
+      export const finish = (out: Map<string, { data: Uint8Array; mode: number }>) => {
+        out.set("z/gen.md", { data: new TextEncoder().encode("gen\\n"), mode: 0o644 });
+      };
+    `));
+    t.pb(["build"], { cwd: t.repo.path });
+    const before = read(entries);
+    t.repo.write("skills/z/gen.md", "gen edited\n");
+    t.repo.write("skills/hello/SKILL.md", replace(t.repo.read("skills/hello/SKILL.md"), "Then wave.", "Then wave twice."));
+    expect(t.pb(["record", "--intent", "Wave twice."], { cwd: t.repo.path, code: 1 }).stderr).toContain("z/gen.md is built from nothing");
+    expect(read(entries)).toBe(before);
+  });
+
+  vendorTest("test_record_skips_a_file_with_block_entries_that_a_hook_leaves_out_and_was_put_back", (t) => {
+    t.missingScaffoldPatchBuild();
+    const skill = t.repo.read("skills/hello/SKILL.md");
+    writeFileSync(join(t.repo.path, ".patchbook/hooks.ts"), dedent(`
+      export const finish = (out: Map<string, { data: Uint8Array; mode: number }>) => {
+        out.delete("hello/SKILL.md");
+      };
+    `));
+    t.pb(["build"], { cwd: t.repo.path });
+    expect(existsSync(join(t.repo.path, "skills/hello/SKILL.md"))).toBe(false);
+    t.repo.write("skills/hello/SKILL.md", skill);
+    expect(t.pb(["record", "--intent", "Keep the skill."], { cwd: t.repo.path }).stdout)
+      .toBe("skipped  hello/SKILL.md: a hook leaves it out of the build; change the hook to keep it\n");
+    expect(existsSync(join(t.repo.path, ".patchbook/changes/keep-the-skill"))).toBe(false);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  const holderAndTwin = (t: VendorCase, copy: string): string => {
+    const changes = join(t.repo.path, ".patchbook/changes");
+    mkdirSync(join(changes, "holder/ours/skills/hello"), { recursive: true });
+    writeFileSync(join(changes, "holder/ours/skills/hello/tpl.md.pb"), copy);
+    writeFileSync(join(changes, "holder/CHANGE.md"), "# holder\n\nintent: Greet.\n\nedits:\n- add skills/hello/tpl.md\n");
+    mkdirSync(join(changes, "twin"));
+    writeFileSync(join(changes, "twin/CHANGE.md"), "# twin\n\nintent: Greet twice.\n\nedits:\n- copy skills/hello/tpl.md -> skills/hello/tpl2.md\n");
+    const series = join(t.repo.path, ".patchbook/series");
+    writeFileSync(series, (existsSync(series) ? read(series) : "") + "holder\ntwin\n");
+    t.pb(["build"], { cwd: t.repo.path });
+    return join(changes, "holder/ours/skills/hello/tpl.md.pb");
+  };
+  const shared = (path: string, other: string) =>
+    `skipped  ${path}: its copy in holder also builds ${other}, which this record changes too; edit holder directly, or to give them different text, remove the copy edit and record the destination again\n`;
+
+  vendorTest("test_record_skips_two_outputs_that_share_one_copy_when_both_are_edited", (t) => {
+    t.missingScaffoldPatchBuild();
+    const copy = holderAndTwin(t, "Then hi.\n");
+    t.repo.write("skills/hello/tpl.md", "Then hey.\n");
+    t.repo.write("skills/hello/tpl2.md", "Then yo.\n");
+    expect(t.pb(["record"], { cwd: t.repo.path }).stdout).toBe(shared("hello/tpl.md", "hello/tpl2.md") + shared("hello/tpl2.md", "hello/tpl.md"));
+    expect(read(copy)).toBe("Then hi.\n");
+  });
+
+  vendorTest("test_record_skips_a_delete_and_an_edit_of_two_outputs_that_share_one_copy", (t) => {
+    t.missingScaffoldPatchBuild();
+    const copy = holderAndTwin(t, "Then {{snippet:greet}}\n");
+    unlinkSync(join(t.repo.path, "skills/hello/tpl.md"));
+    t.repo.write("skills/hello/tpl2.md", "Then hi.\n");
+    expect(t.pb(["record"], { cwd: t.repo.path }).stdout).toBe(shared("hello/tpl.md", "hello/tpl2.md") + shared("hello/tpl2.md", "hello/tpl.md"));
+    expect(read(copy)).toBe("Then {{snippet:greet}}\n");
+    expect(read(join(t.repo.path, ".patchbook/changes/holder/CHANGE.md"))).toContain("- add skills/hello/tpl.md");
+  });
+
+  vendorTest("test_record_that_cannot_update_the_build_lock_still_says_what_it_saved", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.repo.write("skills/hello/notes.txt", "added by hand\n");
+    const lock = join(t.repo.path, ".patchbook/build.lock");
+    chmodSync(lock, 0o444);
+    try {
+      const r = t.pb(["record", "--intent", "Add notes."], { cwd: t.repo.path, code: 1 });
+      expect(r.stdout).toBe("add-notes: Add notes.\nadd      hello/notes.txt\n");
+      expect(r.stderr).toContain("permission denied");
+    } finally {
+      chmodSync(lock, 0o644);
+    }
+    expect(read(join(t.repo.path, ".patchbook/changes/add-notes/CHANGE.md"))).toContain("- add skills/hello/notes.txt");
   });
 
   vendorTest("test_record_ignores_output_the_patchbook_changed", (t) => {

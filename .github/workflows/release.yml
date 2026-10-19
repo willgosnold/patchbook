@@ -32,7 +32,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - run: bun test
+      - run: bun test --isolate
       - name: Cross-compile every target
         run: bun scripts/build-release.ts --version "$VERSION"
         env:
