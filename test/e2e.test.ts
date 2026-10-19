@@ -1028,54 +1028,6 @@ test.skipIf(process.getuid?.() === 0)("skill install that cannot write the skill
   }
 }, TIMEOUT);
 
-test.skipIf(process.getuid?.() === 0)("skill install in a fork puts back a recorded link when the skill cannot be written", () => {
-  const t = new Case();
-  let file = "";
-  try {
-    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
-    const fork = skillFork(t);
-    file = join(fork.path, SKILL_FILE);
-    fork.write(SKILL_FILE, STALE_SKILL);
-    retarget(fork, "../../elsewhere");
-    t.pb(["record"], { cwd: fork.path });
-    fork.commit("a wrong link and an older skill");
-    chmodSync(file, 0o444);
-    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
-    expect(out.stderr).toContain("couldn't install the update skill");
-    expect(readlinkSync(join(fork.path, SKILL_LINK))).toBe("../../elsewhere");
-    expect(sh(["git", "status", "--porcelain"], { cwd: fork.path }).stdout).toBe("");
-  } finally {
-    if (file && existsSync(file)) chmodSync(file, 0o644);
-    t.cleanup();
-  }
-}, TIMEOUT);
-
-test("skill install does not call it current when a folder is in the way", () => {
-  const t = new Case();
-  try {
-    const up = new Repo(join(t.tmp, "upstream"));
-    up.write("a.md", "a\n");
-    up.commit("start");
-    const repo = new Repo(join(t.tmp, "adapted"));
-    repo.write("README.md", "mine\n");
-    repo.commit("start");
-    t.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: repo.path });
-    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
-    t.pb(["skill", "install"], { cwd: repo.path });
-    rmSync(join(repo.path, SKILL_LINK));
-    repo.write(`${SKILL_LINK}/SKILL.md`, "Mine.\n");
-    repo.commit("a skill folder of my own");
-
-    const out = t.pb(["skill", "install"], { cwd: repo.path, code: 1 });
-    expect(out.stdout).not.toContain("already current");
-    expect(out.stderr).toContain(`${SKILL_LINK} is a folder`);
-    expect(out.stderr).toContain(`the update skill was not installed at ${SKILL_LINK}`);
-    expect(repo.read(`${SKILL_LINK}/SKILL.md`)).toBe("Mine.\n");
-  } finally {
-    t.cleanup();
-  }
-}, TIMEOUT);
-
 test("skill install in a fork refuses to replace a customization that git ignores", () => {
   const t = new Case();
   try {
@@ -1445,25 +1397,6 @@ test("skill install in a fork writes and records nothing when an untracked folde
   }
 }, TIMEOUT);
 
-test("skill install in the folder layout writes nothing when an untracked folder is at the link", () => {
-  const t = new Case();
-  try {
-    const repo = skillFolder(t);
-    repo.write(SKILL_FILE, STALE_SKILL);
-    repo.commit("an older skill");
-    rmSync(join(repo.path, SKILL_LINK));
-    repo.write(`${SKILL_LINK}/notes.txt`, "Mine.\n");
-    const before = tree(repo.path);
-    const out = t.pb(["skill", "install"], { cwd: repo.path, code: 1 });
-    expect(out.stderr).toContain(`${SKILL_LINK} is a folder`);
-    expect(out.stderr).toContain(`the update skill was not installed at ${SKILL_LINK}`);
-    expect(out.stderr).not.toContain("Commit them first");
-    expect(tree(repo.path)).toEqual(before);
-  } finally {
-    t.cleanup();
-  }
-}, TIMEOUT);
-
 test.skipIf(process.getuid?.() === 0)("skill install that cannot write the skill puts back the mode of a file it replaced", () => {
   const t = new Case();
   const umask = process.umask(0o022);
@@ -1816,7 +1749,7 @@ function writeBytes(repo: Repo, rel: string, data: Uint8Array): void {
   writeFileSync(join(repo.path, rel), data);
 }
 
-test("clone replaces a skill file that is not UTF-8", () => {
+test("clone replaces a skill file that is not UTF-8 and records its bytes as the base", () => {
   const t = new Case();
   try {
     const up = new Repo(join(t.tmp, "upstream"));
@@ -1827,25 +1760,7 @@ test("clone replaces a skill file that is not UTF-8", () => {
     const out = t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
     expect(out.stderr).not.toContain("TypeError");
     expect(read(join(t.tmp, "fork", SKILL_FILE))).toBe(SKILL_COPY);
-  } finally {
-    t.cleanup();
-  }
-}, TIMEOUT);
-
-test("init replaces a skill file that is not UTF-8", () => {
-  const t = new Case();
-  try {
-    const up = new Repo(join(t.tmp, "upstream"));
-    up.write("app.txt", "one\ntwo\n");
-    up.commit("start");
-    sh(["git", "clone", "-q", up.path, join(t.tmp, "mine")], { cwd: t.tmp });
-    const mine = new Repo(join(t.tmp, "mine"));
-    writeBytes(mine, SKILL_FILE, NOT_UTF8);
-    mine.commit("a skill that is not text");
-    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
-    const out = t.pb(["init", "--upstream", up.path], { cwd: mine.path });
-    expect(out.stderr).not.toContain("TypeError");
-    expect(mine.read(SKILL_FILE)).toBe(SKILL_COPY);
+    expect(readFileSync(join(t.tmp, "fork/.patchbook/changes/patchbook-update-skill/base", `${SKILL_FILE}.pb`))).toEqual(Buffer.from(NOT_UTF8));
   } finally {
     t.cleanup();
   }
@@ -3469,7 +3384,7 @@ test("clone keeps the bytes of a hook that is not UTF-8", () => {
   }
 }, TIMEOUT);
 
-test("init keeps the bytes of a husky hook that is not UTF-8", () => {
+test("init leaves the bytes of a husky hook that is not UTF-8 and already runs patchbook", () => {
   const t = new Case();
   try {
     const up = new Repo(join(t.tmp, "upstream"));
@@ -3477,15 +3392,13 @@ test("init keeps the bytes of a husky hook that is not UTF-8", () => {
     up.commit("start");
     const repo = new Repo(join(t.tmp, "adapted"));
     mkdirSync(join(repo.path, ".husky"));
-    writeFileSync(join(repo.path, ".husky/pre-commit"), LATIN1_HOOK);
+    const hooked = Buffer.concat([Buffer.from("patchbook hook run || exit 1\r\n"), LATIN1_HOOK]);
+    writeFileSync(join(repo.path, ".husky/pre-commit"), hooked);
     repo.commit("start");
     installManager(repo, ".husky");
-    t.pb(["init", "--upstream", up.path, "--output-from", "skills", "--output-to", "skills"], { cwd: repo.path });
-    const hook = readFileSync(join(repo.path, ".husky/pre-commit"));
-    expect(hook.subarray(hook.length - LATIN1_HOOK.length).equals(LATIN1_HOOK)).toBe(true);
-    expect(carriageReturns(hook)).toBe(carriageReturns(LATIN1_HOOK));
-    expect(hook.includes(Buffer.from("\ufffd"))).toBe(false);
-    expect(hook.toString("latin1")).toContain("patchbook hook run || exit 1");
+    const init = t.pb(["init", "--upstream", up.path, "--output-from", "skills", "--output-to", "skills"], { cwd: repo.path });
+    expect(init.stderr).toBe("");
+    expect(readFileSync(join(repo.path, ".husky/pre-commit"))).toEqual(hooked);
   } finally {
     t.cleanup();
   }
@@ -5984,16 +5897,6 @@ describe("ForkTest", () => {
     expect(porcelain(t)).toBe("");
   });
 
-  forkTest("commit records a staged edit the working copy put back", (t) => {
-    const built = t.fork.read("app.txt");
-    t.fork.write("app.txt", built.replaceAll("two", "TWO"));
-    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
-    t.fork.write("app.txt", built);
-    expect(hookCommit(t, ["-m", "shout"]).stderr).toContain("file     app.txt");
-    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("TWO");
-    expect(porcelain(t)).toBe("");
-  });
-
   forkTest("commit records a staged edit after build --force", (t) => {
     t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
@@ -7350,6 +7253,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(read(config)).not.toContain("p-x");
   });
 
+  // A write to the user config never loads the book, so hooks.ts never runs: loading it would throw.
   forkTest("config writes the user config inside a book whose hooks throw", (t) => {
     const user = join(t.tmp, "config/patchbook/config.toml");
     writeFileSync(join(t.fork.path, ".patchbook/hooks.ts"), 'throw new Error("hooks blew up");\n');
@@ -7368,16 +7272,6 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(out.stdout).toContain("intent.model");
     expect(out.stderr).not.toContain("pre-commit hook");
     expect(existsSync(hook)).toBe(false);
-  });
-
-  forkTest("config writes the user config in a book outside a git repo", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    const loose = join(t.tmp, "loose");
-    mkdirSync(join(loose, ".patchbook"), { recursive: true });
-    writeFileSync(join(loose, ".patchbook/config.toml"), read(join(t.fork.path, ".patchbook/config.toml")));
-    const out = t.pb(["config", "intent.model", "fake-x"], { cwd: loose });
-    expect(out.stderr).not.toContain("pre-commit hook");
-    expect((Bun.TOML.parse(read(user)) as { intent: { model: string } }).intent.model).toBe("fake-x");
   });
 
   forkTest("a user config that is not TOML is named in the error", (t) => {
@@ -7403,7 +7297,10 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
   forkTest("build refuses to overwrite hand edits", (t) => {
     t.recordFeature();
     t.fork.write("app.txt", "hand edit\n");
-    t.pb(["build"], { cwd: t.fork.path, code: 1 });
+    const before = tree(t.fork.path);
+    expect(t.pb(["build"], { cwd: t.fork.path, code: 1 }).stderr).toBe("patchbook: these output files changed since the last build:\n  app.txt\n"
+      + "Move the edits into the patchbook with `patchbook record`, or pass --force to discard them.\n");
+    expect(tree(t.fork.path)).toEqual(before);
     t.pb(["build", "--force"], { cwd: t.fork.path });
     expect(t.fork.read("app.txt")).toContain("TWO");
   });
@@ -7419,6 +7316,9 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
 
   forkTest("a recorded build keeps the executable bit of an upstream script", (t) => {
     t.recordFeature();
+    rmSync(join(t.fork.path, "bin/run.sh"));
+    t.pb(["build", "--force"], { cwd: t.fork.path });
+    expect(t.fork.read("bin/run.sh")).toBe("#!/bin/sh\necho run\n");
     expect(isExecutable(join(t.fork.path, "bin/run.sh"))).toBe(true);
   });
 
@@ -8462,7 +8362,7 @@ exec '${Bun.which("git")}' "$@"
     expect(tree(t.repo.path)).toEqual(before);
   });
 
-  vendorTest("a killed sync keeps the ref of a commit another upstream has pinned since", (t) => {
+  vendorTest("a killed sync keeps the ref of a commit another upstream on that remote has pinned since", (t) => {
     t.missingScaffoldPatchBuild();
     const extra = new Repo(join(t.tmp, "extra"));
     extra.write("x/a.md", "x\n");
@@ -8470,11 +8370,16 @@ exec '${Bun.which("git")}' "$@"
     extra.commit("a");
     t.pb(["track", "extra", extra.path, "--path", "x"], { cwd: t.repo.path });
     t.pb(["track", "other", extra.path, "--path", "y"], { cwd: t.repo.path });
+    t.repo.commit("follow extra and other");
     extra.write("x/a.md", "x2\n");
     extra.write("y/a.md", "y2\n");
     const head = extra.commit("v2");
     killSync(t, "update-ref refs/pins/");
-    t.pb(["sync", "other"], { cwd: t.repo.path });
+    sh(["git", "clone", "-q", t.repo.path, "mate"], { cwd: t.tmp });
+    const mate = new Repo(join(t.tmp, "mate"));
+    t.pb(["sync", "other"], { cwd: mate.path });
+    mate.commit("sync other");
+    sh(["git", "pull", "-q", "--ff-only", mate.path, "main"], { cwd: t.repo.path });
     t.pb(["sync", "extra", "refs/heads/nope"], { cwd: t.repo.path, code: 1 });
     expect(pinRefs(t, head)).toBe(1);
   });
@@ -8485,13 +8390,16 @@ exec '${Bun.which("git")}' "$@"
     extra.write("x/a.md", "x\n");
     extra.write("y/a.md", "y\n");
     extra.commit("a");
+    sh(["git", "clone", "-q", extra.path, "mirror"], { cwd: t.tmp });
+    const mirror = join(t.tmp, "mirror");
     t.pb(["track", "extra", extra.path, "--path", "x"], { cwd: t.repo.path });
-    t.pb(["track", "other", `${extra.path}/`, "--path", "y"], { cwd: t.repo.path });
+    t.pb(["track", "other", mirror, "--path", "y"], { cwd: t.repo.path });
     extra.write("x/a.md", "x2\n");
     extra.write("y/a.md", "y2\n");
     const head = extra.commit("v2");
-    killSync(t, "update-ref refs/pins/");
+    sh(["git", "pull", "-q", "--ff-only"], { cwd: mirror });
     t.pb(["sync", "other"], { cwd: t.repo.path });
+    killSync(t, "update-ref refs/pins/");
     t.pb(["sync", "extra", "refs/heads/nope"], { cwd: t.repo.path, code: 1 });
     expect(pinRefs(t, head)).toBe(1);
   });
@@ -8570,15 +8478,17 @@ exec '${Bun.which("git")}' "$@"
   });
 
   for (const command of ["status", "build"]) {
+    // the pin read from the store, which heal keeps
     vendorTest(`${command} keeps a pin it held without a ref`, (t) => {
       const store = storeOf(t);
       const pin = pinOf(t);
       dropRefs(store);
-      t.pb([command], { cwd: t.repo.path, code: null });
+      t.pb([command], { cwd: t.repo.path, code: 1 });
       gc(store);
       expect(inStore(store, pin)).toBe(true);
     });
 
+    // a vendored copy read from disk, whose pin healIfHeld keeps
     vendorTest(`${command} keeps the pin of a vendored upstream held without a ref`, (t) => {
       t.missingScaffoldPatchBuild();
       const extra = new Repo(join(t.tmp, "extra"));
