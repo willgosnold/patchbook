@@ -14,7 +14,7 @@ process.env["XDG_CONFIG_HOME"] = join(sandbox, "config");
 const { applyStructure } = await import("../src/assemble.ts");
 const { blockSpans, formatEntry, nearest, readEntries } = await import("../src/blocks.ts");
 const { Book, globRe } = await import("../src/book.ts");
-const { Change } = await import("../src/changes.ts");
+const { Change, parseChange } = await import("../src/changes.ts");
 const { intentSettings, pendingDiff, PROVIDERS, writeIntent } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
 const { setToml, USER_CONFIG } = await import("../src/settings.ts");
@@ -642,5 +642,47 @@ describe.skipIf(!inSandbox)("writeIntent", () => {
   test("shows the first 500 characters of an unusable reply without splitting one", async () => {
     const book = await answering(`printf '!${"😀".repeat(600)}'`);
     expect(() => writeIntent(book, new Map(), "", "x", true)).toThrow(`:\n!${"😀".repeat(499)}\nPass a name and --intent instead.`);
+  });
+});
+
+describe("parseChange", () => {
+  const parse = (edits: string[]) => {
+    const dir = scratch();
+    const path = put(join(dir, "edits", "CHANGE.md"), `# edits\n\nintent: Try paths.\n\nedits:\n${edits.join("\n")}\n`);
+    const refused: [string, string][] = [];
+    const change = parseChange(path, (edit, detail) => refused.push([edit, detail]));
+    return { edits: change.edits, held: change.held, refused };
+  };
+
+  test("never trims a path: spaces and a BOM at either end of a path are part of it", () => {
+    const edits = [
+      "- file  lead", "- file trail ", "- add \uFEFFbom-lead", "- delete bom-trail\uFEFF",
+      "- replace a/ b /c", "- move  from\uFEFF ->  to ", "- copy from\uFEFF -> \uFEFFto\uFEFF",
+    ];
+    expect(parse(edits).edits).toEqual([
+      { kind: "file", path: " lead" },
+      { kind: "file", path: "trail " },
+      { kind: "add", path: "\uFEFFbom-lead" },
+      { kind: "delete", path: "bom-trail\uFEFF" },
+      { kind: "replace", path: "a/ b /c" },
+      { kind: "move", path: " from\uFEFF", dest: " to " },
+      { kind: "copy", path: "from\uFEFF", dest: "\uFEFFto\uFEFF" },
+    ]);
+  });
+
+  test("holds an unsafe path as written, edges included", () => {
+    const got = parse(["- file ../up "]);
+    expect(got.edits).toEqual([]);
+    expect(got.held).toEqual(["- file ../up "]);
+    expect(got.refused.map(([edit]) => edit)).toEqual(["file ../up "]);
+  });
+
+  test("an edit line starts in the first column, so an indented one is refused", () => {
+    expect(() => parse(["  - file a"])).toThrow("expected `- <file|add|replace|delete|move|copy> <path>`");
+    expect(() => parse(["\uFEFF- file a"])).toThrow("expected `- <file|add|replace|delete|move|copy> <path>`");
+  });
+
+  test("a line of only whitespace or a BOM between edits is blank", () => {
+    expect(parse(["- file a", " \t\uFEFF", "- file b"]).edits.map((e) => e.path)).toEqual(["a", "b"]);
   });
 });

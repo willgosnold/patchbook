@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TomlDocument } from "@decimalturn/toml-patch";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "../src/lib/difflib.ts";
 import { nonFolders, rmFolders } from "../src/lib/fs.ts";
 import { dumps, loads } from "../src/lib/json.ts";
-import { shellQuote } from "../src/lib/proc.ts";
+import { git, shellQuote } from "../src/lib/proc.ts";
 import { str, strRepr } from "../src/lib/repr.ts";
 import { byCodePoint, lines } from "../src/lib/text.ts";
 
@@ -94,6 +94,59 @@ describe("listing a folder", () => {
       rmSync(join(dir, "a.c/d/f"));
       rmFolders(dir);
       expect(existsSync(dir)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("git", () => {
+  const repoWith = (names: string[]): string => {
+    const dir = mkdtempSync(join(tmpdir(), "git"));
+    Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+    for (const name of names) writeFileSync(join(dir, name), "x\n");
+    return dir;
+  };
+  const listed = (dir: string) => git(["ls-files", "-z", "-o"], { cwd: dir }).split("\0").slice(0, -1);
+  const PATHS = ["\uFEFFbom-lead", " lead", "bom-trail\uFEFF", "trail ", "a\nb", "tab\t"];
+
+  test.each(PATHS)("leaves a path of -z output as it is: %j", (name) => {
+    const dir = repoWith([name]);
+    try {
+      expect(listed(dir)).toEqual([name]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("leaves every name of -z output as it is, the first and the last included", () => {
+    const dir = repoWith(PATHS);
+    try {
+      expect(listed(dir)).toEqual([...PATHS].sort(byCodePoint));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("takes the one line terminator git adds off a single value and nothing else", () => {
+    const root = mkdtempSync(join(tmpdir(), "git"));
+    const dirs = ["lead", " lead", "trail ", "bom\uFEFF", "\uFEFFbom"].map((name) => join(root, name));
+    try {
+      for (const dir of dirs) {
+        mkdirSync(dir);
+        Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+        expect(git(["rev-parse", "--show-toplevel"], { cwd: dir })).toBe(realpathSync(dir));
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("gives an empty string for no output, and keeps a blank line a command prints", () => {
+    const dir = repoWith([]);
+    try {
+      expect(git(["ls-files", "-o"], { cwd: dir })).toBe("");
+      expect(git(["var", "GIT_EDITOR"], { cwd: dir, env: { ...process.env, GIT_EDITOR: "" } })).toBe("");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

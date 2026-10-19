@@ -6695,6 +6695,14 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(t.pb(["status"], { cwd: t.fork.path }).stderr).not.toContain(".githooks/pre-commit");
   });
 
+  forkTest("test_config_rows_stay_aligned_when_a_value_holds_a_character_above_u_ffff", (t) => {
+    t.config(["intent.effort", "😀"]);
+    const rows = t.config([]).split("\n").filter((l) => /^[a-z]+\.[a-z_]+ /.test(l));
+    expect(rows.length).toBeGreaterThan(5);
+    expect(rows.find((l) => l.startsWith("intent.effort"))).toContain('"😀"');
+    for (const row of rows) expect(row).toMatch(/^.{50}(env|project|user|default)\b/u);
+  });
+
   forkTest("test_settings_layer", (t) => {
     const project = join(t.fork.path, ".patchbook/config.toml");
     writeFileSync(project, "# my settings\n" + read(project));
@@ -7509,6 +7517,22 @@ describe("VendorTest", () => {
     t.missingScaffoldPatchBuild();
     t.recordEdit("Then wave.", "Then\fwave\u2028twice.");
     expect(read(join(t.tmp, "prompt.txt"))).toContain("@@ -1 +1 @@\n-Then wave.\n+Then\fwave\u2028twice.\n");
+  });
+
+  forkTest("test_record_lists_and_records_a_file_under_its_real_name_when_the_name_starts_or_ends_with_a_space_or_a_bom", (t) => {
+    const names = [" lead.txt", "trail.txt ", "\uFEFFbom-lead.txt", "bom-trail.txt\uFEFF"];
+    for (const name of names) t.fork.write(name, `${JSON.stringify(name)}\n`);
+    const out = t.pb(["record", "names", "--intent", "Add files whose names start and end with whitespace."], { cwd: t.fork.path }).stdout;
+    const change = read(join(t.fork.path, ".patchbook/changes/names/CHANGE.md"));
+    for (const name of names) {
+      expect(out).toContain(`${"add".padEnd(9)}${name}\n`);
+      expect(change).toContain(`\n- add ${name}\n`);
+    }
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(read(join(t.fork.path, ".patchbook/build.lock")).split("\n").filter(Boolean).map((l) => l.slice(41))).toEqual(expect.arrayContaining(names));
+    for (const name of names) rmSync(join(t.fork.path, name));
+    t.pb(["build"], { cwd: t.fork.path });
+    for (const name of names) expect(read(join(t.fork.path, name))).toBe(`${JSON.stringify(name)}\n`);
   });
 
   vendorTest("test_record_skips_a_paragraph_edit_whose_entry_uses_a_placeholder_that_is_empty", (t) => {
