@@ -8,13 +8,13 @@ import { Fail } from "./lib/fail.ts";
 import { pjoin, readText } from "./lib/fs.ts";
 import { sha256 } from "./lib/hash.ts";
 import { loads } from "./lib/json.ts";
-import { length, round2, S, str, strip, strRepr, W } from "./lib/py.ts";
+import { length, round2, str, strRepr } from "./lib/py.ts";
 import { byCodePoint, decode } from "./lib/text.ts";
 
 export const ENTRY_FIELDS = ["kind", "rules", "intent"] as const;
 export const ENTRY_KINDS = ["translation", "policy", "keep"];
-export const PLACEHOLDER_HINT = new RegExp(`\\{\\{[${W}]+:[^}]+\\}\\}`, "gu");
-const FENCE = new RegExp(`^[${S}]*(\`{3,}|~{3,})`, "u");
+export const PLACEHOLDER_HINT = /\{\{[\p{L}\p{N}_]+:[^}]+\}\}/gu;
+const FENCE = /^\s*(`{3,}|~{3,})/;
 const ENTRY_HEAD = /^=== entry ([0-9a-f]{12})$/;
 
 export type Entry = { hash: string; kind: string; rules: string; intent: string; upstream: string; patched: string };
@@ -42,7 +42,7 @@ export function blockSpans(lines: readonly string[]): [number, number][] {
   let fence: string | null = null;
   for (let i = first; i < lines.length; i++) {
     const line = lines[i]!;
-    const stripped = strip(line);
+    const stripped = line.trim();
     const m = FENCE.exec(line);
     if (fence === null && m) fence = m[1]!;
     else if (fence && stripped && [...stripped].every((c) => c === fence![0]) && length(stripped) >= length(fence)) fence = null;
@@ -78,21 +78,21 @@ export function readEntries(path: string): Map<string, Entry> {
       section = "fields";
       lastField = null;
     } else if (entry === null) {
-      if (strip(line)) throw new Fail(`${path}:${n}: text before the first entry`);
+      if (line.trim()) throw new Fail(`${path}:${n}: text before the first entry`);
     } else if (line === "--- upstream" || line === "--- patched") section = line === "--- upstream" ? "upstream" : "patched";
     else if (section === "fields") {
       const sep = line.indexOf(": ");
       const name = sep === -1 ? line : line.slice(0, sep);
       const field = ENTRY_FIELDS.find((f) => f === name);
       if (field && sep !== -1) {
-        entry[field] = strip(line.slice(sep + 2));
+        entry[field] = line.slice(sep + 2).trim();
         lastField = field;
-      } else if (strip(line) && lastField === "intent") entry.intent += " " + strip(line);
-      else if (strip(line)) throw new Fail(`${path}:${n}: expected one of ${ENTRY_FIELDS.join(", ")}`);
+      } else if (line.trim() && lastField === "intent") entry.intent += " " + line.trim();
+      else if (line.trim()) throw new Fail(`${path}:${n}: expected one of ${ENTRY_FIELDS.join(", ")}`);
     } else entry[section].push(line);
   }
   return new Map(
-    Array.from(drafts, ([h, d]) => [h, { ...d, upstream: strip(d.upstream.join("\n"), "\n"), patched: strip(d.patched.join("\n"), "\n") }]),
+    Array.from(drafts, ([h, d]) => [h, { ...d, upstream: d.upstream.join("\n").replace(/^\n+|\n+$/g, ""), patched: d.patched.join("\n").replace(/^\n+|\n+$/g, "") }]),
   );
 }
 
@@ -157,11 +157,11 @@ export class Rules {
         let name: string | null = null;
         for (const line of text.split("\n")) {
           if (line.startsWith("## ")) {
-            name = strip(line.slice(3));
+            name = line.slice(3).trim();
             lines.set(name, []);
           } else if (name) lines.get(name)!.push(line);
         }
-        for (const [k, v] of lines) values.set(k, strip(v.join("\n")));
+        for (const [k, v] of lines) values.set(k, v.join("\n").trim());
       } else {
         const raw = loads(text);
         if (!(raw instanceof Map)) throw new Fail(`${spec.file} must hold a JSON object`);

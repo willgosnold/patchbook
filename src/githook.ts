@@ -9,7 +9,6 @@ import { Fail } from "./lib/fail.ts";
 import { exists, type File, isDir, isSymlink, lexists, mkdirs, readBytes, readDisk, readTextReplace, relative, resolve, sameFile, writeBytes, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
 import { git, run, shellQuote, spawn } from "./lib/proc.ts";
-import { strip } from "./lib/py.ts";
 import { byCodePoint, bytesEqual, concat, decode, decodeReplace, encode } from "./lib/text.ts";
 import { type Source, setting } from "./settings.ts";
 import { refuseMergedUpstream } from "./store.ts";
@@ -472,7 +471,7 @@ function committable(book: Book, staged: ReadonlyMap<string, File>, paths: strin
   refuseBehindLinks(book, missing);
   const absent = missing.map((p) => inRepo(book, p));
   const found = spawn(["git", "check-ignore", "-z", "--stdin"], { cwd: book.root, input: encode(absent.join("\0")) });
-  if (found.code !== 0 && found.code !== 1) throw new Fail(`git check-ignore failed:\n${strip(decodeReplace(found.stderr))}`);
+  if (found.code !== 0 && found.code !== 1) throw new Fail(`git check-ignore failed:\n${decodeReplace(found.stderr).trim()}`);
   const ignored = new Set(decode(found.stdout).split("\0"));
   return paths.filter((p) => !ignored.has(inRepo(book, p)));
 }

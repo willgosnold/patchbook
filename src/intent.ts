@@ -10,7 +10,7 @@ import { Fail } from "./lib/fail.ts";
 import type { File } from "./lib/fs.ts";
 import { JsonError, loads } from "./lib/json.ts";
 import { spawn, which } from "./lib/proc.ts";
-import { length, type PyValue, slice, split, str, strip, strRepr } from "./lib/py.ts";
+import { length, type PyValue, slice, str, strRepr } from "./lib/py.ts";
 import { decode, decodeReplace, encode, isText, lines } from "./lib/text.ts";
 import { configured, readToml, type Source, setting, SETTINGS, type Table, USER_CONFIG } from "./settings.ts";
 
@@ -108,14 +108,14 @@ function askModel(provider: string, spec: Provider, model: string, effort: strin
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
-  if (result.code !== 0) throw new Fail(`${provider} failed: ${slice(strip(decodeReplace(result.stderr)), -500)}. Pass --intent instead.`);
+  if (result.code !== 0) throw new Fail(`${provider} failed: ${slice(decodeReplace(result.stderr).trim(), -500)}. Pass --intent instead.`);
   return decodeReplace(result.stdout);
 }
 
 const NAME_LENGTH = 40;
 
 /** An intent on one line, with each run of whitespace a single space. */
-export const oneLine = (text: string): string => split(text).join(" ");
+export const oneLine = (text: string): string => text.trim().replace(/\s+/g, " ");
 
 /** A kebab-case change name from at most the first four words of an intent, kept within `NAME_LENGTH`, unique among the existing changes. */
 export function nameFromIntent(intent: string, changes: ReadonlyMap<string, Change>): string {
@@ -160,7 +160,7 @@ export function writeIntent(
   let chosen = typeof given === "string" ? given : "";
   let intent: string | null = oneLine(str(fields.has("intent") ? fields.get("intent")! : ""));
   if (!CHANGE_NAME.test(chosen) || !intent) {
-    throw new Fail(`${provider} didn't return a usable name and intent:\n${slice(strip(reply), 0, 500)}\nPass a name and --intent instead.`);
+    throw new Fail(`${provider} didn't return a usable name and intent:\n${slice(reply.trim(), 0, 500)}\nPass a name and --intent instead.`);
   }
   if (name && chosen !== name) chosen = name;
   const known = changes.get(chosen);

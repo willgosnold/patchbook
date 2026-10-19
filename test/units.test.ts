@@ -59,6 +59,11 @@ describe("blockSpans", () => {
     expect(spans("a\n \t \nb")).toEqual([[0, 1], [2, 3]]);
   });
 
+  test("whitespace is what JavaScript's \\s matches, so a no-break space or a BOM is blank and \\x1c or U+0085 is not", () => {
+    expect(spans("a\n\u00a0\ufeff\u3000\nb")).toEqual([[0, 1], [2, 3]]);
+    expect(spans("a\n\x1c\x85\nb")).toEqual([[0, 3]]);
+  });
+
   test("frontmatter is its own block, closed by the next ---", () => {
     expect(spans("---\nname: x\n---\ntext\n\nmore")).toEqual([[0, 3], [3, 4], [5, 6]]);
   });

@@ -6,7 +6,6 @@ import { Book } from "./book.ts";
 import { unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, foldersWith, isSymlink, LINK, lexists, mkdirs, type Mode, readDisk, readText, writeDisk, writeText } from "./lib/fs.ts";
-import { strip, W } from "./lib/py.ts";
 import { decodeReplace, lines } from "./lib/text.ts";
 
 export const EDIT_KINDS = ["file", "add", "replace", "delete", "move", "copy"] as const;
@@ -63,10 +62,11 @@ export class Change {
   }
 }
 
-const EDIT_LINE = new RegExp(`^- ([${W}]+) (.+?)(?: -> (.+))?$`, "su");
+const EDIT_LINE = /^- ([\p{L}\p{N}_]+) (.+?)(?: -> (.+))?$/su;
+const OUTER_SLASHES = /^\/+|\/+$/g;
 
 function unsafePath(raw: string): string | null {
-  if (!raw.startsWith("/") && !strip(raw, "/").split("/").some((part) => part === "" || part === "." || part === "..")) return null;
+  if (!raw.startsWith("/") && !raw.replace(OUTER_SLASHES, "").split("/").some((part) => part === "" || part === "." || part === "..")) return null;
   return `${JSON.stringify(raw)} must be a path inside the tree: not absolute, with no empty, . or .. segment`;
 }
 
@@ -83,11 +83,11 @@ export function parseChange(path: string, reject: (edit: string, detail: string)
     if (line.startsWith("# ") && section === null) continue;
     if (line.startsWith("intent:")) {
       section = "intent";
-      change.intent = strip(line.slice("intent:".length));
-    } else if (strip(line) === "edits:") section = "edits";
-    else if (section === "intent" && strip(line)) change.intent += " " + strip(line);
-    else if (section === "edits" && strip(line)) {
-      const m = EDIT_LINE.exec(strip(line));
+      change.intent = line.slice("intent:".length).trim();
+    } else if (line.trim() === "edits:") section = "edits";
+    else if (section === "intent" && line.trim()) change.intent += " " + line.trim();
+    else if (section === "edits" && line.trim()) {
+      const m = EDIT_LINE.exec(line.trim());
       const kind = m?.[1];
       if (!m || kind === undefined || !isEditKind(kind)) throw new Fail(`${path}:${n}: expected \`- <${EDIT_KINDS.join("|")}> <path>\``);
       const [, , src = "", dest] = m;
@@ -95,10 +95,10 @@ export function parseChange(path: string, reject: (edit: string, detail: string)
       const unsafe = unsafePath(src) ?? (dest === undefined ? null : unsafePath(dest));
       if (unsafe) {
         change.held.push(line);
-        reject(strip(line).slice(2), unsafe);
+        reject(line.trim().slice(2), unsafe);
       } else {
         change.edits.push(
-          kind === "move" || kind === "copy" ? { kind, path: strip(src, "/"), dest: strip(dest ?? "", "/") } : { kind, path: strip(src, "/") },
+          kind === "move" || kind === "copy" ? { kind, path: src.replace(OUTER_SLASHES, ""), dest: (dest ?? "").replace(OUTER_SLASHES, "") } : { kind, path: src.replace(OUTER_SLASHES, "") },
         );
       }
     }
@@ -118,7 +118,7 @@ export function saveChange(change: Change): void {
 
 export function readSeries(book: Book): string[] {
   const path = join(book.dir, "series");
-  const names = exists(path) ? readText(path).split("\n").map((l) => strip(l)) : [];
+  const names = exists(path) ? readText(path).split("\n").map((l) => l.trim()) : [];
   return names.filter((n) => n && !n.startsWith("#"));
 }
 

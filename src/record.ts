@@ -12,7 +12,7 @@ import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, LINK, type Mode, rglob, sameFile, writeText } from "./lib/fs.ts";
 import { blobOid } from "./lib/hash.ts";
-import { replace, strip } from "./lib/py.ts";
+import { replace } from "./lib/py.ts";
 import { bytesEqual, decode, decodeReplace, encode, isText, lines } from "./lib/text.ts";
 
 /** An entry a recording makes. A null intent means it still needs one. */
@@ -230,8 +230,8 @@ function planParagraphs(
     const js = Math.min(mapLine(every, bs, fresh.length), ...mine.map((b) => b.j1));
     const je = Math.max(mapLine(every, be, fresh.length), ...mine.map((b) => b.j2));
     const chunk = fresh.slice(js, je);
-    while (chunk.length && !strip(chunk[0]!)) chunk.shift();
-    while (chunk.length && !strip(chunk.at(-1)!)) chunk.pop();
+    while (chunk.length && !chunk[0]!.trim()) chunk.shift();
+    while (chunk.length && !chunk.at(-1)!.trim()) chunk.pop();
     for (const [i, k] of group.entries()) {
       let piece = i === 0 ? chunk.join("\n") : "";
       const [start, end] = spans[k]!;

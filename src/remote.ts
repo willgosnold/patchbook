@@ -3,7 +3,6 @@ import { isAbsolute } from "node:path";
 import { Fail } from "./lib/fail.ts";
 import { resolve } from "./lib/fs.ts";
 import { redact, run, shellQuote, spawn } from "./lib/proc.ts";
-import { split } from "./lib/py.ts";
 import { decode, decodeReplace } from "./lib/text.ts";
 
 const NETWORK = /^([a-z][a-z0-9+.-]*:\/\/|[^/]*:)/i;
@@ -50,7 +49,7 @@ export function notThisRepo(root: string, url: string): void {
 function tipOf(root: string, label: string, repo: string, branch: string, shown = repo): string {
   const r = spawn(["git", "ls-remote", "--", repo, `refs/heads/${branch}`], { cwd: root });
   if (r.code !== 0) throw new Fail(redact(`couldn't read ${label} ${shown}:\n${decodeReplace(r.stderr).trim()}`));
-  return split(decode(r.stdout))[0] ?? "";
+  return decode(r.stdout).split("\t", 1)[0]!;
 }
 
 export function checkUpstreamRemote(root: string, upstream: string, branch: string): void {

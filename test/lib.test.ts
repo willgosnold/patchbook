@@ -10,14 +10,13 @@ import { nonFolders, rmFolders } from "../src/lib/fs.ts";
 import { dumps, loads } from "../src/lib/json.ts";
 import { shellQuote } from "../src/lib/proc.ts";
 import {
-  floatRepr, lstrip, replace, round2, rstrip, split, str, strip, strRepr,
+  floatRepr, replace, round2, str, strRepr,
 } from "../src/lib/py.ts";
 import { byCodePoint, lines } from "../src/lib/text.ts";
 
 type Fixture = {
   matcher: { a: string | string[]; b: string | string[]; autojunk: boolean; ratio: number; opcodes: Opcode[] }[];
   unified: { a: string; b: string; fromfile: string; tofile: string; diff: string }[];
-  strip: { s: string; strip: string; lstrip: string; rstrip: string; split: string[] }[];
   round: { x: number; round: string }[];
   floats: { x: number; repr: string }[];
   json: { text: string; dumps: string; indent: string; str: string }[];
@@ -147,13 +146,6 @@ const pythonLines = (s: string): string[] =>
 
 test.each(cases.unified)("unified_diff %#", (c) => {
   expect(unifiedDiff(pythonLines(c.a), pythonLines(c.b), c.fromfile, c.tofile)).toBe(c.diff);
-});
-
-test.each(cases.strip)("strip and split %#", (c) => {
-  expect(strip(c.s)).toBe(c.strip);
-  expect(lstrip(c.s)).toBe(c.lstrip);
-  expect(rstrip(c.s)).toBe(c.rstrip);
-  expect(split(c.s)).toEqual(c.split);
 });
 
 test("round(x, 2), ties to even", () => {

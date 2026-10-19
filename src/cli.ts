@@ -12,7 +12,7 @@ import { cmdHook, commitAdvice, installHook, installHookOrWarn, keepGitHook } fr
 import { Fail } from "./lib/fail.ts";
 import { exists, lexists, readText, resolve, writeText } from "./lib/fs.ts";
 import { git, redact } from "./lib/proc.ts";
-import { rstrip, split, strRepr } from "./lib/py.ts";
+import { strRepr } from "./lib/py.ts";
 import { quoteToml } from "./lib/toml.ts";
 import { cmdRecord } from "./record.ts";
 import { checkUpstreamRemote, notThisRepo } from "./remote.ts";
@@ -52,7 +52,7 @@ const noHook = () => ({ ...process.env, PATCHBOOK_HOOK: "0" });
 
 async function cmdClone(args: { url: string; dir: string | null; branch: string | null }) {
   const shown = redact(args.url);
-  const dest = resolve(args.dir || basename(rstrip(shown, "/")).replace(/\.git$/, ""));
+  const dest = resolve(args.dir || basename(shown.replace(/\/+$/, "")).replace(/\.git$/, ""));
   if (exists(dest)) throw new Fail(`${dest} already exists`);
   const clone = ["clone", "--quiet", "--origin", "upstream", ...(args.branch ? ["--branch", args.branch] : [])];
   git([...clone, "--end-of-options", args.url, dest], { cwd: dirname(dest) });
@@ -104,7 +104,7 @@ async function cmdInit(args: {
   const text = configText("fork", upstreamToml(name, follows, args.path, args.branch, ""));
   const book = await Book.fromText(root, text);
   notThisRepo(root, args.upstream);
-  const hasRemote = split(git(["remote"], { cwd: root })).includes("upstream");
+  const hasRemote = git(["remote"], { cwd: root }).split("\n").includes("upstream");
   if (hasRemote) checkUpstreamRemote(root, args.upstream, args.branch);
   git(["fetch", "--quiet", "--end-of-options", args.upstream, args.branch], { cwd: root });
   const base = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: root });
@@ -127,7 +127,7 @@ async function cmdTrack(args: { name: string; url: string; branch: string; path:
   if (book.upstreams.some((u) => u.name === args.name)) throw new Fail(`already following an upstream called ${args.name}`);
   const config = join(book.dir, "config.toml");
   const mount = args.mount ?? args.name;
-  const text = rstrip(readText(config), "\n") + "\n\n" + upstreamToml(args.name, args.url, args.path, args.branch, mount, args.vendor);
+  const text = readText(config).replace(/\n+$/, "") + "\n\n" + upstreamToml(args.name, args.url, args.path, args.branch, mount, args.vendor);
   const candidate = await Book.fromText(book.root, text);
   candidate.dropPin(args.name);
   syncUpstream(candidate, candidate.upstream(args.name), args.branch, []);
@@ -381,7 +381,7 @@ const HYPHEN = /(?<=(?:[^\W\d]{2}|[^\W\d]-[^\W\d])-)(?=[^\W\d]-?[^\W\d])/u;
 
 /** textwrap.wrap: fill lines greedily with words and hyphenated pieces, splitting a word longer than a line. */
 function wrap(text: string, w: number): string[] {
-  const chunks = split(text).flatMap((word, i) => [...(i ? [" "] : []), ...word.split(HYPHEN)]).reverse();
+  const chunks = text.split(/\s+/).filter(Boolean).flatMap((word, i) => [...(i ? [" "] : []), ...word.split(HYPHEN)]).reverse();
   const lines: string[] = [];
   while (chunks.length) {
     const line: string[] = [];

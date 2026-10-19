@@ -7,7 +7,7 @@ import { Book, NoBook } from "./book.ts";
 import { intentSettings, PROVIDERS } from "./intent.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, mkdirs, pjoin, readBytes, readText, writeText } from "./lib/fs.ts";
-import { ljust, S, strRepr } from "./lib/py.ts";
+import { ljust, strRepr } from "./lib/py.ts";
 import { decode } from "./lib/text.ts";
 import { quoteToml } from "./lib/toml.ts";
 
@@ -61,7 +61,7 @@ const flag: Kind<boolean> = {
 };
 
 const list: Kind<string[]> = {
-  parse: (_, raw) => raw.split(new RegExp(`[,${S}]+`, "u")).filter((v) => v),
+  parse: (_, raw) => raw.split(/[,\s]+/).filter((v) => v),
   accept: (v) => (Array.isArray(v) && v.every((x) => typeof x === "string") ? v : undefined),
   show: (v) => "[" + v.map(quoteToml).join(", ") + "]",
 };

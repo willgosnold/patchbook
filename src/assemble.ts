@@ -16,7 +16,7 @@ import {
 import { blobOid } from "./lib/hash.ts";
 import { dumps, type Json, loads } from "./lib/json.ts";
 import { type Env, git, run, spawn } from "./lib/proc.ts";
-import { floatRepr, ljust, rstrip, strip } from "./lib/py.ts";
+import { floatRepr, ljust } from "./lib/py.ts";
 import { byCodePoint, bytesEqual, decode, encode, isText } from "./lib/text.ts";
 import { pinned, refuseMergedUpstream } from "./store.ts";
 
@@ -256,7 +256,7 @@ export function readBuildLock(book: Book): Map<string, string> | null {
 export function parseBuildLock(text: string): Map<string, string> {
   const entries = new Map<string, string>();
   for (const line of text.split("\n")) {
-    if (!strip(line)) continue;
+    if (!line.trim()) continue;
     const sep = line.indexOf(" ");
     if (sep === -1) entries.set("", line);
     else entries.set(line.slice(sep + 1), line.slice(0, sep));
@@ -467,7 +467,7 @@ export async function cmdScaffold(args: { file: string[] }) {
   for (const [rel, found] of byFile) {
     const path = entriesPath(book, rel);
     mkdirs(dirname(path));
-    const existing = exists(path) ? rstrip(readText(path), "\n") + "\n\n" : "";
+    const existing = exists(path) ? readText(path).replace(/\n+$/, "") + "\n\n" : "";
     const skeletons = found.map((p) => formatEntry({ hash: p.hash, kind: "translation", rules: "", intent: "", upstream: p.upstream, patched: p.upstream }));
     writeText(path, existing + skeletons.join("\n"));
   }

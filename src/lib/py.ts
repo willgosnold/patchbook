@@ -1,47 +1,6 @@
 // Python's str and number semantics where JavaScript's differ. Python strings index code points,
 // JavaScript strings UTF-16 code units, so anything that counts, slices or orders characters is here.
 
-/** Python's `\s` and `str.isspace()`, as a regex class body. */
-export const S = "\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
-/** Python's `\w` for str patterns: letters, numbers and the underscore. */
-export const W = "\\p{L}\\p{N}_";
-
-const SPACE = new Set(
-  [0x9, 0xa, 0xb, 0xc, 0xd, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x85, 0xa0, 0x1680, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000]
-    .concat(Array.from({ length: 11 }, (_, i) => 0x2000 + i)),
-);
-
-export function isSpace(ch: string): boolean {
-  return ch.length === 1 && SPACE.has(ch.charCodeAt(0));
-}
-
-function trim(s: string, chars: string | undefined, left: boolean, right: boolean): string {
-  if (chars === undefined) {
-    // Every Python whitespace character is in the BMP, so code units are safe here.
-    let start = 0;
-    let end = s.length;
-    while (left && start < end && SPACE.has(s.charCodeAt(start))) start++;
-    while (right && end > start && SPACE.has(s.charCodeAt(end - 1))) end--;
-    return s.slice(start, end);
-  }
-  const strip = new Set(chars);
-  const cps = Array.from(s);
-  let start = 0;
-  let end = cps.length;
-  while (left && start < end && strip.has(cps[start]!)) start++;
-  while (right && end > start && strip.has(cps[end - 1]!)) end--;
-  return cps.slice(start, end).join("");
-}
-
-export const strip = (s: string, chars?: string) => trim(s, chars, true, true);
-export const lstrip = (s: string, chars?: string) => trim(s, chars, true, false);
-export const rstrip = (s: string, chars?: string) => trim(s, chars, false, true);
-
-/** `str.split()` with no separator: runs of whitespace, no empty strings. */
-export function split(s: string): string[] {
-  return s.split(new RegExp(`[${S}]+`, "u")).filter((w) => w !== "");
-}
-
 /** `str.replace(old, new)`, including Python's insertion around every character when `old` is empty. */
 export function replace(s: string, old: string, by: string): string {
   if (old === "") return by + Array.from(s).map((ch) => ch + by).join("");
