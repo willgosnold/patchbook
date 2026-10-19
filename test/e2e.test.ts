@@ -6537,16 +6537,14 @@ describe("ForkTest", () => {
     expect(headMode(t, "mine.sh")).toBe("100644");
   });
 
-  forkTest("test_commit_writes_the_build_over_a_mode_the_index_already_has", (t) => {
+  forkTest("test_commit_records_a_mode_the_index_already_has", (t) => {
     t.fork.write("mine.sh", "echo mine\n", 0o755);
     sh(["git", "add", "mine.sh"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "add mine.sh"]);
     chmodSync(join(t.fork.path, "mine.sh"), 0o644);
     sh(["git", "add", "mine.sh"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "mine.sh is not a program"]);
-    chmodSync(join(t.fork.path, ".patchbook/changes/shout/ours/mine.sh.pb"), 0o644);
-    sh(["git", "add", ".patchbook"], { cwd: t.fork.path });
-    hookCommit(t, ["-m", "record that mine.sh is not a program"]);
+    expect(isExecutable(join(t.fork.path, ".patchbook/changes/shout/ours/mine.sh.pb"))).toBe(false);
     expect(isExecutable(join(t.fork.path, "mine.sh"))).toBe(false);
     expect(porcelain(t)).toBe("");
   });
