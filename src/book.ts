@@ -96,12 +96,7 @@ function suggest(name: string): string {
 /** Load hooks.ts, checking each export is a hook, and what each hook returns. */
 async function loadHooks(dir: string): Promise<Hooks> {
   const path = join(dir, "hooks.ts");
-  if (!exists(path)) {
-    if (exists(join(dir, "hooks.py"))) {
-      throw new Fail(`${PB}/hooks.py is Python, and patchbook now runs ${PB}/hooks.ts instead. Port it: the hooks keep their names, except block_terms, which becomes blockTerms.`);
-    }
-    return {};
-  }
+  if (!exists(path)) return {};
   const module: unknown = await import(pathToFileURL(path).href);
   const hooks: Hooks = {};
   if (typeof module !== "object" || module === null) return hooks;
@@ -120,6 +115,7 @@ async function loadHooks(dir: string): Promise<Hooks> {
       case "blockTerms":
         hooks.blockTerms = (file, block, outputs) => {
           const found = call(file, block, outputs);
+          if (typeof found === "string") throw hookFail(path, "blockTerms must return an array or iterable of strings, not a string");
           const terms = isIterable(found) ? Array.from(found) : null;
           if (terms === null || !terms.every((t) => typeof t === "string")) throw hookFail(path, "blockTerms must return strings");
           return terms;
@@ -154,12 +150,11 @@ async function loadHooks(dir: string): Promise<Hooks> {
   return hooks;
 }
 
-/** Strings count: Python iterated one into its characters. */
 function isIterable(value: unknown): value is Iterable<unknown> {
-  return typeof value === "string" || (typeof value === "object" && value !== null && Symbol.iterator in value);
+  return typeof value === "object" && value !== null && Symbol.iterator in value;
 }
 
-/** Only the `problem` kind is checked. The rest of the fields are the hook's to get right, as in Python. */
+/** Only the `problem` kind is checked. The rest of the fields are the hook's to get right. */
 function isProblem(value: unknown): value is Problem {
   return isTable(value) && typeof value["problem"] === "string";
 }

@@ -66,7 +66,7 @@ export type Assembly = {
 };
 
 const CONFLICT = /^(?:<{7}|>{7})(?: |$)/;
-/** A line that starts with a conflict marker. Python's `^` in MULTILINE breaks on `\n` only. */
+/** A line that starts with a conflict marker. Only `\n` ends a line. */
 export const hasConflictMarker = (text: string) => text.split("\n").some((line) => CONFLICT.test(line));
 const mayHoldMarker = (data: Uint8Array) => {
   const bytes = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
