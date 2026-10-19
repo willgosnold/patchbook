@@ -2,10 +2,10 @@
 // Also the rules a block is checked against: [[check]] patterns, placeholders and the hooks.
 import type { InBlock, InOutput, Nearest, Problem } from "./api.ts";
 import { Book, type Check, escape } from "./book.ts";
-import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { pjoin, readText } from "./lib/fs.ts";
 import { sha256 } from "./lib/hash.ts";
+import { similarity } from "./lib/match.ts";
 import { strRepr } from "./lib/repr.ts";
 import { list, readJson, type Shape, ShapeError, shown, string, table } from "./lib/shape.ts";
 import { verbatim } from "./lib/term.ts";
@@ -108,17 +108,6 @@ export function checkEntry(e: Entry): string | null {
   if (e.kind === "translation" && !e.rules) return "a translation must name its rules";
   if (e.kind === "keep" && e.patched !== e.upstream) return "a keep entry must leave the block unchanged";
   return null;
-}
-
-/**
- * Twice the matching code points over the code points of both texts, to hundredths with a half rounded up.
- * It rounds the counts, not the ratio: as a double, 0.575 * 100 is 57.49999999999999, so Math.round(r * 100) / 100 gives 0.57.
- */
-export function similarity(a: string, b: string): number {
-  const total = Array.from(a).length + Array.from(b).length;
-  if (total === 0) return 1;
-  const matches = new SequenceMatcher<string>(a, b).getMatchingBlocks().reduce((sum, m) => sum + m[2], 0);
-  return Math.floor((400 * matches + total) / (2 * total)) / 100;
 }
 
 export function nearest(text: string, candidates: readonly Unmatched[], limit = 2): Nearest[] {

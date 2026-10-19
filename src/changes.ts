@@ -3,11 +3,11 @@ import { appendFileSync, chmodSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Problem } from "./api.ts";
 import { Book } from "./book.ts";
-import { unifiedDiff } from "./lib/difflib.ts";
+import { unifiedDiff } from "./lib/diff.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, foldersWith, isDir, isSymlink, LINK, lexists, mkdirs, type Mode, readDisk, readText, relative, writeDisk, writeText } from "./lib/fs.ts";
 import { escaped, say, verbatim } from "./lib/term.ts";
-import { decode, decodeReplace, encode, lines } from "./lib/text.ts";
+import { decode, encode } from "./lib/text.ts";
 
 export const EDIT_KINDS = ["file", "add", "replace", "delete", "move", "copy"] as const;
 type EditKind = (typeof EDIT_KINDS)[number];
@@ -281,8 +281,8 @@ export async function cmdShow(args: { change: string }) {
   say(rejected.join(""));
   for (const e of c.edits) {
     if (e.kind === "file") {
-      const base = lines(decodeReplace(c.read("base", e.path) ?? new Uint8Array()));
-      const ours = lines(decodeReplace(c.read("ours", e.path) ?? new Uint8Array()));
+      const base = c.read("base", e.path) ?? new Uint8Array();
+      const ours = c.read("ours", e.path) ?? new Uint8Array();
       verbatim(unifiedDiff(base, ours, escaped(`upstream/${e.path}`), escaped(`ours/${e.path}`)));
     } else if (e.kind === "add" || e.kind === "replace") {
       say(`${editText(e)} (${(c.read("ours", e.path) ?? new Uint8Array()).length} bytes)\n`);
