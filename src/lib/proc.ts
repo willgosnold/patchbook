@@ -1,7 +1,7 @@
 // subprocess.run on Bun.spawnSync. Node's spawnSync fails with ENOBUFS above 1 MB of output by
 // default, and `git cat-file --batch` on a real upstream is already past that.
 import { Fail } from "./fail.ts";
-import { decode, decodeReplace } from "./text.ts";
+import { decode, decodeReplace, withoutFinalNewline } from "./text.ts";
 
 export type Env = Record<string, string | undefined>;
 export type SpawnOptions = { cwd?: string; input?: Uint8Array; env?: Env; capture?: boolean };
@@ -38,10 +38,11 @@ export function run(args: readonly string[], options: SpawnOptions & { check?: b
   return result.stdout;
 }
 
-/** Run git with every pathspec taken literally, so a config path like `o*` names that folder and no other. */
+/** Run git with every pathspec taken literally, so a config path like `o*` names that folder and no other.
+ * Returns its stdout without the final `\n` git ends a value with. A path can start or end with whitespace, so nothing else is cut, and `-z` output, which ends in a NUL, is whole. */
 export function git(args: readonly string[], options: SpawnOptions & { check?: boolean } = {}): string {
   const env = { ...(options.env ?? process.env), GIT_LITERAL_PATHSPECS: "1" };
-  return decode(run(["git", ...args], { ...options, env })).trim();
+  return withoutFinalNewline(decode(run(["git", ...args], { ...options, env })));
 }
 
 /** text as one word for POSIX sh, in a command patchbook prints for the user to run. A word of only letters,

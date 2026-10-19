@@ -3,11 +3,11 @@ import { isAbsolute } from "node:path";
 import { Fail } from "./lib/fail.ts";
 import { resolve } from "./lib/fs.ts";
 import { redact, run, shellQuote, spawn } from "./lib/proc.ts";
-import { decode, decodeReplace } from "./lib/text.ts";
+import { decode, decodeReplace, withoutFinalNewline } from "./lib/text.ts";
 
 const NETWORK = /^([a-z][a-z0-9+.-]*:\/\/|[^/]*:)/i;
 
-const gitLine = (root: string, args: string[]) => decode(run(["git", ...args], { cwd: root })).replace(/\n$/, "");
+const gitLine = (root: string, args: string[]) => withoutFinalNewline(decode(run(["git", ...args], { cwd: root })));
 
 function hostEnd(url: string): number {
   const at = url.indexOf("@[");
@@ -32,7 +32,7 @@ function commonDir(root: string, url: string): string | null {
   const path = localPath(root, url)?.replace(/(.)\/+$/, "$1");
   for (const gitDir of path === undefined ? [] : [`${path}/.git`, path, `${path}.git/.git`, `${path}.git`]) {
     const r = spawn(["git", "--git-dir", gitDir, "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root });
-    if (r.code === 0) return resolve(decode(r.stdout).trim());
+    if (r.code === 0) return resolve(withoutFinalNewline(decode(r.stdout)));
   }
   return null;
 }

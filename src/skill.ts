@@ -10,7 +10,7 @@ import { readChanges } from "./changes.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, isDir, isSymlink, lexists, mkdirs, readBytes, writeText } from "./lib/fs.ts";
 import { spawn } from "./lib/proc.ts";
-import { bytesEqual, decode, encode } from "./lib/text.ts";
+import { bytesEqual, decode, encode, withoutFinalNewline } from "./lib/text.ts";
 import { cmdRecord } from "./record.ts";
 import { setting } from "./settings.ts";
 
@@ -194,7 +194,7 @@ const folders = (book: Book) => wanted(book).filter((p) =>
 function headEntry(book: Book, p: string): { link: boolean; bytes: Uint8Array } | null {
   const listed = spawn(["git", "ls-tree", "HEAD", "--", p], { cwd: book.root });
   if (listed.code !== 0) return null;
-  const [, mode, sha, path] = /^(100644|100755|120000) blob (\w+)\t(.*)$/.exec(decode(listed.stdout).trim()) ?? [];
+  const [, mode, sha, path] = /^(100644|100755|120000) blob (\w+)\t(.*)$/.exec(withoutFinalNewline(decode(listed.stdout))) ?? [];
   if (!sha || path !== p) return null;
   const blob = spawn(["git", "cat-file", "blob", sha], { cwd: book.root });
   return blob.code === 0 ? { link: mode === "120000", bytes: blob.stdout } : null;
