@@ -12891,7 +12891,7 @@ describe("PendingIntentTest", () => {
     ["unusable", "claude didn't return a usable name and intent"],
     ["timeout", "claude took longer than 1s"],
   ];
-  const WORKING = (t: Case) => `#!/bin/sh\ncat > ${t.tmp}/prompt.txt\necho 'Sure. {"change": "shout", "intent": "Shout the second line."}'\n`;
+  const WORKING = (t: Case) => `#!/bin/sh\ncat > ${t.tmp}/prompt.txt\necho '{"change": "shout", "intent": "Shout the second line."}'\n`;
 
   const breakModel = (t: Case, kind: Failure): (() => void) => {
     const claude = join(t.tmp, "bin/claude");
@@ -13312,6 +13312,136 @@ describe("PendingIntentTest", () => {
       expect(run.stdout).toBe("");
       expect(run.stderr).toBe("patchbook: --intent needs a change name: patchbook intent <change> --intent ...\n");
       expect(tree(t.repo.path)).toEqual(before);
+    });
+  });
+
+  describe("the model call", () => {
+    const REPLY = '{"change": "louder", "intent": "Make it louder."}';
+
+    const fakeReplying = (t: Case, provider: string, reply: string): void => {
+      const file = join(t.tmp, "bin", provider);
+      writeFileSync(file, `#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a"; done > ${t.tmp}/argv.txt\ncat > /dev/null\ncat <<'REPLY'\n${reply}\nREPLY\n`);
+      chmodSync(file, 0o755);
+    };
+    const argvOf = (t: Case): string[] => read(join(t.tmp, "argv.txt")).slice(0, -1).split("\n");
+
+    forkTest("test_claude_runs_as_a_plain_completion_with_no_tools_mcp_servers_or_slash_commands", (t) => {
+      fakeReplying(t, "claude", REPLY);
+      t.fork.write("extra.txt", "ours\n");
+      t.pb(["record"], { cwd: t.fork.path });
+      expect(argvOf(t)).toEqual([
+        "-p", "--model", "claude-haiku-5-5", "--effort", "medium",
+        "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence",
+      ]);
+    });
+
+    forkTest("test_claude_keeps_the_users_settings_and_login", (t) => {
+      fakeReplying(t, "claude", REPLY);
+      t.fork.write("extra.txt", "ours\n");
+      t.pb(["record"], { cwd: t.fork.path });
+      const argv = argvOf(t);
+      for (const flag of ["--bare", "--setting-sources", "--settings", "--mcp-config"]) expect(argv).not.toContain(flag);
+    });
+
+    forkTest("test_codex_runs_read_only_and_ephemeral", (t) => {
+      fakeReplying(t, "codex", REPLY);
+      t.env["PATCHBOOK_PROVIDER"] = "codex";
+      t.fork.write("extra.txt", "ours\n");
+      t.pb(["record"], { cwd: t.fork.path });
+      const argv = argvOf(t);
+      expect(argv.slice(0, 9)).toEqual(["exec", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=high", "--skip-git-repo-check", "-s", "read-only", "--ephemeral"]);
+      expect(argv[9]).toBe("-C");
+      expect(argv.slice(11)).toEqual(["-"]);
+    });
+
+    const USABLE: readonly (readonly [string, string, string])[] = [
+      ["a_bare_object", REPLY, "louder: Make it louder."],
+      ["an_object_with_blank_lines_around_it", `\n\n${REPLY}\n\n`, "louder: Make it louder."],
+      ["a_json_fence", "```json\n" + REPLY + "\n```", "louder: Make it louder."],
+      ["a_bare_fence", "```\n" + REPLY + "\n```", "louder: Make it louder."],
+      ["a_fence_with_blank_lines_around_it", "\n```json\n" + REPLY + "\n```\n\n", "louder: Make it louder."],
+      ["an_object_over_several_lines", '{\n  "change": "louder",\n  "intent": "Make it louder."\n}', "louder: Make it louder."],
+      ["an_intent_with_a_closing_brace", '{"change": "louder", "intent": "Close the } in the header."}', "louder: Close the } in the header."],
+      ["an_intent_with_braces_in_a_fence", '```json\n{"change": "louder", "intent": "Use {braces} and a } here."}\n```', "louder: Use {braces} and a } here."],
+    ];
+    for (const [what, reply, line] of USABLE) {
+      forkTest(`test_record_takes_the_name_and_intent_from_${what}`, (t) => {
+        fakeReplying(t, "claude", reply);
+        t.fork.write("extra.txt", "ours\n");
+        expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe(`${line}\nadd      extra.txt\n`);
+        expect(changeText(t, "louder")).toContain(`intent: ${line.slice("louder: ".length)}`);
+      });
+
+      forkTest(`test_hook_takes_the_name_and_intent_from_${what}`, (t) => {
+        fakeReplying(t, "claude", reply);
+        t.fork.write("extra.txt", "ours\n");
+        const run = hookCommit(t);
+        expect(run.code).toBe(0);
+        expect(run.stderr).toContain(`${line}\nadd      extra.txt\n`);
+        expect(committed(t)).toContain(".patchbook/changes/louder/CHANGE.md");
+      });
+    }
+
+    const UNUSABLE: readonly (readonly [string, string])[] = [
+      ["prose_before_the_object", `Sure. Here it is:\n${REPLY}`],
+      ["prose_after_the_object", `${REPLY}\nHope that helps.`],
+      ["prose_on_both_sides_of_the_object", `Sure.\n${REPLY}\nHope that helps.`],
+      ["prose_on_the_same_line_as_the_object", `Sure. ${REPLY}`],
+      ["two_objects", `${REPLY}\n{"change": "other", "intent": "Something else."}`],
+      ["an_object_followed_by_a_stray_brace", `${REPLY}\n}`],
+      ["a_fence_with_prose_around_it", "Here:\n```json\n" + REPLY + "\n```\nDone."],
+      ["two_fences", "```json\n" + REPLY + "\n```\n```json\n{\"change\": \"other\", \"intent\": \"Something else.\"}\n```"],
+      ["a_fence_of_another_language", "```js\n" + REPLY + "\n```"],
+      ["a_fence_around_text", "```\nnot json\n```"],
+      ["an_unclosed_fence", "```json\n" + REPLY],
+      ["an_array_holding_the_object", `[${REPLY}]`],
+      ["an_array_nested_too_deep_to_decode", "[".repeat(32768) + "0" + "]".repeat(32768)],
+      ["an_object_with_a_missing_intent", '{"change": "louder"}'],
+      ["text_that_is_not_json", "I cannot help with that."],
+      ["an_empty_reply", ""],
+      ["a_reply_of_only_whitespace", "   \n\n"],
+    ];
+    for (const [what, reply] of UNUSABLE) {
+      forkTest(`test_record_leaves_a_pending_intent_when_the_reply_is_${what}`, (t) => {
+        fakeReplying(t, "claude", reply);
+        t.fork.write("extra.txt", "ours\n");
+        const run = t.pb(["record"], { cwd: t.fork.path });
+        expect(run.stdout).toBe("pending  no intent yet for pending (claude didn't return a usable name and intent). To fill it: patchbook intent pending\nadd      extra.txt\n");
+        expectPending(t, "pending");
+      });
+
+      forkTest(`test_hook_commits_with_a_pending_intent_when_the_reply_is_${what}`, (t) => {
+        fakeReplying(t, "claude", reply);
+        t.fork.write("extra.txt", "ours\n");
+        const run = hookCommit(t);
+        expect(run.code).toBe(0);
+        expect(run.stderr).toContain("pending  no intent yet for pending (claude didn't return a usable name and intent)");
+        expect(committed(t)).toContain("extra.txt");
+        expect(committed(t)).toContain(".patchbook/changes/pending/CHANGE.md");
+        expectPending(t, "pending");
+      });
+    }
+
+    forkTest("test_intent_writes_nothing_when_the_reply_has_prose_around_the_object", (t) => {
+      breakModel(t, "exit");
+      t.fork.write("extra.txt", "ours\n");
+      t.pb(["record"], { cwd: t.fork.path });
+      fakeReplying(t, "claude", `Sure.\n{"change": "pending", "intent": "Ship extra files."}`);
+      delete t.env["PATCHBOOK_PROVIDER"];
+      const before = tree(t.fork.path);
+      const run = t.pb(["intent", "pending"], { cwd: t.fork.path, code: 1 });
+      expect(run.stderr).toContain("claude didn't return a usable name and intent");
+      expect(tree(t.fork.path)).toEqual(before);
+    });
+
+    forkTest("test_intent_fills_a_pending_change_from_a_fenced_reply", (t) => {
+      breakModel(t, "exit");
+      t.fork.write("extra.txt", "ours\n");
+      t.pb(["record"], { cwd: t.fork.path });
+      fakeReplying(t, "claude", '```json\n{"change": "pending", "intent": "Ship extra files."}\n```');
+      delete t.env["PATCHBOOK_PROVIDER"];
+      expect(t.pb(["intent", "pending"], { cwd: t.fork.path }).stdout).toBe("intent   pending: Ship extra files.\n");
+      expect(changeText(t, "pending")).toContain("intent: Ship extra files.");
     });
   });
 });

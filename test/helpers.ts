@@ -190,7 +190,7 @@ export class Case {
     const binDir = join(this.tmp, "bin");
     mkdirSync(binDir);
     const fake = join(binDir, "claude");
-    writeFileSync(fake, `#!/bin/sh\ncat > ${this.tmp}/prompt.txt\necho 'Sure. {"change": "shout", "intent": "Shout the second line."}'\n`);
+    writeFileSync(fake, `#!/bin/sh\ncat > ${this.tmp}/prompt.txt\necho '{"change": "shout", "intent": "Shout the second line."}'\n`);
     chmodSync(fake, 0o755);
     // The pre-commit hook runs `patchbook` from PATH.
     const shim = join(binDir, "patchbook");
