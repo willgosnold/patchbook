@@ -6,6 +6,7 @@ import { assemble, describe, handEdits, readBuildLock, writeBuildLines } from ".
 import { blockHash, blockSpans, type Entry, entriesPath, formatEntry, patchBlocks, PLACEHOLDER_HINT, readEntries, Rules } from "./blocks.ts";
 import { Book } from "./book.ts";
 import { appendSeries, CHANGE_NAME, Change, notAChangeName, readChanges, readSeries, saveChange } from "./changes.ts";
+import { installHookOrWarn } from "./githook.ts";
 import { nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
 import { type Opcode, SequenceMatcher, unifiedDiff } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
@@ -20,6 +21,7 @@ type Plan = { path: string; entries: Map<string, Draft>; notes: [string, string]
 
 export async function cmdRecord(args: { change: string | null; intent: string | null; current?: Map<string, File>; edits?: string[]; only?: (path: string) => boolean }) {
   const book = await Book.find();
+  if (args.current === undefined) installHookOrWarn(book);
   const problems: Problem[] = [];
   const changes = new Map(readChanges(book, problems).map((c) => [c.name, c]));
   const asked = args.change || null;

@@ -8,7 +8,7 @@ import {
 } from "./blocks.ts";
 import { Book, buildInputs, GIT, PB, type Reserved, under } from "./book.ts";
 import { type Change, editText, readChanges } from "./changes.ts";
-import { warnUnhooked } from "./githook.ts";
+import { installHookOrWarn, warnUnhooked } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import {
   exists, type File, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, nonFolders, readDisk, readText, relative, resolve, rglob, rmFolders, sameFile, writeDisk, writeText,
@@ -368,6 +368,7 @@ export function writeOutput(book: Book, out: ReadonlyMap<string, File>, changes:
 
 export async function cmdBuild(args: { force: boolean; commit: boolean }) {
   const book = await Book.find();
+  installHookOrWarn(book);
   const a = assemble(book);
   if (a.problems.length) {
     for (const p of a.problems) process.stderr.write(describe(p) + "\n");

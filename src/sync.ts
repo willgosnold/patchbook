@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Book } from "./book.ts";
 import { type Change, readChanges } from "./changes.ts";
+import { installHookOrWarn } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, readTextReplace, sameFile, writeDisk, writeText } from "./lib/fs.ts";
@@ -77,6 +78,7 @@ type Report = {
 
 export async function cmdSync(args: { name: string | null; ref: string | null }) {
   const book = await Book.find();
+  installHookOrWarn(book);
   if (args.ref && !args.name && book.upstreams.length > 1) throw new Fail("name the upstream to sync to a ref: patchbook sync <name> <ref>");
   const targets = args.name ? [book.upstream(args.name)] : book.upstreams;
   const changes = readChanges(book, []);

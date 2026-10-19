@@ -204,7 +204,8 @@ export class Case {
   }
 
   pb(args: string[], opts: { cwd: string; code?: number | null }): Run {
-    const r = run([...CMD, ...args], opts.cwd, this.env);
+    const env = this.env["PATCHBOOK_HOOK"] === "0" ? { ...this.env, PATCHBOOK_HOOK: "" } : this.env;
+    const r = run([...CMD, ...args], opts.cwd, env);
     const code = opts.code === undefined ? 0 : opts.code;
     if (code !== null && r.code !== code) {
       throw new Error(`expected exit ${code}, got ${r.code}: patchbook ${args.join(" ")}\n${r.stdout}\n${r.stderr}`);

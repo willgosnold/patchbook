@@ -45,9 +45,9 @@ Or, to build something from a repo into a folder of your own repo, as wstack doe
 patchbook init --upstream <url> --path <folder> --output-to <folder>
 ```
 
-Both install a pre-commit hook in the repo, and write the `patchbook-update` skill for agents to `.agents/skills/patchbook-update/`, with a `.claude/skills` link for Claude Code.
+Both install a pre-commit hook in the repo, unless `hook.enabled` is off (`patchbook config hook.enabled false`, or `PATCHBOOK_HOOK=0` in the environment), and write the `patchbook-update` skill for agents to `.agents/skills/patchbook-update/`, with a `.claude/skills` link for Claude Code.
 
-If the repo runs its hooks through a hook manager, patchbook's hook has to run from there. For Vite+ (`.vite-hooks/pre-commit`) and husky (`.husky/pre-commit`), patchbook puts `patchbook hook run` first in the script, and in a fork records that edit as the change `patchbook-hook`. For lefthook, the pre-commit framework and any other `core.hooksPath`, it prints the lines to add, and `patchbook hook install` prints them again. For lefthook they are in the format of its config file, whether that is YAML, TOML or JSON. `patchbook status` warns while the hook git runs doesn't call patchbook.
+If the repo runs its hooks through a hook manager, patchbook's hook has to run from there. For Vite+ (`.vite-hooks/pre-commit`) and husky (`.husky/pre-commit`), patchbook puts `patchbook hook run` first in the script, and in a fork records that edit as the change `patchbook-hook`. For lefthook, the pre-commit framework and any other `core.hooksPath`, it prints the lines to add, and `patchbook hook install` prints them again. For lefthook they are in the format of its config file, whether that is YAML, TOML or JSON. `patchbook status` warns while git runs no hook, or the hook it runs doesn't call patchbook, and `patchbook hook status` shows which hook git runs. In a new git worktree of a husky or Vite+ repo, git runs no hook until you run the manager's install (`npx husky`, `vp config`).
 
 Patchbook runs first, so the manager's checks see the rebuilt output. A fixer that rewrites an output file after patchbook, such as `prettier --write` in `vp staged`, leaves the commit's output different from `build.lock`, and the next commit records that rewrite as a hand edit. With lefthook, patchbook must not run in parallel with other commands, because it stages files and runs `git update-index`.
 
@@ -55,7 +55,7 @@ What patchbook adds to a manager (the lines in a Vite+ or husky script, the comm
 
 **2. Change things.** Edit files the way you normally would, including the built output, then stage them and commit as usual.
 
-A pre-commit hook moves the edits you staged into the patchbook, rebuilds, and adds both to the commit. A model reads the edits, names the change and writes its intent: what the change does and why. It uses Claude if it's installed, otherwise Codex; `patchbook config intent.provider codex` switches. To write the intent yourself, commit with `PATCHBOOK_INTENT="..." git commit`, or run `patchbook record <name> --intent "..."` and `git add .patchbook` first.
+With the hook installed and `hook.enabled` on, a pre-commit hook moves the edits you staged into the patchbook, rebuilds, and adds both to the commit. `patchbook hook status` says whether git runs it. A model reads the edits, names the change and writes its intent: what the change does and why. It uses Claude if it's installed, otherwise Codex; `patchbook config intent.provider codex` switches. To write the intent yourself, commit with `PATCHBOOK_INTENT="..." git commit`, or run `patchbook record <name> --intent "..."` and `git add .patchbook` first.
 
 The intent matters most. It's how an agent redoes your change later, if upstream rewrites the code underneath it.
 

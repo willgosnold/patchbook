@@ -2,7 +2,6 @@
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Hooks, Problem } from "./api.ts";
-import { installHookOrWarn } from "./githook.ts";
 import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, GITLINK, isDir, isMode, isSymlink, lexists, mkdirs, type Mode, normMode, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
@@ -279,7 +278,6 @@ export class Book {
   static async find(start?: string): Promise<Book> {
     const root = Book.root(start);
     if (root === null) throw new NoBook(`no ${PB}/config.toml here or above. Start one with \`patchbook clone\` or \`patchbook init\`.`);
-    installHookOrWarn(root);
     return Book.open(root);
   }
 
