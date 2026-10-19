@@ -1,7 +1,7 @@
 // Has an upstream moved, and moving the pins: carrying every change forward with git merge-file.
-import { chmodSync, lstatSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
 import { Book } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
@@ -125,7 +125,11 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   const commit = u.fetch(ref || u.branch);
   const tree = u.treeOf(commit);
   if (tree === pin.tree) {
-    process.stdout.write(`${u.name}: upstream at ${commit.slice(0, 7)} matches the pin (tree ${tree.slice(0, 7)}). Nothing to do.\n`);
+    const rewrite = u.vendor !== null && (!isFolder(u.vendor) || u.vendorTree(u.vendor).tree !== tree);
+    if (rewrite) rewriteVendor(book, u, u.vendor, pin, u.files(commit), tree);
+    const rest = rewrite ? "Rewrote the vendored copy, which did not." : "Nothing to do.";
+    process.stdout.write(`${u.name}: upstream at ${commit.slice(0, 7)} matches the pin (tree ${tree.slice(0, 7)}). ${rest}\n`);
+    warnLeft(book, u);
     return null;
   }
   const raw = u.files(commit);
@@ -167,32 +171,54 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     }
   }
 
-  const j = journal(book, u);
-  try {
-    begin(book, u, pin, { commit, tree });
+  journaled(book, u, pin, { commit, tree }, (j) => {
     u.keep(commit);
     takeVendor(u.vendor, join(j, "old"));
-    if (u.vendor) {
-      for (const [p, f] of raw) writeDisk(join(u.vendor, p), f);
-      const actual = u.vendorTree(u.vendor).tree;
-      if (actual !== tree) {
-        throw new Fail(`the vendored copy of ${u.name} hashes to ${actual}, not upstream's ${tree}. Does a .gitignore hide upstream files?`);
-      }
-    }
+    if (u.vendor) writeVendor(u, u.vendor, raw, tree);
     saveBefore(book, j, writes.map((w) => w.c.content(w.side, w.path)));
     for (const w of writes) w.c.write(w.side, w.path, w.data);
     beforePin?.(report);
     const lock = join(book.dir, "upstream.lock");
     writeFileSync(join(j, "lock"), lexists(lock) ? readFileSync(lock) : "");
     book.writeLock(u.name, commit, tree);
+  });
+  process.stdout.write(`${u.name}: pinned ${commit.slice(0, 7)}. ${report.upstream.length} upstream files changed, `
+    + `${report.merged.length} of ours merged cleanly, ${report.conflicts.length} conflicts, ${report.gone.length} gone.\n`);
+  warnLeft(book, u);
+  return report;
+}
+
+function journaled(book: Book, u: Upstream, from: Pin, to: Required<Pin> | null, write: (j: string) => void): void {
+  const j = journal(book, u);
+  try {
+    begin(book, u, from, to);
+    write(j);
   } catch (e) {
     recover(book, u);
     throw e;
   }
   drop(j);
-  process.stdout.write(`${u.name}: pinned ${commit.slice(0, 7)}. ${report.upstream.length} upstream files changed, `
-    + `${report.merged.length} of ours merged cleanly, ${report.conflicts.length} conflicts, ${report.gone.length} gone.\n`);
-  return report;
+}
+
+/** A missing copy counts as a folder, since it hashes as the empty tree. A link never does, so it is moved aside, not followed. */
+function isFolder(vendor: string): boolean {
+  return !lexists(vendor) || lstatSync(vendor).isDirectory();
+}
+
+function rewriteVendor(book: Book, u: Upstream, vendor: string, pin: Pin, raw: ReadonlyMap<string, File>, tree: string): void {
+  journaled(book, u, pin, null, (j) => {
+    takeVendor(vendor, join(j, "old"));
+    writeVendor(u, vendor, raw, tree);
+  });
+}
+
+/** Checked only in place: git's ignore rules match by path, so the same files hash differently elsewhere. */
+function writeVendor(u: Upstream, vendor: string, raw: ReadonlyMap<string, File>, tree: string): void {
+  for (const [p, f] of raw) writeDisk(join(vendor, p), f);
+  const actual = u.vendorTree(vendor).tree;
+  if (actual !== tree) {
+    throw new Fail(`the vendored copy of ${u.name} hashes to ${actual}, not upstream's ${tree}. Does a .gitignore hide upstream files?`);
+  }
 }
 
 const REPORT = "last-sync.json";
@@ -201,18 +227,29 @@ const journal = (book: Book, u: Upstream) => join(book.dir, `sync-${encodeURICom
 
 const spell = (pin: Pin) => `${pin.commit ?? ""} ${pin.tree ?? ""}`;
 
-type Journal = { from: string; to: string; added: string; vendor: string; copy: boolean };
+type Journal = { from: string; to: string; rewrite: boolean; added: string; vendor: string; copy: boolean; made: string };
 
-function begin(book: Book, u: Upstream, from: Pin, to: Required<Pin>): void {
+const PAYLOADS = ["lock", "pin.tmp", "next", "old", "before"];
+
+function begin(book: Book, u: Upstream, from: Pin, to: Required<Pin> | null): void {
   const j = journal(book, u);
+  const stale = PAYLOADS.find((p) => lexists(join(j, p)));
+  if (stale) {
+    throw new Fail(`couldn't delete ${relative(book.root, join(j, stale))}, left by an earlier sync of ${u.name}, so this sync can't start. `
+      + "Make it writable and delete it by hand, then sync again.");
+  }
   mkdirs(j);
-  writeText(join(j, ".gitignore"), "*\n");
+  ignoreAll(j);
+  let made = u.vendor && !lexists(u.vendor) ? u.vendor : "";
+  while (made && !lexists(dirname(made))) made = dirname(made);
   const record: Journal = {
     from: spell(from),
-    to: spell(to),
-    added: u.kept(to.commit) ? "" : to.commit,
+    to: to ? spell(to) : "",
+    rewrite: !to,
+    added: to && !u.kept(to.commit) ? to.commit : "",
     vendor: u.vendor ? relative(book.root, u.vendor) : "",
     copy: u.vendor !== null && lexists(u.vendor),
+    made: made && relative(book.root, made),
   };
   writeText(join(j, "pin.tmp"), JSON.stringify(record));
   renameSync(join(j, "pin.tmp"), join(j, "pin"));
@@ -256,11 +293,11 @@ function recover(book: Book, u: Upstream): void {
     } catch {
       throw stuck(book, u, "its record can't be read");
     }
-    const { from, to, added, vendor: path, copy } = record;
+    const { from, to, rewrite, added, vendor: path, copy, made } = record;
     const now = locked(u);
     const wrote = lexists(join(j, "lock"));
     const torn = now === null && wrote;
-    if (now === to) return drop(j);
+    if (!rewrite && now === to) return drop(j);
     if (now !== from && !torn) {
       if (now !== null && !wrote) release(book, u, added);
       throw stuck(book, u, "upstream.lock has changed since");
@@ -281,12 +318,21 @@ function recover(book: Book, u: Upstream): void {
     const old = join(j, "old");
     const newCopy = lexists(old) || !copy;
     if (newCopy) takeVendor(vendor, null);
+    if (vendor && made) removeMadeFolders(vendor, join(book.root, made));
     if (vendor && lexists(old)) {
       mkdirs(dirname(vendor));
       renameSync(old, vendor);
     }
   }
   drop(j);
+}
+
+function removeMadeFolders(vendor: string, made: string): void {
+  for (let dir = dirname(vendor); dir === made || dir.startsWith(made + sep); dir = dirname(dir)) {
+    if (!lexists(dir)) continue;
+    if (readdirSync(dir).length) return;
+    rmdirSync(dir);
+  }
 }
 
 function stuck(book: Book, u: Upstream, why: string): Fail {
@@ -320,7 +366,36 @@ function putReport(p: string, was: string): void {
 }
 
 function drop(j: string): void {
+  if (lexists(j) && !lstatSync(j).isDirectory()) return rmSync(j);
   rmSync(join(j, "pin"), { force: true });
-  for (const payload of ["lock", "pin.tmp", "next", "old", "before"]) rmSync(join(j, payload), { recursive: true, force: true });
-  rmSync(j, { recursive: true, force: true });
+  sweep(j);
+}
+
+function sweep(j: string): void {
+  try {
+    for (const payload of PAYLOADS) {
+      try {
+        rmSync(join(j, payload), { recursive: true, force: true });
+      } catch {
+        mkdirs(join(j, "left"));
+        renameSync(join(j, payload), join(j, "left", `${payload}-${Date.now()}`));
+      }
+    }
+    rmSync(join(j, "left"), { recursive: true, force: true });
+    rmSync(j, { recursive: true, force: true });
+  } catch {
+    ignoreAll(j);
+  }
+}
+
+function ignoreAll(j: string): void {
+  const p = join(j, ".gitignore");
+  if (!exists(p) || readText(p) !== "*\n") writeText(p, "*\n");
+}
+
+function warnLeft(book: Book, u: Upstream): void {
+  const j = journal(book, u);
+  if (!lexists(j)) return;
+  process.stderr.write(`patchbook: couldn't delete ${relative(book.root, j)}, which holds files a sync of ${u.name} no longer needs. `
+    + "git ignores it, but it still takes disk space. Make it writable and delete it by hand; the next sync tries again.\n");
 }

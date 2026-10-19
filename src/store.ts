@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
 import { Book, PB } from "./book.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, mkdirs, normMode, pjoin, readDisk, readText, relative, resolve, writeDisk } from "./lib/fs.ts";
+import { exists, type File, lexists, mkdirs, normMode, pjoin, readDisk, readText, relative, resolve, writeDisk } from "./lib/fs.ts";
 import { sha1 } from "./lib/hash.ts";
 import { loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
@@ -327,9 +327,9 @@ export function indexFiles(root: string, rel: string): { files: Files; tree: str
   try {
     const env = { ...process.env, GIT_INDEX_FILE: join(tmp, "index") };
     git(["read-tree", "--empty"], { cwd: root, env });
-    git(["add", "--", rel], { cwd: root, env });
-    tree = git(["write-tree", `--prefix=${rel}/`], { cwd: root, env });
+    if (lexists(join(root, rel))) git(["add", "--", rel], { cwd: root, env });
     staged = git(["ls-files", "-s", "-z", "--", rel], { cwd: root, env });
+    tree = git(staged ? ["write-tree", `--prefix=${rel}/`] : ["write-tree"], { cwd: root, env });
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
