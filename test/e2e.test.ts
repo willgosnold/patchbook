@@ -1958,6 +1958,8 @@ test("test_build_leaves_a_vendored_copy_alone_when_upstream_ships_the_folder", (
     up.commit("start");
     t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
     const fork = new Repo(join(t.tmp, "fork"));
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: fork.path, code: 1 });
+    rmSync(join(fork.path, "vendor/extra/stale.md"));
     t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: fork.path });
     fork.commit("track");
     t.pb(["build"], { cwd: fork.path });
@@ -7611,10 +7613,6 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
   }
 
   const notAFolder: [string, (t: ForkCase, vendor: string) => string | null][] = [
-    ["a_file", (_, vendor) => {
-      writeFileSync(vendor, "a file\n");
-      return null;
-    }],
     ["a_symlink_to_a_missing_path", (t, vendor) => {
       symlinkSync(join(t.tmp, "nowhere"), vendor);
       return null;
@@ -8772,10 +8770,6 @@ exec '${Bun.which("git")}' "$@"
     writeFileSync(join(change, "ours/extra/a.md.pb"), "ONE\ntwo\nthree\nfour\nfive\n");
     writeFileSync(join(t.repo.path, ".patchbook/series"), "tweak\n");
     t.pb(["build"], { cwd: t.repo.path });
-    if (vendored) {
-      writeFileSync(join(t.repo.path, ".git/info/exclude"), "scratch\n");
-      writeFileSync(join(t.repo.path, "vendor/extra/scratch"), "ignored, and only here\n");
-    }
     extra.write("a.md", "one\ntwo\nthree\nfour\nFIVE\n");
     return extra;
   };
@@ -8831,8 +8825,6 @@ exec '${Bun.which("git")}' "$@"
     extra.write("y/c.log", "hidden\n");
     extra.commit("a");
     t.pb(["track", "extra", extra.path, "--path", "x", "--vendor", "vendor/extra"], { cwd: t.repo.path });
-    writeFileSync(join(t.repo.path, ".git/info/exclude"), "scratch\n");
-    t.repo.write("vendor/extra/scratch", "ignored, and only here\n");
     t.repo.write(".patchbook/config.toml", t.repo.read(".patchbook/config.toml").replace('path = "x"', 'path = "y"'));
     t.repo.write(".gitignore", "*.log\n");
     const before = tree(t.repo.path);
@@ -8927,7 +8919,6 @@ exec '${Bun.which("git")}' "$@"
 
   vendorTest("test_a_rewrite_killed_while_it_checks_the_new_copy_is_undone_and_done_again_by_the_next_sync", (t) => {
     extraWithAChange(t, true);
-    rmSync(join(t.repo.path, "vendor/extra/scratch"));
     t.repo.commit("follow extra");
     const before = tree(t.repo.path);
     rmSync(join(t.repo.path, "vendor/extra"), { recursive: true });
@@ -8943,7 +8934,6 @@ exec '${Bun.which("git")}' "$@"
 
   vendorTest("test_a_symlink_at_the_vendor_path_comes_back_as_a_link_when_its_rewrite_is_killed", (t) => {
     extraWithAChange(t, true);
-    rmSync(join(t.repo.path, "vendor/extra/scratch"));
     t.repo.commit("follow extra");
     const outside = join(t.tmp, "outside");
     mkdirSync(outside);
@@ -8963,7 +8953,6 @@ exec '${Bun.which("git")}' "$@"
 
   const killARewrite = (t: VendorCase): Record<string, string> => {
     const extra = extraWithAChange(t, true);
-    rmSync(join(t.repo.path, "vendor/extra/scratch"));
     extra.commit("v2");
     t.repo.commit("follow extra");
     t.pb(["sync", "extra"], { cwd: t.repo.path });
@@ -8990,7 +8979,9 @@ exec '${Bun.which("git")}' "$@"
 
       rmSync(join(t.repo.path, ".patchbook/sync-extra"), { recursive: true });
       sh(["git", "checkout", "HEAD", "--", ".patchbook"], { cwd: t.repo.path });
-      expect(t.pb(["sync", "extra"], { cwd: t.repo.path }).stdout).toContain("Rewrote the vendored copy, which did not.");
+      expect(t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 }).stderr).toContain("vendor/extra/mine.txt");
+      rmSync(join(t.repo.path, "vendor/extra/mine.txt"));
+      expect(t.pb(["sync", "extra"], { cwd: t.repo.path }).stdout).toContain("Nothing to do.");
       expect(tree(t.repo.path)).toEqual(synced);
     });
   }
@@ -10368,6 +10359,257 @@ exec '${Bun.which("git")}' "$@"
     writeFileSync(join(root, dir, "wip.txt"), "uncommitted\n");
   };
   const lockOf = (t: VendorCase): string => t.repo.read(".patchbook/upstream.lock");
+
+  const userFiles: [string, string, (repo: Repo) => void][] = [
+    ["a_file_of_your_own", "vendor/extra/new.md", (repo) => repo.write("vendor/extra/new.md", "my notes\n")],
+    ["a_file_in_a_folder_of_your_own", "vendor/extra/deep/er/n.md", (repo) => repo.write("vendor/extra/deep/er/n.md", "nested\n")],
+    ["a_file_git_ignores", "vendor/extra/.env", (repo) => {
+      appendFileSync(join(repo.path, ".gitignore"), ".env\n");
+      repo.write("vendor/extra/.env", "SECRET=1\n");
+    }],
+    ["a_link_of_your_own", "vendor/extra/link", (repo) => {
+      mkdirSync(join(repo.path, "vendor/extra"), { recursive: true });
+      symlinkSync("../../README.md", join(repo.path, "vendor/extra/link"));
+    }],
+    ["a_file_at_a_path_upstream_has_with_other_bytes", "vendor/extra/a.md", (repo) => repo.write("vendor/extra/a.md", "mine, not upstream's\n")],
+  ];
+
+  const statusOf = (t: VendorCase): string => {
+    const r = t.pb(["status"], { cwd: t.repo.path, code: null });
+    return `${r.code}\n${r.stdout}${r.stderr}`;
+  };
+
+  const noJournal = (t: VendorCase): void => {
+    expect(existsSync(join(t.repo.path, ".patchbook/sync-extra"))).toBe(false);
+  };
+
+  for (const [what, found, make] of userFiles) {
+    vendorTest(`test_track_refuses_a_vendor_folder_that_holds_${what}_and_keeps_it`, (t) => {
+      const extra = extraAt(t);
+      make(t.repo);
+      const config = join(t.repo.path, ".patchbook/config.toml");
+      const configBefore = read(config);
+      const lock = lockOf(t);
+      const status = statusOf(t);
+      const before = tree(t.repo.path);
+      const out = t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path, code: 1 });
+      expect(out.stderr).toContain("upstream extra");
+      expect(out.stderr).toContain("vendor/extra");
+      expect(out.stderr).toContain(found);
+      expect(out.stderr).toContain("Nothing was changed.");
+      expect(read(config)).toBe(configBefore);
+      expect(read(config)).not.toContain("extra");
+      expect(lockOf(t)).toBe(lock);
+      expect(tree(t.repo.path)).toEqual(before);
+      noJournal(t);
+      expect(statusOf(t)).toBe(status);
+    });
+
+    test(`test_init_refuses_a_vendor_folder_that_holds_${what}_and_writes_nothing`, () => {
+      const t = new VendorCase();
+      try {
+        const repo = new Repo(join(t.tmp, "fresh"));
+        repo.write("README.md", "mine\n");
+        repo.commit("start");
+        const extra = extraAt(t);
+        make(repo);
+        const before = tree(repo.path);
+        const out = t.pb(["init", "--upstream", extra.path, "--name", "extra", "--output-to", "out", "--vendor", "vendor/extra"], { cwd: repo.path, code: 1 });
+        expect(out.stderr).toContain(found);
+        expect(out.stderr).toContain("Nothing was changed.");
+        expect(existsSync(join(repo.path, ".patchbook"))).toBe(false);
+        expect(tree(repo.path)).toEqual(before);
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+
+    if (!what.endsWith("other_bytes")) {
+      vendorTest(`test_sync_refuses_to_replace_a_vendored_copy_that_holds_${what}`, (t) => {
+        const extra = extraAt(t);
+        t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+        extra.write("b.md", "b\n");
+        extra.commit("b");
+        make(t.repo);
+        const lock = lockOf(t);
+        const before = tree(t.repo.path);
+        const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+        expect(out.stderr).toContain("upstream extra");
+        expect(out.stderr).toContain(found);
+        expect(out.stderr).toContain("Nothing was changed.");
+        expect(lockOf(t)).toBe(lock);
+        expect(tree(t.repo.path)).toEqual(before);
+        noJournal(t);
+      });
+
+      vendorTest(`test_sync_${what === "a_file_git_ignores" ? "leaves" : "refuses_to_rewrite"}_a_vendored_copy_that_holds_${what}`, (t) => {
+        const extra = extraAt(t);
+        t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+        make(t.repo);
+        const lock = lockOf(t);
+        const before = tree(t.repo.path);
+        if (what === "a_file_git_ignores") {
+          expect(t.pb(["sync", "extra"], { cwd: t.repo.path }).stdout).toContain("Nothing to do.");
+          expect(tree(t.repo.path)).toEqual(before);
+          return;
+        }
+        const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+        expect(out.stderr).toContain("upstream extra");
+        expect(out.stderr).toContain(found);
+        expect(out.stderr).toContain("Nothing was changed.");
+        expect(lockOf(t)).toBe(lock);
+        expect(tree(t.repo.path)).toEqual(before);
+        noJournal(t);
+      });
+    }
+  }
+
+  vendorTest("test_track_refuses_a_vendor_path_that_is_a_file_of_yours_and_keeps_it", (t) => {
+    const extra = extraAt(t);
+    t.repo.write("vendor/extra", "my file\n");
+    const config = join(t.repo.path, ".patchbook/config.toml");
+    const configBefore = read(config);
+    const before = tree(t.repo.path);
+    const out = t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("upstream extra");
+    expect(out.stderr).toContain("vendor/extra");
+    expect(out.stderr).toContain("Nothing was changed.");
+    expect(read(config)).toBe(configBefore);
+    expect(tree(t.repo.path)).toEqual(before);
+  });
+
+  for (const [what, moves] of [["moved_pin", true], ["unchanged_upstream", false]] as const) {
+    vendorTest(`test_sync_with_a_${what}_refuses_a_vendor_path_that_is_a_file_of_yours_and_keeps_it`, (t) => {
+      const extra = extraAt(t);
+      t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+      if (moves) {
+        extra.write("b.md", "b\n");
+        extra.commit("b");
+      }
+      rmSync(join(t.repo.path, "vendor/extra"), { recursive: true });
+      t.repo.write("vendor/extra", "my file\n");
+      const lock = lockOf(t);
+      const before = tree(t.repo.path);
+      const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+      expect(out.stderr).toContain("upstream extra");
+      expect(out.stderr).toContain("vendor/extra");
+      expect(out.stderr).toContain("Nothing was changed.");
+      expect(t.repo.read("vendor/extra")).toBe("my file\n");
+      expect(lockOf(t)).toBe(lock);
+      expect(tree(t.repo.path)).toEqual(before);
+      noJournal(t);
+    });
+  }
+
+  describe.skipIf(!!process.env["PATCHBOOK_CMD"])("killed by a preload, so only from source", () => {
+    const killedSync = (t: VendorCase): Repo => {
+      const extra = extraAt(t);
+      t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+      extra.write("b.md", "b\n");
+      extra.commit("b");
+      const env = { ...t.env, CRASH_BEFORE_WRITE: "/.patchbook/sync-extra/lock" };
+      sh([process.execPath, "--preload", join(import.meta.dir, "crash.ts"), TOOL, "sync", "extra"], { cwd: t.repo.path, env, check: false });
+      expect(existsSync(join(t.repo.path, ".patchbook/sync-extra/old"))).toBe(true);
+      return extra;
+    };
+
+    vendorTest("test_a_sync_after_a_killed_sync_refuses_to_delete_a_file_added_to_the_copy_and_keeps_it", (t) => {
+      killedSync(t);
+      t.repo.write("vendor/extra/mine.md", "my notes\n");
+      const before = tree(t.repo.path);
+      const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+      expect(out.stderr).toContain("vendor/extra/mine.md");
+      expect(out.stderr).toContain("sync-extra");
+      expect(t.repo.read("vendor/extra/mine.md")).toBe("my notes\n");
+      expect(tree(t.repo.path)).toEqual(before);
+      expect(existsSync(join(t.repo.path, ".patchbook/sync-extra/old"))).toBe(true);
+    });
+
+    vendorTest("test_a_sync_after_a_killed_sync_goes_through_once_the_file_is_moved_out", (t) => {
+      killedSync(t);
+      t.repo.write("vendor/extra/mine.md", "my notes\n");
+      t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+      renameSync(join(t.repo.path, "vendor/extra/mine.md"), join(t.repo.path, "mine.md"));
+      t.pb(["sync", "extra"], { cwd: t.repo.path });
+      expect(t.repo.read("vendor/extra/b.md")).toBe("b\n");
+      expect(t.repo.read("mine.md")).toBe("my notes\n");
+      noJournal(t);
+    });
+
+    vendorTest("test_a_sync_after_a_killed_sync_with_nothing_of_yours_in_the_copy_still_finishes", (t) => {
+      killedSync(t);
+      t.pb(["sync", "extra"], { cwd: t.repo.path });
+      expect(t.repo.read("vendor/extra/b.md")).toBe("b\n");
+      noJournal(t);
+    });
+  });
+
+  vendorTest("test_a_refusal_names_a_few_files_and_counts_the_rest", (t) => {
+    const extra = extraAt(t);
+    for (let i = 1; i <= 8; i++) t.repo.write(`vendor/extra/mine${i}.md`, `${i}\n`);
+    const before = tree(t.repo.path);
+    const out = t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path, code: 1 });
+    expect(out.stderr).toContain("holds 8 files");
+    expect(out.stderr).toContain("vendor/extra/mine1.md");
+    expect(out.stderr).toContain("vendor/extra/mine5.md");
+    expect(out.stderr).not.toContain("vendor/extra/mine6.md");
+    expect(out.stderr).toContain("and 3 more");
+    expect(tree(t.repo.path)).toEqual(before);
+  });
+
+  vendorTest("test_a_refused_sync_goes_through_once_the_file_is_moved_out", (t) => {
+    const extra = extraAt(t);
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    extra.write("b.md", "b\n");
+    extra.commit("b");
+    t.repo.write("vendor/extra/new.md", "my notes\n");
+    t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    renameSync(join(t.repo.path, "vendor/extra/new.md"), join(t.repo.path, "new.md"));
+    t.pb(["sync", "extra"], { cwd: t.repo.path });
+    expect(t.repo.read("vendor/extra/b.md")).toBe("b\n");
+    expect(t.repo.read("new.md")).toBe("my notes\n");
+    expect(statusOf(t)).not.toContain("Never edit the vendored copy");
+  });
+
+  vendorTest("test_track_into_an_empty_or_missing_vendor_folder_still_works", (t) => {
+    const extra = extraAt(t);
+    mkdirSync(join(t.repo.path, "vendor/empty"), { recursive: true });
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/empty"], { cwd: t.repo.path });
+    expect(t.repo.read("vendor/empty/a.md")).toBe("a\n");
+    t.pb(["track", "other", extra.path, "--vendor", "vendor/missing"], { cwd: t.repo.path });
+    expect(t.repo.read("vendor/missing/a.md")).toBe("a\n");
+    expect(statusOf(t)).not.toContain("differs from the pin");
+  });
+
+  vendorTest("test_track_into_a_folder_that_holds_exactly_upstreams_files_still_works", (t) => {
+    const extra = extraAt(t);
+    t.repo.write("vendor/extra/a.md", "a\n");
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    expect(t.repo.read("vendor/extra/a.md")).toBe("a\n");
+    expect(statusOf(t)).not.toContain("differs from the pin");
+  });
+
+  vendorTest("test_sync_of_an_untouched_vendored_copy_still_works", (t) => {
+    const extra = extraAt(t);
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    extra.write("b.md", "b\n");
+    extra.commit("b");
+    t.pb(["sync", "extra"], { cwd: t.repo.path });
+    expect(t.repo.read("vendor/extra/b.md")).toBe("b\n");
+    rmSync(join(t.repo.path, "vendor/extra/a.md"));
+    t.pb(["sync", "extra"], { cwd: t.repo.path });
+    expect(t.repo.read("vendor/extra/a.md")).toBe("a\n");
+  });
+
+  vendorTest("test_sync_still_rewrites_an_upstream_path_edited_by_hand", (t) => {
+    const extra = extraAt(t);
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.repo.path });
+    extra.write("b.md", "b\n");
+    extra.commit("b");
+    t.repo.write("vendor/extra/a.md", "edited by hand\n");
+    t.pb(["sync", "extra"], { cwd: t.repo.path });
+    expect(t.repo.read("vendor/extra/a.md")).toBe("a\n");
+  });
 
   describe.skipIf(process.getuid?.() === 0)("where chmod hides a folder, so not as root", () => {
     const unhide = (t: Case): void => {
