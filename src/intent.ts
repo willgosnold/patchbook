@@ -9,7 +9,7 @@ import { unifiedDiff } from "./lib/diff.ts";
 import { Fail } from "./lib/fail.ts";
 import type { File } from "./lib/fs.ts";
 import { spawn, which } from "./lib/proc.ts";
-import { object, readJson, string } from "./lib/shape.ts";
+import { nullable, object, readJson, type Shape, string, table } from "./lib/shape.ts";
 import { decodeReplace, encode, isText, quote } from "./lib/text.ts";
 import { configured, readToml, type Source, setting, SETTINGS, type Table, USER_CONFIG } from "./settings.ts";
 
@@ -37,22 +37,18 @@ export const PROVIDERS = new Map<string, Provider>([
   }],
 ]);
 
-const intentPrompt = (changes: string, instruction: string, diff: string) =>
-  `You name and describe a change someone made to their copy of an upstream repo.
-The change is kept as a patch over upstream. When upstream changes, an agent redoes the change from
-its intent alone, so the intent must say what the change does and why, in one or two plain
+const intentPrompt = (changes: string, picking: boolean, subjects: string) =>
+  `You name and describe changes someone made to their copy of an upstream repo.
+Each change is kept as a patch over upstream. When upstream changes, an agent redoes a change from
+its intent alone, so an intent must say what the change does and why, in one or two plain
 sentences, without line numbers or code. Don't describe upstream.
 
 Existing changes, one per line as \`name: intent\`:
 ${changes}
 
-${instruction}
+Reply with only a JSON object: {"change": ${picking ? '"<name>"' : "null"}, "intents": {"<key>": "<intent>", ...}}, with an intent for each key below.
 
-Reply with only a JSON object: {"change": "<name>", "intent": "<intent>"}
-
-The edits, as diffs from what the patchbook builds to what is on disk now:
-${diff}
-`;
+${subjects}`;
 
 const DIFF_LIMIT = 40000;
 const CUT = "\n[diff truncated]\n";
@@ -70,9 +66,10 @@ const textPart = (path: string, what: string, diff: string): Part => ({ line: `$
 
 const binaryPart = (path: string, what: string): Part => ({ line: `${path}: binary, ${what}`, diff: "" });
 
-/** The list of changed paths, then their diffs. Each diff gets an equal share of 40000 characters; a short one leaves what it doesn't use to the longer ones. */
-export function listDiffs(parts: readonly Part[]): string {
-  const chars = parts.map((p) => Array.from(p.diff));
+/** Each group's list of changed paths, then its diffs. Each diff of every group gets an equal share of 40000 characters; a short one
+ * leaves what it doesn't use to the longer ones. */
+export function listDiffs(groups: readonly (readonly Part[])[]): string[] {
+  const chars = groups.flat().map((p) => Array.from(p.diff));
   const kept: number[] = [];
   let left = DIFF_LIMIT;
   Array.from(chars.keys()).sort((a, b) => chars[a]!.length - chars[b]!.length).forEach((i, n, all) => {
@@ -80,16 +77,17 @@ export function listDiffs(parts: readonly Part[]): string {
     left -= kept[i]!;
   });
   const diffs = chars.map((c, i) => (c.length > kept[i]! ? c.slice(0, kept[i]).join("") + CUT : c.join("")));
-  return `Changed paths:\n${parts.map((p) => p.line + "\n").join("")}\n${diffs.join("")}`;
+  let at = 0;
+  return groups.map((parts) => `Changed paths:\n${parts.map((p) => p.line + "\n").join("")}\n${diffs.slice(at, (at += parts.length)).join("")}`);
 }
 
 /** The block entry at `path`, as a paragraph that changed from `upstream` to `patched`. */
 export const entryPart = (path: string, upstream: string, patched: string): Part =>
   textPart(path, "paragraph changed", unifiedDiff(encode(upstream + "\n"), encode(patched + "\n"), `upstream/${path}`, `disk/${path}`));
 
-/** The edits on disk to these output paths, then `more`, as one text for a model to read. */
-export function pendingDiff(a: Assembly, current: ReadonlyMap<string, File>, paths: readonly string[], more: readonly Part[] = []): string {
-  const files = paths.map((p): Part => {
+/** The edits on disk to these output paths. */
+export function pendingParts(a: Assembly, current: ReadonlyMap<string, File>, paths: readonly string[]): Part[] {
+  return paths.map((p): Part => {
     const now = current.get(p);
     const built = a.out.get(p);
     const old = built?.data ?? new Uint8Array();
@@ -98,22 +96,23 @@ export function pendingDiff(a: Assembly, current: ReadonlyMap<string, File>, pat
     if (!(isText(old) && isText(fresh))) return binaryPart(p, what);
     return textPart(p, what, unifiedDiff(old, fresh, built ? `built/${p}` : "/dev/null", now ? `disk/${p}` : "/dev/null"));
   });
-  return listDiffs([...files, ...more]);
 }
 
-export function changeDiff(c: Change): string {
+/** The change's edits, with `overlay` (copy path to bytes) in place of the ours copies a record is about to write. */
+export function changeParts(c: Change, overlay: ReadonlyMap<string, Uint8Array> = new Map()): Part[] {
+  const ours = (path: string) => overlay.get(path) ?? c.read("ours", path);
   const part = (before: Uint8Array | null, after: Uint8Array | null, path: string, what: string): Part => {
     const old = before ?? new Uint8Array();
     const fresh = after ?? new Uint8Array();
     if (!(isText(old) && isText(fresh))) return binaryPart(path, what);
     return textPart(path, what, unifiedDiff(old, fresh, before ? `upstream/${path}` : "/dev/null", `ours/${path}`));
   };
-  return listDiffs(c.edits.map((e): Part => {
-    if (e.kind === "file") return part(c.read("base", e.path), c.read("ours", e.path), e.path, "changed");
-    if (e.kind === "add") return part(null, c.read("ours", e.path), e.path, "added");
-    if (e.kind === "replace") return part(null, c.read("ours", e.path), e.path, "replaced");
+  return c.edits.map((e): Part => {
+    if (e.kind === "file") return part(c.read("base", e.path), ours(e.path), e.path, "changed");
+    if (e.kind === "add") return part(null, ours(e.path), e.path, "added");
+    if (e.kind === "replace") return part(null, ours(e.path), e.path, "replaced");
     return { line: editText(e), diff: "" };
-  }));
+  });
 }
 
 /** The provider, model and effort for writing intents.
@@ -180,7 +179,9 @@ function askModel(provider: string, spec: Provider, model: string, effort: strin
 
 const NAME_LENGTH = 40;
 
-const REPLY = object({ change: string, intent: string });
+const strings: Shape<Map<string, string>> = (v, at) => new Map(Object.entries(table(v, at)).map(([k, x]) => [k, string(x, `${at}.${k}`)]));
+
+const REPLY = object({ change: nullable(string), intents: strings });
 
 /** An intent on one line, with each run of whitespace a single space. */
 export const oneLine = (text: string): string => text.trim().replace(/\s+/g, " ");
@@ -204,26 +205,37 @@ function replyText(reply: string): string {
   return FENCE.exec(text)?.[1] ?? text;
 }
 
-/** Ask the chosen model for the change's name and intent. Returns the name and the intent; the name means nothing when `named` is false. */
-export function writeIntent(
-  book: Book, changes: ReadonlyMap<string, Change>, diff: string, name: string | null, named: boolean, filling = false,
-): [string, string] {
+export const PARAGRAPHS = "paragraphs";
+
+/** An existing change or block entry a record adds to: its intent now, "" when it has none, and its whole diff. */
+export type Refresh = { key: string; was: string; parts: readonly Part[] };
+/** A record's new edits and new block entries. With `named` and no `name`, the model files them into an existing change or names a new one. */
+export type Fresh = { name: string | null; named: boolean; parts: readonly Part[] };
+/** The picked change, when Fresh asked for a pick, and an intent for every key asked: each Refresh's, and Fresh's change name or PARAGRAPHS. */
+export type Reply = { change: string | null; intents: ReadonlyMap<string, string> };
+
+/** Ask the chosen model, in one call, for the intent of the fresh edits and of every refresh. */
+export function writeIntents(book: Book, offered: ReadonlyMap<string, Change>, fresh: Fresh | null, refresh: readonly Refresh[]): Reply {
   const [provider, model, effort] = intentSettings(book);
   if (provider === NO_MODEL) throw new ModelFailed("intent.provider is none", "intent.provider is none, so no model writes intents. Pass --intent.");
-  const listed = Array.from(changes.values(), (c) => `${c.name}: ${c.intent || "(no intent yet)"}`).join("\n") || "(none yet)";
-  let instruction: string;
-  if (!named) {
-    name = "paragraphs";
-    instruction = "These edits rewrite paragraphs in place; each changed paragraph keeps this intent. "
-      + "Write the intent, and reply with the name paragraphs.";
-  } else if (filling) instruction = `The change is called ${name} and has no intent yet. Write its intent, and reply with that name.`;
-  else if (name) instruction = `The change is new and called ${name}. Write its intent, and reply with that name.`;
-  else {
-    instruction = "If these edits serve the purpose of one existing change, reply with that change's name and "
-      + "its intent unchanged. Otherwise give a new short kebab-case name and write its intent.";
-  }
+  const listed = Array.from(offered.values(), (c) => `${c.name}: ${c.intent || "(no intent yet)"}`).join("\n") || "(none yet)";
+  const picking = fresh !== null && fresh.named && fresh.name === null;
+  const said = [
+    ...(fresh === null ? [] : [
+      !fresh.named
+        ? `For "${PARAGRAPHS}": these edits rewrite paragraphs in place, and each changed paragraph keeps this intent.`
+        : fresh.name
+        ? `For ${JSON.stringify(fresh.name)}: these edits are a new change called ${fresh.name}. Write its intent.`
+        : "For these edits: if they serve the purpose of one existing change, set change to its name and write its intent again, to cover what it "
+          + "did and these edits. Otherwise set change to a new short kebab-case name and write its intent. Put the intent under that name.",
+    ]),
+    ...refresh.map((r) => `For ${JSON.stringify(r.key)}: ${r.was ? "write its intent again" : "write its intent"}, to cover all of its edits below. `
+      + `Its intent now: ${r.was || "(no intent yet)"}`),
+  ];
+  const diffs = listDiffs([...(fresh ? [fresh.parts] : []), ...refresh.map((r) => r.parts)]);
+  const subjects = said.map((line, i) => `${line}\n${diffs[i]}`).join("\n");
   const [seconds] = setting("intent.timeout", book);
-  const reply = askModel(provider, PROVIDERS.get(provider)!, model, effort, seconds, intentPrompt(listed, instruction, diff));
+  const reply = askModel(provider, PROVIDERS.get(provider)!, model, effort, seconds, intentPrompt(listed, picking, subjects));
   const unusable = (why: string) => new ModelFailed(
     `${provider} didn't return a usable name and intent`,
     `${provider} didn't return a usable name and intent. ${why}\n${Array.from(reply.trim()).slice(0, 500).join("")}\nPass a name and --intent instead.`,
@@ -234,12 +246,15 @@ export function writeIntent(
   } catch (e) {
     throw e instanceof Fail ? unusable(e.message) : e;
   }
-  let chosen = answer.change;
-  let intent = oneLine(answer.intent);
-  if (!CHANGE_NAME.test(chosen)) throw unusable(`${provider}'s reply: ${notAChangeName(chosen)}.`);
-  if (!intent) throw unusable(`${provider}'s reply: intent is blank.`);
-  if (name && chosen !== name) chosen = name;
-  const known = changes.get(chosen);
-  if (known?.intent && named && !filling) intent = known.intent;
-  return [chosen, intent];
+  const change = picking ? answer.change : null;
+  if (picking && change === null) throw unusable(`${provider}'s reply: change is null.`);
+  if (change !== null && !CHANGE_NAME.test(change)) throw unusable(`${provider}'s reply: ${notAChangeName(change)}.`);
+  const keys = [...(fresh ? [change ?? fresh.name ?? PARAGRAPHS] : []), ...refresh.map((r) => r.key)];
+  const intents = new Map<string, string>();
+  for (const key of keys) {
+    const intent = oneLine(answer.intents.get(key) ?? "");
+    if (!intent) throw unusable(`${provider}'s reply: intents.${key} is ${answer.intents.has(key) ? "blank" : "missing"}.`);
+    intents.set(key, intent);
+  }
+  return { change, intents };
 }

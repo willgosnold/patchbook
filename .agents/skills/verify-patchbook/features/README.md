@@ -15,7 +15,7 @@ This directory is the maintained source for verifying what a patchbook user sees
 - Run each step whose result is proof through `rec`. Use plain commands for setup.
 - Treat commands as literal. Keep quoted names, flags and file contents unchanged, because later steps assert exact output.
 - `git commit` in a patchbook repo runs the pre-commit hook. Use `PATCHBOOK_HOOK=0 git commit` only where a recipe says so.
-- The fake model answers `model-name` / `MODEL WROTE THIS.`. Set `PB_FAKE_CHANGE`, `PB_FAKE_INTENT` or `PB_FAKE_MODEL=fail` on one command to change that.
+- The fake model answers `model-name` / `MODEL WROTE THIS.`. Set `PB_FAKE_CHANGE`, `PB_FAKE_INTENT`, `PB_FAKE_REPLY` or `PB_FAKE_MODEL=fail` on one command to change that.
 
 ## Proof and skip reporting
 

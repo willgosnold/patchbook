@@ -150,6 +150,13 @@ export class Repo {
   }
 }
 
+/** A fake claude CLI that keeps the prompt it got in `tmp`, names the change shout, and gives every key the prompt asks for the same intent. */
+export const fakeClaude = (tmp: string): string => `#!/bin/sh
+cat > ${tmp}/prompt.txt
+keys=$(sed -n 's/^For \\("[^"]*"\\):.*/\\1: "Shout the second line.", /p' ${tmp}/prompt.txt | tr -d '\\n')
+echo "{\\"change\\": \\"shout\\", \\"intents\\": {$keys\\"shout\\": \\"Shout the second line.\\"}}"
+`;
+
 export class Case {
   readonly tmp: string;
   readonly env: Env;
@@ -157,11 +164,10 @@ export class Case {
   constructor() {
     this.tmp = mkdtempSync(join(tmpdir(), "tmp"));
     this.env = { ...baseEnv(), PATCHBOOK_HOME: join(this.tmp, "store") };
-    // A fake claude CLI that names the change and writes its intent, and keeps the prompt it got.
     const binDir = join(this.tmp, "bin");
     mkdirSync(binDir);
     const fake = join(binDir, "claude");
-    writeFileSync(fake, `#!/bin/sh\ncat > ${this.tmp}/prompt.txt\necho '{"change": "shout", "intent": "Shout the second line."}'\n`);
+    writeFileSync(fake, fakeClaude(this.tmp));
     chmodSync(fake, 0o755);
     // The pre-commit hook runs `patchbook` from PATH.
     const shim = join(binDir, "patchbook");

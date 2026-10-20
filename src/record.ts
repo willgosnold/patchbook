@@ -7,8 +7,7 @@ import { type Block, blocksOf, type Entry, entriesPath, entryKey, formatEntry, k
 import { Book, PB, under } from "./book.ts";
 import { appendSeries, CHANGE_NAME, Change, type Edit, editText, notAChangeName, readSeries, Roster, saveChange } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
-import { changeDiff, entryPart, ModelFailed, nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
-import { unifiedDiff } from "./lib/diff.ts";
+import { changeParts, entryPart, type Fresh, ModelFailed, nameFromIntent, oneLine, PARAGRAPHS, type Part, pendingParts, type Reply, writeIntents } from "./intent.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, LINK, meantMode, type Mode, recordedModes, relative, sameFile, type Seen, writeText } from "./lib/fs.ts";
 import { type Changed, lineChanges } from "./lib/match.ts";
@@ -16,8 +15,8 @@ import { say, warn } from "./lib/term.ts";
 import { bytesEqual, decode, encode, isText } from "./lib/text.ts";
 import { Undo } from "./undo.ts";
 
-/** An entry a recording makes. A null intent means it still needs one. */
-type Draft = Omit<Entry, "intent"> & { intent: string | null };
+/** An entry a recording makes. A null intent means it still needs one; `was` marks an updated entry, with the intent it had. */
+type Draft = Omit<Entry, "intent"> & { intent: string | null; was?: string };
 type Plan = { path: string; entries: Map<string, Draft>; notes: [string, string][] };
 
 type Copy = { change: Change; staged: string };
@@ -43,11 +42,16 @@ export type Edited<K extends Kind = Kind> = { [P in K]: { kind: P; path: string 
  * replace from. */
 type Written = { kind: "add" | "delete" | "replace"; path: string; drops?: Change };
 
-type Need = { named: boolean; drafts: readonly Draft[]; writes?: Written };
+/** A change a row writes a copy into without naming it, with the copy's new bytes. */
+type Join = { change: Change; path: string; data: Uint8Array };
+
+/** `updates` are the existing entries a row rewrites, by their label. */
+type Need = { named: boolean; drafts: readonly Draft[]; updates?: readonly [string, Draft][]; writes?: Written; joins?: Join };
 const NOTHING: Need = { named: false, drafts: [] };
 const NAMED: Need = { named: true, drafts: [] };
 
-type Recording = { target: Change | null; intent: string | null };
+/** `intent` is for new entries; `rewritten` gives an updated entry's new intent by its label, or null to keep it. */
+type Recording = { target: Change | null; intent: string | null; rewritten(key: string): string | null };
 /** `copies` are the copies whose mode the row picked, absolute, for the commit hook to stage. */
 type Done = { touched: readonly Change[]; notes: readonly string[]; copies?: readonly [string, Mode][]; afterSave?: () => void };
 
@@ -103,14 +107,14 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     },
   },
   "update-ours": {
-    needs: () => NOTHING,
+    needs: (e) => ({ ...NOTHING, joins: { change: e.change, path: e.staged, data: e.now.data } }),
     apply: (e) => {
       const copies = writeCopy(e.change, e.staged, e.now, e.built.mode, e.up);
       return { touched: [e.change], notes: [`update   ${e.path} (in ${e.change.name})`], copies };
     },
   },
   "file-edit": {
-    needs: (e) => (e.to.kind === "recorded" ? NAMED : NOTHING),
+    needs: (e) => (e.to.kind === "recorded" ? NAMED : { ...NOTHING, joins: { change: e.to.change, path: e.rel, data: e.now.data } }),
     apply: (e, r) => {
       if (e.to.kind === "owned") {
         const c = e.to.change;
@@ -125,10 +129,17 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     },
   },
   "paragraph-edit": {
-    needs: (e) => ({ named: false, drafts: Array.from(e.plan.entries.values()).filter((d) => d.intent === null) }),
+    needs: (e) => {
+      const drafts = Array.from(e.plan.entries).filter(([, d]) => d.intent === null);
+      return {
+        named: false,
+        drafts: drafts.flatMap(([, d]) => (d.was === undefined ? [d] : [])),
+        updates: drafts.flatMap(([h, d]) => (d.was === undefined ? [] : [[entryLabel(e.path, h), d] as [string, Draft]])),
+      };
+    },
     apply: (e, r) => {
-      saveParagraphs(e.plan.path, withIntent(e.plan, r.intent));
-      const notes = e.plan.notes.map(([h, what]) => `entry    ${e.path} [${h}] ${what}`);
+      saveParagraphs(e.plan.path, withIntent(e.plan, r.intent, (h) => r.rewritten(entryLabel(e.path, h))));
+      const notes = e.plan.notes.map(([h, what]) => `entry    ${entryLabel(e.path, h)} ${what}`);
       if (e.modeNotRecorded !== null) notes.push(`skipped  ${e.path}: ${e.modeNotRecorded}`);
       return { touched: [], notes };
     },
@@ -157,6 +168,9 @@ function dropCopies(c: Change, path: string): void {
 }
 
 const row = <K extends Kind>(e: Edited<K>): Row<K> => KINDS[e.kind];
+
+/** A block entry as its `entry` note and the model's reply name it. */
+const entryLabel = (path: string, key: string): string => `${path} [${key}]`;
 
 export const needOf = (e: Edited): Need => row(e).needs(e);
 
@@ -257,17 +271,35 @@ function snapshot(book: Book, a: Assembly, current: ReadonlyMap<string, Seen>, c
   };
 }
 
-type Asked = { named: string[]; drafts: [string, Draft][]; writes: Written[] };
+type Asked = { named: string[]; drafts: [string, Draft][]; updates: [string, Draft][]; writes: Written[]; joins: Join[] };
 
 function asked(edits: readonly Edited[]): Asked {
-  const ask: Asked = { named: [], drafts: [], writes: [] };
+  const ask: Asked = { named: [], drafts: [], updates: [], writes: [], joins: [] };
   for (const e of edits) {
     const need = needOf(e);
     if (need.named) ask.named.push(e.path);
     for (const d of need.drafts) ask.drafts.push([e.path, d]);
+    ask.updates.push(...need.updates ?? []);
     if (need.writes) ask.writes.push(need.writes);
+    if (need.joins) ask.joins.push(need.joins);
   }
   return ask;
+}
+
+/** An existing change or block entry this record adds to, by its key in the model's reply, with the intent it has. */
+type Joined = { key: string; was: string; parts(): Part[] };
+
+/** Every change an edit joins, the named change too when it exists and takes named edits, and every updated entry. Removals don't join. */
+function joined(ask: Asked, known: Change | null, newParts: () => Part[]): Joined[] {
+  const changes = new Map<Change, Map<string, Uint8Array>>();
+  for (const j of ask.joins) changes.set(j.change, (changes.get(j.change) ?? new Map()).set(j.path, j.data));
+  if (known && ask.named.length && !changes.has(known)) changes.set(known, new Map());
+  return [
+    ...Array.from(changes, ([c, overlay]): Joined => ({
+      key: c.name, was: c.intent, parts: () => [...changeParts(c, overlay), ...(c === known && ask.named.length ? newParts() : [])],
+    })),
+    ...ask.updates.map(([label, d]): Joined => ({ key: label, was: d.was!, parts: () => [entryPart(label, d.upstream, d.patched)] })),
+  ];
 }
 
 type Misfit = { edit: Edit; in: string } | "own";
@@ -292,11 +324,29 @@ function refusal(name: string, misfits: readonly [Written, Misfit][]): string {
     + (floor ? `Record into ${floor} or a change after it, or into a new change.` : "Record into a new change.");
 }
 
-type Naming = { name: string; intent: string; said: string | null; unused: boolean } | { name: null; intent: string | null; said: string | null; unused: boolean };
+/** Where this record's intents come from. `fresh` is the model's intent for the record's new change and new entries. */
+type Authored =
+  | { by: "given"; intent: string }
+  | { by: "model"; fresh: string | null; intents: ReadonlyMap<string, string> }
+  | { by: "none"; why: string }
+  | { by: "unasked" };
+type Naming = { name: string | null; authored: Authored; said: string | null; unused: boolean };
+
+/** The new intent for a joined change or entry, or null to keep the one it has. */
+function rewritten(n: Naming, key: string): string | null {
+  if (n.authored.by === "given") return key === n.name ? n.authored.intent : null;
+  return n.authored.by === "model" ? n.authored.intents.get(key) ?? null : null;
+}
+
+/** The intent for the record's new change and new entries: "" while pending, null when nothing asked for one. */
+function newIntent(n: Naming): string | null {
+  const a = n.authored;
+  return a.by === "given" ? a.intent : a.by === "model" ? a.fresh : a.by === "none" ? "" : null;
+}
 
 function nameAndIntent(
-  ask: Asked, name: string | null, given: string | null, roster: Roster,
-  model: (name: string | null, named: boolean, offered: ReadonlyMap<string, Change>) => [string, string],
+  ask: Asked, name: string | null, given: string | null, roster: Roster, joins: readonly Joined[],
+  model: (fresh: Omit<Fresh, "parts"> | null, offered: ReadonlyMap<string, Change>) => Reply,
 ): Naming {
   const changes = roster.parsed;
   const misfits = (c: string) => ask.writes.flatMap((w): [Written, Misfit][] => {
@@ -314,42 +364,45 @@ function nameAndIntent(
     if (refused.length) throw new Fail(refusal(name, refused));
   }
   const named = ask.named.length > 0;
+  const known = name !== null && changes.has(name);
   if (given) {
-    const setsExisting = name !== null && changes.has(name);
-    const unused = !named && !ask.drafts.length && !setsExisting;
-    if (name) return { name, intent: given, said: null, unused };
-    if (!named) return { name: null, intent: given, said: null, unused };
+    const authored: Authored = { by: "given", intent: given };
+    const unused = !named && !ask.drafts.length && !known;
+    if (name) return { name, authored, said: null, unused };
+    if (!named) return { name: null, authored, said: null, unused };
     const derived = nameFromIntent(given, roster);
-    return { name: derived, intent: given, said: `${derived}: ${given}`, unused };
+    return { name: derived, authored, said: `${derived}: ${given}`, unused };
   }
-  const known = name === null ? undefined : changes.get(name);
-  if (known) return { name, intent: known.intent, said: null, unused: false };
-  if (!named && !ask.drafts.length) return { name: null, intent: null, said: null, unused: false };
-  let answer: [string, string];
+  if (!named && !ask.drafts.length && !joins.length) return { name: null, authored: { by: "unasked" }, said: null, unused: false };
+  // A named change that exists takes the new edits as a refresh, so only new things are fresh.
+  const fresh = named ? (known ? null : { name, named: true }) : ask.drafts.length ? { name: null, named: false } : null;
+  let reply: Reply;
   try {
     // The model sees only the changes that can take these edits, and a reply that names another starts a new change.
-    answer = model(name, named, new Map(Array.from(changes).filter(([c]) => !misfits(c).length)));
+    reply = model(fresh, new Map(Array.from(changes).filter(([c]) => !misfits(c).length)));
   } catch (e) {
     if (e instanceof ModelFailed) return pending(ask, name, roster, e.why);
     throw e;
   }
-  const [picked, intent] = answer;
-  if (!named) return { name: null, intent, said: `intent: ${intent}`, unused: false };
+  const key = fresh === null ? name : fresh.named ? reply.change ?? name : PARAGRAPHS;
+  const intent = key === null ? null : reply.intents.get(key) ?? null;
+  const authored: Authored = { by: "model", fresh: intent, intents: reply.intents };
+  if (!named) return { name: known ? name : null, authored, said: fresh ? `intent: ${intent}` : null, unused: false };
+  if (known) return { name, authored, said: null, unused: false };
+  const picked = reply.change ?? name!;
   const chosen = roster.known(picked) && !misfits(picked).length ? picked : roster.free(picked);
-  return { name: chosen, intent, said: changes.has(chosen) ? `adding to ${chosen}` : `${chosen}: ${intent}`, unused: false };
+  return { name: chosen, authored, said: changes.has(chosen) ? `adding to ${chosen}` : `${chosen}: ${intent}`, unused: false };
 }
 
+/** Only new things go pending: a named change that exists keeps its name and its intent. */
 function pending(ask: Asked, name: string | null, roster: Roster, why: string): Naming {
-  const chosen = ask.named.length ? roster.free(name ?? "pending") : null;
+  const known = name !== null && roster.parsed.has(name);
+  const chosen = ask.named.length && !known ? roster.free(name ?? "pending") : null;
   const entries = ask.drafts.length > 0;
   const what = [chosen, entries ? "the new entries" : null].filter((x) => x !== null).join(" and ");
   const fill = chosen && !entries ? `patchbook intent ${chosen}` : "patchbook intent";
-  const said = `pending  no intent yet for ${what} (${why}). To fill it: ${fill}`;
-  return chosen ? { name: chosen, intent: "", said, unused: false } : { name: null, intent: "", said, unused: false };
-}
-
-function modelDiff(a: Assembly, current: ReadonlyMap<string, File>, ask: Asked): string {
-  return pendingDiff(a, current, ask.named, ask.drafts.map(([p, e]) => entryPart(p, e.upstream, e.patched)));
+  const said = what ? `pending  no intent yet for ${what} (${why}). To fill it: ${fill}` : null;
+  return { name: known ? name : chosen, authored: { by: "none", why }, said, unused: false };
 }
 
 /** What a recording says, and the copies whose mode it picked, repo-relative, for the commit hook to stage. */
@@ -377,14 +430,14 @@ export function fill(book: Book, change: string | null, intent: string | null): 
   if (given && change === null) throw new Fail("--intent needs a change name: patchbook intent <change> --intent ...");
 
   const empty = target ? [target] : Array.from(changes.values()).filter((c) => !c.intent);
-  const filled = empty.map((c): [Change, string] => [c, given ?? writeIntent(book, changes, changeDiff(c), c.name, true, true)[1]]);
+  const filled = empty.map((c): [Change, string] => [c, given ?? writeIntents(book, changes, null, [{ key: c.name, was: "", parts: changeParts(c) }]).intents.get(c.name)!]);
   const files: { rel: string; entries: Map<string, Entry>; intent: string }[] = [];
   for (const rel of target ? [] : blockFiles(book)) {
     const entries = readEntries(entriesPath(book, rel));
     const bare = Array.from(entries.values()).filter((e) => !e.intent);
     if (!bare.length) continue;
-    const diff = bare.map((e) => unifiedDiff(encode(e.upstream + "\n"), encode(e.patched + "\n"), `upstream/${rel}`, `patched/${rel}`)).join("");
-    const text = given ?? writeIntent(book, changes, diff, null, false)[1];
+    const parts = bare.map((e) => entryPart(rel, e.upstream, e.patched));
+    const text = given ?? writeIntents(book, changes, { name: null, named: false, parts }, []).intents.get(PARAGRAPHS)!;
     files.push({ rel, entries: new Map(Array.from(entries, ([h, e]) => [h, e.intent ? e : { ...e, intent: text }])), intent: text });
   }
 
@@ -423,10 +476,12 @@ export function record(
 
   const given = intent === null ? null : oneLine(intent) || null;
   const ask = asked(edits);
-  const naming = nameAndIntent(ask, change, given, roster, (n, named, offered) => writeIntent(book, offered, modelDiff(a, current, ask), n, named));
-  const target = naming.name ? changes.get(naming.name) ?? new Change(naming.name, join(book.dir, "changes", naming.name), naming.intent) : null;
-  if (target && naming.name !== null && !target.intent) target.intent = naming.intent;
-  if (target && given) target.intent = given;
+  const newParts = () => [...pendingParts(a, current, ask.named), ...ask.drafts.map(([p, d]) => entryPart(p, d.upstream, d.patched))];
+  const joins = joined(ask, change === null ? null : changes.get(change) ?? null, newParts);
+  const naming = nameAndIntent(ask, change, given, roster, joins, (fresh, offered) =>
+    writeIntents(book, offered, fresh && { ...fresh, parts: newParts() }, joins.map((j) => ({ key: j.key, was: j.was, parts: j.parts() }))));
+  const target = naming.name ? changes.get(naming.name) ?? new Change(naming.name, join(book.dir, "changes", naming.name), newIntent(naming) ?? "") : null;
+  for (const c of new Set([...ask.joins.map((j) => j.change), ...(target ? [target] : [])])) c.intent = rewritten(naming, c.name) ?? c.intent;
 
   const touched = new Map<string, Change>();
   const notes: string[] = [];
@@ -437,7 +492,7 @@ export function record(
   let after: Assembly | null = null;
   try {
     for (const e of edits) {
-      const done = row(e).apply(e, { target, intent: naming.intent });
+      const done = row(e).apply(e, { target, intent: newIntent(naming), rewritten: (key) => rewritten(naming, key) });
       for (const c of done.touched) touched.set(c.name, c);
       notes.push(...done.notes);
       for (const [p, mode] of done.copies ?? []) copies.set(relative(book.root, p), mode);
@@ -471,7 +526,14 @@ export function record(
   }
   const owners = Array.from(touched.keys()).join(", ");
   const dropped = naming.unused && edits.some((e) => e.kind !== "skip");
-  const text = (naming.said !== null ? naming.said + "\n" : "") + notes.map((n) => n + "\n").join("") + (dropped ? `intent   not used${owners ? `: the edits went to ${owners}` : ""}\n` : "");
+  const keys = new Set([...(target && changes.has(target.name) ? [target.name] : []), ...joins.map((j) => j.key)]);
+  const intents = naming.authored.by === "model" ? naming.authored.intents : new Map<string, string>();
+  const rewrites = Array.from(keys).flatMap((k) => (intents.has(k) ? [`intent   ${k}: ${intents.get(k)}\n`] : []));
+  const kept = joins.filter((j) => j.was && rewritten(naming, j.key) === null).map((j) => j.key);
+  const why = naming.authored.by === "none" ? naming.authored.why : "the given intent is for the change being recorded";
+  const text = (naming.said !== null ? naming.said + "\n" : "") + notes.map((n) => n + "\n").join("") + rewrites.join("")
+    + (dropped ? `intent   not used${owners ? `: the edits went to ${owners}` : ""}\n` : "")
+    + (kept.length ? `intent   may be stale: ${kept.join(", ")} (${why}). Edit them by hand to cover these edits\n` : "");
   return { text, copies, after };
 }
 
@@ -566,7 +628,7 @@ function planParagraphs(
         continue;
       }
       if (entry && entry.kind !== "keep") {
-        result.set(key, { ...entry, ...at, patched: piece });
+        result.set(key, entry.intent === null ? { ...entry, ...at, patched: piece } : { ...entry, ...at, patched: piece, intent: null, was: entry.intent });
         notes.push([key, "updated"]);
       } else {
         result.set(key, { hash: b.hash, ...at, kind: "policy", rules: "", intent: null, upstream, patched: piece });
@@ -602,9 +664,10 @@ function mapLine(changed: readonly Changed[], i: number): number {
   return i + shift;
 }
 
-function withIntent(plan: Plan, intent: string | null): Map<string, Entry> {
-  return new Map(Array.from(plan.entries, ([h, d]) => {
-    const own = d.intent ?? intent;
+/** Each entry with its intent: new ones take `intent`, and an updated one takes its rewrite or keeps the one it had. */
+function withIntent(plan: Plan, intent: string | null, rewrite: (key: string) => string | null): Map<string, Entry> {
+  return new Map(Array.from(plan.entries, ([h, { was, ...d }]) => {
+    const own = d.intent ?? (was === undefined ? intent : rewrite(h) ?? was);
     if (own === null) throw new Fail(`${plan.path}: the entry [${h}] has no intent`);
     return [h, { ...d, intent: own }];
   }));

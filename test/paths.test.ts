@@ -28,7 +28,7 @@ ${stderr ? `printf '%s\\n' ${q(stderr)} >&2\n` : ""}exit ${code}
   chmodSync(fake, 0o755);
 }
 
-const answer = (change: string, intent: string): string => JSON.stringify({ change, intent });
+const answer = (change: string, intent: string): string => JSON.stringify({ change, intents: { [change]: intent } });
 
 /** A case with no model settings from the environment, so each test sets the ones it means to use. */
 class Sandbox extends Case {
@@ -188,7 +188,7 @@ describe("the codex provider", () => {
     const prompt = read(join(t.tmp, "codex.prompt"));
     expect(prompt).toContain("disk/app.txt");
     expect(prompt).toContain("-two\n+TWO");
-    expect(prompt).toContain('Reply with only a JSON object: {"change": "<name>", "intent": "<intent>"}');
+    expect(prompt).toContain('Reply with only a JSON object: {"change": "<name>", "intents": {"<key>": "<intent>", ...}}');
     expect(out).toContain("codex-shout: Shout the second line.");
     expect(t.changes()).toEqual(["codex-shout"]);
     expect(t.fork.read(".patchbook/changes/codex-shout/CHANGE.md")).toContain("intent: Shout the second line.");
@@ -209,12 +209,12 @@ describe("the codex provider", () => {
 
   forkTest("a name given to record wins over the one codex picks", (t) => {
     t.env["PATCHBOOK_PROVIDER"] = "codex";
-    t.fake("codex", answer("codex-pick", "Shout the second line."));
+    t.fake("codex", JSON.stringify({ change: "codex-pick", intents: { mine: "Shout the second line." } }));
     t.edit();
     t.record(["mine"]);
     expect(t.changes()).toEqual(["mine"]);
     expect(t.fork.read(".patchbook/changes/mine/CHANGE.md")).toContain("intent: Shout the second line.");
-    expect(read(join(t.tmp, "codex.prompt"))).toContain("The change is new and called mine.");
+    expect(read(join(t.tmp, "codex.prompt"))).toContain('For "mine": these edits are a new change called mine.');
   });
 
   forkTest("a codex that fails is named in the pending note, and no change takes a name or intent from it", (t) => {
@@ -234,8 +234,8 @@ describe("the codex provider", () => {
     "{not json}",
     answer("Not Kebab Case", "Shout."),
     answer("codex-shout", ""),
-    '{"change": 5, "intent": "Shout."}',
-    '{"intent": "Shout."}',
+    '{"change": 5, "intents": {"5": "Shout."}}',
+    '{"intents": {"codex-shout": "Shout."}}',
   ]) {
     forkTest(`an answer codex garbles (${reply}) is named in the pending note, and no change takes a name or intent from it`, (t) => {
       t.env["PATCHBOOK_PROVIDER"] = "codex";
@@ -474,21 +474,7 @@ pattern = '\bCursor\b'
 }
 
 describe("planning paragraph edits", () => {
-  docTest("an edit to a patched paragraph updates its entry, keeps its kind and intent, and asks no model", (t) => {
-    t.edit("Open T3 and say hello.", "Open T3 and say hello. Smile.");
-    const out = t.record().stdout;
-    expect(out).toMatch(/entry +guide\.md \[[0-9a-f]{12}\] updated/);
-    const entries = read(t.entries);
-    expect(entries).toContain("kind: translation\nrules: t3\nintent: Speak T3.\n");
-    expect(entries).toContain("--- patched\nOpen T3 and say hello. Smile.\n");
-    expect(t.called("claude")).toBe(false);
-    expect(existsSync(join(t.tmp, "prompt.txt"))).toBe(false);
-    expect(t.changes()).toEqual([]);
-    t.pb(["build"], { cwd: t.repo.path });
-    expect(t.repo.read(t.guide)).toContain("Open T3 and say hello. Smile.");
-  });
-
-  docTest("an edit to a patched paragraph has the model write its entry's intent again, in one call", (t) => {
+  docTest("an edit to a patched paragraph updates its entry, keeps its kind, and has the model write its intent again, in one call", (t) => {
     const label = `guide.md [${/^=== entry (\S+)$/m.exec(read(t.entries))![1]}]`;
     t.fake("claude", JSON.stringify({ change: null, intents: { [label]: "Speak T3, and smile." } }));
     t.edit("Open T3 and say hello.", "Open T3 and say hello. Smile.");
@@ -499,6 +485,10 @@ describe("planning paragraph edits", () => {
     const prompt = read(join(t.tmp, "claude.prompt"));
     expect(prompt).toContain("Speak T3.");
     expect(prompt).toContain("-Open Cursor and say hello.\n+Open T3 and say hello. Smile.\n");
+    expect(read(t.entries)).toContain("--- patched\nOpen T3 and say hello. Smile.\n");
+    expect(t.changes()).toEqual([]);
+    t.pb(["build"], { cwd: t.repo.path });
+    expect(t.repo.read(t.guide)).toContain("Open T3 and say hello. Smile.");
   });
 
   docTest("with no model, an edit to a patched paragraph keeps its entry's intent and says it may be stale", (t) => {
@@ -536,7 +526,8 @@ describe("planning paragraph edits", () => {
     expect(t.changes()).toEqual([]);
   });
 
-  docTest("an edit recorded into a change with no intent writes an empty intent, never None, and status reports it missing", (t) => {
+  docTest("with no model, an edit recorded into a change with no intent writes an empty intent, never None, and status reports it missing", (t) => {
+    t.env["PATCHBOOK_PROVIDER"] = "none";
     mkdirSync(join(t.repo.path, ".patchbook/changes/mine"), { recursive: true });
     writeFileSync(join(t.repo.path, ".patchbook/changes/mine/CHANGE.md"), "# mine\n\nintent:\n\nedits:\n");
     appendFileSync(join(t.repo.path, ".patchbook/series"), "mine\n");
