@@ -14,7 +14,7 @@ ship-extra-s-x: Ship extra's x skill.
 copy     extra/skills/x -> skills/x
 ```
 
-A file you edit after you copy it is still recorded as an `add`.
+A copy you edit before it is recorded, as when you copy a file and edit it in the same commit, is still recorded as an `add`.
 
 Changes recorded with 0.0.1 keep their `add` lines, so those files still don't follow upstream. To redo one, move the file out of the output and run `patchbook record`, which removes the `add` line and its copy. Then move the file back and run `patchbook record <change>`, which writes a `copy` edit into that change.
 
