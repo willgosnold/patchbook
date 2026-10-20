@@ -33,6 +33,22 @@ file     a2/SKILL.md
 
 A rename is still recorded as a `delete` and an `add` when the old and new versions keep, in order, less than half of the non-blank lines of the longer one, or when its edit can't be recorded on the moved file, as in a file whose copy uses placeholders. Renames recorded with 0.0.1 keep their `delete` and `add` lines.
 
+### Intents cover every file in a large record
+
+The model was given the diff cut at 40,000 characters, with no list of paths, so on a large record it never saw the later files and the intent named only the first ones. Now the prompt lists every changed path first, and each file's diff gets its own share of the budget. A long record loses detail in its diffs, never whole files (#309).
+
+### An edit that joins an existing change rewrites its intent
+
+When an edit went to a file an existing change or block entry already owned, the change kept its old intent, which then no longer described it. Now `record` rewrites that intent from the change's whole diff, in the same single model call it already makes. If you gave the intent yourself (`--intent` or `PATCHBOOK_INTENT`), or no model answers, the old intent stays and `record` prints a line naming it:
+
+```
+intent   may be stale: <change> (<why>)
+```
+
+(#310)
+
+`record` also no longer writes two blank lines after an entry with an empty patched side (#311).
+
 ## 0.0.1
 
 The first release.
