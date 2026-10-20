@@ -14689,6 +14689,25 @@ exec '${Bun.which("git")}' "$@"
     expect(sh(["git", "status", "--porcelain"], { cwd: t.repo.path }).stdout).toBe(before.staged);
   });
 
+  vendorTest("commit never writes the build through an output folder linked outside the repo", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.repo.commit("built");
+    const built = t.repo.read("skills/hello/SKILL.md");
+    t.repo.write(".patchbook/snippets.md", "## greet\n\nSay hi in T3.\n");
+    t.repo.write("skills/hello/SKILL.md", built.replace("Say hello in T3.", "Say hi in T3."));
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+    const outside = join(t.tmp, "outside-hello");
+    renameSync(join(t.repo.path, "skills/hello"), outside);
+    writeFileSync(join(outside, "SKILL.md"), built);
+    symlinkSync(outside, join(t.repo.path, "skills/hello"));
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.repo.path }).stdout;
+    const commit = sh(["git", "commit", "-q", "-m", "say hi"], { cwd: t.repo.path, check: false, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain(`hello/SKILL.md really goes to ${realpathSync(join(outside, "SKILL.md"))}, outside the output folder. Nothing was changed.`);
+    expect(read(join(outside, "SKILL.md"))).toBe(built);
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.repo.path }).stdout).toBe(head);
+  });
+
   vendorTest("commit refuses an output folder replaced by a link before any build", (t) => {
     t.repo.write("skills/hello/SKILL.md", "tracked before the first build\n");
     t.repo.commit("existing output");
