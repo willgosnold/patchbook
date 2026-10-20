@@ -123,7 +123,7 @@ An upstream block that matches a check and has no entry is **missing**. Output t
 
 ## Hooks
 
-`.patchbook/hooks.ts` is optional project code. It exports functions named for the hooks below, and patchbook calls each one by name. The `Hooks` type in `src/api.ts` has their signatures. With patchbook installed from npm as a dev dependency, a hook file can check itself against it with `import type { Hooks } from "patchbook"`.
+`.patchbook/hooks.ts` is optional project code. It exports functions named for the hooks below, and patchbook calls each one by name. The `Hooks` type in `src/api.ts` has their signatures. With patchbook installed from npm as a dev dependency, a hook file can check itself against it with `import type { Hooks } from "@patchbook/cli"`.
 
 | Hook | Called | Returns |
 | --- | --- | --- |
@@ -241,7 +241,7 @@ Help text does not wrap to the terminal. A test keeps every help line within 80 
 
 ## JSON files and output
 
-Patchbook writes four JSON documents. `.patchbook/upstream.lock` is committed with the repo. `.patchbook/last-sync.json` is a report that `patchbook sync` writes and nobody commits. `patchbook check` and `patchbook status --json` print the other two. `UpstreamLock`, `LastSync`, `CheckJson` and `StatusJson` in `src/api.ts` are their types, and the code that writes each document is typed against its type. With patchbook installed from npm, `import type { CheckJson } from "patchbook"` gets the same types. Patchbook also reads two JSON texts that it doesn't write: a placeholder file with `format = "json"`, and the reply of the model that writes an intent.
+Patchbook writes four JSON documents. `.patchbook/upstream.lock` is committed with the repo. `.patchbook/last-sync.json` is a report that `patchbook sync` writes and nobody commits. `patchbook check` and `patchbook status --json` print the other two. `UpstreamLock`, `LastSync`, `CheckJson` and `StatusJson` in `src/api.ts` are their types, and the code that writes each document is typed against its type. With patchbook installed from npm, `import type { CheckJson } from "@patchbook/cli"` gets the same types. Patchbook also reads two JSON texts that it doesn't write: a placeholder file with `format = "json"`, and the reply of the model that writes an intent.
 
 **Writing.** Patchbook writes each document with `JSON.stringify(value, null, 2)` and a newline at the end. Text outside ASCII is written as UTF-8, not as `\u` escapes, except that every control character is a `\u` escape, so none reaches a terminal raw. Keys come in the order the tables below list them. Each list of upstreams is a list of objects with `name` first, never an object keyed by upstream name, because JavaScript puts a key such as `2` in front of the other keys of an object, whatever order it was added in. Writing a number that isn't finite fails, so a `NaN` never becomes `null`.
 

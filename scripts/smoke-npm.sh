@@ -12,7 +12,7 @@ trap 'rm -rf "$work"' EXIT
 
 npm pack --silent --pack-destination "$work" "$npm_dir/$target" "$npm_dir/patchbook" >/dev/null
 platform_tgz=$(ls "$work"/patchbook-"$target"-*.tgz)
-main_tgz=$(ls "$work"/patchbook-[0-9]*.tgz)
+main_tgz=$(ls "$work"/patchbook-cli-[0-9]*.tgz)
 
 install() {
   local dir=$1

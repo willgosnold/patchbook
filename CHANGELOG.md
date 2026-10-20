@@ -4,6 +4,8 @@ The hand-written part of each release's notes. GitHub's generated notes list the
 
 ## 0.0.1
 
+The npm package is `@patchbook/cli`, since npm refused the name `patchbook` as too close to an existing package. Install it with `npm install -g @patchbook/cli`. The command it installs is still `patchbook`.
+
 ### Configs patchbook now refuses
 
 These configs used to load, build once, and then break `status`, `build` or the next commit. Patchbook now refuses them when it loads the config, with a message that names the folder and what to change. A failed `init`, `clone` or `track` writes nothing. (#42, #43, #54)

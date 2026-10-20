@@ -50,7 +50,7 @@ function writeHook(path: string): void {
 const GUARD = `if [ "$PATCHBOOK_HOOK" != 0 ] && ${HAS_PATCHBOOK}; then
   if ! command -v patchbook >/dev/null; then
     echo "patchbook isn't installed, so this commit can't record hand edits to the build output." >&2
-    echo "Install it with npm install -g patchbook, or skip it once with PATCHBOOK_HOOK=0 git commit" >&2
+    echo "Install it with npm install -g @patchbook/cli, or skip it once with PATCHBOOK_HOOK=0 git commit" >&2
     exit 1
   fi
   patchbook hook run || exit 1

@@ -32,7 +32,7 @@ End every run with one of these as its last line, so a scheduler can read the ou
 
 ## 1. Check
 
-First, upgrade patchbook the way it was installed, if you can tell: `npm install -g patchbook@latest` for an npm install, or rerun the install script for a script install. If you can't tell how it was installed, or the upgrade fails, carry on with the installed version. `patchbook --version` prints it.
+First, upgrade patchbook the way it was installed, if you can tell: `npm install -g @patchbook/cli@latest` for an npm install, or rerun the install script for a script install. If you can't tell how it was installed, or the upgrade fails, carry on with the installed version. `patchbook --version` prints it.
 
 Then run `patchbook check`.
 

@@ -28,7 +28,7 @@ detect_target() {
   case "$(uname -s)" in
     Linux) os=linux ;;
     Darwin) os=darwin ;;
-    *) die "this installer supports Linux and macOS, not $(uname -s). On Windows, use 'npm install -g patchbook' or download the .exe from https://github.com/$repo/releases." ;;
+    *) die "this installer supports Linux and macOS, not $(uname -s). On Windows, use 'npm install -g @patchbook/cli' or download the .exe from https://github.com/$repo/releases." ;;
   esac
   case "$(uname -m)" in
     x86_64 | amd64) cpu=x64 ;;
