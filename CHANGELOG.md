@@ -2,6 +2,22 @@
 
 The hand-written part of each release's notes. GitHub's generated notes list the pull requests. This file says what a user needs to know. Paste a release's section at the top of its GitHub release notes.
 
+## 0.0.2
+
+### Record writes a copy for a file copied from upstream
+
+When you copied a file from an upstream into the output, such as a skill from a second upstream tracked at `extra/`, `record` and the commit hook wrote an `add` edit with a frozen copy of the file. The file then never changed with upstream, and `status` reported no problems. Now a new file that builds exactly as an upstream file builds is recorded as a `copy` edit, so `sync` and `build` bring in upstream's changes to it. If you copy a whole folder into a new folder, the edit copies the folder, and a file upstream adds to it later ships too (#307).
+
+```
+$ git commit -m "ship x"
+ship-extra-s-x: Ship extra's x skill.
+copy     extra/skills/x -> skills/x
+```
+
+A copy you edit before it is recorded, as when you copy a file and edit it in the same commit, is still recorded as an `add`.
+
+Changes recorded with 0.0.1 keep their `add` lines, so those files still don't follow upstream. To redo one, move the file out of the output and run `patchbook record`, which removes the `add` line and its copy. Then move the file back and run `patchbook record <change>`, which writes a `copy` edit into that change.
+
 ## 0.0.1
 
 The first release.

@@ -12,7 +12,7 @@ import { Fail } from "./lib/fail.ts";
 import { exists, type File, LINK, meantMode, type Mode, recordedModes, relative, sameFile, type Seen, writeText } from "./lib/fs.ts";
 import { type Changed, lineChanges } from "./lib/match.ts";
 import { say, warn } from "./lib/term.ts";
-import { bytesEqual, decode, encode, isText } from "./lib/text.ts";
+import { byCodePoint, bytesEqual, decode, encode, isText } from "./lib/text.ts";
 import { Undo } from "./undo.ts";
 
 /** An entry a recording makes. A null intent means it still needs one; `was` marks an updated entry, with the intent it had. */
@@ -23,8 +23,11 @@ type Copy = { change: Change; staged: string };
 
 type Destination = { kind: "owned"; change: Change; up?: File | undefined } | { kind: "recorded"; base: File };
 
+type Follow = Extract<Edit, { kind: "move" | "copy" }>;
+
 type Data = {
   "add": { staged: string; now: Seen };
+  "follow": { edit: Follow };
   "delete-upstream": { staged: string; entries: string | null };
   "replace": { staged: string; now: Seen; built: Mode; up: File | undefined; entries: string | null };
   "unadd": Copy;
@@ -40,7 +43,7 @@ export type Edited<K extends Kind = Kind> = { [P in K]: { kind: P; path: string 
 
 /** A structural edit a row adds to the change it records into. A delete that stands in for a replace names the change it drops the
  * replace from. */
-type Written = { kind: "add" | "delete" | "replace"; path: string; drops?: Change };
+type Written = Exclude<Edit, { kind: "file" }> & { drops?: Change };
 
 /** A change a row writes a copy into without naming it, with the copy's new bytes. */
 type Join = { change: Change; path: string; data: Uint8Array };
@@ -68,6 +71,14 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
       c.edits.push({ kind: "add", path: e.staged });
       const copies = writeCopy(c, e.staged, e.now, undefined, undefined);
       return { touched: [c], notes: [`add      ${e.path}`], copies };
+    },
+  },
+  "follow": {
+    needs: (e) => ({ ...NAMED, writes: e.edit }),
+    apply: (e, r) => {
+      const c = r.target!;
+      c.edits.push(e.edit);
+      return { touched: [c], notes: [`${e.edit.kind.padEnd(8)} ${editText(e.edit).slice(e.edit.kind.length + 1)}`] };
     },
   },
   "delete-upstream": {
@@ -190,11 +201,19 @@ export type Snapshot = {
   /** Whether a change's copy is text with a placeholder of a configured kind. The build expands only text. */
   uses(copy: Uint8Array | null): boolean;
   plan(rel: string, path: string, built: File, now: File): Plan | string;
+  /** Staged path to source, after every change in the series. */
+  staged: ReadonlyMap<string, Source>;
+  /** What a source builds at an output path, before the finish hook. */
+  build(src: Source, at: string): File;
 };
 
 /** An edit to an output whose source builds another output still on disk is a replace of that output alone: an edit to the source
- * would change the other output too. */
+ * would change the other output too. A new output that builds as a copy of a staged file is recorded as that copy. */
 export function classify(s: Snapshot, paths: readonly string[]): Edited[] {
+  return follow(s, each(s, paths));
+}
+
+function each(s: Snapshot, paths: readonly string[]): Edited[] {
   return paths.map((path) => {
     const now = s.current.get(path);
     const built = s.out.get(path);
@@ -260,6 +279,106 @@ function classifyOne(s: Snapshot, path: string): Edited {
 const skipPlaceholders = (path: string, change: Change): Edited =>
   ({ kind: "skip", path, reason: `its copy in ${change.name} uses placeholders; edit that copy directly` });
 
+type Lead = {
+  add: Edited<"add">; kind: Follow["kind"]; from: string; rel: string; takes: Edited<"delete-upstream"> | null;
+  rest: Edited | null; rank: readonly [sure: number, tail: number];
+};
+
+const EXACT_COPY = 2;
+
+const emptyMatch = (l: Lead) => l.add.now.data.length === 0;
+
+function follow(s: Snapshot, edits: readonly Edited[]): Edited[] {
+  const all = leads(s, edits);
+  const chosen = choose(all.filter((l) => !emptyMatch(l)));
+  const widened = new Map(chosen.map((l) => [l.add as Edited, { lead: l, ...widen(s, chosen, all, l) }]));
+  const dropped = new Set<Edited>(Array.from(widened.values()).flatMap((w) => (w.lead.takes ? [...w.covers, w.lead.takes] : w.covers)));
+  const written = new Set<string>();
+  return edits.flatMap((e): Edited[] => {
+    if (dropped.has(e)) return [];
+    const w = widened.get(e);
+    if (!w) return [e];
+    const text = editText(w.edit);
+    const head: Edited[] = written.has(text) ? [] : [{ kind: "follow", path: e.path, edit: w.edit }];
+    written.add(text);
+    return w.lead.rest ? [...head, w.lead.rest] : head;
+  });
+}
+
+function leads(s: Snapshot, edits: readonly Edited[]): Lead[] {
+  const editedRels = touched(s, edits);
+  const buildsAsUpstream = (rel: string) => !s.owners.has(rel) && !s.blocks.has(rel);
+  const adds = edits.filter((e): e is Edited<"add"> => e.kind === "add");
+  return adds.flatMap((add) => Array.from(s.staged).flatMap(([from, src]): Lead[] => {
+    if (src.kind !== "up" || editedRels.has(src.path)) return [];
+    if (buildsAsUpstream(src.path) && s.upstream.get(src.path)!.data.length !== add.now.data.length) return [];
+    if (rest(s, add, src) !== null) return [];
+    return [{ add, kind: "copy", from, rel: src.path, takes: null, rest: null, rank: [EXACT_COPY, sharedTail(from, add.staged)] }];
+  }));
+}
+
+function touched(s: Snapshot, edits: readonly Edited[]): Map<string, number> {
+  const rels = new Map<string, number>();
+  for (const e of edits) {
+    const src = s.sources.get(e.path);
+    if (src?.kind === "up") rels.set(src.path, (rels.get(src.path) ?? 0) + 1);
+  }
+  return rels;
+}
+
+function rest(s: Snapshot, add: Edited<"add">, src: Source): Edited | null | "unclean" {
+  return sameFile(add.now, s.build(src, add.path), add.now.chosen) ? null : "unclean";
+}
+
+function choose(leads: readonly Lead[]): Lead[] {
+  const ranked = leads.toSorted((a, b) => b.rank[0] - a.rank[0] || b.rank[1] - a.rank[1] || byCodePoint(a.from, b.from));
+  const ends = (l: Lead): Edited[] => (l.takes ? [l.add, l.takes] : [l.add]);
+  const decided = new Set<Edited>();
+  const open = (l: Lead) => !ends(l).some((e) => decided.has(e));
+  const chosen: Lead[] = [];
+  const tiesWithOtherUpstream = (l: Lead) =>
+    ranked.some((o) => o.rel !== l.rel && o.rank[0] === l.rank[0] && open(o) && ends(o).some((e) => ends(l).includes(e)));
+  for (const l of ranked) {
+    if (!open(l)) continue;
+    if (!tiesWithOtherUpstream(l)) chosen.push(l);
+    for (const e of ends(l)) decided.add(e);
+  }
+  return chosen;
+}
+
+function widen(s: Snapshot, chosen: readonly Lead[], all: readonly Lead[], lead: Lead): { edit: Follow; covers: Edited[] } {
+  let [from, dest, covers] = [lead.from, lead.add.staged, [] as Edited[]];
+  for (;;) {
+    const [i, j] = [from.lastIndexOf("/"), dest.lastIndexOf("/")];
+    const sameName = i >= 0 && j >= 0 && from.slice(i) === dest.slice(j);
+    if (!sameName) break;
+    const [folder, into] = [from.slice(0, i), dest.slice(0, j)];
+    const nested = under(folder, into) || under(into, folder);
+    const intoStaged = Array.from(s.staged.keys()).some((p) => under(p, into));
+    if (nested || intoStaged) break;
+    const empty: Edited[] = [];
+    const wholeFolderGoes = Array.from(s.staged.keys()).every((p) => {
+      if (!under(p, folder)) return true;
+      const to = into + p.slice(folder.length);
+      const goes = (l: Lead) => l.kind === lead.kind && l.from === p && l.add.staged === to;
+      if (chosen.some(goes)) return true;
+      const keep = all.find((l) => goes(l) && emptyMatch(l));
+      if (keep) empty.push(keep.add);
+      return keep !== undefined;
+    });
+    if (!wholeFolderGoes) break;
+    [from, dest, covers] = [folder, into, empty];
+  }
+  return { edit: { kind: lead.kind, path: from, dest }, covers };
+}
+
+function sharedTail(a: string, b: string): number {
+  const [x, y] = [a.split("/"), b.split("/")];
+  let n = 0;
+  while (n < x.length && n < y.length && x[x.length - 1 - n] === y[y.length - 1 - n]) n++;
+  return n;
+}
+
 function snapshot(book: Book, a: Assembly, current: ReadonlyMap<string, Seen>, changes: ReadonlyMap<string, Change>): Snapshot {
   const owners = new Map<string, Change>();
   for (const c of changes.values()) for (const e of c.edits) if (e.kind === "file") owners.set(e.path, c);
@@ -271,6 +390,8 @@ function snapshot(book: Book, a: Assembly, current: ReadonlyMap<string, Seen>, c
     prefix: book.layout.kind === "folder" && book.layout.from ? book.layout.from + "/" : "",
     uses: (copy) => copy !== null && isText(copy) && rules.uses(decode(copy)),
     plan: (rel, path, built, now) => planParagraphs(book, rules, rel, path, decode(a.upstream.get(rel)!.data), built.data, now.data),
+    staged: a.staged,
+    build: a.build,
   };
 }
 
@@ -312,17 +433,18 @@ type Misfit = { edit: Edit; in: string } | "own";
 /** Why the change `name` can't take `w`: an edit on its path, a folder above it or a path under it, in a change later in the series,
  * which has to apply first; or, for an add or a replace, a copy of that path the change already keeps. */
 function misfit(roster: Roster, name: string, w: Written): Misfit | null {
-  const overlaps = (p: string) => under(p, w.path) || under(w.path, p);
+  const ends = "dest" in w ? [w.path, w.dest] : [w.path];
+  const overlaps = (p: string) => ends.some((q) => under(p, q) || under(q, p));
   for (const later of roster.after(name).toReversed()) {
     const edit = later.edits.findLast((e) => e.kind !== "file" && !(later === w.drops && e.kind === "replace" && e.path === w.path)
       && (overlaps(e.path) || ("dest" in e && overlaps(e.dest))));
     if (edit) return { edit, in: later.name };
   }
-  return w.kind !== "delete" && roster.parsed.get(name)?.read("ours", w.path) != null ? "own" : null;
+  return (w.kind === "add" || w.kind === "replace") && roster.parsed.get(name)?.read("ours", w.path) != null ? "own" : null;
 }
 
 function refusal(name: string, misfits: readonly [Written, Misfit][]): string {
-  const lines = misfits.map(([w, why]) => `  ${w.kind} ${w.path}: `
+  const lines = misfits.map(([w, why]) => `  ${editText(w)}: `
     + (why === "own" ? `${name} already has its own copy of ${w.path}` : `${editText(why.edit)} in ${why.in}, later in the series, has to come before it`));
   const floor = misfits.flatMap(([, why]) => (why === "own" ? [] : [why.in])).at(-1);
   return `can't record into ${name}:\n${lines.join("\n")}\n`
@@ -507,17 +629,22 @@ export function record(
     for (const c of touched.values()) saveChange(c);
     if (target?.edits.length && !readSeries(book).includes(target.name)) appendSeries(book, target.name);
     for (const after of afterSave) after();
-    // The recorded output is now what the patchbook builds, so it no longer counts as a hand edit.
     const lock = readBuildLock(book);
-    if (lock !== null) {
-      after = assemble(book);
-      for (const p of edited) {
-        const built = after.out.get(p);
-        const now = current.get(p);
-        if (built !== undefined && sameFile(now, built, now?.chosen ?? true)) lock.set(p, stampOf(built));
-        else if (built === undefined && !current.has(p)) lock.delete(p);
+    const follows = edits.flatMap((e) => (e.kind === "follow" ? [e.edit] : []));
+    if (lock !== null || follows.length) {
+      const built = assemble(book);
+      after = built;
+      refuseBuiltOtherwise(built, current, edited, s.prefix, follows);
+      // The recorded output is now what the patchbook builds, so it no longer counts as a hand edit.
+      if (lock !== null) {
+        for (const p of edited) {
+          const out = built.out.get(p);
+          const now = current.get(p);
+          if (out !== undefined && sameFile(now, out, now?.chosen ?? true)) lock.set(p, stampOf(out));
+          else if (out === undefined && !current.has(p)) lock.delete(p);
+        }
+        writeBuildLines(book, lock);
       }
-      writeBuildLines(book, lock);
     }
   } catch (error) {
     // An Undo passed in belongs to the caller, which puts everything back and names what it couldn't, once.
@@ -540,6 +667,17 @@ export function record(
     + (dropped ? `intent   not used${owners ? `: the edits went to ${owners}` : ""}\n` : "")
     + (kept.length ? `intent   may be stale: ${kept.join(", ")} (${why}). Edit them by hand to cover these edits\n` : "");
   return { text, copies, after };
+}
+
+function refuseBuiltOtherwise(a: Assembly, current: ReadonlyMap<string, Seen>, edited: readonly string[], prefix: string, follows: readonly Follow[]): void {
+  const wrong = follows.flatMap((f): [Follow, string[]][] => {
+    const paths = edited.filter((p) => under(prefix + p, f.dest) && !sameFile(current.get(p), a.out.get(p), current.get(p)?.chosen ?? true));
+    return paths.length ? [[f, paths]] : [];
+  });
+  if (wrong.length) {
+    throw new Fail(wrong.map(([f, paths]) => `can't record ${editText(f)}: the build would differ from ${paths.join(", ")} on disk, `
+      + "for example because a finish hook rewrites it").join("\n"));
+  }
 }
 
 /** An upstream link keeps its type in the build, so a regular file over it would be written back as a link. */

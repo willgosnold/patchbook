@@ -65,7 +65,11 @@ export type Assembly = {
   staged: Map<string, Source>;
   /** Upstream's files at the pins. */
   upstream: Map<string, File>;
+  /** What `src` builds at output path `at` before the finish hook runs. The problems it finds are dropped. */
+  build(src: Source, at: string): File;
 };
+
+type Sink = { problems: Problem[]; used: Map<string, Set<string>>; unmatched: Map<string, Unmatched[]>; applied: number };
 
 const CONFLICT = /^(?:<{7}|>{7})(?: |$)/;
 /** A line that starts with a conflict marker. Only `\n` ends a line. */
@@ -195,18 +199,15 @@ export function assemble(book: Book): Assembly {
   const rules = new Rules(book, new Set(selected.keys()));
   problems.push(...book.badChecks);
 
-  const out = new Map<string, File>();
-  const used = new Map<string, Set<string>>(Array.from(blocks.keys(), (rel) => [rel, new Set()]));
-  const unmatched = new Map<string, Unmatched[]>(Array.from(blocks.keys(), (rel) => [rel, []]));
-  for (const [outPath, src] of [...selected].sort(([a], [b]) => byCodePoint(a, b))) {
+  const buildAt = (src: Source, outPath: string, sink: Sink): File => {
+    const { problems, used, unmatched } = sink;
     if (src.kind === "up") {
       const rel = src.path;
       const { data, mode } = content.get(rel)!;
       const where: InOutput = { file: rel, output: outPath };
       if (mode === LINK || !isText(data)) {
         if (blocks.has(rel)) problems.push({ problem: "invalid", ...where, detail: "block entries need a text file; use a replace edit" });
-        out.set(outPath, { data, mode });
-        continue;
+        return { data, mode };
       }
       let text: string;
       if (owner.has(rel)) {
@@ -220,23 +221,33 @@ export function assemble(book: Book): Assembly {
           unmatched: unmatched.get(rel)!, problems,
         });
         text = patched.text;
-        applied += patched.applied;
+        sink.applied += patched.applied;
       }
-      out.set(outPath, { data: encode(text), mode });
-    } else {
-      const c = byName.get(src.change)!;
-      const copy = c.file("ours", src.path)!;
-      let data = copy.data;
-      const mode = outputMode(copy, c.file("base", src.path), upstream.get(src.path));
-      const where: InOutput = { file: `changes/${c.name}`, output: outPath };
-      if (isText(data)) {
-        const text = rules.expand(decode(data), (detail) => problems.push({ problem: "placeholder", ...where, detail }));
-        leakScan(rules, outPath, text, problems, where);
-        data = encode(text);
-      }
-      out.set(outPath, { data, mode });
+      return { data: encode(text), mode };
     }
-  }
+    const c = byName.get(src.change)!;
+    const copy = c.file("ours", src.path)!;
+    let data = copy.data;
+    const mode = outputMode(copy, c.file("base", src.path), upstream.get(src.path));
+    const where: InOutput = { file: `changes/${c.name}`, output: outPath };
+    if (isText(data)) {
+      const text = rules.expand(decode(data), (detail) => problems.push({ problem: "placeholder", ...where, detail }));
+      leakScan(rules, outPath, text, problems, where);
+      data = encode(text);
+    }
+    return { data, mode };
+  };
+
+  const out = new Map<string, File>();
+  const sink: Sink = {
+    problems,
+    used: new Map(Array.from(blocks.keys(), (rel) => [rel, new Set()])),
+    unmatched: new Map(Array.from(blocks.keys(), (rel) => [rel, []])),
+    applied: 0,
+  };
+  const { used, unmatched } = sink;
+  for (const [outPath, src] of [...selected].sort(([a], [b]) => byCodePoint(a, b))) out.set(outPath, buildAt(src, outPath, sink));
+  applied += sink.applied;
   for (const [rel, entries] of blocks) {
     for (const [h, entry] of entries) {
       if (!used.get(rel)?.has(h)) problems.push(orphan(rel, entry, unmatched.get(rel) ?? []));
@@ -251,7 +262,8 @@ export function assemble(book: Book): Assembly {
       problems.push({ problem: "conflict", file: p, detail: "conflict marker in the output" });
     }
   }
-  return { out, sources: selected, problems, dropped, applied, staged, upstream };
+  const build = (src: Source, at: string) => buildAt(src, at, { problems: [], used: new Map(), unmatched: new Map(), applied: 0 });
+  return { out, sources: selected, problems, dropped, applied, staged, upstream, build };
 }
 
 // Build

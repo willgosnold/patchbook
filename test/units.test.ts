@@ -1584,6 +1584,8 @@ describe("classify", () => {
     prefix: "skills/",
     uses: (copy) => copy !== null && new TextDecoder().decode(copy).includes("{{snippet:"),
     plan: (rel) => plans.get(rel) ?? "no plan",
+    staged: new Map(cases.flatMap(([, , , s]) => (s?.kind === "up" ? [[s.path, s] as const] : []))),
+    build: () => f("upstream"),
   };
 
   const one = (w: Snapshot, path: string): Edited => classify(w, [path])[0]!;
@@ -1668,5 +1670,78 @@ describe("classify", () => {
     const w = { ...world, out: new Map([[path, f("up")]]), current: seen(new Map([[path, { ...f("up"), mode: 0o755 as const }]])),
       sources: new Map([[path, up("skills/para.md")]]) };
     expect(one(w, path)).toMatchObject({ kind: "skip", reason: expect.stringContaining('out.get("para\\"x.md")!.mode = 0o755;') });
+  });
+
+  const X = "---\nname: x\n---\n\nThe x skill.\n";
+  const staging = (files: Record<string, string>, disk: Record<string, string | File | null>, builds: Record<string, string> = {}): Snapshot => {
+    const upstream = new Map(Object.entries({ "skills/a/SKILL.md": "a\n", ...files }).map(([p, text]) => [p, f(text)]));
+    const built = (rel: string) => (builds[rel] === undefined ? upstream.get(rel)! : f(builds[rel]));
+    const out = new Map(Array.from(upstream.keys()).flatMap((p) => (p.startsWith("skills/") ? [[p.slice("skills/".length), built(p)] as const] : [])));
+    const current = new Map(out);
+    for (const [p, now] of Object.entries(disk)) {
+      if (now === null) current.delete(p);
+      else current.set(p, typeof now === "string" ? f(now) : now);
+    }
+    return {
+      ...world, upstream, out, current: seen(current),
+      sources: new Map(Array.from(out.keys(), (p) => [p, up(`skills/${p}`)])),
+      staged: new Map(Array.from(upstream.keys(), (p) => [p, up(p)])),
+      owners: new Map(), blocks: new Set(Object.keys(builds)),
+      build: (src) => built(src.path),
+    };
+  };
+  const copy = (path: string, dest: string) => ({ kind: "copy" as const, path, dest });
+
+  test("a new output that builds as a staged file outside the output is a copy of its folder when the whole folder goes to a new one", () => {
+    const w = staging({ "extra/skills/x/SKILL.md": X }, { "x/SKILL.md": X });
+    const edits = classify(w, ["x/SKILL.md"]);
+    expect(edits).toEqual([{ kind: "follow", path: "x/SKILL.md", edit: copy("extra/skills/x", "skills/x") }] as Edited[]);
+    expect(needOf(edits[0]!)).toEqual({ named: true, drafts: [], writes: copy("extra/skills/x", "skills/x") });
+  });
+
+  test("a new output is a copy of the file alone when its folder has a file not copied, or the destination folder is staged", () => {
+    const partial = staging({ "extra/skills/x/SKILL.md": X, "extra/skills/x/notes.md": "notes\n" }, { "x/SKILL.md": X });
+    expect(classify(partial, ["x/SKILL.md"])).toMatchObject([{ kind: "follow", edit: copy("extra/skills/x/SKILL.md", "skills/x/SKILL.md") }]);
+    const into = staging({ "extra/skills/x/notes.md": "notes\n" }, { "a/notes.md": "notes\n" });
+    expect(classify(into, ["a/notes.md"])).toMatchObject([{ kind: "follow", edit: copy("extra/skills/x/notes.md", "skills/a/notes.md") }]);
+  });
+
+  test("new outputs copied from one folder are one copy", () => {
+    const w = staging({ "extra/skills/x/SKILL.md": X, "extra/skills/x/ref/notes.md": "notes\n" }, { "x/SKILL.md": X, "x/ref/notes.md": "notes\n" });
+    expect(classify(w, ["x/SKILL.md", "x/ref/notes.md"])).toEqual([{ kind: "follow", path: "x/SKILL.md", edit: copy("extra/skills/x", "skills/x") }] as Edited[]);
+  });
+
+  test("a new output is a copy of what an upstream file builds, not of its raw bytes", () => {
+    const w = (now: string) => staging({ "extra/skills/x/SKILL.md": X }, { "x/SKILL.md": now }, { "extra/skills/x/SKILL.md": "patched\n" });
+    expect(classify(w(X), ["x/SKILL.md"])).toMatchObject([{ kind: "add", staged: "skills/x/SKILL.md" }]);
+    expect(classify(w("patched\n"), ["x/SKILL.md"])).toMatchObject([{ kind: "follow", edit: copy("extra/skills/x", "skills/x") }]);
+  });
+
+  test("a new output with the bytes of an upstream file and another mode is an add", () => {
+    const w = staging({ "extra/skills/x/run.sh": "echo x\n" }, { "x/run.sh": { data: encode("echo x\n"), mode: 0o755 } });
+    expect(classify(w, ["x/run.sh"])).toMatchObject([{ kind: "add", path: "x/run.sh" }]);
+  });
+
+  test("an empty new output is an add, unless it sits in a folder copied whole beside a file that matches", () => {
+    const alone = staging({ "extra/skills/x/.keep": "" }, { "x/.keep": "" });
+    expect(classify(alone, ["x/.keep"])).toMatchObject([{ kind: "add", path: "x/.keep" }]);
+    const beside = staging({ "extra/skills/x/SKILL.md": X, "extra/skills/x/.keep": "" }, { "x/.keep": "", "x/SKILL.md": X });
+    expect(classify(beside, ["x/.keep", "x/SKILL.md"])).toEqual([{ kind: "follow", path: "x/SKILL.md", edit: copy("extra/skills/x", "skills/x") }] as Edited[]);
+  });
+
+  test("a new output that matches a file this recording also edits is an add", () => {
+    const w = staging({}, { "a/SKILL.md": "edited\n", "b/SKILL.md": "a\n" });
+    expect(classify(w, ["a/SKILL.md", "b/SKILL.md"])).toMatchObject([{ kind: "file-edit", path: "a/SKILL.md" }, { kind: "add", path: "b/SKILL.md" }]);
+  });
+
+  test("a new output that matches two upstream files is an add, however close their paths are", () => {
+    const w = staging({ "extra/skills/x/LICENSE": "MIT\n", "skills/a/LICENSE": "MIT\n" }, { "x/LICENSE": "MIT\n", "c/LICENSE": "MIT\n" });
+    expect(classify(w, ["c/LICENSE", "x/LICENSE"])).toMatchObject([{ kind: "add", path: "c/LICENSE" }, { kind: "add", path: "x/LICENSE" }]);
+  });
+
+  test("a new output that matches one upstream file at two staged paths copies the path whose names end the same", () => {
+    const base = staging({ "skills/a/SKILL.md": X }, { "b/SKILL.md": X });
+    const w = { ...base, staged: new Map([...base.staged, ["zz/b/SKILL.md", up("skills/a/SKILL.md")]]) };
+    expect(classify(w, ["b/SKILL.md"])).toMatchObject([{ kind: "follow", edit: copy("zz/b", "skills/b") }]);
   });
 });
