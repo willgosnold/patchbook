@@ -1,28 +1,30 @@
 # Changelog
 
-The hand-written part of each release's notes. GitHub's generated notes list the pull requests, and this says what a user must do differently. Paste a release's section at the top of its GitHub release notes.
+The hand-written part of each release's notes. GitHub's generated notes list the pull requests. This file says what a user needs to know. Paste a release's section at the top of its GitHub release notes.
 
 ## 0.0.1
 
-The npm package is `@patchbook/cli`, since npm refused the name `patchbook` as too close to an existing package. Install it with `npm install -g @patchbook/cli`. The command it installs is still `patchbook`.
+The first release.
 
-### Configs patchbook now refuses
+Install it with `npm install -g @patchbook/cli`. The command it installs is `patchbook`. The package is scoped because npm refused the plain name `patchbook` as too close to an existing package.
 
-These configs used to load, build once, and then break `status`, `build` or the next commit. Patchbook now refuses them when it loads the config, with a message that names the folder and what to change. A failed `init`, `clone` or `track` writes nothing. (#42, #43, #54)
+### Patchbook checks your config when it loads it
 
-- A `vendor` folder that is the folder its own upstream builds into, holds it, or sits inside it. The same goes for one that holds another upstream's output, or that holds or sits inside another upstream's `vendor` folder.
-- A `mount` at or inside `.patchbook` or `.git`, an absolute `mount`, or one whose `..` climbs out of the repo. Mounts are now normalised, so `./lib` and `x/../lib` mean `lib`.
-- An `[output] to` that is the repo root, outside the repo, inside `.patchbook`, holding or inside a vendored copy, a link, under a link inside the repo, under a file, or containing a `.git` segment in any case.
+Some configs would build once and then break `status`, `build` or the next commit, so patchbook refuses them when it loads the config. The message names the folder and says what to change. If `init`, `clone` or `track` fails, it writes nothing.
 
-If `patchbook status` fails after upgrading with one of these messages, change the named `vendor`, `mount` or `[output] to` in `.patchbook/config.toml` as the message says, then run `patchbook build`.
+- A `vendor` folder that is its upstream's output folder, holds that output, or sits inside it. The same applies to a `vendor` folder that holds another upstream's output, or holds or sits inside another upstream's `vendor` folder.
+- A `mount` at or inside `.patchbook` or `.git`, a `mount` given as an absolute path, or one whose `..` climbs out of the repo. Mounts are normalised, so `./lib` and `x/../lib` both mean `lib`.
+- An `[output] to` that is any of these: the repo root; outside the repo; inside `.patchbook`; holding or inside a vendored copy; a link; under a link inside the repo; under a file; or containing a `.git` segment in any case.
 
-### Sync no longer guesses where a paragraph goes
+If you see one of these messages, change the named `vendor`, `mount` or `[output] to` in `.patchbook/config.toml` as it says, then run `patchbook build`.
 
-A file can hold the same paragraph more than once. `git merge-file` can put a `file` edit of one copy on another copy once upstream moves things around, or drop it, and earlier versions reported that merge as clean. The same goes for a paragraph the fork deleted from any file, once upstream moves it. Now `sync` reports a **conflict** instead, and `status` and `build` refuse until it is resolved. (#283, #289, #290)
+### Sync reports a conflict instead of guessing where a paragraph goes
 
-- An edit of a copy that the merge would put on another copy or leave out. (#283)
-- A copy the fork deleted, which the merge would bring back. (#283)
-- A copy the fork inserted, which the merge would drop because upstream moved another copy to the same spot. (#290)
-- A paragraph the fork deleted from any file, which the merge would bring back because upstream moved it. (#289)
+`git merge-file` can misplace a `file` edit once upstream moves paragraphs around. This happens when a file holds the same paragraph more than once, and when the fork deleted a paragraph that upstream then moved. In these cases `sync` reports a **conflict** rather than a clean merge, and `status` and `build` refuse until you resolve it:
 
-Sync names the file on stderr, and `.patchbook/changes/<change>/ours/<file>.pb` holds both texts between conflict markers. Resolve them so the file reads as you mean it, then run `patchbook build`. Some of these conflicts are merges that would have been right. Sync refuses rather than guess (#286, #294).
+- an edit to one copy of a paragraph that the merge would put on another copy or leave out;
+- a copy the fork deleted that the merge would bring back;
+- a copy the fork inserted that the merge would drop because upstream moved another copy to the same spot;
+- a paragraph the fork deleted from any file that the merge would bring back because upstream moved it.
+
+Sync names the file on stderr, and `.patchbook/changes/<change>/ours/<file>.pb` holds both texts between conflict markers. Edit it so the file reads as you mean it, then run `patchbook build`. Sometimes the merge sync refuses would have been right. Sync refuses rather than guess (#286, #294).
