@@ -509,7 +509,7 @@ describe("planning paragraph edits", () => {
     expect(out.match(/entry +guide\.md \[[0-9a-f]{12}\] added/g)).toHaveLength(2);
     const entries = read(t.entries);
     expect(entries).toContain("kind: policy\nrules: \nintent: Merge the last two steps.\n--- upstream\nThen wave.\n--- patched\nThen wave and sit.\n");
-    expect(entries).toContain("kind: policy\nrules: \nintent: Merge the last two steps.\n--- upstream\nThen sit.\n--- patched\n\n");
+    expect(entries.endsWith("kind: policy\nrules: \nintent: Merge the last two steps.\n--- upstream\nThen sit.\n--- patched\n")).toBe(true);
     expect(entries).toContain("--- patched\nOpen T3 and say hello.\n");
     const edited = t.repo.read(t.guide);
     t.pb(["build"], { cwd: t.repo.path });

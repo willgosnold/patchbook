@@ -183,7 +183,7 @@ export function readEntries(path: string): Map<string, Entry> {
 
 export function formatEntry(e: Entry): string {
   return `=== entry ${entryKey(e.hash, e.at)}\n` + ENTRY_FIELDS.map((f) => `${f}: ${e[f]}\n`).join("")
-    + `--- upstream\n${e.upstream}\n--- patched\n${e.patched}\n`;
+    + `--- upstream\n${e.upstream}\n--- patched\n${e.patched ? `${e.patched}\n` : ""}`;
 }
 
 export function checkEntry(e: Entry): string | null {
