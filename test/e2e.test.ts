@@ -13371,6 +13371,22 @@ exec '${Bun.which("git")}' "$@"
     expect(out.stderr).toContain("its pin ");
   });
 
+  vendorTest("a sync journal whose old/ is a link out of the repo is left for the user and the vendored copy does not become a link", (t) => {
+    const journal = plantJournal(t, "vendor/extra", true);
+    const outside = join(t.tmp, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "a.md"), "not patchbook's\n");
+    symlinkSync(outside, join(journal, "old"));
+    const before = tree(t.repo.path);
+    const out = t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 });
+    expect(lstatSync(join(t.repo.path, "vendor/extra")).isDirectory()).toBe(true);
+    expect(readdirSync(outside)).toEqual(["a.md"]);
+    expect(read(join(outside, "a.md"))).toBe("not patchbook's\n");
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(out.stderr).toContain(".patchbook/sync-extra holds a sync of extra");
+    expect(out.stderr).toContain("its old ");
+  });
+
   permissionTest("track refuses a vendor folder that holds a git repo before it drops a pin an earlier track left", (t) => {
     const extra = new Repo(join(t.tmp, "extra"));
     extra.write("a.md", "a\n");
