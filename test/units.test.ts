@@ -461,6 +461,12 @@ describe("entries", () => {
     expect(roundTrip(e)).toEqual([e]);
   });
 
+  test("an entry with an empty patched text is followed by one blank line, as any other is", () => {
+    const text = [entry({ hash: "aaaaaaaaaaaa", patched: "" }), entry({ hash: "bbbbbbbbbbbb" })].map(formatEntry).join("\n");
+    expect(text).toContain("--- patched\n\n=== entry bbbbbbbbbbbb\n");
+    expect(text).not.toContain("\n\n\n");
+  });
+
   test("a blank line around a text is trimmed", () => {
     const path = put(join(scratch(), "x.entries"), "=== entry 0123456789ab\nkind: keep\nrules: \nintent: Same.\n--- upstream\n\nkeep\n\n--- patched\n\nkeep\n\n");
     expect(readEntries(path).get("0123456789ab")).toEqual(entry({ kind: "keep", rules: "", intent: "Same.", upstream: "keep", patched: "keep" }));

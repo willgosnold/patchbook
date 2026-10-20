@@ -517,6 +517,18 @@ describe("planning paragraph edits", () => {
     expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
   });
 
+  docTest("an entry recorded after one that deletes its paragraph follows it after one blank line", (t) => {
+    t.edit("Open T3 and say hello.\n\n", "");
+    t.record(["--intent", "Drop the greeting."]);
+    expect(read(t.entries)).toContain("--- upstream\nOpen Cursor and say hello.\n--- patched\n");
+    t.edit("Then wave.", "Then wave twice.");
+    t.record(["--intent", "Wave twice."]);
+    const entries = read(t.entries);
+    expect(entries).toContain("--- upstream\nOpen Cursor and say hello.\n--- patched\n\n=== entry ");
+    expect(entries).toContain("--- patched\nThen wave twice.\n");
+    expect(entries).not.toContain("\n\n\n");
+  });
+
   docTest("an edit to a paragraph upstream wrote gets a new entry with the model's intent", (t) => {
     t.edit("Then wave.", "Then wave twice.");
     const out = t.record().stdout;
