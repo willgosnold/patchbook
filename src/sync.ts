@@ -416,6 +416,7 @@ function misshapen(book: Book, u: Upstream): string | null {
   const paths: [string, string, boolean, string][] = [
     ["its lock", lock, lexists(lock), "recovery would read it"],
     ["its before", before, lexists(before), "recovery would read it"],
+    ["its old", join(j, "old"), lexists(join(j, "old")), "recovery would move it back as the vendored copy"],
     [`its before/${REPORT}`, join(before, REPORT), report, "recovery would read it"],
     ...saved.filter((rel) => rel !== REPORT).map((rel): [string, string, boolean, string] => {
       const folder = dirname(join(book.dir, rel));
