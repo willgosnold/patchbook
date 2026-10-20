@@ -34,7 +34,7 @@ Preconditions:
 
 ## Gotchas
 
-- A given intent with no name starts a change named from the intent, so `PATCHBOOK_INTENT` and an unnamed `record --intent` never join an existing change. Naming one (`record add-extra --intent "..."`) joins it and replaces its intent. When the model picks an existing name, the edit joins and the change keeps its intent. The fake model always answers `model-name` unless `PB_FAKE_CHANGE` is set, so set it on every model-named `record` or commit after the first, or the steps pile into `model-name`.
+- A given intent with no name starts a change named from the intent, so `PATCHBOOK_INTENT` and an unnamed `record --intent` never join an existing change. Naming one (`record add-extra --intent "..."`) joins it and replaces its intent. When the model picks an existing name, the edit joins and the model's intent replaces the change's. The fake model always answers `model-name` unless `PB_FAKE_CHANGE` is set, so set it on every model-named `record` or commit after the first, or the steps pile into `model-name`.
 - One owner per path. Recording an edit to a path another change owns adds it to that change and ignores the new name, so an owned path can't test `record-named`.
 - `record` prints `no hand edits to the output since the last build; nothing to record` and exits 0 when there's nothing to record. Exit 0 alone doesn't prove anything was recorded.
 - `record` doesn't commit. Commit with `PATCHBOOK_HOOK=0 git commit` to keep the hook from recording a second time.

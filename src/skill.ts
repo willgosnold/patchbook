@@ -4,7 +4,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import skill from "../skills/patchbook-update/SKILL.md" with { type: "text" };
 import { assemble, describe, handEdits } from "./assemble.ts";
 import { Book } from "./book.ts";
-import { appendSeries, readChanges, Roster } from "./changes.ts";
+import { appendSeries, Roster } from "./changes.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, fsMessage, isDir, isSymlink, lexists, mkdirs, readBytes, writeText } from "./lib/fs.ts";
 import { spawn } from "./lib/proc.ts";
@@ -132,8 +132,6 @@ function installed(book: Book, p: string): boolean {
   return sharesSkills(book.root, p) || pointsAt(at, join(book.root, ".agents", "skills", NAME));
 }
 
-const recorded = (book: Book) => readChanges(book, []).some((c) => c.name === CHANGE);
-
 /** The skill files on disk that no change records yet. Unlike `changed`, this counts files an earlier run already wrote. */
 export const unrecordedSkill = (book: Book): string[] => handEdits(book, assemble(book).out, book.seen("disk")).filter(ownsSkill);
 
@@ -144,9 +142,9 @@ export const leftBehindSkill = (book: Book): string[] =>
 /** Record the skill files as the `patchbook-update-skill` change, and leave every other edit waiting. */
 export async function recordSkill(book: Book): Promise<number> {
   process.chdir(book.root);
-  const intent = recorded(book)
-    ? null
-    : "Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.";
+  // A given intent asks no model: a refresh keeps the change's own intent.
+  const intent = Roster.read(book).parsed.get(CHANGE)?.intent
+    || "Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.";
   // An `init` that stopped early can leave this folder out of the series, and patchbook owns the name, so it adopts the folder.
   if (Roster.read(book).stray(CHANGE) === "folder") appendSeries(book, CHANGE);
   return cmdRecord({ change: CHANGE, intent, only: ownsSkill });

@@ -35,14 +35,20 @@ cmd_new() {
   if [ -n "${PATCHBOOK_CMD:-}" ]; then cmd=$PATCHBOOK_CMD; else cmd="\"$bun\" \"$CHECKOUT/src/cli.ts\""; fi
   printf '#!/bin/sh\nexec %s "$@"\n' "$cmd" > "$sb/bin/patchbook"
 
-  # The fake model. Default answer matches the repro scripts in the audit issues.
-  # PB_FAKE_MODEL=fail makes it exit 1, like an offline or missing CLI.
+  # The fake model. Default answer matches the repro scripts in the audit issues: it names the change
+  # model-name and gives it, and every key the prompt asks for, the same intent.
+  # PB_FAKE_MODEL=fail makes it exit 1, like an offline or missing CLI. PB_FAKE_REPLY is the whole reply.
   cat > "$sb/bin/claude" <<F
 #!/bin/sh
 cat > "$sb/prompt.txt"
 echo "\$(date +%s) claude \$*" >> "$sb/model-calls.log"
 [ "\${PB_FAKE_MODEL:-}" = fail ] && { echo "fake claude: failing on purpose" >&2; exit 1; }
-echo "{\"change\": \"\${PB_FAKE_CHANGE:-model-name}\", \"intent\": \"\${PB_FAKE_INTENT:-MODEL WROTE THIS.}\"}"
+[ -n "\${PB_FAKE_REPLY:-}" ] && { printf '%s\\n' "\$PB_FAKE_REPLY"; exit 0; }
+name=\${PB_FAKE_CHANGE:-model-name} intent=\${PB_FAKE_INTENT:-MODEL WROTE THIS.} keys=
+while IFS= read -r k; do [ -n "\$k" ] && keys="\$keys\$k: \"\$intent\", "; done <<K
+\$(sed -n 's/^For \\("[^"]*"\\):.*/\\1/p' "$sb/prompt.txt")
+K
+echo "{\"change\": \"\$name\", \"intents\": {\$keys\"\$name\": \"\$intent\"}}"
 F
   chmod +x "$sb/bin/patchbook" "$sb/bin/claude"
 

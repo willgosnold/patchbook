@@ -24,7 +24,7 @@ $H doctor
 `new` makes `$TMPDIR/patchbook-verify/<label>-<time>-<pid>/` with:
 
 - `bin/patchbook`, a shim that runs this checkout's `src/cli.ts` with an absolute bun path. Set `PATCHBOOK_CMD` before `new` to drive something else, such as a compiled `dist/patchbook`.
-- `bin/claude`, a fake model. It answers `{"change": "model-name", "intent": "MODEL WROTE THIS."}`, saves the prompt to `$SB/prompt.txt`, and logs each call to `$SB/model-calls.log`. Override per command with `PB_FAKE_CHANGE=` and `PB_FAKE_INTENT=`, or make it fail like an offline CLI with `PB_FAKE_MODEL=fail`.
+- `bin/claude`, a fake model. It answers `{"change": "model-name", "intents": {"model-name": "MODEL WROTE THIS."}}`, with the same intent under every other key the prompt asks for, saves the prompt to `$SB/prompt.txt`, and logs each call to `$SB/model-calls.log`. Override per command with `PB_FAKE_CHANGE=` and `PB_FAKE_INTENT=`, set the whole reply with `PB_FAKE_REPLY=`, or make it fail like an offline CLI with `PB_FAKE_MODEL=fail`.
 - `PATCHBOOK_HOME` (store) and `XDG_CONFIG_HOME` (user config) inside the sandbox, `GIT_CONFIG_GLOBAL=/dev/null`, a fixed git identity, `PATCHBOOK_SKILL=0` and `PATCHBOOK_PROVIDER=claude`.
 
 Ready means `doctor` prints only `ok` lines. Every shell you drive from must source `$ENV` first. The env only lives in that shell, so in a tool that starts a fresh shell per command, start each command with `. "$ENV" &&`. Sourcing it also `cd`s to `$SB/work`.

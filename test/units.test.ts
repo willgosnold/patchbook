@@ -17,7 +17,7 @@ const { applyStructure, describe: describeProblem } = await import("../src/assem
 const { blockHash, blocksOf, blockSpans, checkEntry, formatEntry, nearest, parsePlaceholders, readEntries, Rules } = await import("../src/blocks.ts");
 const { Book, globRe, lockText, parseLock } = await import("../src/book.ts");
 const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
-const { intentSettings, pendingDiff, PROVIDERS, writeIntent } = await import("../src/intent.ts");
+const { changeParts, intentSettings, listDiffs, pendingParts, PROVIDERS, writeIntents } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
 const { meantMode, outputMode, recordedModes } = await import("../src/lib/fs.ts");
 const { redact, refuseCredentials } = await import("../src/lib/proc.ts");
@@ -461,6 +461,12 @@ describe("entries", () => {
     expect(roundTrip(e)).toEqual([e]);
   });
 
+  test("an entry with an empty patched text is followed by one blank line, as any other is", () => {
+    const text = [entry({ hash: "aaaaaaaaaaaa", patched: "" }), entry({ hash: "bbbbbbbbbbbb" })].map(formatEntry).join("\n");
+    expect(text).toContain("--- patched\n\n=== entry bbbbbbbbbbbb\n");
+    expect(text).not.toContain("\n\n\n");
+  });
+
   test("a blank line around a text is trimmed", () => {
     const path = put(join(scratch(), "x.entries"), "=== entry 0123456789ab\nkind: keep\nrules: \nintent: Same.\n--- upstream\n\nkeep\n\n--- patched\n\nkeep\n\n");
     expect(readEntries(path).get("0123456789ab")).toEqual(entry({ kind: "keep", rules: "", intent: "Same.", upstream: "keep", patched: "keep" }));
@@ -551,12 +557,67 @@ describe("nearest", () => {
   });
 });
 
-describe("pendingDiff", () => {
+describe("pendingParts", () => {
+  const MARKER = "\n[diff truncated]\n";
+  const built = { out: new Map() } as unknown as Assembly;
+  const onDisk = (files: Record<string, string>) => new Map(Object.entries(files).map(([p, text]) => [p, { data: new TextEncoder().encode(text), mode: 0o644 as const }]));
+  const length = (text: string) => Array.from(text).length;
+
   test("cuts a diff past 40000 characters without splitting one", () => {
-    const current = new Map([["ab", { data: new TextEncoder().encode("😀".repeat(50000) + "\n"), mode: 0o644 as const }]]);
-    const diff = pendingDiff({ out: new Map() } as unknown as Assembly, current, ["ab"]);
+    const [diff] = listDiffs([pendingParts(built, onDisk({ ab: "😀".repeat(50000) + "\n" }), ["ab"])]) as [string];
+    const list = "Changed paths:\nab: added, +1 -0 lines\n\n";
+    expect(diff.startsWith(list)).toBe(true);
     expect(diff.endsWith("😀\n[diff truncated]\n")).toBe(true);
-    expect(Array.from(diff).length).toBe(40000 + "\n[diff truncated]\n".length);
+    expect(length(diff)).toBe(length(list) + 40000 + length(MARKER));
+  });
+
+  test("lists every path and gives each file's diff an equal share of 40000 characters", () => {
+    const names = Array.from({ length: 10 }, (_, i) => `big${i}`);
+    const lines = (n: string) => Array.from({ length: 250 }, (_, i) => `The ${n} skill, line ${i}: it handles ${n} work in its own way.`).join("\n") + "\n";
+    const [diff] = listDiffs([pendingParts(built, onDisk({ small: "one\ntwo\n", ...Object.fromEntries(names.map((n) => [n, lines(n)])) }), ["small", ...names])]) as [string];
+    const list = "Changed paths:\nsmall: added, +2 -0 lines\n" + names.map((n) => `${n}: added, +250 -0 lines\n`).join("") + "\n";
+    expect(diff.startsWith(list)).toBe(true);
+    const diffs = diff.slice(list.length);
+    expect(diffs.startsWith("--- /dev/null\n+++ disk/small\n@@ -0,0 +1,2 @@\n+one\n+two\n--- /dev/null\n+++ disk/big0\n")).toBe(true);
+    for (const n of names) expect(diffs).toContain(`--- /dev/null\n+++ disk/${n}\n@@ -0,0 +1,250 @@\n+The ${n} skill, line 0:`);
+    expect(diffs.split(MARKER).length - 1).toBe(10);
+    expect(length(diffs)).toBe(40000 + 10 * length(MARKER));
+  });
+
+  test("shares one 40000-character budget across every group, and lists each group's paths on its own", () => {
+    const groups = listDiffs([pendingParts(built, onDisk({ a: "😀".repeat(30000) + "\n" }), ["a"]), pendingParts(built, onDisk({ b: "😀".repeat(30000) + "\n" }), ["b"])]);
+    expect(groups.map((g) => g.split("\n\n")[0])).toEqual(["Changed paths:\na: added, +1 -0 lines", "Changed paths:\nb: added, +1 -0 lines"]);
+    expect(groups.map((g) => g.endsWith(MARKER))).toEqual([true, true]);
+    expect(length(groups.join("")) - 2 * length("Changed paths:\na: added, +1 -0 lines\n\n")).toBe(40000 + 2 * length(MARKER));
+  });
+});
+
+describe("changeParts", () => {
+  test("lists the edits in order, with a diff for each file", () => {
+    const bytes = (s: string) => new TextEncoder().encode(s);
+    const c = new Change("c", scratch(), "intent", [
+      { kind: "file", path: "a.md" },
+      { kind: "add", path: "new.md" },
+      { kind: "delete", path: "gone.md" },
+    ]);
+    c.write("base", "a.md", bytes("old\nkeep\n"));
+    c.write("ours", "a.md", bytes("new\nkeep\n"));
+    c.write("ours", "new.md", bytes("fresh\n"));
+    const [diff] = listDiffs([changeParts(c)]) as [string];
+    const list = "Changed paths:\na.md: changed, +1 -1 lines\nnew.md: added, +1 -0 lines\ndelete gone.md\n\n";
+    expect(diff.startsWith(list)).toBe(true);
+    expect(diff.slice(list.length)).toBe(
+      "--- upstream/a.md\n+++ ours/a.md\n@@ -1,2 +1,2 @@\n-old\n+new\n keep\n"
+      + "--- /dev/null\n+++ ours/new.md\n@@ -0,0 +1 @@\n+fresh\n",
+    );
+  });
+
+  test("reads a copy from the overlay in place of the change's own", () => {
+    const c = new Change("c", scratch(), "intent", [{ kind: "add", path: "new.md" }]);
+    c.write("ours", "new.md", new TextEncoder().encode("fresh\n"));
+    const [diff] = listDiffs([changeParts(c, new Map([["new.md", new TextEncoder().encode("fresher\n")]]))]) as [string];
+    expect(diff).toContain("+fresher\n");
+    expect(diff).not.toContain("+fresh\n");
   });
 });
 
@@ -1098,7 +1159,7 @@ describe("recordedModes", () => {
   });
 });
 
-describe.skipIf(!inSandbox)("writeIntent", () => {
+describe.skipIf(!inSandbox)("writeIntents", () => {
   const ambient = process.env["PATCHBOOK_PROVIDER"];
 
   afterEach(() => {
@@ -1106,6 +1167,8 @@ describe.skipIf(!inSandbox)("writeIntent", () => {
     if (ambient === undefined) delete process.env["PATCHBOOK_PROVIDER"];
     else process.env["PATCHBOOK_PROVIDER"] = ambient;
   });
+
+  const X = { name: "x", named: true, parts: [] };
 
   const answering = async (script: string): Promise<Opened> => {
     PROVIDERS.set("sh", { model: "m", effort: "e", command: () => ["sh", "-c", `cat >/dev/null; ${script}`] });
@@ -1118,23 +1181,23 @@ describe.skipIf(!inSandbox)("writeIntent", () => {
 
   test("shows the last 500 characters of a failed model's errors without splitting one", async () => {
     const book = await answering(`printf '${"😀".repeat(600)}!' >&2; exit 1`);
-    expect(() => writeIntent(book, new Map(), "", "x", true)).toThrow(`sh failed: ${"😀".repeat(499)}!. Pass --intent instead.`);
+    expect(() => writeIntents(book, new Map(), X, [])).toThrow(`sh failed: ${"😀".repeat(499)}!. Pass --intent instead.`);
   });
 
   test("shows the first 500 characters of an unusable reply without splitting one", async () => {
     const book = await answering(`printf '!${"😀".repeat(600)}'`);
-    expect(() => writeIntent(book, new Map(), "", "x", true)).toThrow(`.\n!${"😀".repeat(499)}\nPass a name and --intent instead.`);
+    expect(() => writeIntents(book, new Map(), X, [])).toThrow(`.\n!${"😀".repeat(499)}\nPass a name and --intent instead.`);
   });
 
   test("lists a change with no intent as (no intent yet) in the prompt, never None or nothing", async () => {
     const book = await answering("true");
     const prompt = join(scratch(), "prompt.txt");
-    PROVIDERS.set("sh", { model: "m", effort: "e", command: () => ["sh", "-c", `cat >${prompt}; echo '{"change": "x", "intent": "Do x."}'`] });
+    PROVIDERS.set("sh", { model: "m", effort: "e", command: () => ["sh", "-c", `cat >${prompt}; echo '{"change": null, "intents": {"x": "Do x."}}'`] });
     const changes = new Map([
       ["blank", new Change("blank", "", "")],
       ["said", new Change("said", "", "Say it.")],
     ]);
-    writeIntent(book, changes, "", "x", true);
+    writeIntents(book, changes, X, []);
     const text = readFileSync(prompt, "utf8");
     expect(text).toContain("blank: (no intent yet)\nsaid: Say it.");
     expect(text).not.toContain("None");
@@ -1536,11 +1599,14 @@ describe("classify", () => {
     expect(e.kind === "file-edit" && e.to.kind === "owned" && e.to.change).toBe(owner);
   });
 
-  test("a paragraph edit needs an intent only for its new entries that have none", () => {
+  test("a paragraph edit needs an intent for its new entries, and a rewrite of each entry it updates", () => {
     const w = { ...world, out: new Map([["para-new.md", f("up")]]), current: seen(new Map([["para-new.md", f("edited")]])),
       sources: new Map([["para-new.md", up("skills/para-new.md")]]) };
-    expect(needOf(one(w, "para-new.md"))).toEqual({ named: false, drafts: [fresh] });
-    expect(needOf(one(world, "para.md"))).toEqual({ named: false, drafts: [] });
+    expect(needOf(one(w, "para-new.md"))).toEqual({ named: false, drafts: [fresh], updates: [] });
+    expect(needOf(one(world, "para.md"))).toEqual({ named: false, drafts: [], updates: [] });
+    const updated = { ...draft("cccccccccccc", null), was: "Speak T3." };
+    const u = { ...w, plan: () => ({ path: "", entries: new Map([[kept.hash, kept], [updated.hash, updated]]), notes: [] }) };
+    expect(needOf(one(u, "para-new.md"))).toEqual({ named: false, drafts: [], updates: [["para-new.md [cccccccccccc]", updated]] });
   });
 
   test("a path built from nothing throws while classifying", () => {
