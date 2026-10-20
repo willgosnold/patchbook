@@ -6531,6 +6531,9 @@ describe("ForkTest", () => {
     t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("three", "THREE"));
     t.fork.rm("extra.txt");
     expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe("file     app.txt (in unnamed)\nunadd    extra.txt (from unnamed)\nintent   unnamed: Shout the second line.\n");
+    const prompt = read(join(t.tmp, "prompt.txt"));
+    expect(prompt).toContain("app.txt: changed");
+    expect(prompt).not.toContain("extra.txt: added");
     const change = read(join(t.fork.path, ".patchbook/changes/unnamed/CHANGE.md"));
     expect(change).toContain("- file app.txt");
     expect(change).not.toContain("- add extra.txt");
@@ -8824,7 +8827,10 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(existsSync(join(t.fork.path, ".patchbook/changes/rep/ours/docs/guide.md.pb"))).toBe(false);
     expect(read(join(t.fork.path, ".patchbook/series"))).toBe("rep\n");
     expect(out.stdout).toBe("delete   docs/guide.md (replace removed from rep)\nintent   rep: Shout the second line.\n");
-    expect(read(join(t.tmp, "prompt.txt"))).toContain('For "rep": write its intent again, to cover all of its edits below. Its intent now: Replace the guide.\n');
+    const prompt = read(join(t.tmp, "prompt.txt"));
+    expect(prompt).toContain('For "rep": write its intent again, to cover all of its edits below. Its intent now: Replace the guide.\n');
+    expect(prompt).toContain("docs/guide.md: deleted");
+    expect(prompt).not.toContain("docs/guide.md: replaced");
   });
 
   forkTest("record deleting the output of a replace prints no note when the second change cannot be saved", (t) => {
@@ -15851,6 +15857,26 @@ describe("StaleIntentTest", () => {
     expect(changeText(t, "feature")).toContain(`intent: ${intent}\n`);
     expect(changeText(t, "feature")).toContain("- add more.txt");
     expect(prompts()).toHaveLength(1);
+  });
+
+  forkTest("a change that loses an add and takes an edit in one record is shown to the model without the add", (t) => {
+    t.fork.write("a.txt", "a\n");
+    t.fork.write("b.txt", "b\n");
+    t.pb(["record", "x", "--intent", "Add a.txt and b.txt."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("x");
+    const intent = "Add b.txt.";
+    const prompts = model(t, reply(null, { x: intent }));
+    t.fork.rm("a.txt");
+    t.fork.write("b.txt", "bee\n");
+    expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe(`unadd    a.txt (from x)\nupdate   b.txt (in x)\nintent   x: ${intent}\n`);
+    expect(prompts()).toHaveLength(1);
+    const [prompt] = prompts();
+    expect(prompt).toContain("b.txt: added");
+    expect(prompt).toContain("+++ ours/b.txt\n@@ -0,0 +1 @@\n+bee\n");
+    expect(prompt).not.toContain("a.txt: added");
+    expect(prompt).not.toContain("ours/a.txt");
+    expect(changeText(t, "x")).toBe(`# x\n\nintent: ${intent}\n\nedits:\n- add b.txt\n`);
   });
 
   for (const [what, setUp, args, calls, said] of [
