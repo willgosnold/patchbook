@@ -9321,7 +9321,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("series: no change called ghost");
   };
 
-  forkTest("test_hook_refuses_an_edit_it_cant_record_when_the_patchbook_has_a_problem", (t) => {
+  forkTest("the hook refuses an edit it can't record when the patchbook has a problem", (t) => {
     placeholderCopyAndMissingChange(t);
     t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("one", "ONE"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
@@ -9334,7 +9334,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(tree(t.fork.path)).toEqual(files);
   });
 
-  forkTest("test_hook_still_commits_with_a_problem_when_every_edit_is_recorded", (t) => {
+  forkTest("the hook still commits with a problem when every edit is recorded", (t) => {
     placeholderCopyAndMissingChange(t);
     const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
     t.fork.write(".patchbook/notes.md", "a note\n");
@@ -9362,7 +9362,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
   };
 
   for (const [name, change] of [["deletes", ["rm", "-q", "new.txt"]], ["renames", ["mv", "new.txt", "new2.txt"]]] as const) {
-    forkTest(`test_hook_refuses_when_it_${name}_an_output_a_problem_dropped`, (t) => {
+    forkTest(`the hook refuses a commit that ${name} an output a problem dropped`, (t) => {
       addWithItsCopyGone(t);
       sh(["git", ...change], { cwd: t.fork.path });
       const state = gitState(t);
@@ -9375,7 +9375,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     });
   }
 
-  forkTest("test_hook_commits_a_deletion_the_patchbook_makes_while_it_has_a_problem", (t) => {
+  forkTest("the hook commits a deletion the patchbook makes while it has a problem", (t) => {
     placeholderCopyAndMissingChange(t);
     const change = ".patchbook/changes/ver/CHANGE.md";
     t.fork.write(change, t.fork.read(change) + "- delete docs/guide.md\n");
