@@ -11060,10 +11060,11 @@ describe("VendorTest", () => {
 
   const SKILL_A = "---\nname: a\n---\n\nFirst paragraph of a.\n\nSecond paragraph of a.\n\nThird paragraph of a.\n";
   const REVISED = (text: string) => text.replace("Second paragraph of a.", "Second paragraph of a, revised upstream.");
-  const committedSkillA = (t: VendorCase): void => {
+  const committedSkillA = (t: VendorCase, more: Record<string, string> = {}): void => {
     t.missingScaffoldPatchBuild();
     t.up.write("plugin/skills/a/SKILL.md", SKILL_A);
     t.up.write("plugin/skills/a/notes.md", "Notes on a.\n");
+    for (const [name, text] of Object.entries(more)) t.up.write(`plugin/skills/a/${name}`, text);
     t.up.commit("a");
     t.pb(["sync"], { cwd: t.repo.path });
     t.pb(["build"], { cwd: t.repo.path });
@@ -11101,6 +11102,24 @@ describe("VendorTest", () => {
     const change = join(t.repo.path, ".patchbook/changes/ship-a-as-a2");
     expect(read(join(change, "CHANGE.md"))).toBe("# ship-a-as-a2\n\nintent: Ship a as a2.\n\nedits:\n- move skills/a -> skills/a2\n");
     expect(existsSync(join(change, "ours"))).toBe(false);
+  });
+
+  vendorTest("hook records a renamed skill that holds an empty file as one folder move, and the empty file follows upstream", (t) => {
+    committedSkillA(t, { "empty.keep": "" });
+    expect(t.repo.read("skills/a/empty.keep")).toBe("");
+    const commit = commitRename(t, (text) => text);
+    expect(commit.stderr).toContain("ship-a-as-a2: Ship a as a2.\nmove     skills/a -> skills/a2\n");
+    expect(read(join(t.repo.path, ".patchbook/changes/ship-a-as-a2/CHANGE.md")))
+      .toBe("# ship-a-as-a2\n\nintent: Ship a as a2.\n\nedits:\n- move skills/a -> skills/a2\n");
+    t.up.write("plugin/skills/a/empty.keep", "filled upstream\n");
+    t.up.write("plugin/skills/a/more.md", "More on a.\n");
+    t.up.commit("fill and add");
+    t.pb(["sync"], { cwd: t.repo.path });
+    t.pb(["build"], { cwd: t.repo.path });
+    expect(t.repo.read("skills/a2/empty.keep")).toBe("filled upstream\n");
+    expect(t.repo.read("skills/a2/more.md")).toBe("More on a.\n");
+    expect(existsSync(join(t.repo.path, "skills/a"))).toBe(false);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
   });
 
   vendorTest("record of a renamed skill with block entries keeps the entries, and the build still applies them", (t) => {

@@ -1758,6 +1758,14 @@ describe("classify", () => {
       .toEqual([{ kind: "follow", path: "b/SKILL.md", edit: move("skills/a/SKILL.md", "skills/b/SKILL.md") }] as Edited[]);
   });
 
+  test("an empty output moved with its folder is part of the folder move, and a lone empty file stays a delete and an add", () => {
+    const whole = staging({ "skills/a/empty.keep": "" }, { "a/SKILL.md": null, "a/empty.keep": null, "a2/SKILL.md": "a\n", "a2/empty.keep": "" });
+    expect(classify(whole, ["a/SKILL.md", "a/empty.keep", "a2/SKILL.md", "a2/empty.keep"]))
+      .toEqual([{ kind: "follow", path: "a2/SKILL.md", edit: move("skills/a", "skills/a2") }] as Edited[]);
+    const lone = staging({ "skills/a/empty.keep": "" }, { "a/empty.keep": null, "b/empty.keep": "" });
+    expect(classify(lone, ["a/empty.keep", "b/empty.keep"])).toMatchObject([{ kind: "delete-upstream", path: "a/empty.keep" }, { kind: "add", path: "b/empty.keep" }]);
+  });
+
   test("a renamed and edited output is a move, then a file edit of the file it moved", () => {
     const w = staging({ "skills/a/SKILL.md": A, "skills/a/ref.md": "ref\n" }, { "a/SKILL.md": null, "a/ref.md": null, "a2/SKILL.md": A2, "a2/ref.md": "ref\n" });
     expect(classify(w, ["a/SKILL.md", "a/ref.md", "a2/SKILL.md", "a2/ref.md"])).toMatchObject([
