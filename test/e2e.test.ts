@@ -9355,6 +9355,10 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
       "U4\n\nU6x\n\nU2\n\nS\n\nR\n\nS\n\nR\n\nS\n");
   });
 
+  forkTest("sync refuses a file edit that deletes a paragraph upstream moves", (t) => {
+    syncRefuses(t, "T\n\nU\n\nV\n", "U\n\nV\n", "U\n\nT\n\nV\n");
+  });
+
   forkTest("sync refuses a file edit that inserts a copy of a repeated paragraph where upstream moves a copy", (t) => {
     syncRefuses(t, "# T\n\nS\n\nA\n\nS\n\nB\n\nC\n\nD\n", "# T\n\nS\n\nA\n\nS\n\nB\n\nS\n\nC\n\nD\n", "# T\n\nS\n\nA\n\nB\n\nS\n\nC\n\nD\n");
   });
