@@ -3,6 +3,7 @@ import { appendFileSync, chmodSync, lstatSync, mkdtempSync, readdirSync, readFil
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
+import { misplacesRepeat } from "./blocks.ts";
 import { Book, GIT, PB, refuseNestedGit, refuseUpstreamGit, segmentNamesGit, under, unsafeVendor } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
@@ -12,7 +13,7 @@ import { similarity } from "./lib/match.ts";
 import { spawn } from "./lib/proc.ts";
 import { boolean, count, jsonText, list, named, nullable, object, oid, readJson, type Shape, string, table, versioned } from "./lib/shape.ts";
 import { say, verbatim, warn } from "./lib/term.ts";
-import { byCodePoint, bytesEqual, decodeReplace, isText, quote } from "./lib/text.ts";
+import { byCodePoint, bytesEqual, decode, decodeReplace, isText, quote } from "./lib/text.ts";
 import { type Pin, pinned, type Upstream } from "./store.ts";
 
 export const EXIT_MOVED = 10;
@@ -182,6 +183,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   };
 
   const writes: Write[] = [];
+  const repeats: { c: Change; path: string }[] = [];
   const added = Array.from(fresh.keys()).filter((p) => !old.has(p));
   for (const c of changes) {
     for (const e of c.edits) {
@@ -205,7 +207,11 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
         report.conflicts.push({ change: c.name, path: e.path, detail: "binary file changed upstream" });
         continue;
       }
-      const { merged, conflicts } = mergeFile(ours, base, theirs);
+      const merge = mergeFile(ours, base, theirs);
+      const unsure = !merge.conflicts && misplacesRepeat(decode(base), decode(ours), decode(theirs), decode(merge.merged));
+      // Merged with no base, every line where ours and upstream differ is a conflict.
+      const { merged, conflicts } = unsure ? mergeFile(ours, new Uint8Array(), theirs) : merge;
+      if (unsure) repeats.push({ c, path: e.path });
       writes.push({ c, side: "ours", path: e.path, data: merged }, { c, side: "base", path: e.path, data: theirs });
       if (conflicts) report.conflicts.push({ change: c.name, path: e.path, count: conflicts });
       else report.merged.push({ change: c.name, path: e.path });
@@ -226,6 +232,11 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   });
   say(`${u.name}: pinned ${commit.slice(0, 7)}. ${report.upstream.length} upstream files changed, `
     + `${report.merged.length} of ours merged cleanly, ${report.conflicts.length} conflicts, ${report.gone.length} gone.\n`);
+  for (const { c, path } of repeats) {
+    warn(`patchbook: ${path} (change ${c.name}): the edit is to a paragraph the file repeats, and upstream moved what lies around it, `
+      + `so sync can't tell which copy the edit is for and didn't merge it. ${relative(book.root, c.content("ours", path))} holds our text `
+      + "and upstream's between conflict markers. Resolve them with the edit on the copy you mean, then run patchbook build.\n");
+  }
   warnLeft(book, u);
   return report;
 }

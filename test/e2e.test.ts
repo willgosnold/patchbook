@@ -9278,6 +9278,76 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(t.fork.read("r.md")).toBe("# Title\n\nTwo.\n\nOne.\n\nS\n\nA\n\nX\n\nB\n\nS\n");
   });
 
+  // #283: a file edit to one of several identical paragraphs.
+  const fileEditMiddleS = (t: ForkCase): void => {
+    upstreamFile(t, "r.md", SAS);
+    writeFileSync(join(t.fork.path, "r.md"), SAS.replaceAll("A\n\nS\n\nB", "A\n\nX\n\nB"));
+    expect(t.pb(["record", "x", "--intent", "Say X between A and B."], { cwd: t.fork.path }).stdout).toBe("file     r.md\n");
+    t.fork.commit("x");
+  };
+
+  forkTest("sync refuses a file edit to a repeated paragraph once upstream moves what lies around it", (t) => {
+    fileEditMiddleS(t);
+    t.up.write("r.md", SAS.replaceAll("A\n\nS\n\nB", "B\n\nS\n\nA"));
+    t.up.commit("swap A and B");
+    const sync = t.pb(["sync"], { cwd: t.fork.path });
+    expect(sync.stdout).toContain("0 of ours merged cleanly, 1 conflicts");
+    expect(sync.stderr).toContain("patchbook: r.md (change x): the edit is to a paragraph the file repeats, and upstream moved what lies "
+      + "around it, so sync can't tell which copy the edit is for and didn't merge it. .patchbook/changes/x/ours/r.md.pb holds our text "
+      + "and upstream's between conflict markers. Resolve them with the edit on the copy you mean, then run patchbook build.\n");
+    expect(read(join(t.fork.path, ".patchbook/changes/x/ours/r.md.pb")))
+      .toBe("# Title\n\nOne.\n\nTwo.\n\nS\n\n<<<<<<< ours\nA\n\nX\n\nB\n=======\nB\n\nS\n\nA\n>>>>>>> upstream\n\nS\n");
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("conflict  r.md: ours has conflict markers\n");
+    t.pb(["build"], { cwd: t.fork.path, code: 1 });
+    expect(t.fork.read("r.md")).toBe(SAS.replaceAll("A\n\nS\n\nB", "A\n\nX\n\nB"));
+  });
+
+  forkTest("sync merges a file edit to a repeated paragraph when upstream reorders paragraphs away from it", (t) => {
+    fileEditMiddleS(t);
+    t.up.write("r.md", SAS.replaceAll("One.\n\nTwo.", "Two.\n\nOne."));
+    t.up.commit("swap one and two");
+    expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("1 of ours merged cleanly, 0 conflicts");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("r.md")).toBe("# Title\n\nTwo.\n\nOne.\n\nS\n\nA\n\nX\n\nB\n\nS\n");
+  });
+
+  const syncRefuses = (t: ForkCase, text: string, ours: string, upstream: string): void => {
+    upstreamFile(t, "r.md", text);
+    writeFileSync(join(t.fork.path, "r.md"), ours);
+    t.pb(["record", "x", "--intent", "Edit next to an S."], { cwd: t.fork.path });
+    t.fork.commit("x");
+    t.up.write("r.md", upstream);
+    t.up.commit("move an S");
+    expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("0 of ours merged cleanly, 1 conflicts");
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("conflict  r.md: ours has conflict markers\n");
+    t.pb(["build"], { cwd: t.fork.path, code: 1 });
+    expect(t.fork.read("r.md")).toBe(ours);
+  };
+
+  forkTest("sync refuses a file edit that deletes a repeated paragraph once upstream moves it", (t) => {
+    syncRefuses(t, "# T\n\nS\n\nA\n\nS\n\nB\n\nC\n\nD\n", "# T\n\nS\n\nA\n\nB\n\nC\n\nD\n", "# T\n\nS\n\nA\n\nB\n\nS\n\nC\n\nD\n");
+  });
+
+  forkTest("sync refuses a file edit that inserts next to a repeated paragraph once upstream moves it", (t) => {
+    syncRefuses(t, "S\n\nS\n\nU2\n\nS\n\nU4\n\nR\n\nU6\n\nR\n", "S\n\nS\n\nN\n\nX\n\nS\n\nU4\n\nR\n\nU6\n\nR\n",
+      "U4\n\nU6x\n\nU2\n\nS\n\nR\n\nS\n\nR\n\nS\n");
+  });
+
+  forkTest("sync of a file edit without repeated paragraphs is unchanged", (t) => {
+    upstreamFile(t, "u.md", "# Title\n\nOne.\n\nTwo.\n\nThree.\n\nFour.\n\nFive.\n");
+    writeFileSync(join(t.fork.path, "u.md"), "# Title\n\nOne.\n\nTwo.\n\nThree.\n\nFour.\n\n5.\n");
+    t.pb(["record", "five", "--intent", "Number five."], { cwd: t.fork.path });
+    t.fork.commit("five");
+    t.up.write("u.md", "# Title\n\nTwo.\n\nOne.\n\nThree.\n\nFour.\n\nFive.\n");
+    t.up.commit("swap one and two");
+    const sync = t.pb(["sync"], { cwd: t.fork.path });
+    expect([sync.stdout, sync.stderr]).toEqual([expect.stringContaining("1 of ours merged cleanly, 0 conflicts"), ""]);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("u.md")).toBe("# Title\n\nTwo.\n\nOne.\n\nThree.\n\nFour.\n\n5.\n");
+  });
+
   forkTest("scaffold writes one entry for identical paragraphs", (t) => {
     upstreamFile(t, "dup.md", DUP);
     const config = join(t.fork.path, ".patchbook/config.toml");

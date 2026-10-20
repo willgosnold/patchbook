@@ -6,7 +6,7 @@ import { Book, type Check, escape } from "./book.ts";
 import { Fail } from "./lib/fail.ts";
 import { pjoin, readText } from "./lib/fs.ts";
 import { sha256 } from "./lib/hash.ts";
-import { similarity } from "./lib/match.ts";
+import { lineChanges, similarity } from "./lib/match.ts";
 import { list, readJson, type Shape, ShapeError, shown, string, table } from "./lib/shape.ts";
 import { verbatim } from "./lib/term.ts";
 import { byCodePoint, decode, quote } from "./lib/text.ts";
@@ -92,6 +92,28 @@ export function blocksOf(lines: readonly string[]): Block[] {
     }
   }
   return blocks;
+}
+
+/** The blocks an edit from `lines` to `to` changes, and the block on each side of each change, which an insert may be next to. */
+function touched(lines: readonly string[], to: readonly string[], blocks: readonly Block[]): Set<Block> {
+  const found = new Set<Block>();
+  for (const [i1, i2] of lineChanges(lines, to)) {
+    const inside = blocks.filter((b) => b.start < i2 && i1 < b.end);
+    for (const b of [blocks.findLast((b) => b.end <= i1), ...inside, blocks.find((b) => b.start >= i2)]) if (b) found.add(b);
+  }
+  return found;
+}
+
+/** Whether a merge of `ours` onto `theirs` edits other copies of a repeated paragraph than `ours` edits in `base`, or leaves out
+ * the edit. Copies are told apart as occurrence entries are, so this holds once upstream moves what lies around an edited copy. */
+export function misplacesRepeat(base: string, ours: string, theirs: string, merged: string): boolean {
+  const [old, fresh] = [base.split("\n"), theirs.split("\n")];
+  const [oldBlocks, freshBlocks] = [blocksOf(old), blocksOf(fresh)];
+  const repeated = new Set([...oldBlocks, ...freshBlocks].filter((b) => b.of > 1).map((b) => b.hash));
+  if (!repeated.size) return false;
+  const keys = (lines: string[], to: string, blocks: Block[]) =>
+    [...touched(lines, to.split("\n"), blocks)].filter((b) => repeated.has(b.hash)).map((b) => entryKey(b.hash, b)).sort(byCodePoint).join("\n");
+  return keys(old, ours, oldBlocks) !== keys(fresh, merged, freshBlocks);
 }
 
 export function entriesPath(book: Book, rel: string): string {
