@@ -8588,8 +8588,9 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
 
   forkTest("hook someone added lines to is left alone", (t) => {
     const hook = join(t.fork.path, ".git/hooks/pre-commit");
-    const edited = bakedPathsHook("other-tool --check || exit $?\n");
-    writeFileSync(hook, edited);
+    const edited = unguardedHook + "other-tool --check || exit $?\n";
+    writeFileSync(hook, edited, { mode: 0o755 });
+    expect(t.pb(["build"], { cwd: t.fork.path }).stderr).not.toContain("patchbook:");
     expect(t.pb(["status", "--json"], { cwd: t.fork.path }).stderr).not.toContain("patchbook:");
     expect(read(hook)).toBe(edited);
     expect(t.pb(["hook", "install"], { cwd: t.fork.path }).stderr).toContain("is another tool's hook; add `patchbook hook run`");
