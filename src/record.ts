@@ -45,8 +45,11 @@ type Written = { kind: "add" | "delete" | "replace"; path: string; drops?: Chang
 /** A change a row writes a copy into without naming it, with the copy's new bytes. */
 type Join = { change: Change; path: string; data: Uint8Array };
 
+/** An add or replace a row takes out of the change that has it. */
+type Dropped = { change: Change; kind: "add" | "replace"; path: string };
+
 /** `updates` are the existing entries a row rewrites, by their label. */
-type Need = { named: boolean; drafts: readonly Draft[]; updates?: readonly [string, Draft][]; writes?: Written; joins?: Join };
+type Need = { named: boolean; drafts: readonly Draft[]; updates?: readonly [string, Draft][]; writes?: Written; joins?: Join; dropped?: Dropped };
 const NOTHING: Need = { named: false, drafts: [] };
 const NAMED: Need = { named: true, drafts: [] };
 
@@ -89,7 +92,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     },
   },
   "unadd": {
-    needs: () => NOTHING,
+    needs: (e) => ({ ...NOTHING, dropped: { change: e.change, kind: "add", path: e.staged } }),
     apply: (e) => {
       e.change.edits = e.change.edits.filter((x) => !(x.kind === "add" && x.path === e.staged));
       const afterSave = () => dropCopies(e.change, e.staged);
@@ -97,7 +100,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     },
   },
   "unreplace": {
-    needs: (e) => ({ ...NAMED, writes: { kind: "delete", path: e.staged, drops: e.change } }),
+    needs: (e) => ({ ...NAMED, writes: { kind: "delete", path: e.staged, drops: e.change }, dropped: { change: e.change, kind: "replace", path: e.staged } }),
     apply: (e, r) => {
       const c = r.target!;
       e.change.edits = e.change.edits.filter((x) => !(x.kind === "replace" && x.path === e.staged));
@@ -271,10 +274,10 @@ function snapshot(book: Book, a: Assembly, current: ReadonlyMap<string, Seen>, c
   };
 }
 
-type Asked = { named: string[]; drafts: [string, Draft][]; updates: [string, Draft][]; writes: Written[]; joins: Join[] };
+type Asked = { named: string[]; drafts: [string, Draft][]; updates: [string, Draft][]; writes: Written[]; joins: Join[]; dropped: Dropped[] };
 
 function asked(edits: readonly Edited[]): Asked {
-  const ask: Asked = { named: [], drafts: [], updates: [], writes: [], joins: [] };
+  const ask: Asked = { named: [], drafts: [], updates: [], writes: [], joins: [], dropped: [] };
   for (const e of edits) {
     const need = needOf(e);
     if (need.named) ask.named.push(e.path);
@@ -282,6 +285,7 @@ function asked(edits: readonly Edited[]): Asked {
     ask.updates.push(...need.updates ?? []);
     if (need.writes) ask.writes.push(need.writes);
     if (need.joins) ask.joins.push(need.joins);
+    if (need.dropped) ask.dropped.push(need.dropped);
   }
   return ask;
 }
@@ -289,14 +293,15 @@ function asked(edits: readonly Edited[]): Asked {
 /** An existing change or block entry this record adds to, by its key in the model's reply, with the intent it has. */
 type Joined = { key: string; was: string; parts(): Part[] };
 
-/** Every change an edit joins, the named change too when it exists and takes named edits, and every updated entry. Removals don't join. */
+/** Every change an edit joins, the named change too when it exists and takes named edits, and every updated entry. Removals don't join,
+ * but a change that is rewritten is shown without the edits this record takes out of it. */
 function joined(ask: Asked, known: Change | null, newParts: () => Part[]): Joined[] {
   const changes = new Map<Change, Map<string, Uint8Array>>();
   for (const j of ask.joins) changes.set(j.change, (changes.get(j.change) ?? new Map()).set(j.path, j.data));
   if (known && ask.named.length && !changes.has(known)) changes.set(known, new Map());
   return [
     ...Array.from(changes, ([c, overlay]): Joined => ({
-      key: c.name, was: c.intent, parts: () => [...changeParts(c, overlay), ...(c === known && ask.named.length ? newParts() : [])],
+      key: c.name, was: c.intent, parts: () => [...changeParts(c, overlay, ask.dropped.filter((d) => d.change === c)), ...(c === known && ask.named.length ? newParts() : [])],
     })),
     ...ask.updates.map(([label, d]): Joined => ({ key: label, was: d.was!, parts: () => [entryPart(label, d.upstream, d.patched)] })),
   ];

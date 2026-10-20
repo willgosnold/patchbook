@@ -98,8 +98,9 @@ export function pendingParts(a: Assembly, current: ReadonlyMap<string, File>, pa
   });
 }
 
-/** The change's edits, with `overlay` (copy path to bytes) in place of the ours copies a record is about to write. */
-export function changeParts(c: Change, overlay: ReadonlyMap<string, Uint8Array> = new Map()): Part[] {
+/** The change's edits, with `overlay` (copy path to bytes) in place of the ours copies a record is about to write, and without the
+ * `dropped` edits it is about to take out. */
+export function changeParts(c: Change, overlay: ReadonlyMap<string, Uint8Array> = new Map(), dropped: readonly { kind: string; path: string }[] = []): Part[] {
   const ours = (path: string) => overlay.get(path) ?? c.read("ours", path);
   const part = (before: Uint8Array | null, after: Uint8Array | null, path: string, what: string): Part => {
     const old = before ?? new Uint8Array();
@@ -107,7 +108,7 @@ export function changeParts(c: Change, overlay: ReadonlyMap<string, Uint8Array> 
     if (!(isText(old) && isText(fresh))) return binaryPart(path, what);
     return textPart(path, what, unifiedDiff(old, fresh, before ? `upstream/${path}` : "/dev/null", `ours/${path}`));
   };
-  return c.edits.map((e): Part => {
+  return c.edits.filter((e) => !dropped.some((d) => d.kind === e.kind && d.path === e.path)).map((e): Part => {
     if (e.kind === "file") return part(c.read("base", e.path), ours(e.path), e.path, "changed");
     if (e.kind === "add") return part(null, ours(e.path), e.path, "added");
     if (e.kind === "replace") return part(null, ours(e.path), e.path, "replaced");
