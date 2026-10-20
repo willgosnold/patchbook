@@ -11830,7 +11830,7 @@ exec '${Bun.which("git")}' "$@"
     expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
   });
 
-  vendorTest("a symlink at the vendor path comes back as a link when its rewrite is killed", (t) => {
+  vendorTest("a killed rewrite of a symlink at the vendor path that leads out of the repo is left for the user, and the folder it leads to is untouched", (t) => {
     extraWithAChange(t, true);
     t.repo.commit("follow extra");
     const outside = join(t.tmp, "outside");
@@ -11840,9 +11840,14 @@ exec '${Bun.which("git")}' "$@"
     rmSync(vendor, { recursive: true });
     symlinkSync(outside, vendor);
     killSync(t, "write-tree --prefix=vendor/extra/");
-    expect(existsSync(join(t.repo.path, ".patchbook/sync-extra/pin"))).toBe(true);
+    const journal = join(t.repo.path, ".patchbook/sync-extra");
+    expect(existsSync(join(journal, "pin"))).toBe(true);
 
-    expect(t.pb(["sync", "extra"], { cwd: t.repo.path }).stdout).toContain("Rewrote the vendored copy, which did not.");
+    expect(t.pb(["sync", "extra"], { cwd: t.repo.path, code: 1 }).stderr).toContain("its old leads outside the repo");
+    expect(existsSync(join(journal, "pin"))).toBe(true);
+    expect(readdirSync(outside)).toEqual(["a.md"]);
+    rmSync(journal, { recursive: true });
+    expect(t.pb(["sync", "extra"], { cwd: t.repo.path }).stdout).toContain("matches the pin");
     expect(lstatSync(vendor).isDirectory()).toBe(true);
     expect(readdirSync(outside)).toEqual(["a.md"]);
     expect(readFileSync(join(outside, "a.md"), "utf8")).toBe("outside\n");
