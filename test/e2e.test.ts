@@ -9221,6 +9221,21 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(snapshot(join(t.fork.path, ".patchbook"))).toEqual(before);
   });
 
+  forkTest("record of a move whose old path a finish hook writes back fails and saves nothing", (t) => {
+    writeFileSync(join(t.fork.path, ".patchbook/hooks.ts"), dedent(`
+      export const finish = (out: Map<string, { data: Uint8Array; mode: number }>) => {
+        if (!out.has("docs/guide.md")) out.set("docs/guide.md", { data: new TextEncoder().encode("a guide\\n"), mode: 0o644 });
+      };
+    `));
+    t.pb(["build"], { cwd: t.fork.path });
+    const before = snapshot(join(t.fork.path, ".patchbook"));
+    t.fork.rm("docs/guide.md");
+    t.fork.write("manual/guide.md", "a guide\n");
+    expect(t.pb(["record", "--intent", "Move the guide."], { cwd: t.fork.path, code: 1 }).stderr)
+      .toBe("patchbook: can't record move docs -> manual: the build would differ from docs/guide.md on disk, for example because a finish hook rewrites it\n");
+    expect(snapshot(join(t.fork.path, ".patchbook"))).toEqual(before);
+  });
+
   for (const [what, path] of [["destination", "docs/guide2.md"], ["source", "docs/guide.md"]] as const) {
     forkTest(`recording an edit to the ${what} of an upstream copy replaces only that output`, (t) => {
       handChange(t, "second", "Copy the guide.", ["copy docs/guide.md -> docs/guide2.md"]);
@@ -11041,6 +11056,82 @@ describe("VendorTest", () => {
     t.pb(["sync"], { cwd: t.repo.path });
     t.pb(["build"], { cwd: t.repo.path });
     expect(t.repo.read("skills/x/notes.md")).toBe("notes\n");
+  });
+
+  const SKILL_A = "---\nname: a\n---\n\nFirst paragraph of a.\n\nSecond paragraph of a.\n\nThird paragraph of a.\n";
+  const REVISED = (text: string) => text.replace("Second paragraph of a.", "Second paragraph of a, revised upstream.");
+  const committedSkillA = (t: VendorCase, more: Record<string, string> = {}): void => {
+    t.missingScaffoldPatchBuild();
+    t.up.write("plugin/skills/a/SKILL.md", SKILL_A);
+    t.up.write("plugin/skills/a/notes.md", "Notes on a.\n");
+    for (const [name, text] of Object.entries(more)) t.up.write(`plugin/skills/a/${name}`, text);
+    t.up.commit("a");
+    t.pb(["sync"], { cwd: t.repo.path });
+    t.pb(["build"], { cwd: t.repo.path });
+    t.pb(["hook", "install"], { cwd: t.repo.path });
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+    sh(["git", "commit", "-qm", "built"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "0" } });
+  };
+  const commitRename = (t: VendorCase, edit: (text: string) => string) => {
+    sh(["git", "mv", "skills/a", "skills/a2"], { cwd: t.repo.path });
+    t.repo.write("skills/a2/SKILL.md", edit(t.repo.read("skills/a2/SKILL.md")));
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+    return sh(["git", "commit", "-qm", "rename a"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Ship a as a2." } });
+  };
+
+  vendorTest("hook records a renamed and edited skill as a move and a file edit, and the renamed skill follows upstream", (t) => {
+    committedSkillA(t);
+    const commit = commitRename(t, (text) => text.replace("name: a\n", "name: a2\n"));
+    expect(commit.stderr).toContain("ship-a-as-a2: Ship a as a2.\nmove     skills/a -> skills/a2\nfile     a2/SKILL.md\n");
+    expect(read(join(t.repo.path, ".patchbook/changes/ship-a-as-a2/CHANGE.md")))
+      .toBe("# ship-a-as-a2\n\nintent: Ship a as a2.\n\nedits:\n- move skills/a -> skills/a2\n- file skills/a/SKILL.md\n");
+    t.up.write("plugin/skills/a/SKILL.md", REVISED(SKILL_A));
+    t.up.commit("revise");
+    expect(t.pb(["sync"], { cwd: t.repo.path }).stdout).toContain("1 of ours merged cleanly");
+    t.pb(["build"], { cwd: t.repo.path });
+    expect(t.repo.read("skills/a2/SKILL.md")).toBe(REVISED(SKILL_A).replace("name: a\n", "name: a2\n"));
+    expect(t.repo.read("skills/a2/notes.md")).toBe("Notes on a.\n");
+    expect(existsSync(join(t.repo.path, "skills/a"))).toBe(false);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  vendorTest("hook records a renamed skill with no edit as a move alone", (t) => {
+    committedSkillA(t);
+    const commit = commitRename(t, (text) => text);
+    expect(commit.stderr).toContain("ship-a-as-a2: Ship a as a2.\nmove     skills/a -> skills/a2\n");
+    const change = join(t.repo.path, ".patchbook/changes/ship-a-as-a2");
+    expect(read(join(change, "CHANGE.md"))).toBe("# ship-a-as-a2\n\nintent: Ship a as a2.\n\nedits:\n- move skills/a -> skills/a2\n");
+    expect(existsSync(join(change, "ours"))).toBe(false);
+  });
+
+  vendorTest("hook records a renamed skill that holds an empty file as one folder move, and the empty file follows upstream", (t) => {
+    committedSkillA(t, { "empty.keep": "" });
+    expect(t.repo.read("skills/a/empty.keep")).toBe("");
+    const commit = commitRename(t, (text) => text);
+    expect(commit.stderr).toContain("ship-a-as-a2: Ship a as a2.\nmove     skills/a -> skills/a2\n");
+    expect(read(join(t.repo.path, ".patchbook/changes/ship-a-as-a2/CHANGE.md")))
+      .toBe("# ship-a-as-a2\n\nintent: Ship a as a2.\n\nedits:\n- move skills/a -> skills/a2\n");
+    t.up.write("plugin/skills/a/empty.keep", "filled upstream\n");
+    t.up.write("plugin/skills/a/more.md", "More on a.\n");
+    t.up.commit("fill and add");
+    t.pb(["sync"], { cwd: t.repo.path });
+    t.pb(["build"], { cwd: t.repo.path });
+    expect(t.repo.read("skills/a2/empty.keep")).toBe("filled upstream\n");
+    expect(t.repo.read("skills/a2/more.md")).toBe("More on a.\n");
+    expect(existsSync(join(t.repo.path, "skills/a"))).toBe(false);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  vendorTest("record of a renamed skill with block entries keeps the entries, and the build still applies them", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    const before = read(entries);
+    renameSync(join(t.repo.path, "skills/hello"), join(t.repo.path, "skills/hi"));
+    expect(t.pb(["record", "hi", "--intent", "Call it hi."], { cwd: t.repo.path }).stdout).toBe("move     skills/hello -> skills/hi\n");
+    expect(read(entries)).toBe(before);
+    rmSync(join(t.repo.path, "skills/hi"), { recursive: true });
+    t.pb(["build", "--force"], { cwd: t.repo.path });
+    expect(t.repo.read("skills/hi/SKILL.md")).toContain("Say hello in T3.");
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
   });
 
   const copyOfHello = (t: VendorCase): void => {
