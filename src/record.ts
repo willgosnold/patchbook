@@ -314,7 +314,7 @@ function leads(s: Snapshot, edits: readonly Edited[]): Lead[] {
   const adds = edits.filter((e): e is Edited<"add"> => e.kind === "add");
   const gone = edits.filter((e): e is Edited<"delete-upstream"> => {
     const src = e.kind === "delete-upstream" ? s.sources.get(e.path) : undefined;
-    return src?.kind === "up" && editedRels.get(src.path) === 1 && s.out.get(e.path)!.data.length > 0;
+    return src?.kind === "up" && editedRels.get(src.path) === 1;
   });
   const moves = adds.flatMap((add) => gone.flatMap((d): Lead[] => {
     const src = s.sources.get(d.path)!;
@@ -399,7 +399,7 @@ function widen(s: Snapshot, chosen: readonly Lead[], all: readonly Lead[], lead:
       const goes = (l: Lead) => l.kind === lead.kind && l.from === p && l.add.staged === to;
       if (chosen.some(goes)) return true;
       const keep = all.find((l) => goes(l) && emptyMatch(l));
-      if (keep) empty.push(keep.add);
+      if (keep) empty.push(...(keep.takes ? [keep.add, keep.takes] : [keep.add]));
       return keep !== undefined;
     });
     if (!wholeFolderGoes) break;

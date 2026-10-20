@@ -31,7 +31,7 @@ move     skills/a -> skills/a2
 file     a2/SKILL.md
 ```
 
-A rename is still recorded as a `delete` and an `add` when the renamed file keeps less than half of its lines, or when its edit can't be recorded on the moved file, as in a file whose copy uses placeholders. Renames recorded with 0.0.1 keep their `delete` and `add` lines.
+A rename is still recorded as a `delete` and an `add` when the old and new versions keep, in order, less than half of the non-blank lines of the longer one, or when its edit can't be recorded on the moved file, as in a file whose copy uses placeholders. Renames recorded with 0.0.1 keep their `delete` and `add` lines.
 
 ## 0.0.1
 
