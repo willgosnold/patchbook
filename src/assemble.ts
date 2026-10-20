@@ -58,6 +58,8 @@ export type Assembly = {
   /** Output path to source. */
   sources: Map<string, Source>;
   problems: Problem[];
+  /** Output paths a problem kept out of `out` that the build would otherwise write. */
+  dropped: Set<string>;
   applied: number;
   /** Staged path to source, before choosing the output. */
   staged: Map<string, Source>;
@@ -84,6 +86,7 @@ export function applyStructure(
   upstream: ReadonlyMap<string, File>,
   problems: Problem[],
   reservedHolding: (staged: string) => Reserved | null,
+  dropped = new Set<string>(),
 ): Map<string, Source> {
   const tree = new Map<string, Source>(Array.from(upstream.keys(), (p) => [p, { kind: "up", path: p }]));
   for (const c of changes) {
@@ -96,8 +99,10 @@ export function applyStructure(
         if (reserved !== null) {
           problems.push(intoReserved(where, e.path, reserved));
         } else if (matched.length) problems.push({ problem: "invalid", ...where, detail: `${e.path} already exists; use replace` });
-        else if (c.read("ours", e.path) === null) problems.push({ problem: "invalid", ...where, detail: "its ours copy is missing" });
-        else tree.set(e.path, { kind: "ours", change: c.name, path: e.path });
+        else if (c.read("ours", e.path) === null) {
+          problems.push({ problem: "invalid", ...where, detail: "its ours copy is missing" });
+          dropped.add(e.path);
+        } else tree.set(e.path, { kind: "ours", change: c.name, path: e.path });
       } else if (e.kind === "replace") {
         if (!tree.has(e.path)) problems.push({ problem: "gone", ...where, detail: `${e.path} no longer exists` });
         else if (c.read("ours", e.path) === null) problems.push({ problem: "invalid", ...where, detail: "its ours copy is missing" });
@@ -181,15 +186,12 @@ export function assemble(book: Book): Assembly {
     blocks.set(rel, readEntries(entriesPath(book, rel)));
   }
 
-  const staged = applyStructure(changes, upstream, problems, (p) => book.reservedHolding(p));
-  let selected: Map<string, Source>;
-  if (book.layout.kind === "folder") {
-    const prefix = book.layout.from;
-    selected = new Map();
-    for (const [p, s] of staged) {
-      if (!prefix || p.startsWith(prefix + "/")) selected.set(prefix ? p.slice(prefix.length + 1) : p, s);
-    }
-  } else selected = new Map(staged);
+  const lost = new Set<string>();
+  const staged = applyStructure(changes, upstream, problems, (p) => book.reservedHolding(p), lost);
+  const prefix = book.layout.kind === "folder" ? book.layout.from : "";
+  const atOutput = (p: string) => (!prefix ? [p] : p.startsWith(prefix + "/") ? [p.slice(prefix.length + 1)] : []);
+  const selected = new Map(Array.from(staged).flatMap(([p, s]) => atOutput(p).map((at) => [at, s] as const)));
+  const dropped = new Set(Array.from(lost).flatMap(atOutput));
   const rules = new Rules(book, new Set(selected.keys()));
   problems.push(...book.badChecks);
 
@@ -249,7 +251,7 @@ export function assemble(book: Book): Assembly {
       problems.push({ problem: "conflict", file: p, detail: "conflict marker in the output" });
     }
   }
-  return { out, sources: selected, problems, applied, staged, upstream };
+  return { out, sources: selected, problems, dropped, applied, staged, upstream };
 }
 
 // Build

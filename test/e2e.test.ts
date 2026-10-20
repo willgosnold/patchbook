@@ -9314,6 +9314,79 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     t.pb(["build"], { cwd: t.fork.path });
   });
 
+  const placeholderCopyAndMissingChange = (t: ForkCase): void => {
+    ownedFileEdit(t, "{{snippet:v}}", true);
+    t.fork.write(".patchbook/series", t.fork.read(".patchbook/series") + "ghost\n");
+    t.fork.commit("a problem");
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("series: no change called ghost");
+  };
+
+  forkTest("the hook refuses an edit it can't record when the patchbook has a problem", (t) => {
+    placeholderCopyAndMissingChange(t);
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("one", "ONE"));
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    const state = gitState(t);
+    const files = tree(t.fork.path);
+    const refused = intoKeptCommit(t);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain("couldn't record these hand edits:\n  app.txt\n");
+    expect(gitState(t)).toBe(state);
+    expect(tree(t.fork.path)).toEqual(files);
+  });
+
+  forkTest("the hook still commits with a problem when every edit is recorded", (t) => {
+    placeholderCopyAndMissingChange(t);
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+    t.fork.write(".patchbook/notes.md", "a note\n");
+    sh(["git", "add", ".patchbook/notes.md"], { cwd: t.fork.path });
+    const noEdit = intoKeptCommit(t);
+    expect(noEdit.code).toBe(0);
+    expect(noEdit.stderr).toContain("1 problems, so the output wasn't rebuilt.");
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).not.toBe(head);
+    t.fork.write("docs/guide.md", "a better guide\n");
+    sh(["git", "add", "docs/guide.md"], { cwd: t.fork.path });
+    const recorded = intoKeptCommit(t);
+    expect(recorded.code).toBe(0);
+    expect(recorded.stderr).toContain("1 problems, so the output wasn't rebuilt.");
+    expect(changeText(t, "shout-two")).toContain("- file docs/guide.md");
+    expect(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.fork.path }).stdout).toContain(".patchbook/changes/shout-two/CHANGE.md");
+  });
+
+  const addWithItsCopyGone = (t: ForkCase): void => {
+    t.fork.write("new.txt", "new file\n");
+    sh(["git", "add", "new.txt"], { cwd: t.fork.path });
+    expect(intoKeptCommit(t).code).toBe(0);
+    t.fork.rm(".patchbook/changes/shout-two/ours/new.txt.pb");
+    t.fork.commit("lose the copy");
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("add new.txt: its ours copy is missing");
+  };
+
+  for (const [name, change] of [["deletes", ["rm", "-q", "new.txt"]], ["renames", ["mv", "new.txt", "new2.txt"]]] as const) {
+    forkTest(`the hook refuses a commit that ${name} an output a problem dropped`, (t) => {
+      addWithItsCopyGone(t);
+      sh(["git", ...change], { cwd: t.fork.path });
+      const state = gitState(t);
+      const files = tree(t.fork.path);
+      const refused = intoKeptCommit(t);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("couldn't record these hand edits:\n  new.txt\n");
+      expect(gitState(t)).toBe(state);
+      expect(tree(t.fork.path)).toEqual(files);
+    });
+  }
+
+  forkTest("the hook commits a deletion the patchbook makes while it has a problem", (t) => {
+    placeholderCopyAndMissingChange(t);
+    const change = ".patchbook/changes/ver/CHANGE.md";
+    t.fork.write(change, t.fork.read(change) + "- delete docs/guide.md\n");
+    sh(["git", "add", change], { cwd: t.fork.path });
+    sh(["git", "rm", "-q", "docs/guide.md"], { cwd: t.fork.path });
+    const committed = intoKeptCommit(t);
+    expect(committed.code).toBe(0);
+    expect(committed.stderr).toContain("1 problems, so the output wasn't rebuilt.");
+    expect(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.fork.path }).stdout).toContain("docs/guide.md");
+  });
+
   forkTest("a symlink the fork adds stays a symlink in the build", (t) => {
     symlinkSync("app.txt", join(t.fork.path, "link"));
     t.pb(["record", "link", "--intent", "Link to the app."], { cwd: t.fork.path });
