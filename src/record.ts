@@ -7,7 +7,7 @@ import { type Block, blocksOf, type Entry, entriesPath, entryKey, formatEntry, k
 import { Book, PB, under } from "./book.ts";
 import { appendSeries, CHANGE_NAME, Change, type Edit, editText, notAChangeName, readSeries, Roster, saveChange } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
-import { changeDiff, ModelFailed, nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
+import { changeDiff, entryPart, ModelFailed, nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
 import { unifiedDiff } from "./lib/diff.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, LINK, meantMode, type Mode, recordedModes, relative, sameFile, type Seen, writeText } from "./lib/fs.ts";
@@ -349,9 +349,7 @@ function pending(ask: Asked, name: string | null, roster: Roster, why: string): 
 }
 
 function modelDiff(a: Assembly, current: ReadonlyMap<string, File>, ask: Asked): string {
-  return pendingDiff(a, current, ask.named) + ask.drafts
-    .map(([p, e]) => unifiedDiff(encode(e.upstream + "\n"), encode(e.patched + "\n"), `upstream/${p}`, `disk/${p}`))
-    .join("");
+  return pendingDiff(a, current, ask.named, ask.drafts.map(([p, e]) => entryPart(p, e.upstream, e.patched)));
 }
 
 /** What a recording says, and the copies whose mode it picked, repo-relative, for the commit hook to stage. */

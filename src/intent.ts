@@ -54,37 +54,66 @@ The edits, as diffs from what the patchbook builds to what is on disk now:
 ${diff}
 `;
 
-/** The edits on disk to these output paths, as one text for a model to read. */
-export function pendingDiff(a: Assembly, current: ReadonlyMap<string, File>, paths: readonly string[]): string {
-  const parts: string[] = [];
-  for (const p of paths) {
+const DIFF_LIMIT = 40000;
+const CUT = "\n[diff truncated]\n";
+
+/** One changed path: its line in the path list, and its diff, empty for a binary file or an edit with no diff. */
+export type Part = { line: string; diff: string };
+
+/** The `+` and `-` lines of a diff's hunks, after the two header lines. */
+const countLines = (diff: string): string => {
+  const lines = diff.split("\n").slice(2);
+  return `+${lines.filter((l) => l.startsWith("+")).length} -${lines.filter((l) => l.startsWith("-")).length} lines`;
+};
+
+const textPart = (path: string, what: string, diff: string): Part => ({ line: `${path}: ${what}, ${countLines(diff)}`, diff });
+
+const binaryPart = (path: string, what: string): Part => ({ line: `${path}: binary, ${what}`, diff: "" });
+
+/** The list of changed paths, then their diffs. Each diff gets an equal share of 40000 characters; a short one leaves what it doesn't use to the longer ones. */
+export function listDiffs(parts: readonly Part[]): string {
+  const chars = parts.map((p) => Array.from(p.diff));
+  const kept: number[] = [];
+  let left = DIFF_LIMIT;
+  Array.from(chars.keys()).sort((a, b) => chars[a]!.length - chars[b]!.length).forEach((i, n, all) => {
+    kept[i] = Math.min(chars[i]!.length, Math.floor(left / (all.length - n)));
+    left -= kept[i]!;
+  });
+  const diffs = chars.map((c, i) => (c.length > kept[i]! ? c.slice(0, kept[i]).join("") + CUT : c.join("")));
+  return `Changed paths:\n${parts.map((p) => p.line + "\n").join("")}\n${diffs.join("")}`;
+}
+
+/** The block entry at `path`, as a paragraph that changed from `upstream` to `patched`. */
+export const entryPart = (path: string, upstream: string, patched: string): Part =>
+  textPart(path, "paragraph changed", unifiedDiff(encode(upstream + "\n"), encode(patched + "\n"), `upstream/${path}`, `disk/${path}`));
+
+/** The edits on disk to these output paths, then `more`, as one text for a model to read. */
+export function pendingDiff(a: Assembly, current: ReadonlyMap<string, File>, paths: readonly string[], more: readonly Part[] = []): string {
+  const files = paths.map((p): Part => {
     const now = current.get(p);
     const built = a.out.get(p);
     const old = built?.data ?? new Uint8Array();
     const fresh = now?.data ?? new Uint8Array();
-    if (!(isText(old) && isText(fresh))) {
-      parts.push(`binary file ${p} ${!built ? "added" : !now ? "deleted" : "changed"}\n`);
-      continue;
-    }
-    parts.push(unifiedDiff(old, fresh, built ? `built/${p}` : "/dev/null", now ? `disk/${p}` : "/dev/null"));
-  }
-  const chars = Array.from(parts.join(""));
-  return chars.slice(0, 40000).join("") + (chars.length > 40000 ? "\n[diff truncated]\n" : "");
+    const what = !built ? "added" : !now ? "deleted" : "changed";
+    if (!(isText(old) && isText(fresh))) return binaryPart(p, what);
+    return textPart(p, what, unifiedDiff(old, fresh, built ? `built/${p}` : "/dev/null", now ? `disk/${p}` : "/dev/null"));
+  });
+  return listDiffs([...files, ...more]);
 }
 
 export function changeDiff(c: Change): string {
-  const diff = (before: Uint8Array | null, after: Uint8Array | null, path: string): string => {
+  const part = (before: Uint8Array | null, after: Uint8Array | null, path: string, what: string): Part => {
     const old = before ?? new Uint8Array();
     const fresh = after ?? new Uint8Array();
-    if (!(isText(old) && isText(fresh))) return `binary file ${path}\n`;
-    return unifiedDiff(old, fresh, before ? `upstream/${path}` : "/dev/null", `ours/${path}`);
+    if (!(isText(old) && isText(fresh))) return binaryPart(path, what);
+    return textPart(path, what, unifiedDiff(old, fresh, before ? `upstream/${path}` : "/dev/null", `ours/${path}`));
   };
-  const chars = Array.from(c.edits.map((e) => {
-    if (e.kind === "file") return diff(c.read("base", e.path), c.read("ours", e.path), e.path);
-    if (e.kind === "add" || e.kind === "replace") return diff(null, c.read("ours", e.path), e.path);
-    return editText(e) + "\n";
-  }).join(""));
-  return chars.slice(0, 40000).join("") + (chars.length > 40000 ? "\n[diff truncated]\n" : "");
+  return listDiffs(c.edits.map((e): Part => {
+    if (e.kind === "file") return part(c.read("base", e.path), c.read("ours", e.path), e.path, "changed");
+    if (e.kind === "add") return part(null, c.read("ours", e.path), e.path, "added");
+    if (e.kind === "replace") return part(null, c.read("ours", e.path), e.path, "replaced");
+    return { line: editText(e), diff: "" };
+  }));
 }
 
 /** The provider, model and effort for writing intents.
