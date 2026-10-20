@@ -17,7 +17,7 @@ const { applyStructure, describe: describeProblem } = await import("../src/assem
 const { blockHash, blocksOf, blockSpans, checkEntry, formatEntry, nearest, parsePlaceholders, readEntries, Rules } = await import("../src/blocks.ts");
 const { Book, globRe, lockText, parseLock } = await import("../src/book.ts");
 const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
-const { intentSettings, pendingDiff, PROVIDERS, writeIntent } = await import("../src/intent.ts");
+const { changeDiff, intentSettings, pendingDiff, PROVIDERS, writeIntent } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
 const { meantMode, outputMode, recordedModes } = await import("../src/lib/fs.ts");
 const { redact, refuseCredentials } = await import("../src/lib/proc.ts");
@@ -552,11 +552,51 @@ describe("nearest", () => {
 });
 
 describe("pendingDiff", () => {
+  const MARKER = "\n[diff truncated]\n";
+  const built = { out: new Map() } as unknown as Assembly;
+  const onDisk = (files: Record<string, string>) => new Map(Object.entries(files).map(([p, text]) => [p, { data: new TextEncoder().encode(text), mode: 0o644 as const }]));
+  const length = (text: string) => Array.from(text).length;
+
   test("cuts a diff past 40000 characters without splitting one", () => {
-    const current = new Map([["ab", { data: new TextEncoder().encode("😀".repeat(50000) + "\n"), mode: 0o644 as const }]]);
-    const diff = pendingDiff({ out: new Map() } as unknown as Assembly, current, ["ab"]);
+    const diff = pendingDiff(built, onDisk({ ab: "😀".repeat(50000) + "\n" }), ["ab"]);
+    const list = "Changed paths:\nab: added, +1 -0 lines\n\n";
+    expect(diff.startsWith(list)).toBe(true);
     expect(diff.endsWith("😀\n[diff truncated]\n")).toBe(true);
-    expect(Array.from(diff).length).toBe(40000 + "\n[diff truncated]\n".length);
+    expect(length(diff)).toBe(length(list) + 40000 + length(MARKER));
+  });
+
+  test("lists every path and gives each file's diff an equal share of 40000 characters", () => {
+    const names = Array.from({ length: 10 }, (_, i) => `big${i}`);
+    const lines = (n: string) => Array.from({ length: 250 }, (_, i) => `The ${n} skill, line ${i}: it handles ${n} work in its own way.`).join("\n") + "\n";
+    const diff = pendingDiff(built, onDisk({ small: "one\ntwo\n", ...Object.fromEntries(names.map((n) => [n, lines(n)])) }), ["small", ...names]);
+    const list = "Changed paths:\nsmall: added, +2 -0 lines\n" + names.map((n) => `${n}: added, +250 -0 lines\n`).join("") + "\n";
+    expect(diff.startsWith(list)).toBe(true);
+    const diffs = diff.slice(list.length);
+    expect(diffs.startsWith("--- /dev/null\n+++ disk/small\n@@ -0,0 +1,2 @@\n+one\n+two\n--- /dev/null\n+++ disk/big0\n")).toBe(true);
+    for (const n of names) expect(diffs).toContain(`--- /dev/null\n+++ disk/${n}\n@@ -0,0 +1,250 @@\n+The ${n} skill, line 0:`);
+    expect(diffs.split(MARKER).length - 1).toBe(10);
+    expect(length(diffs)).toBe(40000 + 10 * length(MARKER));
+  });
+});
+
+describe("changeDiff", () => {
+  test("lists the edits in order, with a diff for each file", () => {
+    const bytes = (s: string) => new TextEncoder().encode(s);
+    const c = new Change("c", scratch(), "intent", [
+      { kind: "file", path: "a.md" },
+      { kind: "add", path: "new.md" },
+      { kind: "delete", path: "gone.md" },
+    ]);
+    c.write("base", "a.md", bytes("old\nkeep\n"));
+    c.write("ours", "a.md", bytes("new\nkeep\n"));
+    c.write("ours", "new.md", bytes("fresh\n"));
+    const diff = changeDiff(c);
+    const list = "Changed paths:\na.md: changed, +1 -1 lines\nnew.md: added, +1 -0 lines\ndelete gone.md\n\n";
+    expect(diff.startsWith(list)).toBe(true);
+    expect(diff.slice(list.length)).toBe(
+      "--- upstream/a.md\n+++ ours/a.md\n@@ -1,2 +1,2 @@\n-old\n+new\n keep\n"
+      + "--- /dev/null\n+++ ours/new.md\n@@ -0,0 +1 @@\n+fresh\n",
+    );
   });
 });
 
