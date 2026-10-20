@@ -14,7 +14,7 @@ const ambientConfigHome = process.env["XDG_CONFIG_HOME"];
 process.env["XDG_CONFIG_HOME"] = join(sandbox, "config");
 
 const { applyStructure, describe: describeProblem } = await import("../src/assemble.ts");
-const { blockHash, blockSpans, checkEntry, formatEntry, nearest, parsePlaceholders, readEntries, Rules } = await import("../src/blocks.ts");
+const { blockHash, blocksOf, blockSpans, checkEntry, formatEntry, nearest, parsePlaceholders, readEntries, Rules } = await import("../src/blocks.ts");
 const { Book, globRe, lockText, parseLock } = await import("../src/book.ts");
 const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
 const { intentSettings, pendingDiff, PROVIDERS, writeIntent } = await import("../src/intent.ts");
@@ -89,6 +89,11 @@ describe("blockSpans", () => {
 
   test("a --- that is not on the first line is not frontmatter", () => {
     expect(spans("intro\n---\nx\n---\ny")).toEqual([[0, 5]]);
+  });
+
+  test("CRLF frontmatter is its own block, but only when every line of it ends in CR", () => {
+    expect(spans("---\r\nname: x\r\n---\r\ntext\r\n")).toEqual([[0, 3], [3, 4]]);
+    expect(spans("---\r\nname: x\n---\r\ntext\n")).toEqual([[0, 4]]);
   });
 
   test("blank lines inside a backtick fence do not end the block", () => {
@@ -320,6 +325,22 @@ describe("refuseCredentials and redact", () => {
   }
 });
 
+describe("blocksOf", () => {
+  test("a block's text drops the CR of each line, and identical blocks count their occurrences", () => {
+    expect(blocksOf("a\r\nb\r\n\r\nc\r\n\r\na\r\nb\r\n".split("\n")).map(({ start, end, text, nth, of }) => [start, end, text, nth, of])).toEqual([
+      [0, 2, "a\nb", 1, 2], [3, 4, "c", 1, 1], [5, 7, "a\nb", 2, 2],
+    ]);
+  });
+
+  test("an identical block is told apart by the blocks between it and the identical ones beside it", () => {
+    const between = (text: string) => blocksOf(text.split("\n")).filter((b) => b.text === "S").map((b) => b.between);
+    const before = between("S\n\nA\n\nS\n\nB\n\nS");
+    expect(new Set(before).size).toBe(3);
+    expect(between("T\n\nS\n\nA\n\nS\n\nB\n\nS")[1]).toBe(before[1]!);
+    expect(between("S\n\nA\n\nB\n\nS\n\nS")[1]).not.toBe(before[1]!);
+  });
+});
+
 describe("entries", () => {
   const entry = (over: Partial<Entry> = {}): Entry => ({
     hash: "0123456789ab", kind: "translation", rules: "t3", intent: "Say T3.", upstream: "Open Cursor.", patched: "Open T3.", ...over,
@@ -391,6 +412,14 @@ describe("entries", () => {
     const path = file(entry(), entry());
     expect(() => readEntries(path)).toThrow(Fail);
     expect(() => readEntries(path)).toThrow(`${path}:10: duplicate entry 0123456789ab`);
+  });
+
+  test("an entry for one of several identical paragraphs keeps its place in its head", () => {
+    const e = entry({ at: { nth: 2, of: 3, between: "89abcdef0123" } });
+    expect(formatEntry(e)).toStartWith("=== entry 0123456789ab 2 of 3 between 89abcdef0123\nkind: translation\n");
+    const path = file(entry(), e);
+    expect(Array.from(readEntries(path))).toEqual([["0123456789ab", entry()], ["0123456789ab 2 of 3 between 89abcdef0123", e]]);
+    expect(() => readEntries(file(e, e))).toThrow(":10: duplicate entry 0123456789ab 2 of 3 between 89abcdef0123");
   });
 
   test("text before the first entry is refused", () => {
@@ -1438,14 +1467,16 @@ describe("classify", () => {
     sources: new Map(sources),
   });
 
-  test("outputs built from one ours copy are all skipped when more than one is edited or deleted", () => {
+  test("an edit to an output built from an ours copy that another output on disk shares is a replace of that output", () => {
     const w = twins([["new.md", ours(added, "skills/new.md")], ["new2.md", ours(added, "skills/new.md")], ["new3.md", ours(added, "skills/new.md")]],
       { "new.md": "a", "new2.md": null, "new3.md": "built" });
-    expect(classify(w, ["new.md", "new2.md"])).toEqual([
-      { kind: "skip", path: "new.md", reason: "its copy in added also builds new2.md, which this record changes too; edit added directly, or to give them different text, remove the copy edit and record the destination again" },
-      { kind: "skip", path: "new2.md", reason: "its copy in added also builds new.md, which this record changes too; edit added directly, or to give them different text, remove the copy edit and record the destination again" },
+    expect(classify(w, ["new.md", "new2.md"])).toMatchObject([
+      { kind: "replace", path: "new.md", staged: "skills/new.md", entries: null },
+      { kind: "delete-upstream", path: "new2.md", staged: "skills/new2.md" },
     ]);
-    expect(classify(w, ["new.md"])).toMatchObject([{ kind: "update-ours", path: "new.md" }]);
+    expect(needOf(classify(w, ["new.md"])[0]!)).toEqual({ named: true, drafts: [], writes: { kind: "replace", path: "skills/new.md" } });
+    const alone = twins([["new.md", ours(added, "skills/new.md")], ["new2.md", ours(added, "skills/new.md")]], { "new.md": "a", "new2.md": null });
+    expect(classify(alone, ["new.md"])).toMatchObject([{ kind: "update-ours", path: "new.md" }]);
   });
 
   test("deleting an output of an ours copy that a copy edit reads deletes it instead of dropping the copy", () => {
@@ -1456,15 +1487,26 @@ describe("classify", () => {
     expect(classify(alone, ["new.md"])).toMatchObject([{ kind: "unadd", path: "new.md" }]);
   });
 
-  test("outputs built from one upstream file are all skipped when more than one is edited, but a delete stands alone", () => {
+  test("edits to outputs built from one upstream file are replaces while another output is on disk, and a delete stands alone", () => {
     const w = twins([["plain.md", up("skills/plain.md")], ["plain2.md", up("skills/plain.md")], ["plain3.md", up("skills/plain.md")]],
       { "plain.md": "a", "plain2.md": "b", "plain3.md": null });
     expect(classify(w, ["plain.md", "plain2.md", "plain3.md"])).toMatchObject([
-      { kind: "skip", path: "plain.md", reason: "upstream's skills/plain.md also builds plain2.md, which this record changes too; edit only one of them, or to give them different text, remove the copy edit and record the destination again" },
-      { kind: "skip", path: "plain2.md", reason: "upstream's skills/plain.md also builds plain.md, which this record changes too; edit only one of them, or to give them different text, remove the copy edit and record the destination again" },
+      { kind: "replace", path: "plain.md", staged: "skills/plain.md" },
+      { kind: "replace", path: "plain2.md", staged: "skills/plain2.md" },
       { kind: "delete-upstream", path: "plain3.md", staged: "skills/plain3.md" },
     ]);
-    expect(classify(w, ["plain.md", "plain3.md"])).toMatchObject([{ kind: "file-edit", path: "plain.md" }, { kind: "delete-upstream", path: "plain3.md" }]);
+    const one = twins([["plain.md", up("skills/plain.md")], ["plain3.md", up("skills/plain.md")]], { "plain.md": "a", "plain3.md": null });
+    expect(classify(one, ["plain.md", "plain3.md"])).toMatchObject([{ kind: "file-edit", path: "plain.md" }, { kind: "delete-upstream", path: "plain3.md" }]);
+  });
+
+  test("a replace takes the block entries of its upstream file with it only when it replaces every output of that file", () => {
+    const w = { ...twins([["plain.md", up("skills/plain.md")], ["plain2.md", up("skills/plain.md")]], { "plain.md": "a", "plain2.md": "b" }),
+      blocks: new Set(["skills/plain.md"]) };
+    expect(classify(w, ["plain.md", "plain2.md"])).toMatchObject([
+      { kind: "replace", path: "plain.md", entries: "blocks/skills/plain.md.entries" },
+      { kind: "replace", path: "plain2.md", entries: "blocks/skills/plain.md.entries" },
+    ]);
+    expect(classify(w, ["plain2.md"])).toMatchObject([{ kind: "replace", path: "plain2.md", entries: null }]);
   });
 
   test("a mode change to a file with block entries names the file as a string literal", () => {

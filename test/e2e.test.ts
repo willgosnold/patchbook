@@ -6678,7 +6678,7 @@ describe("ForkTest", () => {
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
 
-  forkTest("record skips two outputs that share one upstream file when both are edited", (t) => {
+  forkTest("record replaces each of two outputs that share one upstream file when both are edited", (t) => {
     mkdirSync(join(t.fork.path, ".patchbook/changes/twin"), { recursive: true });
     writeFileSync(join(t.fork.path, ".patchbook/changes/twin/CHANGE.md"), "# twin\n\nintent: Two guides.\n\nedits:\n- copy docs/guide.md -> docs/guide2.md\n");
     const series = join(t.fork.path, ".patchbook/series");
@@ -6686,11 +6686,11 @@ describe("ForkTest", () => {
     t.pb(["build"], { cwd: t.fork.path });
     t.fork.write("docs/guide.md", "a guide!\n");
     t.fork.write("docs/guide2.md", "a second guide\n");
-    const skip = (path: string, other: string) =>
-      `skipped  ${path}: upstream's docs/guide.md also builds ${other}, which this record changes too; edit only one of them, or to give them different text, remove the copy edit and record the destination again\n`;
-    expect(t.pb(["record", "--intent", "Shout."], { cwd: t.fork.path }).stdout)
-      .toBe(skip("docs/guide.md", "docs/guide2.md") + skip("docs/guide2.md", "docs/guide.md"));
+    expect(t.pb(["record", "--intent", "Shout."], { cwd: t.fork.path }).stdout).toBe("shout: Shout.\nreplace  docs/guide.md\nreplace  docs/guide2.md\n");
+    expect(read(join(t.fork.path, ".patchbook/changes/shout/CHANGE.md"))).toContain("edits:\n- replace docs/guide.md\n- replace docs/guide2.md\n");
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect([t.fork.read("docs/guide.md"), t.fork.read("docs/guide2.md")]).toEqual(["a guide!\n", "a second guide\n"]);
   });
 
   forkTest("record that cannot write a later edit puts back the edits it wrote before", (t) => {
@@ -9216,6 +9216,177 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(out.stdout).toBe("delete   docs/guide.md\n");
   });
 
+  // #28: identical paragraphs, CRLF files, and edits to the outputs of a copy.
+  const DUP = "# Title\n\nExample:\n\nfirst body\n\nExample:\n\nsecond body\n";
+  const upstreamFile = (t: ForkCase, path: string, text: string): void => {
+    writeFileSync(join(t.up.path, path), text);
+    t.up.commit(`add ${path}`);
+    syncAndBuild(t);
+  };
+  const keepEntry = (t: ForkCase, rel: string, hash: string, text: string): void => {
+    mkdirSync(join(t.fork.path, ".patchbook/blocks"), { recursive: true });
+    writeFileSync(join(t.fork.path, `.patchbook/blocks/${rel}.entries`),
+      `=== entry ${hash}\nkind: keep\nrules: \nintent: Keep it.\n--- upstream\n${text}\n--- patched\n${text}\n`);
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("entries");
+  };
+
+  forkTest("commit records an edit to one of two identical paragraphs", (t) => {
+    upstreamFile(t, "dup.md", DUP);
+    keepEntry(t, "dup.md", "79aeaf7ba450", "# Title");
+    const edited = DUP.replaceAll("Example:\n\nsecond", "Example 2:\n\nsecond");
+    writeFileSync(join(t.fork.path, "dup.md"), edited);
+    sh(["git", "add", "dup.md"], { cwd: t.fork.path });
+    const commit = sh(["git", "commit", "-qm", "number it"], { cwd: t.fork.path, env: { ...withHook(t), PATCHBOOK_INTENT: "Number the second example." } });
+    expect(commit.stdout + commit.stderr).toContain("entry    dup.md [872887e563e7 2 of 2 between 9eae27830b75] added\n");
+    expect(committedFiles(t.fork)).toContain(".patchbook/blocks/dup.md.entries");
+    expect(read(join(t.fork.path, ".patchbook/blocks/dup.md.entries"))).toContain(
+      "=== entry 872887e563e7 2 of 2 between 9eae27830b75\nkind: policy\nrules: \nintent: Number the second example.\n--- upstream\nExample:\n--- patched\nExample 2:\n");
+    expect(t.pb(["blocks", "dup.md"], { cwd: t.fork.path }).stdout).toContain("=== line 3 [872887e563e7 1 of 2 between 4734623e8873]\nExample:\n\n=== line 5");
+    expect(t.pb(["blocks", "dup.md"], { cwd: t.fork.path }).stdout).toContain("=== line 7 [872887e563e7 2 of 2 between 9eae27830b75]\nExample:\n\n=== line 9");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("dup.md")).toBe(edited);
+  });
+
+  const SAS = "# Title\n\nOne.\n\nTwo.\n\nS\n\nA\n\nS\n\nB\n\nS\n";
+  const editMiddleS = (t: ForkCase): void => {
+    upstreamFile(t, "r.md", SAS);
+    keepEntry(t, "r.md", "79aeaf7ba450", "# Title");
+    writeFileSync(join(t.fork.path, "r.md"), SAS.replaceAll("A\n\nS\n\nB", "A\n\nX\n\nB"));
+    expect(t.pb(["record", "x", "--intent", "Say X between A and B."], { cwd: t.fork.path }).stdout).toStartWith("entry    r.md [8de0b3c47f11 2 of 3");
+    t.fork.commit("x");
+  };
+
+  forkTest("an occurrence entry orphans when upstream moves what lies around it", (t) => {
+    editMiddleS(t);
+    t.up.write("r.md", "# Title\n\nOne.\n\nTwo.\n\nS\n\nA\n\nB\n\nS\n\nS\n");
+    t.up.commit("move an S after B");
+    t.pb(["sync"], { cwd: t.fork.path });
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("orphan    r.md [8de0b3c47f11 2 of 3");
+    t.pb(["build"], { cwd: t.fork.path, code: 1 });
+    expect(t.fork.read("r.md")).toBe(SAS.replaceAll("A\n\nS\n\nB", "A\n\nX\n\nB"));
+  });
+
+  forkTest("an occurrence entry still applies when upstream reorders paragraphs away from it", (t) => {
+    editMiddleS(t);
+    t.up.write("r.md", SAS.replaceAll("One.\n\nTwo.", "Two.\n\nOne."));
+    t.up.commit("swap one and two");
+    t.pb(["sync"], { cwd: t.fork.path });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("r.md")).toBe("# Title\n\nTwo.\n\nOne.\n\nS\n\nA\n\nX\n\nB\n\nS\n");
+  });
+
+  forkTest("scaffold writes one entry for identical paragraphs", (t) => {
+    upstreamFile(t, "dup.md", DUP);
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    writeFileSync(config, read(config) + "\n[[check]]\nname = \"example\"\nfiles = [\"dup.md\"]\npattern = 'Example'\n");
+    expect(t.pb(["scaffold"], { cwd: t.fork.path }).stdout).toBe("scaffolded 1 entries in 1 files\n");
+    expect(read(join(t.fork.path, ".patchbook/blocks/dup.md.entries")))
+      .toBe("=== entry 872887e563e7\nkind: translation\nrules: \nintent: \n--- upstream\nExample:\n--- patched\nExample:\n");
+    const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
+    expect(status).toContain("invalid   dup.md:3 [872887e563e7]: it has no intent; fill it with `patchbook intent`\n");
+    expect(status).toContain("invalid   dup.md:7 [872887e563e7]: it has no intent; fill it with `patchbook intent`\n");
+  });
+
+  forkTest("record records an edit to a CRLF file with block entries", (t) => {
+    const crlf = "---\r\nname: crlf\r\n---\r\n# Title\r\n\r\nBody one.\r\n\r\nBody two.\r\n";
+    upstreamFile(t, "crlf.md", crlf);
+    expect(t.pb(["blocks", "crlf.md"], { cwd: t.fork.path }).stdout).toBe("=== line 1 [39eb3e2cacd1]\n---\nname: crlf\n---\n\n"
+      + "=== line 4 [79aeaf7ba450]\n# Title\n\n=== line 6 [c9317c857871]\nBody one.\n\n=== line 8 [adeb0bde4698]\nBody two.\n\n");
+    keepEntry(t, "crlf.md", "c9317c857871", "Body one.");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    const edited = crlf.replaceAll("Body two.", "Body dos.");
+    writeFileSync(join(t.fork.path, "crlf.md"), edited);
+    expect(t.pb(["record", "spanish", "--intent", "Say the second body in Spanish."], { cwd: t.fork.path }).stdout)
+      .toBe("entry    crlf.md [adeb0bde4698] added\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("crlf.md")).toBe(edited);
+  });
+
+  forkTest("record refuses a delete into a change before the copy that makes the file", (t) => {
+    handChange(t, "first", "Add a first file.", ["add first.txt"], { "first.txt": "first\n" });
+    handChange(t, "second", "Copy the guide.", ["copy docs/guide.md -> docs/guide2.md"]);
+    t.pb(["build"], { cwd: t.fork.path });
+    const first = changeText(t, "first");
+    t.fork.rm("docs/guide2.md");
+    expect(t.pb(["record", "first"], { cwd: t.fork.path, code: 1 }).stderr).toContain("patchbook: can't record into first:\n"
+      + "  delete docs/guide2.md: copy docs/guide.md -> docs/guide2.md in second, later in the series, has to come before it\n"
+      + "Record into second or a change after it, or into a new change.\n");
+    expect(changeText(t, "first")).toBe(first);
+    writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > ${t.tmp}/prompt.txt\necho '{"change": "first", "intent": "Add a first file."}'\n`);
+    expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe("first-2: Add a first file.\ndelete   docs/guide2.md\n");
+    expect(read(join(t.tmp, "prompt.txt"))).toContain("second: Copy the guide.");
+    expect(read(join(t.tmp, "prompt.txt"))).not.toContain("first: Add a first file.");
+    expect(changeText(t, "first")).toBe(first);
+    expect(changeText(t, "first-2")).toContain("- delete docs/guide2.md\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(existsSync(join(t.fork.path, "docs/guide2.md"))).toBe(false);
+  });
+
+  for (const [what, copy] of [["file", "copy docs/guide.md -> manual/guide.md"], ["folder", "copy docs -> manual"]] as const) {
+    forkTest(`record refuses deleting the source of a ${what} copy into a change before it`, (t) => {
+      handChange(t, "early", "Add an early file.", ["add early.txt"], { "early.txt": "early\n" });
+      handChange(t, "cp", "Copy the guide.", [copy]);
+      t.pb(["build"], { cwd: t.fork.path });
+      const early = changeText(t, "early");
+      t.fork.rm("docs/guide.md");
+      expect(t.pb(["record", "early"], { cwd: t.fork.path, code: 1 }).stderr).toContain(`patchbook: can't record into early:\n`
+        + `  delete docs/guide.md: ${copy} in cp, later in the series, has to come before it\nRecord into cp or a change after it, or into a new change.\n`);
+      expect(changeText(t, "early")).toBe(early);
+      expect(t.pb(["record", "cp"], { cwd: t.fork.path }).stdout).toBe("delete   docs/guide.md\n");
+      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+      t.pb(["build"], { cwd: t.fork.path });
+      expect(t.fork.read("manual/guide.md")).toBe("a guide\n");
+      expect(existsSync(join(t.fork.path, "docs/guide.md"))).toBe(false);
+    });
+  }
+
+  for (const [what, path] of [["destination", "docs/guide2.md"], ["source", "docs/guide.md"]] as const) {
+    forkTest(`recording an edit to the ${what} of an upstream copy replaces only that output`, (t) => {
+      handChange(t, "second", "Copy the guide.", ["copy docs/guide.md -> docs/guide2.md"]);
+      t.pb(["build"], { cwd: t.fork.path });
+      t.fork.write(path, "a copied guide\n");
+      const disk = outputs(t);
+      expect(t.pb(["record", "copyedit", "--intent", "Change one guide."], { cwd: t.fork.path }).stdout).toBe(`replace  ${path}\n`);
+      expect(changeText(t, "copyedit")).toBe(`# copyedit\n\nintent: Change one guide.\n\nedits:\n- replace ${path}\n`);
+      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+      t.pb(["build"], { cwd: t.fork.path });
+      expect(outputs(t)).toEqual(disk);
+    });
+  }
+
+  forkTest("record refuses a replace into the change whose file edit it would overwrite", (t) => {
+    t.fork.write("docs/guide.md", "my guide\n");
+    t.pb(["record", "own", "--intent", "Own the guide."], { cwd: t.fork.path });
+    handChange(t, "second", "Copy the guide.", ["copy docs/guide.md -> docs/guide2.md"]);
+    writeFileSync(join(t.fork.path, ".patchbook/series"), "second\nown\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.write("docs/guide.md", "our guide\n");
+    expect(t.pb(["record", "own"], { cwd: t.fork.path, code: 1 }).stderr).toContain("patchbook: can't record into own:\n"
+      + "  replace docs/guide.md: own already has its own copy of docs/guide.md\nRecord into a new change.\n");
+    expect(t.pb(["record", "apart", "--intent", "Keep our guide apart."], { cwd: t.fork.path }).stdout).toBe("replace  docs/guide.md\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect([t.fork.read("docs/guide.md"), t.fork.read("docs/guide2.md")]).toEqual(["our guide\n", "my guide\n"]);
+  });
+
+  forkTest("build of a book without occurrence keys or replaces is unchanged", (t) => {
+    upstreamFile(t, "dup.md", DUP);
+    t.fork.write("docs/guide.md", "my guide\n");
+    t.pb(["record", "own", "--intent", "Own the guide."], { cwd: t.fork.path });
+    handChange(t, "second", "Copy the guide.", ["copy docs/guide.md -> docs/guide2.md"]);
+    mkdirSync(join(t.fork.path, ".patchbook/blocks"), { recursive: true });
+    writeFileSync(join(t.fork.path, ".patchbook/blocks/dup.md.entries"),
+      "=== entry 872887e563e7\nkind: policy\nrules: \nintent: Lead in.\n--- upstream\nExample:\n--- patched\nFor example:\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("dup.md")).toBe(DUP.replaceAll("Example:", "For example:"));
+    expect([t.fork.read("docs/guide.md"), t.fork.read("docs/guide2.md")]).toEqual(["my guide\n", "my guide\n"]);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
   const configureSnippets = (t: ForkCase): void => {
     const config = join(t.fork.path, ".patchbook/config.toml");
     writeFileSync(config, read(config) + '\n[placeholders.snippet]\nfile = ".patchbook/snippets.md"\nformat = "sections"\n');
@@ -11056,24 +11227,24 @@ describe("VendorTest", () => {
     t.pb(["build"], { cwd: t.repo.path });
     return join(changes, "holder/ours/skills/hello/tpl.md.pb");
   };
-  const shared = (path: string, other: string) =>
-    `skipped  ${path}: its copy in holder also builds ${other}, which this record changes too; edit holder directly, or to give them different text, remove the copy edit and record the destination again\n`;
-
-  vendorTest("record skips two outputs that share one copy when both are edited", (t) => {
+  vendorTest("record replaces each of two outputs that share one copy when both are edited", (t) => {
     t.missingScaffoldPatchBuild();
     const copy = holderAndTwin(t, "Then hi.\n");
     t.repo.write("skills/hello/tpl.md", "Then hey.\n");
     t.repo.write("skills/hello/tpl2.md", "Then yo.\n");
-    expect(t.pb(["record"], { cwd: t.repo.path }).stdout).toBe(shared("hello/tpl.md", "hello/tpl2.md") + shared("hello/tpl2.md", "hello/tpl.md"));
+    expect(t.pb(["record"], { cwd: t.repo.path }).stdout).toBe("shout: Shout the second line.\nreplace  hello/tpl.md\nreplace  hello/tpl2.md\n");
     expect(read(copy)).toBe("Then hi.\n");
+    t.pb(["build"], { cwd: t.repo.path });
+    expect([t.repo.read("skills/hello/tpl.md"), t.repo.read("skills/hello/tpl2.md")]).toEqual(["Then hey.\n", "Then yo.\n"]);
   });
 
-  vendorTest("record skips a delete and an edit of two outputs that share one copy", (t) => {
+  vendorTest("record deletes one output of a copy and skips the other whose copy uses placeholders", (t) => {
     t.missingScaffoldPatchBuild();
     const copy = holderAndTwin(t, "Then {{snippet:greet}}\n");
     unlinkSync(join(t.repo.path, "skills/hello/tpl.md"));
     t.repo.write("skills/hello/tpl2.md", "Then hi.\n");
-    expect(t.pb(["record"], { cwd: t.repo.path }).stdout).toBe(shared("hello/tpl.md", "hello/tpl2.md") + shared("hello/tpl2.md", "hello/tpl.md"));
+    expect(t.pb(["record"], { cwd: t.repo.path }).stdout).toBe("shout: Shout the second line.\ndelete   hello/tpl.md\n"
+      + "skipped  hello/tpl2.md: its copy in holder uses placeholders; edit that copy directly\n");
     expect(read(copy)).toBe("Then {{snippet:greet}}\n");
     expect(read(join(t.repo.path, ".patchbook/changes/holder/CHANGE.md"))).toContain("- add skills/hello/tpl.md");
   });

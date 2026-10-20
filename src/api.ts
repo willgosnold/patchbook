@@ -20,10 +20,14 @@ export type Problem =
   | ({ problem: "leak" } & ((InOutput & { line: number }) | InBlock) & { terms: string[] })
   | ({ problem: "missing" } & InBlock & { terms: string[]; upstream: string })
   | {
-    problem: "orphan"; file: string; hash: string; kind: string; rules: string; intent: string; upstream: string;
+    problem: "orphan"; file: string; hash: string; occurrence?: Occurrence; kind: string; rules: string; intent: string; upstream: string;
     patched: string; nearest: Nearest[];
   }
   | ({ problem: "check" } & InFile & Detail);
+
+/** Which of a file's identical paragraphs an entry patches: the nth from the top, of `of` in all, with `between` the hash of the
+ * paragraphs from the identical one before it, or the file's start, to the identical one after it, or the file's end. */
+export type Occurrence = { nth: number; of: number; between: string };
 
 /** A candidate for the new home of an orphaned entry. */
 export type Nearest = { line: number; hash: string; similarity: number };

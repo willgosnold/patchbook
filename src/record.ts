@@ -1,11 +1,11 @@
 // Recording hand edits to the output: as block entries, as edits to a change that owns the file, or as a new change.
 import { unlinkSync } from "node:fs";
 import { join } from "node:path";
-import type { Problem } from "./api.ts";
+import type { Occurrence, Problem } from "./api.ts";
 import { assemble, type Assembly, blockFiles, describe, handEdits, readBuildLock, refuseFolderToFile, type Source, stampOf, writeBuildLines } from "./assemble.ts";
-import { blockHash, blockSpans, type Entry, entriesPath, formatEntry, patchBlocks, PLACEHOLDER_HINT, readEntries, Rules } from "./blocks.ts";
+import { type Block, blocksOf, type Entry, entriesPath, entryKey, formatEntry, keyFor, patchBlocks, PLACEHOLDER_HINT, readEntries, Rules } from "./blocks.ts";
 import { Book, PB, under } from "./book.ts";
-import { appendSeries, CHANGE_NAME, Change, notAChangeName, readSeries, Roster, saveChange } from "./changes.ts";
+import { appendSeries, CHANGE_NAME, Change, type Edit, editText, notAChangeName, readSeries, Roster, saveChange } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { changeDiff, ModelFailed, nameFromIntent, oneLine, pendingDiff, writeIntent } from "./intent.ts";
 import { unifiedDiff } from "./lib/diff.ts";
@@ -27,6 +27,7 @@ type Destination = { kind: "owned"; change: Change; up?: File | undefined } | { 
 type Data = {
   "add": { staged: string; now: Seen };
   "delete-upstream": { staged: string; entries: string | null };
+  "replace": { staged: string; now: Seen; built: Mode; up: File | undefined; entries: string | null };
   "unadd": Copy;
   "unreplace": Copy;
   "update-ours": Copy & { now: Seen; built: File; up: File | undefined };
@@ -38,7 +39,11 @@ type Data = {
 type Kind = keyof Data;
 export type Edited<K extends Kind = Kind> = { [P in K]: { kind: P; path: string } & Data[P] }[K];
 
-type Need = { named: boolean; drafts: readonly Draft[] };
+/** A structural edit a row adds to the change it records into. A delete that stands in for a replace names the change it drops the
+ * replace from. */
+type Written = { kind: "add" | "delete" | "replace"; path: string; drops?: Change };
+
+type Need = { named: boolean; drafts: readonly Draft[]; writes?: Written };
 const NOTHING: Need = { named: false, drafts: [] };
 const NAMED: Need = { named: true, drafts: [] };
 
@@ -50,7 +55,7 @@ type Row<K extends Kind> = { needs(e: Edited<K>): Need; apply(e: Edited<K>, r: R
 
 const KINDS: { readonly [K in Kind]: Row<K> } = {
   "add": {
-    needs: () => NAMED,
+    needs: (e) => ({ ...NAMED, writes: { kind: "add", path: e.staged } }),
     apply: (e, r) => {
       const c = r.target!;
       c.edits.push({ kind: "add", path: e.staged });
@@ -59,13 +64,24 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     },
   },
   "delete-upstream": {
-    needs: () => NAMED,
+    needs: (e) => ({ ...NAMED, writes: { kind: "delete", path: e.staged } }),
     apply: (e, r) => {
       const c = r.target!;
       c.edits.push({ kind: "delete", path: e.staged });
       const entries = e.entries;
       const afterSave = () => { if (entries !== null && exists(entries)) unlinkSync(entries); };
       return { touched: [c], notes: [`delete   ${e.path}`], afterSave };
+    },
+  },
+  "replace": {
+    needs: (e) => ({ ...NAMED, writes: { kind: "replace", path: e.staged } }),
+    apply: (e, r) => {
+      const c = r.target!;
+      c.edits.push({ kind: "replace", path: e.staged });
+      const copies = writeCopy(c, e.staged, e.now, e.built, e.up);
+      const entries = e.entries;
+      const afterSave = () => { if (entries !== null && exists(entries)) unlinkSync(entries); };
+      return { touched: [c], notes: [`replace  ${e.path}`], copies, afterSave };
     },
   },
   "unadd": {
@@ -77,7 +93,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     },
   },
   "unreplace": {
-    needs: () => NAMED,
+    needs: (e) => ({ ...NAMED, writes: { kind: "delete", path: e.staged, drops: e.change } }),
     apply: (e, r) => {
       const c = r.target!;
       e.change.edits = e.change.edits.filter((x) => !(x.kind === "replace" && x.path === e.staged));
@@ -159,24 +175,24 @@ export type Snapshot = {
   plan(rel: string, path: string, built: File, now: File): Plan | string;
 };
 
+/** An edit to an output whose source builds another output still on disk is a replace of that output alone: an edit to the source
+ * would change the other output too. */
 export function classify(s: Snapshot, paths: readonly string[]): Edited[] {
-  const shared = new Map(paths.map((p) => [p, sharedSource(s, p)]));
-  const units = Map.groupBy(paths.filter((p) => shared.get(p)), (p) => unitKey(shared.get(p)!));
   return paths.map((path) => {
-    const src = shared.get(path);
-    const others = src ? units.get(unitKey(src))!.filter((p) => p !== path) : [];
-    if (!src || !others.length) return classifyOne(s, path);
-    const from = src.kind === "ours" ? `its copy in ${src.change}` : `upstream's ${src.path}`;
-    const fix = src.kind === "ours" ? `edit ${src.change} directly` : "edit only one of them";
-    return { kind: "skip", path, reason: `${from} also builds ${others.join(", ")}, which this record changes too; ${fix}, or to give them different text, remove the copy edit and record the destination again` };
+    const now = s.current.get(path);
+    const built = s.out.get(path);
+    const src = now && built ? s.sources.get(path) : undefined;
+    const outputs = src ? builtFrom(s, src) : [];
+    if (!now || !built || !src || !outputs.some((p) => p !== path && s.current.has(p))) return classifyOne(s, path);
+    // Once every output of a file with block entries is replaced, nothing reads its entries.
+    const entries = src.kind === "up" && s.blocks.has(src.path) && outputs.every((p) => paths.includes(p)) ? s.entriesAt(src.path) : null;
+    const staged = s.prefix + path;
+    return { kind: "replace", path, staged, now, built: built.mode, up: s.upstream.get(staged), entries };
   });
 }
 
-function sharedSource(s: Snapshot, path: string): Source | null {
-  const src = s.out.has(path) ? s.sources.get(path) : undefined;
-  const deleted = !s.current.has(path);
-  return src && (src.kind === "ours" || !deleted) ? src : null;
-}
+const builtFrom = (s: Snapshot, src: Source): string[] =>
+  Array.from(s.sources).flatMap(([p, o]) => (s.out.has(p) && unitKey(o) === unitKey(src) ? [p] : []));
 
 const stillBuilt = (s: Snapshot, rel: string): boolean =>
   Array.from(s.sources).some(([p, src]) => src.kind === "up" && src.path === rel && s.current.has(p));
@@ -241,31 +257,62 @@ function snapshot(book: Book, a: Assembly, current: ReadonlyMap<string, Seen>, c
   };
 }
 
-type Asked = { named: string[]; drafts: [string, Draft][] };
+type Asked = { named: string[]; drafts: [string, Draft][]; writes: Written[] };
 
 function asked(edits: readonly Edited[]): Asked {
-  const ask: Asked = { named: [], drafts: [] };
+  const ask: Asked = { named: [], drafts: [], writes: [] };
   for (const e of edits) {
     const need = needOf(e);
     if (need.named) ask.named.push(e.path);
     for (const d of need.drafts) ask.drafts.push([e.path, d]);
+    if (need.writes) ask.writes.push(need.writes);
   }
   return ask;
+}
+
+type Misfit = { edit: Edit; in: string } | "own";
+
+/** Why the change `name` can't take `w`: an edit on its path, a folder above it or a path under it, in a change later in the series,
+ * which has to apply first; or, for an add or a replace, a copy of that path the change already keeps. */
+function misfit(roster: Roster, name: string, w: Written): Misfit | null {
+  const overlaps = (p: string) => under(p, w.path) || under(w.path, p);
+  for (const later of roster.after(name).toReversed()) {
+    const edit = later.edits.findLast((e) => e.kind !== "file" && !(later === w.drops && e.kind === "replace" && e.path === w.path)
+      && (overlaps(e.path) || ("dest" in e && overlaps(e.dest))));
+    if (edit) return { edit, in: later.name };
+  }
+  return w.kind !== "delete" && roster.parsed.get(name)?.read("ours", w.path) != null ? "own" : null;
+}
+
+function refusal(name: string, misfits: readonly [Written, Misfit][]): string {
+  const lines = misfits.map(([w, why]) => `  ${w.kind} ${w.path}: `
+    + (why === "own" ? `${name} already has its own copy of ${w.path}` : `${editText(why.edit)} in ${why.in}, later in the series, has to come before it`));
+  const floor = misfits.flatMap(([, why]) => (why === "own" ? [] : [why.in])).at(-1);
+  return `can't record into ${name}:\n${lines.join("\n")}\n`
+    + (floor ? `Record into ${floor} or a change after it, or into a new change.` : "Record into a new change.");
 }
 
 type Naming = { name: string; intent: string; said: string | null; unused: boolean } | { name: null; intent: string | null; said: string | null; unused: boolean };
 
 function nameAndIntent(
   ask: Asked, name: string | null, given: string | null, roster: Roster,
-  model: (name: string | null, named: boolean) => [string, string],
+  model: (name: string | null, named: boolean, offered: ReadonlyMap<string, Change>) => [string, string],
 ): Naming {
   const changes = roster.parsed;
+  const misfits = (c: string) => ask.writes.flatMap((w): [Written, Misfit][] => {
+    const why = misfit(roster, c, w);
+    return why ? [[w, why]] : [];
+  });
 
   const stray = name ? roster.stray(name) : null;
   if (stray === "folder") {
     throw new Fail(`change ${name} is not in the series: add it to ${PB}/series to record into it, or move ${PB}/changes/${name} out of the way`);
   }
   if (stray) throw new Fail(`${PB}/changes/${name} is not a change folder: move it out of ${PB}/changes`);
+  if (name !== null && roster.known(name)) {
+    const refused = misfits(name);
+    if (refused.length) throw new Fail(refusal(name, refused));
+  }
   const named = ask.named.length > 0;
   if (given) {
     const setsExisting = name !== null && changes.has(name);
@@ -280,14 +327,15 @@ function nameAndIntent(
   if (!named && !ask.drafts.length) return { name: null, intent: null, said: null, unused: false };
   let answer: [string, string];
   try {
-    answer = model(name, named);
+    // The model sees only the changes that can take these edits, and a reply that names another starts a new change.
+    answer = model(name, named, new Map(Array.from(changes).filter(([c]) => !misfits(c).length)));
   } catch (e) {
     if (e instanceof ModelFailed) return pending(ask, name, roster, e.why);
     throw e;
   }
   const [picked, intent] = answer;
   if (!named) return { name: null, intent, said: `intent: ${intent}`, unused: false };
-  const chosen = roster.known(picked) ? picked : roster.free(picked);
+  const chosen = roster.known(picked) && !misfits(picked).length ? picked : roster.free(picked);
   return { name: chosen, intent, said: changes.has(chosen) ? `adding to ${chosen}` : `${chosen}: ${intent}`, unused: false };
 }
 
@@ -377,7 +425,7 @@ export function record(
 
   const given = intent === null ? null : oneLine(intent) || null;
   const ask = asked(edits);
-  const naming = nameAndIntent(ask, change, given, roster, (n, named) => writeIntent(book, changes, modelDiff(a, current, ask), n, named));
+  const naming = nameAndIntent(ask, change, given, roster, (n, named, offered) => writeIntent(book, offered, modelDiff(a, current, ask), n, named));
   const target = naming.name ? changes.get(naming.name) ?? new Change(naming.name, join(book.dir, "changes", naming.name), naming.intent) : null;
   if (target && naming.name !== null && !target.intent) target.intent = naming.intent;
   if (target && given) target.intent = given;
@@ -450,8 +498,7 @@ function planParagraphs(
 ): Plan | string {
   if (!(isText(built) && isText(now))) return "it isn't text";
   const entries = readEntries(entriesPath(book, rel));
-  const lines = upstreamText.split("\n");
-  const spans = blockSpans(lines);
+  const blocks = blocksOf(upstreamText.split("\n"));
   const owners: (number | null)[] = [];
   const { text } = patchBlocks({ rules, outPath, rel, text: upstreamText, entries, owners });
   if (!bytesEqual(encode(text), built)) return "a hook changes it after its block entries apply; edit the entries directly";
@@ -476,7 +523,7 @@ function planParagraphs(
 
   // Neighbouring touched blocks form one group: the first block takes the group's new text.
   const groups: number[][] = [];
-  const shown = spans.map((_, k) => k).filter((k) => owners.includes(k));
+  const shown = blocks.map((_, k) => k).filter((k) => owners.includes(k));
   for (const k of touched) {
     const last = groups.at(-1);
     if (last && shown.indexOf(k) === shown.indexOf(last.at(-1)!) + 1) last.push(k);
@@ -495,31 +542,37 @@ function planParagraphs(
     while (chunk.length && !chunk[0]!.trim()) chunk.shift();
     while (chunk.length && !chunk.at(-1)!.trim()) chunk.pop();
     for (const [i, k] of group.entries()) {
-      let piece = i === 0 ? chunk.join("\n") : "";
-      const [start, end] = spans[k]!;
-      const upstream = lines.slice(start, end).join("\n");
-      const h = blockHash(upstream);
-      const entry = entries.get(h);
-      if (entry) { // keep its placeholders where their values still appear
-        for (const [hint] of entry.patched.matchAll(PLACEHOLDER_HINT)) {
+      let piece = i === 0 ? chunk.map((line) => line.replace(/\r$/, "")).join("\n") : "";
+      const b = blocks[k]!;
+      const upstream = b.text;
+      const was = keyFor(entries, b);
+      if (was !== undefined) { // keep its placeholders where their values still appear
+        for (const [hint] of entries.get(was)!.patched.matchAll(PLACEHOLDER_HINT)) {
           const value = rules.expand(hint, () => {});
           if (value === "") return `its block entry uses ${hint}, which is empty, so the edit can't show where it goes; edit its block entries directly`;
           if (value !== hint) piece = piece.split(value).join(hint);
         }
       }
+      const key = recordKey(result, blocks, b);
+      const at = key === b.hash ? {} : { at: occurrence(b) };
+      const entry = result.get(key) ?? result.get(b.hash);
       if (piece === upstream && (!entry || entry.kind !== "keep")) {
-        if (entry) {
-          result.delete(h);
-          notes.push([h, "removed: the paragraph is upstream's again"]);
+        if (result.delete(key)) notes.push([key, "removed: the paragraph is upstream's again"]);
+        // An entry for every paragraph with this text would still patch this one.
+        const shared = keyFor(result, b);
+        if (shared !== undefined && result.get(shared)!.patched !== upstream) {
+          const own = entryKey(b.hash, b);
+          result.set(own, { hash: b.hash, at: occurrence(b), kind: "keep", rules: "", intent: null, upstream, patched: upstream });
+          notes.push([own, "added"]);
         }
         continue;
       }
       if (entry && entry.kind !== "keep") {
-        result.set(h, { ...entry, patched: piece });
-        notes.push([h, "updated"]);
+        result.set(key, { ...entry, ...at, patched: piece });
+        notes.push([key, "updated"]);
       } else {
-        result.set(h, { hash: h, kind: "policy", rules: "", intent: null, upstream, patched: piece });
-        notes.push([h, "added"]);
+        result.set(key, { hash: b.hash, ...at, kind: "policy", rules: "", intent: null, upstream, patched: piece });
+        notes.push([key, "added"]);
       }
     }
   }
@@ -528,6 +581,16 @@ function planParagraphs(
   const check = patchBlocks({ rules, outPath, rel, text: upstreamText, entries: filled }).text;
   if (!bytesEqual(encode(check), now)) return "the edit doesn't map onto whole paragraphs; edit its block entries directly";
   return { path: entriesPath(book, rel), entries: result, notes };
+}
+
+const occurrence = ({ nth, of, between }: Block): Occurrence => ({ nth, of, between });
+
+/** The key to record a block's entry under: the block's own entry's, else the one for its text, unless another block with that
+ * text has no entry of its own and would take the new text too. Then a new entry for this occurrence alone. */
+function recordKey(result: ReadonlyMap<string, Draft>, blocks: readonly Block[], b: Block): string {
+  const own = entryKey(b.hash, b);
+  if (result.has(own)) return own;
+  return blocks.some((o) => o !== b && o.hash === b.hash && !result.has(entryKey(o.hash, o))) ? own : b.hash;
 }
 
 /** The line of the new text that line i of the old text lines up with. */
