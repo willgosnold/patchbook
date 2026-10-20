@@ -9199,7 +9199,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
       + "  copy docs -> manual: delete docs/notes.md in late, later in the series, has to come before it\n"
       + "Record into late or a change after it, or into a new change.\n");
     expect(changeText(t, "early")).toBe(early);
-    expect(t.pb(["record", "late"], { cwd: t.fork.path }).stdout).toBe("copy     docs -> manual\n");
+    expect(t.pb(["record", "late"], { cwd: t.fork.path }).stdout).toBe("copy     docs -> manual\nintent   late: Shout the second line.\n");
     expect(changeText(t, "late")).toContain("- delete docs/notes.md\n- copy docs -> manual\n");
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
     t.pb(["build"], { cwd: t.fork.path });
