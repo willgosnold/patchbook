@@ -11240,15 +11240,16 @@ exec '${Bun.which("git")}' "$@"
     expect(words(t.pb(["upstream", "plugin"], { cwd: t.repo.path }).stdout)).toEqual(["README.md", "agents/helper.md", "skills/hello/SKILL.md"]);
   });
 
-  vendorTest("check leaves the heads it fetches to gc", (t) => {
-    const store = join(t.tmp, "store/upstreams", readdirSync(join(t.tmp, "store/upstreams"))[0]!);
-    const pin = lockPin(read(join(t.repo.path, ".patchbook/upstream.lock")), "plugin").commit;
+  vendorTest("check keeps the pin it compares with and leaves the head it fetches to gc", (t) => {
+    const store = storeOf(t);
+    const pin = pinOf(t);
+    dropRefs(store);
     t.up.write("plugin/README.md", "For everyone.\n");
     const head = t.up.commit("readme");
     t.pb(["check"], { cwd: t.repo.path, code: 10 });
-    sh(["git", "gc", "-q", "--prune=now"], { cwd: store });
-    expect(sh(["git", "cat-file", "-e", `${pin}^{commit}`], { cwd: store, check: false }).code).toBe(0);
-    expect(sh(["git", "cat-file", "-e", `${head}^{commit}`], { cwd: store, check: false }).code).not.toBe(0);
+    gc(store);
+    expect(inStore(store, pin)).toBe(true);
+    expect(inStore(store, head)).toBe(false);
     rmSync(t.up.path, { recursive: true });
     expect(words(t.pb(["upstream", "plugin"], { cwd: t.repo.path }).stdout)).toEqual(["README.md", "agents/helper.md", "skills/hello/SKILL.md"]);
   });
@@ -11260,17 +11261,6 @@ exec '${Bun.which("git")}' "$@"
     t.up.write("other/ignored.md", "Still not followed.\n");
     t.up.commit("outside the path");
     t.pb(["check"], { cwd: t.repo.path });
-    gc(store);
-    expect(inStore(store, pin)).toBe(true);
-  });
-
-  vendorTest("check keeps the pin it compares with", (t) => {
-    const store = storeOf(t);
-    const pin = pinOf(t);
-    dropRefs(store);
-    t.up.write("plugin/README.md", "For everyone.\n");
-    t.up.commit("readme");
-    t.pb(["check"], { cwd: t.repo.path, code: 10 });
     gc(store);
     expect(inStore(store, pin)).toBe(true);
   });
