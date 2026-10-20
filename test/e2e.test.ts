@@ -11993,7 +11993,7 @@ exec '${Bun.which("git")}' "$@"
     expect(tree(t.repo.path)).toEqual(before);
   });
 
-  vendorTest("a killed sync keeps the ref of a commit another upstream has pinned since", (t) => {
+  vendorTest("a killed sync keeps the ref of a commit another upstream on that remote has pinned since", (t) => {
     t.missingScaffoldPatchBuild();
     const extra = new Repo(join(t.tmp, "extra"));
     extra.write("x/a.md", "x\n");
@@ -12001,11 +12001,16 @@ exec '${Bun.which("git")}' "$@"
     extra.commit("a");
     t.pb(["track", "extra", extra.path, "--path", "x"], { cwd: t.repo.path });
     t.pb(["track", "other", extra.path, "--path", "y"], { cwd: t.repo.path });
+    t.repo.commit("follow extra and other");
     extra.write("x/a.md", "x2\n");
     extra.write("y/a.md", "y2\n");
     const head = extra.commit("v2");
     killSync(t, "update-ref refs/pins/");
-    t.pb(["sync", "other"], { cwd: t.repo.path });
+    sh(["git", "clone", "-q", t.repo.path, "mate"], { cwd: t.tmp });
+    const mate = new Repo(join(t.tmp, "mate"));
+    t.pb(["sync", "other"], { cwd: mate.path });
+    mate.commit("sync other");
+    sh(["git", "pull", "-q", "--ff-only", mate.path, "main"], { cwd: t.repo.path });
     t.pb(["sync", "extra", "refs/heads/nope"], { cwd: t.repo.path, code: 1 });
     expect(pinRefs(t, head)).toBe(1);
   });
@@ -12016,13 +12021,16 @@ exec '${Bun.which("git")}' "$@"
     extra.write("x/a.md", "x\n");
     extra.write("y/a.md", "y\n");
     extra.commit("a");
+    sh(["git", "clone", "-q", extra.path, "mirror"], { cwd: t.tmp });
+    const mirror = join(t.tmp, "mirror");
     t.pb(["track", "extra", extra.path, "--path", "x"], { cwd: t.repo.path });
-    t.pb(["track", "other", `${extra.path}/`, "--path", "y"], { cwd: t.repo.path });
+    t.pb(["track", "other", mirror, "--path", "y"], { cwd: t.repo.path });
     extra.write("x/a.md", "x2\n");
     extra.write("y/a.md", "y2\n");
     const head = extra.commit("v2");
-    killSync(t, "update-ref refs/pins/");
+    sh(["git", "pull", "-q", "--ff-only"], { cwd: mirror });
     t.pb(["sync", "other"], { cwd: t.repo.path });
+    killSync(t, "update-ref refs/pins/");
     t.pb(["sync", "extra", "refs/heads/nope"], { cwd: t.repo.path, code: 1 });
     expect(pinRefs(t, head)).toBe(1);
   });
