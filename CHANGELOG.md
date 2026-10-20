@@ -18,6 +18,21 @@ A copy you edit before it is recorded, as when you copy a file and edit it in th
 
 Changes recorded with 0.0.1 keep their `add` lines, so those files still don't follow upstream. To redo one, move the file out of the output and run `patchbook record`, which removes the `add` line and its copy. Then move the file back and run `patchbook record <change>`, which writes a `copy` edit into that change.
 
+### Record writes a move for a renamed file
+
+When you renamed an output file or folder with `git mv`, `record` and the commit hook wrote a `delete` of the old path and an `add` of the new one, with a frozen copy. The renamed file then never changed with upstream, and `status` reported no problems. Now a rename is recorded as a `move` edit, so `sync` and `build` bring in upstream's changes to the renamed file. If you also edited the file, as when you change the `name:` line of a renamed skill, the edit is recorded after the move as a `file` edit or as block entries, and `sync` merges upstream's changes into it (#308).
+
+```
+$ git mv skills/a skills/a2
+$ sed -i 's/^name: a$/name: a2/' skills/a2/SKILL.md
+$ git commit -am "rename a"
+ship-a-as-a2: Ship a as a2.
+move     skills/a -> skills/a2
+file     a2/SKILL.md
+```
+
+A rename is still recorded as a `delete` and an `add` when the renamed file keeps less than half of its lines, or when its edit can't be recorded on the moved file, as in a file whose copy uses placeholders. Renames recorded with 0.0.1 keep their `delete` and `add` lines.
+
 ## 0.0.1
 
 The first release.
