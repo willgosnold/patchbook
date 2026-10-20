@@ -244,18 +244,23 @@ export function readChanges(book: Book, problems: Problem[], names: readonly str
 export class Roster {
   private constructor(
     readonly parsed: ReadonlyMap<string, Change>,
-    private readonly names: ReadonlySet<string>,
+    private readonly series: readonly string[],
     private readonly dir: string,
   ) {}
 
   static read(book: Book, problems: Problem[] = []): Roster {
     const names = readSeries(book);
     const parsed = new Map(readChanges(book, problems, names).map((c) => [c.name, c]));
-    return new Roster(parsed, new Set(names), join(book.dir, "changes"));
+    return new Roster(parsed, names, join(book.dir, "changes"));
   }
 
   known(name: string): boolean {
-    return this.names.has(name);
+    return this.series.includes(name);
+  }
+
+  /** The changes after `name`, a change the series lists, in series order. */
+  after(name: string): Change[] {
+    return this.series.slice(this.series.indexOf(name) + 1).flatMap((n) => this.parsed.get(n) ?? []);
   }
 
   stray(name: string): "folder" | "other" | null {

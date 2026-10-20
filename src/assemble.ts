@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { InChange, InEdit, InOutput, Problem, StatusJson } from "./api.ts";
 import {
-  entriesPath, type Entry, formatEntry, leakScan, orphan, patchBlocks, readEntries, Rules, type Unmatched,
+  entriesPath, type Entry, entryKey, formatEntry, leakScan, orphan, patchBlocks, readEntries, Rules, type Unmatched,
 } from "./blocks.ts";
 import { Book, buildInputs, GIT, PB, type Reserved, under } from "./book.ts";
 import { type Change, editText, readChanges } from "./changes.ts";
@@ -32,7 +32,7 @@ export function describe(p: Problem): string {
       return `leak      ${at} still says ${p.terms.join(", ")}`;
     case "orphan": {
       const near = p.nearest.map((n) => `line ${n.line} [${n.hash}] ${Math.round(n.similarity * 100)}%`).join(", ") || "none";
-      return `orphan    ${p.file} [${p.hash}] intent: ${p.intent || "(no intent yet)"}\n          nearest new blocks: ${near}`;
+      return `orphan    ${p.file} [${entryKey(p.hash, p.occurrence)}] intent: ${p.intent || "(no intent yet)"}\n          nearest new blocks: ${near}`;
     }
     case "invalid":
     case "gone":
@@ -499,18 +499,20 @@ export async function cmdStatus(args: { json: boolean }) {
 export async function cmdScaffold(args: { file: string[] }) {
   const book = await Book.find();
   const a = assemble(book);
-  const byFile = new Map<string, Extract<Problem, { problem: "missing" }>[]>();
-  let count = 0;
+  // One entry for each paragraph's text, which patches every occurrence of it.
+  const byFile = new Map<string, Map<string, Extract<Problem, { problem: "missing" }>>>();
   for (const p of a.problems) {
     if (p.problem !== "missing" || (args.file.length && !args.file.includes(p.file))) continue;
-    count++;
-    byFile.set(p.file, [...(byFile.get(p.file) ?? []), p]);
+    if (!byFile.has(p.file)) byFile.set(p.file, new Map());
+    byFile.get(p.file)!.set(p.hash, p);
   }
+  let count = 0;
   for (const [rel, found] of byFile) {
     const path = entriesPath(book, rel);
     mkdirs(dirname(path));
     const existing = exists(path) ? readText(path).replace(/\n+$/, "") + "\n\n" : "";
-    const skeletons = found.map((p) => formatEntry({ hash: p.hash, kind: "translation", rules: "", intent: "", upstream: p.upstream, patched: p.upstream }));
+    const skeletons = Array.from(found.values(), (p) => formatEntry({ hash: p.hash, kind: "translation", rules: "", intent: "", upstream: p.upstream, patched: p.upstream }));
+    count += skeletons.length;
     writeText(path, existing + skeletons.join("\n"));
   }
   say(`scaffolded ${count} entries in ${byFile.size} files\n`);

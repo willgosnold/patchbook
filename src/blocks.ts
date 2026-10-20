@@ -1,6 +1,7 @@
 // Block entries: a paragraph of an upstream file, keyed by the hash of its text, with its patched text.
+// An entry for one of several identical paragraphs also names which one it is.
 // Also the rules a block is checked against: [[check]] patterns, placeholders and the hooks.
-import type { InBlock, InOutput, Nearest, Problem } from "./api.ts";
+import type { InBlock, InOutput, Nearest, Occurrence, Problem } from "./api.ts";
 import { Book, type Check, escape } from "./book.ts";
 import { Fail } from "./lib/fail.ts";
 import { pjoin, readText } from "./lib/fs.ts";
@@ -14,14 +15,37 @@ export const ENTRY_FIELDS = ["kind", "rules", "intent"] as const;
 export const ENTRY_KINDS = ["translation", "policy", "keep"];
 export const PLACEHOLDER_HINT = /\{\{[\p{L}\p{N}_]+:[^}]+\}\}/gu;
 const FENCE = /^\s*(`{3,}|~{3,})/;
-const ENTRY_HEAD = /^=== entry ([0-9a-f]{12})$/;
+const ENTRY_HEAD = /^=== entry ([0-9a-f]{12})(?: ([1-9][0-9]*) of ([1-9][0-9]*) between ([0-9a-f]{12}))?$/;
 
-export type Entry = { hash: string; kind: string; rules: string; intent: string; upstream: string; patched: string };
+/** An entry with `at` patches only that occurrence of its paragraph. One without patches every occurrence that has no entry of its own. */
+export type Entry = { hash: string; at?: Occurrence; kind: string; rules: string; intent: string; upstream: string; patched: string };
+/** A block of a file: lines [start, end), its text with no CR at the line ends, the hash of that text, and which of the file's
+ * blocks with that text it is. */
+export type Block = { start: number; end: number; text: string; hash: string } & Occurrence;
 /** A block with no entry, which an orphaned entry may have become. */
 export type Unmatched = { line: number; hash: string; upstream: string };
 
 export function blockHash(block: string): string {
   return sha256(block).slice(0, 12);
+}
+
+/** How an entries file names an entry: its hash, then the occurrence it patches, if it patches only one. */
+export const entryKey = (hash: string, at?: Occurrence): string => (at ? `${hash} ${at.nth} of ${at.of} between ${at.between}` : hash);
+
+/** The key of the entry that patches a block: the block's own, else the one for its text. */
+export function keyFor(entries: ReadonlyMap<string, unknown>, b: Block): string | undefined {
+  const own = entryKey(b.hash, b);
+  return entries.has(own) ? own : entries.has(b.hash) ? b.hash : undefined;
+}
+
+const cr = (line: string): string => (line.endsWith("\r") ? "\r" : "");
+
+/** The line that closes the frontmatter, or -1. A CRLF file's frontmatter has a CR on every line up to the closing one. */
+function frontmatterClose(lines: readonly string[]): number {
+  if (lines[0] === "---") return lines.indexOf("---", 1);
+  if (lines[0] !== "---\r") return -1;
+  for (let i = 1; i < lines.length && cr(lines[i]!); i++) if (lines[i] === "---\r") return i;
+  return -1;
 }
 
 /** Line ranges of a file's blocks: the frontmatter, then each run of non-blank lines.
@@ -30,12 +54,10 @@ export function blockHash(block: string): string {
 export function blockSpans(lines: readonly string[]): [number, number][] {
   const spans: [number, number][] = [];
   let first = 0;
-  if (lines.length && lines[0] === "---") {
-    const close = lines.indexOf("---", 1);
-    if (close !== -1) {
-      first = close + 1;
-      spans.push([0, first]);
-    }
+  const close = frontmatterClose(lines);
+  if (close !== -1) {
+    first = close + 1;
+    spans.push([0, first]);
   }
   let start: number | null = null;
   let fence: string | null = null;
@@ -55,13 +77,30 @@ export function blockSpans(lines: readonly string[]): [number, number][] {
   return spans;
 }
 
+export function blocksOf(lines: readonly string[]): Block[] {
+  const blocks = blockSpans(lines).map(([start, end]) => {
+    const text = lines.slice(start, end).map((line) => line.slice(0, line.length - cr(line).length)).join("\n");
+    return { start, end, text, hash: blockHash(text), nth: 1, of: 1, between: "" };
+  });
+  // Upstream can move identical paragraphs and keep their count, so the stretch to the identical ones on each side tells them apart.
+  const hashes = (from: number, to: number) => blocks.slice(from, to).map((b) => b.hash).join(" ");
+  for (const same of Map.groupBy(blocks.keys(), (k) => blocks[k]!.hash).values()) {
+    if (same.length < 2) continue;
+    for (const [i, k] of same.entries()) {
+      const between = blockHash(`${hashes((same[i - 1] ?? -1) + 1, k)} | ${hashes(k + 1, same[i + 1] ?? blocks.length)}`);
+      Object.assign(blocks[k]!, { nth: i + 1, of: same.length, between });
+    }
+  }
+  return blocks;
+}
+
 export function entriesPath(book: Book, rel: string): string {
   return book.data("blocks", `${rel}.entries`);
 }
 
-/** Parse an entries file into {hash: entry}. Field problems are left for checkEntry. */
+/** Parse an entries file into {key: entry}, keyed as entryKey names them. Field problems are left for checkEntry. */
 export function readEntries(path: string): Map<string, Entry> {
-  type Draft = { [K in "hash" | (typeof ENTRY_FIELDS)[number]]: string } & { upstream: string[]; patched: string[] };
+  type Draft = { [K in "hash" | (typeof ENTRY_FIELDS)[number]]: string } & { at?: Occurrence; upstream: string[]; patched: string[] };
   const drafts = new Map<string, Draft>();
   let entry: Draft | null = null;
   let section: "fields" | "upstream" | "patched" = "fields";
@@ -70,10 +109,11 @@ export function readEntries(path: string): Map<string, Entry> {
     const n = i + 1;
     const m = ENTRY_HEAD.exec(line);
     if (m) {
-      const hash = m[1]!;
-      if (drafts.has(hash)) throw new Fail(`${path}:${n}: duplicate entry ${hash}`);
-      entry = { hash, kind: "", rules: "", intent: "", upstream: [], patched: [] };
-      drafts.set(hash, entry);
+      const at = m[2] ? { nth: Number(m[2]), of: Number(m[3]), between: m[4]! } : undefined;
+      const key = entryKey(m[1]!, at);
+      if (drafts.has(key)) throw new Fail(`${path}:${n}: duplicate entry ${key}`);
+      entry = { hash: m[1]!, ...(at && { at }), kind: "", rules: "", intent: "", upstream: [], patched: [] };
+      drafts.set(key, entry);
       section = "fields";
       lastField = null;
     } else if (entry === null) {
@@ -96,7 +136,7 @@ export function readEntries(path: string): Map<string, Entry> {
 }
 
 export function formatEntry(e: Entry): string {
-  return `=== entry ${e.hash}\n` + ENTRY_FIELDS.map((f) => `${f}: ${e[f]}\n`).join("")
+  return `=== entry ${entryKey(e.hash, e.at)}\n` + ENTRY_FIELDS.map((f) => `${f}: ${e[f]}\n`).join("")
     + `--- upstream\n${e.upstream}\n--- patched\n${e.patched}\n`;
 }
 
@@ -118,8 +158,8 @@ export function nearest(text: string, candidates: readonly Unmatched[], limit = 
 
 export function orphan(rel: string, entry: Entry, candidates: readonly Unmatched[]): Problem {
   return {
-    problem: "orphan", file: rel, hash: entry.hash, kind: entry.kind, rules: entry.rules, intent: entry.intent,
-    upstream: entry.upstream, patched: entry.patched, nearest: nearest(entry.upstream, candidates),
+    problem: "orphan", file: rel, hash: entry.hash, ...(entry.at && { occurrence: entry.at }), kind: entry.kind, rules: entry.rules,
+    intent: entry.intent, upstream: entry.upstream, patched: entry.patched, nearest: nearest(entry.upstream, candidates),
   };
 }
 
@@ -207,15 +247,14 @@ export class Rules {
 }
 
 export function leakScan(rules: Rules, outPath: string, text: string, problems: Problem[], where: InOutput): void {
-  const lines = text.split("\n");
-  for (const [start, end] of blockSpans(lines)) {
-    const terms = rules.terms(outPath, lines.slice(start, end).join("\n"));
-    if (terms.length) problems.push({ problem: "leak", ...where, line: start + 1, terms });
+  for (const b of blocksOf(text.split("\n"))) {
+    const terms = rules.terms(outPath, b.text);
+    if (terms.length) problems.push({ problem: "leak", ...where, line: b.start + 1, terms });
   }
 }
 
-/** Swap each block that has an entry for its patched text. If owners is given, it gets, for each output
- * line, the index of the upstream block it came from, or null for the lines between blocks. */
+/** Swap each block that has an entry for its patched text, with the line ends of the block it replaces. If owners is given, it
+ * gets, for each output line, the index of the upstream block it came from, or null for the lines between blocks. */
 export function patchBlocks(args: {
   rules: Rules;
   outPath: string;
@@ -230,7 +269,7 @@ export function patchBlocks(args: {
   const { rules, outPath, rel, text, entries, used = new Set(), unmatched = [], problems = [], owners } = args;
   if (!entries.size && owners === undefined && !rules.watches(outPath)) return { text, applied: 0 };
   const lines = text.split("\n");
-  const spans = blockSpans(lines);
+  const blocks = blocksOf(lines);
   const out: string[] = [];
   let prev = 0;
   let applied = 0;
@@ -240,21 +279,21 @@ export function patchBlocks(args: {
       owners?.push(owner);
     }
   };
-  for (const [i, [start, end]] of spans.entries()) {
-    const block = lines.slice(start, end).join("\n");
-    const h = blockHash(block);
-    const where: InBlock = { file: rel, output: outPath, line: start + 1, hash: h };
+  for (const [i, b] of blocks.entries()) {
+    const { start, end } = b;
+    const where: InBlock = { file: rel, output: outPath, line: start + 1, hash: b.hash };
     emit(lines.slice(prev, start), null);
     prev = end;
-    const entry = entries.get(h);
-    if (entry === undefined) {
-      unmatched.push({ line: start + 1, hash: h, upstream: block });
-      const terms = rules.terms(outPath, block);
-      if (terms.length) problems.push({ problem: "missing", ...where, terms, upstream: block });
+    const key = keyFor(entries, b);
+    if (key === undefined) {
+      unmatched.push({ line: start + 1, hash: b.hash, upstream: b.text });
+      const terms = rules.terms(outPath, b.text);
+      if (terms.length) problems.push({ problem: "missing", ...where, terms, upstream: b.text });
       emit(lines.slice(start, end), i);
       continue;
     }
-    used.add(h);
+    const entry = entries.get(key)!;
+    used.add(key);
     const error = checkEntry(entry);
     if (error) problems.push({ problem: "invalid", ...where, detail: error });
     applied++;
@@ -263,8 +302,9 @@ export function patchBlocks(args: {
       const terms = rules.terms(outPath, patched);
       if (terms.length) problems.push({ problem: "leak", ...where, terms });
     }
-    if (patched) emit(patched.split("\n"), i);
-    else if (i + 1 < spans.length) prev = spans[i + 1]![0]; // drop the blank lines after a deleted block
+    const eol = (last: boolean) => cr(lines[last ? end - 1 : start]!);
+    if (patched) emit(patched.split("\n").map((line, j, all) => line + eol(j === all.length - 1)), i);
+    else if (i + 1 < blocks.length) prev = blocks[i + 1]!.start; // drop the blank lines after a deleted block
   }
   emit(lines.slice(prev), null);
   return { text: out.join("\n"), applied };
@@ -274,10 +314,8 @@ export async function cmdBlocks(args: { file: string }) {
   const book = await Book.find();
   const file = book.stagedUpstream().get(args.file);
   if (!file) throw new Fail(`upstream has no ${args.file}`);
-  const lines = decode(file.data).split("\n");
-  for (const [start, end] of blockSpans(lines)) {
-    const block = lines.slice(start, end).join("\n");
-    verbatim(`=== line ${start + 1} [${blockHash(block)}]\n${block}\n\n`);
+  for (const b of blocksOf(decode(file.data).split("\n"))) {
+    verbatim(`=== line ${b.start + 1} [${b.of > 1 ? entryKey(b.hash, b) : b.hash}]\n${b.text}\n\n`);
   }
   return 0;
 }
