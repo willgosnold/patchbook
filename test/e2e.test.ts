@@ -4113,6 +4113,26 @@ test("init keeps the bytes of a husky hook that is not UTF-8", () => {
   }
 }, TIMEOUT);
 
+test("init leaves the bytes of a husky hook that is not UTF-8 and already runs patchbook", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("skills/a/SKILL.md", "Para one.\n");
+    up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    mkdirSync(join(repo.path, ".husky"));
+    const hooked = Buffer.concat([Buffer.from("patchbook hook run || exit 1\r\n"), LATIN1_HOOK]);
+    writeFileSync(join(repo.path, ".husky/pre-commit"), hooked);
+    repo.commit("start");
+    installManager(repo, ".husky");
+    const init = t.pb(["init", "--upstream", up.path, "--output-from", "skills", "--output-to", "skills"], { cwd: repo.path });
+    expect(init.stderr).toBe("");
+    expect(readFileSync(join(repo.path, ".husky/pre-commit"))).toEqual(hooked);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("a hook script in the tree does not hide another tool's git hook", () => {
   const t = new Case();
   try {
