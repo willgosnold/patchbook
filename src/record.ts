@@ -294,7 +294,10 @@ const emptyMatch = (l: Lead) => l.add.now.data.length === 0;
 function follow(s: Snapshot, edits: readonly Edited[]): Edited[] {
   const all = leads(s, edits);
   const chosen = choose(all.filter((l) => !emptyMatch(l)));
-  const widened = new Map(chosen.map((l) => [l.add as Edited, { lead: l, ...widen(s, chosen, all, l) }]));
+  const going = new Set(chosen.map(wayOf));
+  const empties = new Map<Way, Lead>();
+  for (const l of all) if (emptyMatch(l) && !empties.has(wayOf(l))) empties.set(wayOf(l), l);
+  const widened = new Map(chosen.map((l) => [l.add as Edited, { lead: l, ...widen(s, going, empties, l) }]));
   const dropped = new Set<Edited>(Array.from(widened.values()).flatMap((w) => (w.lead.takes ? [...w.covers, w.lead.takes] : w.covers)));
   const written = new Set<string>();
   return edits.flatMap((e): Edited[] => {
@@ -316,15 +319,20 @@ function leads(s: Snapshot, edits: readonly Edited[]): Lead[] {
     const src = e.kind === "delete-upstream" ? s.sources.get(e.path) : undefined;
     return src?.kind === "up" && editedRels.get(src.path) === 1;
   });
-  const moves = adds.flatMap((add) => gone.flatMap((d): Lead[] => {
-    const src = s.sources.get(d.path)!;
-    const lead = { add, kind: "move", from: d.staged, rel: src.path, takes: d } as const;
-    const r = rest(s, add, src, "move");
-    if (r === null) return [{ ...lead, rest: null, rank: [EXACT_MOVE, sharedTail(d.staged, add.staged)] }];
-    if (r === "unclean") return [];
-    const share = kept(s.out.get(d.path)!.data, add.now.data);
-    return share >= 0.5 ? [{ ...lead, rest: r, rank: [share, sharedTail(d.staged, add.staged)] }] : [];
-  }));
+  const sharers = sharingTwoWordLines(s, gone);
+  const moves = adds.flatMap((add) => {
+    const near = sharers(add);
+    return gone.flatMap((d): Lead[] => {
+      const src = s.sources.get(d.path)!;
+      const lead = { add, kind: "move", from: d.staged, rel: src.path, takes: d } as const;
+      const sized = !buildsAsUpstream(src.path) || s.upstream.get(src.path)!.data.length === add.now.data.length;
+      if (sized && sameFile(add.now, s.build(src, add.path), add.now.chosen)) return [{ ...lead, rest: null, rank: [EXACT_MOVE, sharedTail(d.staged, add.staged)] }];
+      const share = near.has(d) ? kept(s.out.get(d.path)!.data, add.now.data) : 0;
+      if (share < 0.5) return [];
+      const r = rest(s, add, src, "move");
+      return r === null || r === "unclean" ? [] : [{ ...lead, rest: r, rank: [share, sharedTail(d.staged, add.staged)] }];
+    });
+  });
   const copies = adds.flatMap((add) => Array.from(s.staged).flatMap(([from, src]): Lead[] => {
     if (src.kind !== "up" || editedRels.has(src.path)) return [];
     if (buildsAsUpstream(src.path) && s.upstream.get(src.path)!.data.length !== add.now.data.length) return [];
@@ -359,11 +367,34 @@ function rest(s: Snapshot, add: Edited<"add">, src: Source, kind: Follow["kind"]
  * letter or digit, so short files that share a heading don't pair. */
 function kept(old: Uint8Array, fresh: Uint8Array): number {
   if (!isText(old) || !isText(fresh)) return 0;
-  const lines = (data: Uint8Array) => decode(data).split("\n").map((l) => l.replace(/\r$/, "")).filter((l) => l.trim() !== "");
-  const [a, b] = [lines(old), lines(fresh)];
+  const [a, b] = [nonBlank(old), nonBlank(fresh)];
   const changed = new Set(lineChanges(a, b).flatMap(([i1, i2]) => Array.from({ length: i2 - i1 }, (_, k) => i1 + k)));
   const same = a.filter((_, i) => !changed.has(i));
-  return same.filter((l) => /[\p{L}\p{N}]/u.test(l)).length < 2 ? 0 : same.length / Math.max(a.length, b.length);
+  return same.filter((l) => WORD.test(l)).length < 2 ? 0 : same.length / Math.max(a.length, b.length);
+}
+
+const WORD = /[\p{L}\p{N}]/u;
+const nonBlank = (data: Uint8Array) => decode(data).split("\n").map((l) => l.replace(/\r$/, "")).filter((l) => l.trim() !== "");
+
+function wordLines(data: Uint8Array): Map<string, number> {
+  const counts = new Map<string, number>();
+  if (isText(data)) for (const l of nonBlank(data)) if (WORD.test(l)) counts.set(l, (counts.get(l) ?? 0) + 1);
+  return counts;
+}
+
+function sharingTwoWordLines(s: Snapshot, gone: readonly Edited<"delete-upstream">[]): (add: Edited<"add">) => Set<Edited> {
+  const holding = new Map<string, [Edited, number][]>();
+  for (const d of gone) {
+    for (const [l, n] of wordLines(s.out.get(d.path)!.data)) {
+      if (!holding.has(l)) holding.set(l, []);
+      holding.get(l)!.push([d, n]);
+    }
+  }
+  return (add) => {
+    const shared = new Map<Edited, number>();
+    for (const [l, n] of wordLines(add.now.data)) for (const [d, m] of holding.get(l) ?? []) shared.set(d, (shared.get(d) ?? 0) + Math.min(n, m));
+    return new Set(Array.from(shared).flatMap(([d, n]) => (n >= 2 ? [d] : [])));
+  };
 }
 
 function choose(leads: readonly Lead[]): Lead[] {
@@ -382,7 +413,11 @@ function choose(leads: readonly Lead[]): Lead[] {
   return chosen;
 }
 
-function widen(s: Snapshot, chosen: readonly Lead[], all: readonly Lead[], lead: Lead): { edit: Follow; covers: Edited[] } {
+type Way = string & { readonly way: true };
+const way = (kind: Follow["kind"], from: string, to: string) => [kind, from, to].join("\0") as Way;
+const wayOf = (l: Lead) => way(l.kind, l.from, l.add.staged);
+
+function widen(s: Snapshot, going: ReadonlySet<Way>, empties: ReadonlyMap<Way, Lead>, lead: Lead): { edit: Follow; covers: Edited[] } {
   let [from, dest, covers] = [lead.from, lead.add.staged, [] as Edited[]];
   for (;;) {
     const [i, j] = [from.lastIndexOf("/"), dest.lastIndexOf("/")];
@@ -395,10 +430,9 @@ function widen(s: Snapshot, chosen: readonly Lead[], all: readonly Lead[], lead:
     const empty: Edited[] = [];
     const wholeFolderGoes = Array.from(s.staged.keys()).every((p) => {
       if (!under(p, folder)) return true;
-      const to = into + p.slice(folder.length);
-      const goes = (l: Lead) => l.kind === lead.kind && l.from === p && l.add.staged === to;
-      if (chosen.some(goes)) return true;
-      const keep = all.find((l) => goes(l) && emptyMatch(l));
+      const goes = way(lead.kind, p, into + p.slice(folder.length));
+      if (going.has(goes)) return true;
+      const keep = empties.get(goes);
       if (keep) empty.push(...(keep.takes ? [keep.add, keep.takes] : [keep.add]));
       return keep !== undefined;
     });
