@@ -104,26 +104,40 @@ function touched(lines: readonly string[], to: readonly string[], blocks: readon
   return found;
 }
 
-/** Whether `ours` adds or removes copies of a repeated paragraph and the merge doesn't add or remove as many. `git merge-file` keeps
- * one copy where both sides insert the same paragraph in one place, so the merge can leave out an inserted copy without a conflict. */
-function recountsRepeat(base: readonly Block[], ours: readonly Block[], theirs: readonly Block[], merged: readonly Block[]): boolean {
-  const count = (blocks: readonly Block[], hash: string) => blocks.filter((block) => block.hash === hash).length;
-  return [...new Set([base, ours, theirs, merged].flat().filter((block) => block.of > 1).map((block) => block.hash))]
-    .some((hash) => count(ours, hash) - count(base, hash) !== count(merged, hash) - count(theirs, hash));
+/** Whether a merge keeps a different number of copies of a paragraph than `ours` adds or removes, unless upstream already made the
+ * same change and the merge kept it. `git merge-file` reads a moved paragraph as a delete and an insert, so it can bring back a
+ * paragraph ours deletes, or keep one copy where both sides insert the same paragraph in one place, without a conflict. Only text
+ * that both base and `theirs` hold is counted. Other text is an edit, which a merge combines, and two edits that meet conflict. */
+function recounts(base: readonly Block[], ours: readonly Block[], theirs: readonly Block[], merged: readonly Block[]): boolean {
+  const counts = (blocks: readonly Block[]) => {
+    const found = new Map<string, number>();
+    for (const b of blocks) found.set(b.hash, (found.get(b.hash) ?? 0) + 1);
+    return found;
+  };
+  const [b, o, t, m] = [counts(base), counts(ours), counts(theirs), counts(merged)];
+  const n = (found: Map<string, number>, hash: string) => found.get(hash) ?? 0;
+  return [...b.keys()].filter((hash) => t.has(hash)).some((hash) => {
+    const change = n(o, hash) - n(b, hash);
+    const kept = n(m, hash) - n(t, hash);
+    return change !== kept && !(n(t, hash) - n(b, hash) === change && kept === 0);
+  });
 }
 
-/** Whether a merge of `ours` onto `theirs` edits other copies of a repeated paragraph than `ours` edits in `base`, leaves out
- * the edit, or adds or removes a different number of copies. Copies are told apart as occurrence entries are, so this holds once
- * upstream moves what lies around an edited copy. */
-export function misplacesRepeat(base: string, ours: string, theirs: string, merged: string): boolean {
+export type Lost = "count" | "copy";
+
+/** How a clean merge of `ours` onto `theirs` loses ours's edit, if it does: `count` when it keeps a different number of copies of a
+ * paragraph than ours adds or removes, and `copy` when it edits other copies of a repeated paragraph than ours edits in `base`, or
+ * leaves out the edit. Copies are told apart as occurrence entries are, so `copy` holds once upstream moves what lies around an
+ * edited copy. */
+export function lostEdit(base: string, ours: string, theirs: string, merged: string): Lost | null {
   const [old, fresh] = [base.split("\n"), theirs.split("\n")];
   const [oldBlocks, freshBlocks] = [blocksOf(old), blocksOf(fresh)];
-  if (recountsRepeat(oldBlocks, blocksOf(ours.split("\n")), freshBlocks, blocksOf(merged.split("\n")))) return true;
+  if (recounts(oldBlocks, blocksOf(ours.split("\n")), freshBlocks, blocksOf(merged.split("\n")))) return "count";
   const repeated = new Set([...oldBlocks, ...freshBlocks].filter((b) => b.of > 1).map((b) => b.hash));
-  if (!repeated.size) return false;
+  if (!repeated.size) return null;
   const keys = (lines: string[], to: string, blocks: Block[]) =>
     [...touched(lines, to.split("\n"), blocks)].filter((b) => repeated.has(b.hash)).map((b) => entryKey(b.hash, b)).sort(byCodePoint).join("\n");
-  return keys(old, ours, oldBlocks) !== keys(fresh, merged, freshBlocks);
+  return keys(old, ours, oldBlocks) === keys(fresh, merged, freshBlocks) ? null : "copy";
 }
 
 export function entriesPath(book: Book, rel: string): string {

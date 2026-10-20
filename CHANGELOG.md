@@ -16,12 +16,13 @@ These configs used to load, build once, and then break `status`, `build` or the 
 
 If `patchbook status` fails after upgrading with one of these messages, change the named `vendor`, `mount` or `[output] to` in `.patchbook/config.toml` as the message says, then run `patchbook build`.
 
-### Sync no longer guesses which copy of a repeated paragraph an edit is for
+### Sync no longer guesses where a paragraph goes
 
-A file can hold the same paragraph more than once. `git merge-file` can put a `file` edit of one copy on another copy once upstream moves things around, or drop it, and earlier versions reported that merge as clean. Now `sync` reports a **conflict** instead, and `status` and `build` refuse until it is resolved. (#283, #290)
+A file can hold the same paragraph more than once. `git merge-file` can put a `file` edit of one copy on another copy once upstream moves things around, or drop it, and earlier versions reported that merge as clean. The same goes for a paragraph the fork deleted from any file, once upstream moves it. Now `sync` reports a **conflict** instead, and `status` and `build` refuse until it is resolved. (#283, #289, #290)
 
 - An edit of a copy that the merge would put on another copy or leave out. (#283)
 - A copy the fork deleted, which the merge would bring back. (#283)
 - A copy the fork inserted, which the merge would drop because upstream moved another copy to the same spot. (#290)
+- A paragraph the fork deleted from any file, which the merge would bring back because upstream moved it. (#289)
 
-Sync names the file on stderr, and `.patchbook/changes/<change>/ours/<file>.pb` holds both texts between conflict markers. Resolve them with the edit on the copy you mean, then run `patchbook build`. Some of these conflicts are merges that would have been right. Sync refuses rather than guess (#286, #294).
+Sync names the file on stderr, and `.patchbook/changes/<change>/ours/<file>.pb` holds both texts between conflict markers. Resolve them so the file reads as you mean it, then run `patchbook build`. Some of these conflicts are merges that would have been right. Sync refuses rather than guess (#286, #294).
