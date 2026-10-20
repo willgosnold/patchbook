@@ -9186,6 +9186,41 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     });
   }
 
+  forkTest("record refuses a copy into a change before one that edits the copied folder", (t) => {
+    t.up.write("docs/notes.md", "notes\n");
+    t.up.commit("notes");
+    t.pb(["sync"], { cwd: t.fork.path });
+    handChange(t, "early", "Add an early file.", ["add early.txt"], { "early.txt": "early\n" });
+    handChange(t, "late", "Drop the notes.", ["delete docs/notes.md"]);
+    t.pb(["build"], { cwd: t.fork.path });
+    const early = changeText(t, "early");
+    t.fork.write("manual/guide.md", "a guide\n");
+    expect(t.pb(["record", "early"], { cwd: t.fork.path, code: 1 }).stderr).toContain("patchbook: can't record into early:\n"
+      + "  copy docs -> manual: delete docs/notes.md in late, later in the series, has to come before it\n"
+      + "Record into late or a change after it, or into a new change.\n");
+    expect(changeText(t, "early")).toBe(early);
+    expect(t.pb(["record", "late"], { cwd: t.fork.path }).stdout).toBe("copy     docs -> manual\n");
+    expect(changeText(t, "late")).toContain("- delete docs/notes.md\n- copy docs -> manual\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("manual/guide.md")).toBe("a guide\n");
+  });
+
+  forkTest("record of a copy that a finish hook rewrites fails and saves nothing", (t) => {
+    writeFileSync(join(t.fork.path, ".patchbook/hooks.ts"), dedent(`
+      export const finish = (out: Map<string, { data: Uint8Array; mode: number }>) => {
+        const guide = out.get("manual/guide.md");
+        if (guide) out.set("manual/guide.md", { ...guide, data: new TextEncoder().encode("rewritten\\n") });
+      };
+    `));
+    t.pb(["build"], { cwd: t.fork.path });
+    const before = snapshot(join(t.fork.path, ".patchbook"));
+    t.fork.write("manual/guide.md", "a guide\n");
+    expect(t.pb(["record", "--intent", "Copy the guide."], { cwd: t.fork.path, code: 1 }).stderr)
+      .toBe("patchbook: can't record copy docs -> manual: the build would differ from manual/guide.md on disk, for example because a finish hook rewrites it\n");
+    expect(snapshot(join(t.fork.path, ".patchbook"))).toEqual(before);
+  });
+
   for (const [what, path] of [["destination", "docs/guide2.md"], ["source", "docs/guide.md"]] as const) {
     forkTest(`recording an edit to the ${what} of an upstream copy replaces only that output`, (t) => {
       handChange(t, "second", "Copy the guide.", ["copy docs/guide.md -> docs/guide2.md"]);
@@ -10964,6 +10999,48 @@ describe("VendorTest", () => {
     expect(read(join(t.repo.path, ".patchbook/changes/drop-the-skill/CHANGE.md"))).toContain("- delete skills/hello/SKILL.md");
     expect(existsSync(entries)).toBe(false);
     expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  const SKILL_X = "---\nname: x\n---\n\nThe x skill.\n";
+  const extraSkill = (t: VendorCase): Repo => {
+    t.missingScaffoldPatchBuild();
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("skills/x/SKILL.md", SKILL_X);
+    extra.commit("x");
+    t.pb(["track", "extra", extra.path, "--mount", "extra"], { cwd: t.repo.path });
+    t.pb(["build"], { cwd: t.repo.path });
+    return extra;
+  };
+
+  vendorTest("hook records a skill copied from another upstream as a copy, and the copy follows that upstream", (t) => {
+    const extra = extraSkill(t);
+    t.pb(["hook", "install"], { cwd: t.repo.path });
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+    sh(["git", "commit", "-qm", "built"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "0" } });
+    t.repo.write("skills/x/SKILL.md", SKILL_X);
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+    const commit = sh(["git", "commit", "-qm", "ship x"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Ship extra's x skill." } });
+    expect(commit.stderr).toContain("ship-extra-s-x: Ship extra's x skill.\ncopy     extra/skills/x -> skills/x\n");
+    const change = join(t.repo.path, ".patchbook/changes/ship-extra-s-x");
+    expect(read(join(change, "CHANGE.md"))).toBe("# ship-extra-s-x\n\nintent: Ship extra's x skill.\n\nedits:\n- copy extra/skills/x -> skills/x\n");
+    expect(existsSync(join(change, "ours"))).toBe(false);
+    extra.write("skills/x/SKILL.md", SKILL_X.replace("The x skill.", "The x skill, revised upstream."));
+    extra.commit("revise");
+    t.pb(["sync"], { cwd: t.repo.path });
+    t.pb(["build"], { cwd: t.repo.path });
+    expect(t.repo.read("skills/x/SKILL.md")).toBe(SKILL_X.replace("The x skill.", "The x skill, revised upstream."));
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  vendorTest("record of a folder copied from another upstream ships a file that upstream adds to the folder later", (t) => {
+    const extra = extraSkill(t);
+    t.repo.write("skills/x/SKILL.md", SKILL_X);
+    expect(t.pb(["record", "x", "--intent", "Ship x."], { cwd: t.repo.path }).stdout).toBe("copy     extra/skills/x -> skills/x\n");
+    extra.write("skills/x/notes.md", "notes\n");
+    extra.commit("notes");
+    t.pb(["sync"], { cwd: t.repo.path });
+    t.pb(["build"], { cwd: t.repo.path });
+    expect(t.repo.read("skills/x/notes.md")).toBe("notes\n");
   });
 
   const copyOfHello = (t: VendorCase): void => {
