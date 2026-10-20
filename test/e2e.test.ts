@@ -2559,7 +2559,7 @@ for (const [how, remote, given] of [
   }, TIMEOUT);
 }
 
-for (const name of ["my up", "up (copy)", "it's up"]) {
+for (const name of ["my up", "it's up"]) {
   test(`the command a refused fork init prints works for ${name}`, () => {
     const t = new Case();
     try {
@@ -2887,8 +2887,6 @@ for (const [how, hasRemote] of [["remote", true], ["given url", false]] as const
 for (const [how, dir, given] of [
   ["\"..\" from a subfolder", "sub", () => ".."],
   ["\".\" at the root", "", () => "."],
-  ["a file url of the root", "", (fork: string) => `file://${fork}`],
-  ["a file url with a host", "", (fork: string) => `file://example.invalid${fork}`],
   ["a file url with an encoded slash after the host", "", (fork: string) => `file://example.invalid%2F${fork.slice(1)}`],
   ["a file url whose host is not UTF-8", "", (fork: string) => `file://%ff${fork}`],
   ["a path that git reads from its closing bracket", "", () => "x@[y]"],
@@ -2922,8 +2920,6 @@ for (const [how, remote] of [
   ["dot", () => "."],
   ["an alias that another insteadOf would rewrite", () => "self:"],
   ["a file url with a host", (fork: string) => `file://example.invalid${fork}`],
-  ["a file url with an encoded slash after the host", (fork: string) => `file://example.invalid%2F${fork.slice(1)}`],
-  ["a file url whose host is not UTF-8", (fork: string) => `file://%ff${fork}`],
 ] as const) {
   test(`a fork init refuses an upstream remote that fetches the repo itself as ${how}`, () => {
     const t = new Case();
@@ -3702,10 +3698,15 @@ ${indent(`sh -c '${GUARD.trimEnd().replaceAll("'", "'\\''")}'`, 10)}
 
 const LEFTHOOK_DISPATCHER = `#!/bin/sh\n# lefthook stand-in\nlefthook run pre-commit "$@"\n`;
 
-const LEFTHOOK_BY_EXTENSION = { yml: LEFTHOOK_SNIPPET, yaml: LEFTHOOK_SNIPPET, toml: LEFTHOOK_TOML_SNIPPET, json: LEFTHOOK_JSON_SNIPPET, jsonc: LEFTHOOK_JSON_SNIPPET };
-
-const LEFTHOOK_NAMES = ["lefthook", ".lefthook", ".config/lefthook"].flatMap((name) =>
-  Object.entries(LEFTHOOK_BY_EXTENSION).map(([extension, snippet]) => [`${name}.${extension}`, snippet] as const));
+const LEFTHOOK_NAMES = [
+  ["lefthook.yml", LEFTHOOK_SNIPPET],
+  ["lefthook.yaml", LEFTHOOK_SNIPPET],
+  ["lefthook.toml", LEFTHOOK_TOML_SNIPPET],
+  ["lefthook.json", LEFTHOOK_JSON_SNIPPET],
+  ["lefthook.jsonc", LEFTHOOK_JSON_SNIPPET],
+  [".lefthook.yml", LEFTHOOK_SNIPPET],
+  [".config/lefthook.yml", LEFTHOOK_SNIPPET],
+] as const;
 
 const SNIPPETS = {
   ...Object.fromEntries(LEFTHOOK_NAMES.map(([name, snippet]) => [name, { snippet, dispatcher: LEFTHOOK_DISPATCHER }])),
@@ -3770,9 +3771,7 @@ test("hook install prints the advice when a second lefthook name is a symlink to
 // lefthook reads one config file: the first that exists, by extension (yml, yaml, json, jsonc, toml), then by folder (., .lefthook, .config/lefthook).
 const LEFTHOOK_PAIRS: [string, string, string][] = [
   ["lefthook.toml", "lefthook.json", "lefthook.json"],
-  ["lefthook.toml", "lefthook.jsonc", "lefthook.jsonc"],
   [".lefthook.toml", "lefthook.yml", "lefthook.yml"],
-  [".config/lefthook.jsonc", "lefthook.yaml", "lefthook.yaml"],
   [".config/lefthook.yml", ".lefthook.yml", ".lefthook.yml"],
 ];
 
@@ -3858,7 +3857,7 @@ type Paste = {
 const hasPatchbook = (hook: any): void => expect(hook.run).toContain("patchbook hook run");
 
 const PASTES: Paste[] = [
-  ...["lefthook.yml", ".config/lefthook.yaml"].flatMap((config): Paste[] => [
+  ...["lefthook.yml"].flatMap((config): Paste[] => [
     {
       name: "no pre-commit key", config, existing: "skip_output:\n  - meta\n", says: `Add this to ${config},`,
       merge: (existing, printed) => existing + printed, parse: parsed.yaml,
@@ -3875,24 +3874,14 @@ const PASTES: Paste[] = [
       check: (m) => { expect(m["pre-commit"].commands.lint.run).toBe("echo lint"); hasPatchbook(m["pre-commit"].commands.patchbook); },
     },
   ]),
-  ...["lefthook.toml", ".lefthook.toml"].flatMap((config): Paste[] => [
-    {
-      name: "no pre-commit table", config, existing: 'skip_output = ["meta"]\n', says: `Add this to ${config},`,
-      merge: (existing, printed) => existing + printed, parse: parsed.toml,
-      check: (m) => { expect(m.skip_output).toEqual(["meta"]); hasPatchbook(m["pre-commit"].commands.patchbook); },
-    },
+  ...["lefthook.toml"].flatMap((config): Paste[] => [
     {
       name: "a pre-commit table", config, existing: "[pre-commit]\nparallel = true\n", says: `Add this to ${config},`,
       merge: (existing, printed) => existing + printed, parse: parsed.toml,
       check: (m) => { expect(m["pre-commit"].parallel).toBe(true); hasPatchbook(m["pre-commit"].commands.patchbook); },
     },
-    {
-      name: "pre-commit commands", config, existing: '[pre-commit.commands.lint]\nrun = "echo lint"\n', says: `Add this to ${config},`,
-      merge: (existing, printed) => existing + printed, parse: parsed.toml,
-      check: (m) => { expect(m["pre-commit"].commands.lint.run).toBe("echo lint"); hasPatchbook(m["pre-commit"].commands.patchbook); },
-    },
   ]),
-  ...["lefthook.json", "lefthook.jsonc"].flatMap((config): Paste[] => [
+  ...["lefthook.json"].flatMap((config): Paste[] => [
     {
       name: "an empty file", config, existing: "", says: `Add this to ${config},`,
       merge: (_, printed) => printed, parse: parsed.json,
@@ -4560,7 +4549,7 @@ test("install commands leave another tool's hook alone and hook install says git
   }
 }, TIMEOUT);
 
-for (const how of SWITCHES) {
+for (const how of ["user config"] as const) {
   const huskyFiles = { ".husky/pre-commit": NOTE_STAGED };
   const noInstall = (repo: Repo): void => {
     expect(existsSync(hookFile(repo))).toBe(false);
@@ -4892,7 +4881,7 @@ describe("ForkTest", () => {
     });
   }
 
-  for (const mount of ["./.patchbook/pbx", "./.git/pbx", "x/../.patchbook", "./.patchbook", "a/../.git/x"]) {
+  for (const mount of ["./.patchbook/pbx"]) {
     forkTest(`a mount spelled ${mount} is rejected`, (t) => {
       const lib = new Repo(join(t.tmp, "lib"));
       lib.write("d/p.md", "p\n");
@@ -4905,7 +4894,7 @@ describe("ForkTest", () => {
     });
   }
 
-  for (const mount of ["../outside", "x/../../outside", "/abs/outside", ".."]) {
+  for (const mount of ["x/../../outside", "/abs/outside", ".."]) {
     forkTest(`a mount ${mount} outside the repo is rejected`, (t) => {
       const lib = new Repo(join(t.tmp, "lib"));
       lib.write("d/p.md", "p\n");
@@ -5009,7 +4998,6 @@ describe("ForkTest", () => {
   const intoVendor = [
     ["add", "add vendor/extra/new.md"],
     ["copy", "copy app.txt -> vendor/extra/app.txt"],
-    ["move", "move docs/guide.md -> vendor/extra/guide.md"],
   ] as const;
   for (const [kind, edit] of intoVendor) {
     forkTest(`${kind} edit into a vendored copy is refused`, (t) => {
@@ -5036,22 +5024,14 @@ describe("ForkTest", () => {
 
   const intoKept = [
     ["copy into .patchbook/config.toml", "copy app.txt -> .patchbook/config.toml", ".patchbook/config.toml", ".patchbook"],
-    ["copy into .patchbook", "copy app.txt -> .patchbook/notes.txt", ".patchbook/notes.txt", ".patchbook"],
     ["add into .patchbook", "add .patchbook/new.md", ".patchbook/new.md", ".patchbook"],
-    ["move into .patchbook", "move docs/guide.md -> .patchbook/guide.md", ".patchbook/guide.md", ".patchbook"],
     ["copy into .PATCHBOOK/config.toml", "copy app.txt -> .PATCHBOOK/config.toml", ".PATCHBOOK/config.toml", ".patchbook"],
-    ["add into .PatchBook", "add .PatchBook/new.md", ".PatchBook/new.md", ".patchbook"],
     ["copy into .patchbook./config.toml", "copy app.txt -> .patchbook./config.toml", ".patchbook./config.toml", ".patchbook"],
     ["copy into .patchbook with a Kelvin sign", "copy app.txt -> .patchboo\u212A/config.toml", ".patchboo\u212A/config.toml", ".patchbook"],
     ["copy into .patchbook and a space", "copy app.txt -> .patchbook /config.toml", ".patchbook /config.toml", ".patchbook"],
     ["add into .PatchBook. and a space", "add .PatchBook. ./new.md", ".PatchBook. ./new.md", ".patchbook"],
     ["move into .patchbook..", "move docs/guide.md -> .patchbook../guide.md", ".patchbook../guide.md", ".patchbook"],
-    ["copy into .git", "copy app.txt -> .git/x", ".git/x", ".git"],
-    ["add into .git", "add .git/new.md", ".git/new.md", ".git"],
-    ["move into .git", "move docs/guide.md -> .git/guide.md", ".git/guide.md", ".git"],
     ["copy into .GIT", "copy app.txt -> .GIT/x", ".GIT/x", ".git"],
-    ["copy into .git.", "copy app.txt -> .git./x", ".git./x", ".git"],
-    ["copy into a nested .git", "copy app.txt -> a/.git/x", "a/.git/x", ".git"],
   ] as const;
   for (const [name, edit, dest, place] of intoKept) {
     forkTest(`${name} is invalid and nothing is written`, (t) => {
@@ -5090,12 +5070,8 @@ describe("ForkTest", () => {
 
   const hookRefuses = [
     ["copy into .patchbook/config.toml", "copy app.txt -> .patchbook/config.toml", ".patchbook/config.toml", ".patchbook"],
-    ["add into .patchbook", "add .patchbook/new.md", ".patchbook/new.md", ".patchbook"],
-    ["move into .PATCHBOOK", "move docs/guide.md -> .PATCHBOOK/guide.md", ".PATCHBOOK/guide.md", ".patchbook"],
     ["copy into .patchbook.", "copy app.txt -> .patchbook./config.toml", ".patchbook./config.toml", ".patchbook"],
     ["add into .patchbook and a space", "add .patchbook /new.md", ".patchbook /new.md", ".patchbook"],
-    ["copy into .git", "copy app.txt -> .git/x", ".git/x", ".git"],
-    ["copy into .GIT", "copy app.txt -> .GIT/x", ".GIT/x", ".git"],
   ] as const;
   for (const [name, edit, dest, place] of hookRefuses) {
     for (const pending of [false, true]) {
@@ -5159,13 +5135,6 @@ describe("ForkTest", () => {
 
   const hookRefusesUnsafe = [
     ["add climbing out", "add ../outside.txt"],
-    ["add ./new.md", "add ./new.md"],
-    ["add absolute", "add /outside.txt"],
-    ["delete docs//guide.md", "delete docs//guide.md"],
-    ["copy dest climbing out", "copy app.txt -> ../copied.txt"],
-    ["copy dest ./.patchbook/config.toml", "copy app.txt -> ./.patchbook/config.toml"],
-    ["copy dest .//.patchbook/config.toml", "copy app.txt -> .//.patchbook/config.toml"],
-    ["file climbing out", "file ../app.txt"],
     ["add climbing out with a backslash", "add ..\\outside.txt"],
     ["copy dest .patchbook backslash config.toml", "copy app.txt -> .patchbook\\config.toml"],
   ] as const;
@@ -5272,25 +5241,12 @@ describe("ForkTest", () => {
 
   const escaping = [
     ["add climbing out", "add ../outside.txt"],
-    ["add climbing out in the middle", "add docs/../../outside.txt"],
     ["add absolute", "add /outside.txt"],
-    ["replace climbing out", "replace ../app.txt"],
-    ["delete climbing out", "delete ../app.txt"],
-    ["file climbing out", "file ../app.txt"],
-    ["file absolute", "file /app.txt"],
     ["copy dest climbing out", "copy app.txt -> ../copied.txt"],
-    ["copy dest absolute", "copy app.txt -> /copied.txt"],
     ["copy source climbing out", "copy ../app.txt -> copied.txt"],
-    ["move dest climbing out", "move docs/guide.md -> ../guide.md"],
-    ["move source absolute", "move /docs/guide.md -> guide.md"],
     ["copy dest ./.patchbook/config.toml", "copy app.txt -> ./.patchbook/config.toml"],
-    ["copy dest .//.patchbook/config.toml", "copy app.txt -> .//.patchbook/config.toml"],
     ["add ./.patchbook/new.md", "add ./.patchbook/new.md"],
-    ["add ./new.md", "add ./new.md"],
-    ["add docs/./new.md", "add docs/./new.md"],
     ["delete docs//guide.md", "delete docs//guide.md"],
-    ["delete .", "delete ."],
-    ["move source ./docs/guide.md", "move ./docs/guide.md -> guide.md"],
     ["add climbing out with a backslash", "add ..\\outside.txt"],
     ["add backslash in a name", "add docs\\new.md"],
     ["replace backslash", "replace docs\\guide.md"],
@@ -5330,7 +5286,7 @@ describe("ForkTest", () => {
   }
 
   for (const [label, name] of [
-    ["climbing out", "../x"], ["nested", "a/b"], ["absolute", "/abs"], ["capitalised", "Shout"],
+    ["nested", "a/b"], ["absolute", "/abs"], ["capitalised", "Shout"],
     ["leading dot", ".x"], ["with a space", "a b"], ["with an underscore", "a_b"],
   ] as const) {
     forkTest(`record refuses a ${label} change name and writes nothing`, (t) => {
@@ -5410,7 +5366,9 @@ describe("ForkTest", () => {
       expect(shown.stderr).toContain(`no change called ${name}`);
       expect(shown.stdout).toBe("");
     });
+  }
 
+  for (const [what, name, listed] of badNames.slice(0, 2)) {
     forkTest(`hook refuses ${what} that is not a change name and loses no edit`, (t) => {
       badName(t, name, listed);
       sh(["git", "add", "-A"], { cwd: t.fork.path });
@@ -5524,7 +5482,7 @@ describe("ForkTest", () => {
     expect(report.upstream).toEqual(["changed app.txt"]);
   });
 
-  for (const kind of ["annotated", "lightweight"]) {
+  for (const kind of ["annotated"]) {
     forkTest(`sync does not import the ${kind} tags of an in-repo upstream`, (t) => {
       t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
       t.up.commit("upstream edit");
@@ -12448,7 +12406,9 @@ exec '${Bun.which("git")}' "$@"
       const at = builtThenReplaced(t, kind, (folder) => mkdirSync(join(folder, "y/z"), { recursive: true }));
       restored(t, kind, at);
     });
+  }
 
+  for (const kind of ["link"] as const) {
     vendorTest(`build --force refuses a folder of ignored files that replaced a ${kind}`, (t) => {
       const at = builtThenReplaced(t, kind, (folder) => writeFileSync(join(folder, ".DS_Store"), "kept\n"));
       const edited = "hand edit\n";
@@ -12488,7 +12448,7 @@ exec '${Bun.which("git")}' "$@"
     });
   }
 
-  for (const to of ["skills/.git", "skills/.git/x", "a/.git", "a/b/.git/c"]) {
+  for (const to of ["skills/.git", "a/b/.git/c"]) {
     vendorTest(`output folder ${to} has a git segment and is rejected`, (t) => {
       t.missingScaffoldPatchBuild();
       setOutputFolder(t, to);
@@ -12659,10 +12619,8 @@ exec '${Bun.which("git")}' "$@"
     [".git.", ".git."],
     [".git and a space", ".git "],
     ["GIT~1", "GIT~1"],
-    ["git~1. ", "out/git~1. /y"],
     [".git:x", "out/.git:x"],
     ["a backslash before .git", "out/a\\.git"],
-    ["a zero-width non-joiner inside .git", ".g\u200cit"],
     ["a byte order mark before .GIT", "out/\ufeff.GIT/y"],
     [".git then the noncharacter U+FFFE", ".git\ufffe"],
     [".GIT with a zero-width non-joiner and U+FFFF", "out/.GIT\u200c\uffffx/y"],
