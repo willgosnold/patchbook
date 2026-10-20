@@ -3699,7 +3699,7 @@ test("commit through Vite+ stops without patchbook unless skipped", () => {
     fork.write("app.txt", "one\nTWO\n");
     const stopped = sh(["git", "commit", "-qam", "shout"], { cwd: fork.path, check: false, env: teammate });
     expect(stopped.code).not.toBe(0);
-    expect(stopped.stderr).toContain("npm install -g patchbook");
+    expect(stopped.stderr).toContain("npm install -g @patchbook/cli");
     expect(stopped.stderr).toContain("PATCHBOOK_HOOK=0");
     sh(["git", "commit", "-qam", "shout"], { cwd: fork.path, env: { ...teammate, PATCHBOOK_HOOK: "0" } });
     expect(sh(["git", "log", "-1", "--format=%s"], { cwd: fork.path }).stdout).toBe("shout\n");
@@ -3757,7 +3757,7 @@ const GUARD = [
   'if [ "$PATCHBOOK_HOOK" != 0 ] && [ -f .patchbook/config.toml ]; then',
   "  if ! command -v patchbook >/dev/null; then",
   `    echo "patchbook isn't installed, so this commit can't record hand edits to the build output." >&2`,
-  '    echo "Install it with npm install -g patchbook, or skip it once with PATCHBOOK_HOOK=0 git commit" >&2',
+  '    echo "Install it with npm install -g @patchbook/cli, or skip it once with PATCHBOOK_HOOK=0 git commit" >&2',
   "    exit 1",
   "  fi",
   "  patchbook hook run || exit 1",
@@ -3915,7 +3915,7 @@ for (const config of Object.keys(COMMANDS)) {
       const noPatchbook = { ...withHook(t), PATH: t.env["PATH"]!.split(":").filter((d) => !existsSync(join(d, "patchbook"))).join(":") };
       const blocked = sh(argv, { cwd: fork.path, env: noPatchbook, check: false });
       expect(blocked.code).toBe(1);
-      expect(blocked.stderr).toContain("npm install -g patchbook");
+      expect(blocked.stderr).toContain("npm install -g @patchbook/cli");
       expect(blocked.stderr).toContain("PATCHBOOK_HOOK=0");
       const skipped = sh(argv, { cwd: fork.path, env: { ...noPatchbook, PATCHBOOK_HOOK: "0" }, check: false });
       expect([skipped.code, skipped.stderr]).toEqual([0, ""]);

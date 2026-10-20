@@ -47,7 +47,7 @@ try {
       `It ships in the optional package "${target.pkg}". npm skips optional packages when you install with\n` +
       `--omit=optional or optional=false in .npmrc, or when fetching that package fails.\n` +
       `Fix it with one of:\n` +
-      `  npm install patchbook                          (without --omit=optional)\n` +
+      `  npm install @patchbook/cli                     (without --omit=optional)\n` +
       `  npm install --no-save ${target.pkg}@${version}\n` +
       `  curl -fsSL https://raw.githubusercontent.com/willgosnold/patchbook/main/install.sh | sh`,
   );

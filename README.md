@@ -9,7 +9,7 @@ A build applies your changes to a pinned upstream commit. When upstream moves, a
 With npm, which installs the binary for your platform:
 
 ```sh
-npm install -g patchbook
+npm install -g @patchbook/cli
 ```
 
 Or download the binary from the latest [GitHub release](https://github.com/willgosnold/patchbook/releases) with the install script. It checks the checksum and installs to `~/.local/bin`:
