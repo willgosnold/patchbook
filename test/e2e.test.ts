@@ -15336,9 +15336,11 @@ describe("PendingIntentTest", () => {
 
   forkTest("record does not call the model for an edit that needs neither a name nor an intent", (t) => {
     t.recordFeature();
-    breakModel(t, "exit");
+    const ran = join(t.tmp, "model-ran");
+    writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ntouch ${ran}\ncat > /dev/null\necho 'fake claude: offline' >&2\nexit 1\n`);
     t.fork.rm("extra.txt");
     expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe("unadd    extra.txt (from feature)\n");
+    expect(existsSync(ran)).toBe(false);
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
 
