@@ -104,11 +104,21 @@ function touched(lines: readonly string[], to: readonly string[], blocks: readon
   return found;
 }
 
-/** Whether a merge of `ours` onto `theirs` edits other copies of a repeated paragraph than `ours` edits in `base`, or leaves out
- * the edit. Copies are told apart as occurrence entries are, so this holds once upstream moves what lies around an edited copy. */
+/** Whether `ours` adds or removes copies of a repeated paragraph and the merge doesn't add or remove as many. `git merge-file` keeps
+ * one copy where both sides insert the same paragraph in one place, so the merge can leave out an inserted copy without a conflict. */
+function recountsRepeat(base: readonly Block[], ours: readonly Block[], theirs: readonly Block[], merged: readonly Block[]): boolean {
+  const count = (blocks: readonly Block[], hash: string) => blocks.filter((block) => block.hash === hash).length;
+  return [...new Set([base, ours, theirs, merged].flat().filter((block) => block.of > 1).map((block) => block.hash))]
+    .some((hash) => count(ours, hash) - count(base, hash) !== count(merged, hash) - count(theirs, hash));
+}
+
+/** Whether a merge of `ours` onto `theirs` edits other copies of a repeated paragraph than `ours` edits in `base`, leaves out
+ * the edit, or adds or removes a different number of copies. Copies are told apart as occurrence entries are, so this holds once
+ * upstream moves what lies around an edited copy. */
 export function misplacesRepeat(base: string, ours: string, theirs: string, merged: string): boolean {
   const [old, fresh] = [base.split("\n"), theirs.split("\n")];
   const [oldBlocks, freshBlocks] = [blocksOf(old), blocksOf(fresh)];
+  if (recountsRepeat(oldBlocks, blocksOf(ours.split("\n")), freshBlocks, blocksOf(merged.split("\n")))) return true;
   const repeated = new Set([...oldBlocks, ...freshBlocks].filter((b) => b.of > 1).map((b) => b.hash));
   if (!repeated.size) return false;
   const keys = (lines: string[], to: string, blocks: Block[]) =>
