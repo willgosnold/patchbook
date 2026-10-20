@@ -94,9 +94,10 @@ function definedEnv(env: Record<string, string | undefined>): Env {
   return out;
 }
 
-// The default environment for sh(): the caller's, plus a git identity, no global git config
-// (GIT_CONFIG_GLOBAL=/dev/null), git's messages in English (LC_ALL=C), and the commit hook and the skill
-// install off (PATCHBOOK_HOOK=0, PATCHBOOK_SKILL=0), so a test turns them on only when it means to.
+// The default environment for sh(): the caller's, plus a git identity, no global or system git config and no system
+// attributes (GIT_CONFIG_GLOBAL=/dev/null, GIT_CONFIG_NOSYSTEM, GIT_ATTR_NOSYSTEM), git's messages in English
+// (LC_ALL=C), and the commit hook and the skill install off (PATCHBOOK_HOOK=0, PATCHBOOK_SKILL=0), so a test turns
+// them on only when it means to.
 function baseEnv(): Env {
   return {
     ...definedEnv(process.env),
@@ -105,6 +106,8 @@ function baseEnv(): Env {
     GIT_COMMITTER_NAME: "t",
     GIT_COMMITTER_EMAIL: "t@t",
     GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_ATTR_NOSYSTEM: "1",
     LC_ALL: "C",
     PATCHBOOK_HOOK: "0",
     PATCHBOOK_SKILL: "0",

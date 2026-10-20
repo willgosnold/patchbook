@@ -4113,6 +4113,26 @@ test("init keeps the bytes of a husky hook that is not UTF-8", () => {
   }
 }, TIMEOUT);
 
+test("init leaves the bytes of a husky hook that is not UTF-8 and already runs patchbook", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("skills/a/SKILL.md", "Para one.\n");
+    up.commit("start");
+    const repo = new Repo(join(t.tmp, "adapted"));
+    mkdirSync(join(repo.path, ".husky"));
+    const hooked = Buffer.concat([Buffer.from("patchbook hook run || exit 1\r\n"), LATIN1_HOOK]);
+    writeFileSync(join(repo.path, ".husky/pre-commit"), hooked);
+    repo.commit("start");
+    installManager(repo, ".husky");
+    const init = t.pb(["init", "--upstream", up.path, "--output-from", "skills", "--output-to", "skills"], { cwd: repo.path });
+    expect(init.stderr).toBe("");
+    expect(readFileSync(join(repo.path, ".husky/pre-commit"))).toEqual(hooked);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("a hook script in the tree does not hide another tool's git hook", () => {
   const t = new Case();
   try {
@@ -8568,8 +8588,9 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
 
   forkTest("hook someone added lines to is left alone", (t) => {
     const hook = join(t.fork.path, ".git/hooks/pre-commit");
-    const edited = bakedPathsHook("other-tool --check || exit $?\n");
-    writeFileSync(hook, edited);
+    const edited = unguardedHook + "other-tool --check || exit $?\n";
+    writeFileSync(hook, edited, { mode: 0o755 });
+    expect(t.pb(["build"], { cwd: t.fork.path }).stderr).not.toContain("patchbook:");
     expect(t.pb(["status", "--json"], { cwd: t.fork.path }).stderr).not.toContain("patchbook:");
     expect(read(hook)).toBe(edited);
     expect(t.pb(["hook", "install"], { cwd: t.fork.path }).stderr).toContain("is another tool's hook; add `patchbook hook run`");
@@ -11993,7 +12014,7 @@ exec '${Bun.which("git")}' "$@"
     expect(tree(t.repo.path)).toEqual(before);
   });
 
-  vendorTest("a killed sync keeps the ref of a commit another upstream has pinned since", (t) => {
+  vendorTest("a killed sync keeps the ref of a commit another upstream on that remote has pinned since", (t) => {
     t.missingScaffoldPatchBuild();
     const extra = new Repo(join(t.tmp, "extra"));
     extra.write("x/a.md", "x\n");
@@ -12001,11 +12022,16 @@ exec '${Bun.which("git")}' "$@"
     extra.commit("a");
     t.pb(["track", "extra", extra.path, "--path", "x"], { cwd: t.repo.path });
     t.pb(["track", "other", extra.path, "--path", "y"], { cwd: t.repo.path });
+    t.repo.commit("follow extra and other");
     extra.write("x/a.md", "x2\n");
     extra.write("y/a.md", "y2\n");
     const head = extra.commit("v2");
     killSync(t, "update-ref refs/pins/");
-    t.pb(["sync", "other"], { cwd: t.repo.path });
+    sh(["git", "clone", "-q", t.repo.path, "mate"], { cwd: t.tmp });
+    const mate = new Repo(join(t.tmp, "mate"));
+    t.pb(["sync", "other"], { cwd: mate.path });
+    mate.commit("sync other");
+    sh(["git", "pull", "-q", "--ff-only", mate.path, "main"], { cwd: t.repo.path });
     t.pb(["sync", "extra", "refs/heads/nope"], { cwd: t.repo.path, code: 1 });
     expect(pinRefs(t, head)).toBe(1);
   });
@@ -12016,13 +12042,16 @@ exec '${Bun.which("git")}' "$@"
     extra.write("x/a.md", "x\n");
     extra.write("y/a.md", "y\n");
     extra.commit("a");
+    sh(["git", "clone", "-q", extra.path, "mirror"], { cwd: t.tmp });
+    const mirror = join(t.tmp, "mirror");
     t.pb(["track", "extra", extra.path, "--path", "x"], { cwd: t.repo.path });
-    t.pb(["track", "other", `${extra.path}/`, "--path", "y"], { cwd: t.repo.path });
+    t.pb(["track", "other", mirror, "--path", "y"], { cwd: t.repo.path });
     extra.write("x/a.md", "x2\n");
     extra.write("y/a.md", "y2\n");
     const head = extra.commit("v2");
-    killSync(t, "update-ref refs/pins/");
+    sh(["git", "pull", "-q", "--ff-only"], { cwd: mirror });
     t.pb(["sync", "other"], { cwd: t.repo.path });
+    killSync(t, "update-ref refs/pins/");
     t.pb(["sync", "extra", "refs/heads/nope"], { cwd: t.repo.path, code: 1 });
     expect(pinRefs(t, head)).toBe(1);
   });
@@ -14658,6 +14687,25 @@ exec '${Bun.which("git")}' "$@"
     expect(commit.stderr).not.toContain("fatal");
     expect(tree(t.repo.path)).toEqual(before.files);
     expect(sh(["git", "status", "--porcelain"], { cwd: t.repo.path }).stdout).toBe(before.staged);
+  });
+
+  vendorTest("commit never writes the build through an output folder linked outside the repo", (t) => {
+    t.missingScaffoldPatchBuild();
+    t.repo.commit("built");
+    const built = t.repo.read("skills/hello/SKILL.md");
+    t.repo.write(".patchbook/snippets.md", "## greet\n\nSay hi in T3.\n");
+    t.repo.write("skills/hello/SKILL.md", built.replace("Say hello in T3.", "Say hi in T3."));
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+    const outside = join(t.tmp, "outside-hello");
+    renameSync(join(t.repo.path, "skills/hello"), outside);
+    writeFileSync(join(outside, "SKILL.md"), built);
+    symlinkSync(outside, join(t.repo.path, "skills/hello"));
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.repo.path }).stdout;
+    const commit = sh(["git", "commit", "-q", "-m", "say hi"], { cwd: t.repo.path, check: false, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain(`hello/SKILL.md really goes to ${realpathSync(join(outside, "SKILL.md"))}, outside the output folder. Nothing was changed.`);
+    expect(read(join(outside, "SKILL.md"))).toBe(built);
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.repo.path }).stdout).toBe(head);
   });
 
   vendorTest("commit refuses an output folder replaced by a link before any build", (t) => {
