@@ -1,12 +1,15 @@
+import { test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { shellQuote } from "../src/lib/proc.ts";
 
 type Env = Record<string, string>;
 
 export const TOOL = resolve(import.meta.dir, "..", "src", "cli.ts");
+export const TIMEOUT = 120_000;
 
-export function shlexSplit(line: string): string[] {
+export function splitWords(line: string): string[] {
   const out: string[] = [];
   let cur: string | null = null;
   for (let i = 0; i < line.length; i++) {
@@ -44,70 +47,34 @@ export function shlexSplit(line: string): string[] {
   return out;
 }
 
-export function shlexQuote(arg: string): string {
-  if (arg === "") return "''";
-  if (/^[\w@%+=:,./-]+$/.test(arg)) return arg;
-  return `'${arg.replaceAll("'", `'"'"'`)}'`;
-}
-
 // The implementation under test, as a command line. Defaults to the TypeScript one.
-export const CMD = shlexSplit(process.env["PATCHBOOK_CMD"] || [process.execPath, TOOL].map(shlexQuote).join(" "));
+export const CMD = splitWords(process.env["PATCHBOOK_CMD"] || [process.execPath, TOOL].map(shellQuote).join(" "));
 
-// Python's textwrap.dedent: blank lines are emptied, then the common leading whitespace is removed.
-export function dedent(text: string): string {
-  text = text.replace(/^[ \t]+(?=\n|$)/gm, "");
-  let margin: string | null = null;
-  for (const m of text.matchAll(/^([ \t]*)[^ \t\n]/gm)) {
-    const indent = m[1]!;
-    if (margin === null) {
-      margin = indent;
-    } else if (indent.startsWith(margin)) {
-      continue;
-    } else if (margin.startsWith(indent)) {
-      margin = indent;
-    } else {
-      let n = 0;
-      while (margin[n] === indent[n]) n++;
-      margin = margin.slice(0, n);
-    }
+let crashBinary: string | undefined;
+
+// Against a binary, this builds a second one, so the binary under test never carries crash.ts.
+export function crashCmd(): string[] {
+  if (!process.env["PATCHBOOK_CMD"]) return [process.execPath, "--preload", resolve(import.meta.dir, "crash-preload.ts"), TOOL];
+  if (!crashBinary) {
+    const dir = mkdtempSync(join(tmpdir(), "crash"));
+    process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+    crashBinary = join(dir, "patchbook");
+    sh([process.execPath, resolve(import.meta.dir, "crash-build.ts"), "build", crashBinary], { cwd: dir });
   }
-  return margin ? text.replace(new RegExp(`^${margin}`, "gm"), "") : text;
+  return [crashBinary];
 }
 
-// Python's str.replace: every occurrence, and the replacement is literal.
-export function replace(text: string, old: string, repl: string): string {
-  return text.split(old).join(repl);
-}
-
-export function lstrip(text: string, chars?: string): string {
-  let i = 0;
-  while (i < text.length && (chars === undefined ? /\s/.test(text[i]!) : chars.includes(text[i]!))) i++;
-  return text.slice(i);
+/** Takes off the indentation every non-blank line shares, and empties a blank line. */
+export function dedent(text: string): string {
+  const lines = text.split("\n").map((line) => (/^[ \t]*$/.test(line) ? "" : line));
+  const margins = lines.filter(Boolean).map((line) => /^[ \t]*/.exec(line)![0]);
+  let margin = margins[0] ?? "";
+  for (const other of margins) while (!other.startsWith(margin)) margin = margin.slice(0, -1);
+  return lines.map((line) => line.slice(margin.length)).join("\n");
 }
 
 export function words(text: string): string[] {
   return text.split(/\s+/).filter(Boolean);
-}
-
-// Python's str.partition head: everything before the first separator.
-export function partitionHead(text: string, sep: string): string {
-  const i = text.indexOf(sep);
-  return i < 0 ? text : text.slice(0, i);
-}
-
-// Python's json.dumps with its default separators and ASCII escaping.
-export function jsonDumps(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(jsonDumps).join(", ")}]`;
-  if (value !== null && typeof value === "object") {
-    return `{${Object.entries(value).map(([k, v]) => `${jsonDumps(k)}: ${jsonDumps(v)}`).join(", ")}}`;
-  }
-  return JSON.stringify(value).replace(/[\u007f-￿]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
-}
-
-// Python's Path.mkdir(parents=True): fails when the directory already exists.
-export function mkdirNew(path: string): void {
-  if (existsSync(path)) throw new Error(`File exists: ${path}`);
-  mkdirSync(path, { recursive: true });
 }
 
 export interface Run {
@@ -127,9 +94,10 @@ function definedEnv(env: Record<string, string | undefined>): Env {
   return out;
 }
 
-// The default environment for sh(): the caller's, plus a git identity, no global git config
-// (GIT_CONFIG_GLOBAL=/dev/null), and the commit hook and the skill install off (PATCHBOOK_HOOK=0,
-// PATCHBOOK_SKILL=0), so a test turns them on only when it means to.
+// The default environment for sh(): the caller's, plus a git identity, no global or system git config and no system
+// attributes (GIT_CONFIG_GLOBAL=/dev/null, GIT_CONFIG_NOSYSTEM, GIT_ATTR_NOSYSTEM), git's messages in English
+// (LC_ALL=C), and the commit hook and the skill install off (PATCHBOOK_HOOK=0, PATCHBOOK_SKILL=0), so a test turns
+// them on only when it means to.
 function baseEnv(): Env {
   return {
     ...definedEnv(process.env),
@@ -138,6 +106,9 @@ function baseEnv(): Env {
     GIT_COMMITTER_NAME: "t",
     GIT_COMMITTER_EMAIL: "t@t",
     GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_ATTR_NOSYSTEM: "1",
+    LC_ALL: "C",
     PATCHBOOK_HOOK: "0",
     PATCHBOOK_SKILL: "0",
   };
@@ -160,7 +131,7 @@ export class Repo {
   write(rel: string, text: string, mode = 0o644): void {
     const p = join(this.path, rel);
     mkdirSync(dirname(p), { recursive: true });
-    writeFileSync(p, lstrip(dedent(text), "\n"));
+    writeFileSync(p, dedent(text).replace(/^\n+/, ""));
     chmodSync(p, mode);
   }
 
@@ -190,11 +161,11 @@ export class Case {
     const binDir = join(this.tmp, "bin");
     mkdirSync(binDir);
     const fake = join(binDir, "claude");
-    writeFileSync(fake, `#!/bin/sh\ncat > ${this.tmp}/prompt.txt\necho 'Sure. {"change": "shout", "intent": "Shout the second line."}'\n`);
+    writeFileSync(fake, `#!/bin/sh\ncat > ${this.tmp}/prompt.txt\necho '{"change": "shout", "intent": "Shout the second line."}'\n`);
     chmodSync(fake, 0o755);
     // The pre-commit hook runs `patchbook` from PATH.
     const shim = join(binDir, "patchbook");
-    writeFileSync(shim, `#!/bin/sh\nexec ${CMD.map(shlexQuote).join(" ")} "$@"\n`);
+    writeFileSync(shim, `#!/bin/sh\nexec ${CMD.map(shellQuote).join(" ")} "$@"\n`);
     chmodSync(shim, 0o755);
     Object.assign(this.env, { PATH: `${binDir}:${process.env["PATH"]}`, XDG_CONFIG_HOME: join(this.tmp, "config") });
   }
@@ -212,4 +183,24 @@ export class Case {
     }
     return r;
   }
+}
+
+export const isRoot = process.getuid?.() === 0;
+
+/**
+ * A test that needs the OS to refuse a read or write (chmod a-w, 0o444, 0o000). Root ignores file
+ * permissions, so it skips there. Pass the case class to get a fresh one, cleaned up after the body.
+ */
+export function permissionTest(name: string, body: () => void): void;
+export function permissionTest<C extends Case>(name: string, body: (t: C) => void, make: new () => C): void;
+export function permissionTest<C extends Case>(name: string, body: (t: C) => void, make?: new () => C): void {
+  test.skipIf(isRoot)(name, () => {
+    if (!make) return (body as () => void)();
+    const t = new make();
+    try {
+      body(t);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
 }

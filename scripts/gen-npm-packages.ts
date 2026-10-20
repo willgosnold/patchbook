@@ -1,6 +1,6 @@
 // Stages the npm packages for a release from the compiled binaries.
 //   bun scripts/gen-npm-packages.ts --version 1.2.3 [--release dist/release] [--out dist/npm]
-// Writes <out>/patchbook and one <out>/<target id> per entry in scripts/targets.ts.
+// Writes <out>/patchbook (the @patchbook/cli package) and one <out>/<target id> per entry in scripts/targets.ts.
 import { chmodSync, copyFileSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -56,7 +56,7 @@ for (const t of TARGETS) {
   writeJson(join(dir, "package.json"), {
     name: npmName(t),
     version,
-    description: `The patchbook binary for ${t.id}. Install \`patchbook\` instead.`,
+    description: `The patchbook binary for ${t.id}. Install \`${main.name}\` instead.`,
     license: main.license,
     repository: main.repository,
     homepage: main.homepage,
@@ -68,7 +68,7 @@ for (const t of TARGETS) {
   });
   writeFileSync(
     join(dir, "README.md"),
-    `# ${npmName(t)}\n\nThe ${t.id} binary for [patchbook](${main.homepage}). Install \`patchbook\`, which depends on this package.\n`,
+    `# ${npmName(t)}\n\nThe ${t.id} binary for [patchbook](${main.homepage}). Install \`${main.name}\`, which depends on this package.\n`,
   );
 }
 console.log(`${TARGETS.length + 1} packages in ${out}`);

@@ -3,15 +3,15 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
-import { Book, PB, refuseExportedGit } from "./book.ts";
+import { Book, PB, refuseClimbingPaths, refuseExportedGit } from "./book.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isDir, isSymlink, lexists, mkdirs, normMode, pjoin, readDisk, readText, relative, resolve, writeDisk } from "./lib/fs.ts";
+import { exists, type File, isDir, isSymlink, lexists, mkdirs, type Mode, normMode, pjoin, readDisk, relative, resolve, writeDisk } from "./lib/fs.ts";
 import { sha1 } from "./lib/hash.ts";
-import { loads } from "./lib/json.ts";
 import { git, run, spawn } from "./lib/proc.ts";
-import { type PyValue, slice, sorted, split, strip } from "./lib/py.ts";
-import { decode, decodeReplace, encode } from "./lib/text.ts";
+import { say, verbatim, warn } from "./lib/term.ts";
+import { byCodePoint, decode, decodeReplace, encode, quote } from "./lib/text.ts";
 import { storeDir, type Table } from "./settings.ts";
+import { readLastSync } from "./sync.ts";
 
 export type Pin = { commit?: string; tree?: string };
 type Files = Map<string, File>;
@@ -22,8 +22,6 @@ export function defaultName(remote: string, path: string): string {
 }
 
 const rstrip = (s: string) => s.replace(/\/+$/, "");
-
-const quoted = (s: string): string => JSON.stringify(s).replace(/[\u007f-\u009f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 
 /** git's url_is_local_not_ssh, the rule fetch and ls-remote use. `git clone` also takes an existing folder named like `a:b` as local; this does not. */
 function isLocalPath(remote: string): boolean {
@@ -39,7 +37,7 @@ export function absoluteRemote(remote: string): string {
 
 function field(spec: Table, key: string, fallback: string): string {
   const value = Object.hasOwn(spec, key) ? spec[key] : fallback;
-  if (typeof value !== "string") throw new Fail(`an [[upstream]]'s ${key} is a string, not ${JSON.stringify(value)}`);
+  if (typeof value !== "string") throw new Fail(`an [[upstream]]'s ${key} is a string, not ${quote(value)}`);
   return value;
 }
 
@@ -47,9 +45,9 @@ function field(spec: Table, key: string, fallback: string): string {
 export function stagedFolder(raw: string, what: string): string {
   const folder = posix.normalize(raw);
   if (raw.startsWith("/") || folder === ".." || folder.startsWith("../")) {
-    throw new Fail(`${what} ${JSON.stringify(raw)} must be a folder inside the staged tree, not an absolute path or one that climbs out with ..`);
+    throw new Fail(`${what} ${quote(raw)} must be a folder inside the staged tree, not an absolute path or one that climbs out with ..`);
   }
-  return folder === "." || folder === "./" ? "" : strip(folder, "/");
+  return folder === "." || folder === "./" ? "" : folder.replace(/^\/+|\/+$/g, "");
 }
 
 /** One upstream repo, or a folder of one, mounted at a folder of the staged tree. */
@@ -64,22 +62,22 @@ export class Upstream {
   constructor(readonly book: Book, spec: Table) {
     this.remote = field(spec, "remote", "");
     if (!this.remote) throw new Fail("an [[upstream]] needs a remote");
-    this.path = strip(field(spec, "path", ""), "/");
+    this.path = field(spec, "path", "").replace(/^\/+|\/+$/g, "");
     this.branch = field(spec, "branch", "main");
     this.name = field(spec, "name", "") || defaultName(this.remote, this.path);
     if (this.remote.startsWith("-")) {
-      throw new Fail(`upstream ${this.name}'s remote ${JSON.stringify(this.remote)} starts with "-", so git would read it as an option.`);
+      throw new Fail(`upstream ${this.name}'s remote ${quote(this.remote)} starts with "-", so git would read it as an option.`);
     }
     const transport = /^(ssh|git)::/.exec(this.remote)?.[1];
     if (transport) {
       throw new Fail(
-        `upstream ${this.name}'s remote ${JSON.stringify(this.remote)} names git's own ${transport} transport as a remote helper. `
+        `upstream ${this.name}'s remote ${quote(this.remote)} names git's own ${transport} transport as a remote helper. `
           + `git ships no git-remote-${transport} and allows ${transport} always, so it would run whatever git-remote-${transport} is on PATH. Write ${transport}:// instead.`,
       );
     }
     if (isLocalPath(this.remote) && !posix.isAbsolute(this.remote)) {
       throw new Fail(
-        `upstream ${this.name}'s remote ${JSON.stringify(this.remote)} is a relative path, so it names a different repo from each folder. `
+        `upstream ${this.name}'s remote ${quote(this.remote)} is a relative path, so it names a different repo from each folder. `
           + "Set remote in .patchbook/config.toml to an absolute path or a URL.",
       );
     }
@@ -102,20 +100,14 @@ export class Upstream {
   }
 
   pin(): Pin {
-    const raw = this.book.lock().get(this.name);
-    if (!(raw instanceof Map)) return {};
-    const pin: Pin = {};
-    for (const key of ["commit", "tree"] as const) {
-      const value = raw.get(key);
-      if (typeof value === "string" && value) pin[key] = value;
-    }
-    return pin;
+    const found = this.book.lock().find((p) => p.name === this.name);
+    return found ? { commit: found.commit, tree: found.tree } : {};
   }
 
   gitDir(): string {
     if (this.inRepo) return this.book.root;
     const bare = this.remote.replace(/^[\p{L}\p{N}_]+:\/\/|\.git$/gu, "");
-    const readable = slice(strip(bare.replace(/[^A-Za-z0-9]+/g, "-"), "-"), -60);
+    const readable = bare.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(-60);
     const d = pjoin(storeDir(), `${readable}-${sha1(encode(this.remote)).slice(0, 8)}`);
     if (!exists(d)) {
       mkdirs(dirname(d));
@@ -134,7 +126,7 @@ export class Upstream {
     const shallow = !this.inRepo || git(["rev-parse", "--is-shallow-repository"], { cwd }) === "true" ? ["--depth=1"] : [];
     const landing = `refs/patchbook/tmp/${process.pid}-${randomUUID()}`;
     try {
-      this.onRemote(["fetch", "--quiet", "--no-tags", ...shallow, "--end-of-options", this.source(), `+${ref}:${landing}`], `git fetch ${quoted(this.source())} ${ref}`, cwd);
+      this.onRemote(["fetch", "--quiet", "--no-tags", ...shallow, "--end-of-options", this.source(), `+${ref}:${landing}`], `git fetch ${quote(this.source())} ${ref}`, cwd);
       return git(["rev-parse", `${landing}^{commit}`], { cwd });
     } finally {
       spawn(["git", "update-ref", "-d", landing], { cwd });
@@ -173,7 +165,7 @@ export class Upstream {
       this.keep(commit);
     } catch (e) {
       if (!(e instanceof Fail)) throw e;
-      process.stderr.write(`patchbook: couldn't keep ${commit.slice(0, 7)} in ${this.inRepo ? "this repo" : "the store"}, so git gc may prune it. ${e.message}\n`);
+      warn(`patchbook: couldn't keep ${commit.slice(0, 7)} in ${this.inRepo ? "this repo" : "the store"}, so git gc may prune it. ${e.message}\n`);
     }
     return commit;
   }
@@ -197,7 +189,7 @@ export class Upstream {
     const walk = [`refs/remotes/upstream/${this.branch}`, `^${pin.commit}`, ...this.pastPins().map((c) => `^${c}`)];
     const upstream = spawn(["git", "rev-list", "--stdin", "--ignore-missing"], { cwd: root, input: encode(walk.join("\n") + "\n") });
     if (upstream.code !== 0) return [];
-    const newer = new Set(split(decode(upstream.stdout)));
+    const newer = new Set(decode(upstream.stdout).split("\n").filter(Boolean));
     const merging = spawn(["git", "rev-parse", "--quiet", "--verify", "MERGE_HEAD"], { cwd: root }).code === 0 ? ["MERGE_HEAD"] : [];
     const held = spawn(["git", "log", "--topo-order", "--format=%H%x09%s", "HEAD", ...merging, `^${pin.commit}`], { cwd: root });
     if (held.code !== 0) return [];
@@ -215,9 +207,9 @@ export class Upstream {
 
   head(): string {
     const ref = `refs/heads/${this.branch}`;
-    const out = this.onRemote(["ls-remote", "--end-of-options", this.source(), ref], `git ls-remote ${quoted(this.source())} ${ref}`, this.gitDir());
+    const out = this.onRemote(["ls-remote", "--end-of-options", this.source(), ref], `git ls-remote ${quote(this.source())} ${ref}`, this.gitDir());
     if (!out) throw new Fail(`upstream ${this.name} has no branch ${this.branch}`);
-    return split(out)[0]!;
+    return out.split("\t", 1)[0]!;
   }
 
   /**
@@ -229,14 +221,16 @@ export class Upstream {
     const done = namesNoHelper(this.source())
       ? spawn(["git", ...args], { cwd })
       : spawn(["git", "-c", "protocol.ext.allow=never", ...args], { cwd, env: { ...process.env, GIT_PROTOCOL_FROM_USER: "0" } });
-    if (done.code !== 0) throw new Fail(`${asTyped} failed:\n${strip(decodeReplace(done.stderr))}`);
-    return strip(decode(done.stdout));
+    if (done.code !== 0) throw new Fail(`${asTyped} failed:\n${decodeReplace(done.stderr).trim()}`);
+    return decode(done.stdout).trim();
   }
 
   /** Upstream's files at a commit, relative to the upstream path. */
   files(commit: string): Files {
     this.have(commit);
-    return treeFiles(this.gitDir(), commit, this.path);
+    const files = treeFiles(this.gitDir(), commit, this.path);
+    refuseClimbingPaths(this.name, files.keys());
+    return files;
   }
 
   /** Hash the vendored copy as git would commit it, and read its files. */
@@ -315,19 +309,51 @@ export function pinned(u: Upstream, pin: Pin): string {
   return pin.commit;
 }
 
-export function treeFiles(gd: string, tree: string, path: string): Files {
+function treeEntries(gd: string, tree: string, path: string): { rel: string; mode: Mode; oid: string }[] {
   const args = ["ls-tree", "-r", "-z", "--full-tree", tree, ...(path ? ["--", path] : [])];
-  const entries: { rel: string; mode: number; oid: string }[] = [];
+  const entries: { rel: string; mode: Mode; oid: string }[] = [];
   for (const item of decode(run(["git", "--literal-pathspecs", ...args], { cwd: gd })).split("\0")) {
     if (!item) continue;
     const tab = item.indexOf("\t");
-    const [mode = "", kind, oid = ""] = split(item.slice(0, tab));
+    const [mode = "", kind, oid = ""] = item.slice(0, tab).split(" ");
     const found = item.slice(tab + 1);
     if (kind !== "blob") continue; // submodules are not copied
-    entries.push({ rel: path ? found.slice(path.length + 1) : found, mode: parseInt(mode, 8), oid });
+    entries.push({ rel: path ? found.slice(path.length + 1) : found, mode: normMode(parseInt(mode, 8)), oid });
   }
+  return entries;
+}
+
+function readEntries(gd: string, entries: { rel: string; mode: Mode; oid: string }[]): Files {
   const blobs = readBlobs(gd, entries.map((e) => e.oid));
-  return new Map(entries.map(({ rel, mode, oid }) => [rel, { data: blobs.get(oid)!, mode: normMode(mode) }]));
+  return new Map(entries.map(({ rel, mode, oid }) => [rel, { data: blobs.get(oid)!, mode }]));
+}
+
+export function treeFiles(gd: string, tree: string, path: string): Files {
+  return readEntries(gd, treeEntries(gd, tree, path));
+}
+
+class TreeBlob {
+  bytes: Uint8Array | undefined;
+  constructor(readonly gd: string, readonly oid: string, readonly mode: Mode) {}
+
+  get data(): Uint8Array {
+    return (this.bytes ??= readBlobs(this.gd, [this.oid]).get(this.oid)!);
+  }
+}
+
+/** Like `treeFiles`, but reads bytes on demand and keeps git's ids, when they are the SHA-1 `blobOid` gives. */
+export function treeBlobs(gd: string, tree: string, path: string): Files {
+  const entries = treeEntries(gd, tree, path);
+  if (entries.some((e) => e.oid.length !== 40)) return readEntries(gd, entries);
+  return new Map(entries.map(({ rel, mode, oid }) => [rel, new TreeBlob(gd, oid, mode)]));
+}
+
+export function readBlobsOf(files: Iterable<File>): void {
+  const unread = Array.from(files).filter((f): f is TreeBlob => f instanceof TreeBlob && f.bytes === undefined);
+  for (const [gd, group] of Map.groupBy(unread, (f) => f.gd)) {
+    const blobs = readBlobs(gd, group.map((f) => f.oid));
+    for (const f of group) f.bytes = blobs.get(f.oid)!;
+  }
 }
 
 export function readBlobs(gd: string, oids: string[]): Map<string, Uint8Array> {
@@ -338,7 +364,7 @@ export function readBlobs(gd: string, oids: string[]): Map<string, Uint8Array> {
   for (const oid of oids) {
     const nl = out.indexOf(10, i);
     const header = decode(out.subarray(i, nl));
-    const size = Number(split(header)[2]);
+    const size = Number(header.split(" ")[2]);
     if (nl === -1 || !Number.isInteger(size)) throw new Error(`git cat-file --batch said: ${header}`);
     blobs.set(oid, out.subarray(nl + 1, nl + 1 + size));
     i = nl + 1 + size + 1;
@@ -365,7 +391,7 @@ export function indexFiles(root: string, rel: string): { files: Files; tree: str
     if (!item) continue;
     const tab = item.indexOf("\t");
     const path = item.slice(tab + 1);
-    const mode = parseInt(split(item.slice(0, tab))[0] ?? "", 8);
+    const mode = parseInt(item.slice(0, item.indexOf(" ")), 8);
     files.set(path, { data: readDisk(join(root, path)).data, mode: normMode(mode) });
   }
   return { files, tree };
@@ -402,12 +428,6 @@ export function stagedTree(root: string, rel: string): string | null {
   }
 }
 
-function get(value: PyValue | undefined, key: string): PyValue | undefined {
-  if (value === undefined) return undefined;
-  if (!(value instanceof Map)) throw new Fail(`last-sync.json: expected an object holding ${key}`);
-  return value.get(key);
-}
-
 /** Read an upstream at its pin, from the store: list its files, print one, export them, or diff the last sync. */
 export async function cmdUpstream(args: { name: string; path: string | null; diff: boolean; since: string | null; export: string | null }) {
   const book = await Book.find();
@@ -416,16 +436,14 @@ export async function cmdUpstream(args: { name: string; path: string | null; dif
   if (!pin.tree) throw new Fail(`upstream ${u.name} has no pin yet. Run: patchbook sync ${u.name}`);
   const commit = u.heal(pinned(u, pin));
   if (args.diff || args.since) {
-    const last = join(book.dir, "last-sync.json");
-    const from = exists(last) ? get(get(get(loads(readText(last)), "upstreams") ?? new Map(), u.name) ?? new Map(), "from") : undefined;
-    const old = args.since || (typeof from === "string" ? from : "");
+    const old = args.since || readLastSync(book)?.upstreams.find((r) => r.name === u.name)?.from || "";
     if (!old) throw new Fail(`no earlier pin of ${u.name} to compare with; pass --since <commit>`);
     if (args.since) u.have(old);
     else u.heal(old);
     const where = [u.path, args.path].filter((p) => p).join("/");
     const rel = u.path ? [`--relative=${u.path}/`] : [];
     const diff = run(["git", "diff", "--no-color", ...rel, old, commit, "--", ...(where ? [where] : [])], { cwd: u.gitDir() });
-    process.stdout.write(decodeReplace(diff));
+    verbatim(decodeReplace(diff));
     return 0;
   }
   const files = u.files(commit);
@@ -434,15 +452,15 @@ export async function cmdUpstream(args: { name: string; path: string | null; dif
     refuseExportedGit(u.name, dest, files.keys());
     if (lexists(dest) && !(isDir(dest) && readdirSync(dest).length === 0)) throw new Fail(`can't export upstream ${u.name} into ${dest}, which already exists and isn't empty. Name a new or empty folder. Nothing was changed.`);
     for (const [path, file] of files) writeDisk(join(dest, path), file);
-    process.stdout.write(`wrote ${files.size} files of ${u.name} at ${commit.slice(0, 7)} to ${dest}\n`);
+    say(`wrote ${files.size} files of ${u.name} at ${commit.slice(0, 7)} to ${dest}\n`);
     return 0;
   }
   if (args.path) {
     const file = files.get(args.path);
     if (!file) throw new Fail(`${u.name} has no ${args.path} at ${commit.slice(0, 7)}`);
-    process.stdout.write(file.data);
+    verbatim(file.data);
     return 0;
   }
-  process.stdout.write(sorted(files.keys()).join("\n") + "\n");
+  say([...files.keys()].sort(byCodePoint).join("\n") + "\n");
   return 0;
 }

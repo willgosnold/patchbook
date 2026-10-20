@@ -3,32 +3,43 @@ import { appendFileSync, chmodSync, lstatSync, mkdtempSync, readdirSync, readFil
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
-import { Book, refuseNestedGit, refuseUpstreamGit, unsafeVendor } from "./book.ts";
+import { type Lost, lostEdit } from "./blocks.ts";
+import { Book, GIT, PB, refuseNestedGit, refuseUpstreamGit, segmentNamesGit, under, unsafeVendor } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
-import { SequenceMatcher } from "./lib/difflib.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, isSymlink, LINK, lexists, mkdirs, pjoin, readDisk, readText, readTextReplace, sameFile, writeDisk, writeText } from "./lib/fs.ts";
-import { dumps, JsonError, loads } from "./lib/json.ts";
+import { exists, type File, isSymlink, lexists, LINK, mkdirs, type Mode, nonFolders, pjoin, readDisk, readText, readTextReplace, resolve, sameFile, setsMode, writeDisk, writeText } from "./lib/fs.ts";
+import { similarity } from "./lib/match.ts";
 import { spawn } from "./lib/proc.ts";
-import { sorted } from "./lib/py.ts";
-import { bytesEqual, decodeReplace, isText } from "./lib/text.ts";
+import { boolean, count, jsonText, list, named, nullable, object, oid, readJson, type Shape, string, table, versioned } from "./lib/shape.ts";
+import { say, verbatim, warn } from "./lib/term.ts";
+import { byCodePoint, bytesEqual, decode, decodeReplace, isText, quote } from "./lib/text.ts";
 import { type Pin, pinned, type Upstream } from "./store.ts";
 
 export const EXIT_MOVED = 10;
 
-/** A document as it's written: `upstreams` a Map, so `dumps` keeps them in config order and not integer-like names first. */
-type Written<T extends { upstreams: Record<string, unknown> }> =
-  Omit<T, "upstreams"> & { upstreams: ReadonlyMap<string, T["upstreams"][string]> };
+const TEXT_CONFLICT = object({ change: string, path: string, count });
+const BINARY_CONFLICT = object({ change: string, path: string, detail: string });
+const CONFLICT: Shape<SyncReport["conflicts"][number]> = (v, at) => (Object.hasOwn(table(v, at), "count") ? TEXT_CONFLICT : BINARY_CONFLICT)(v, at);
+
+const SYNC_REPORT = object({
+  name: string, from: nullable(oid), to: oid, upstream: list(string),
+  merged: list(object({ change: string, path: string })),
+  conflicts: list(CONFLICT),
+  gone: list(object({ change: string, path: string, maybe: list(string) })),
+  replacedUpstreamChanged: list(string),
+});
+const LAST_SYNC: Shape<LastSync> = versioned(2, { upstreams: named(SYNC_REPORT) });
+const LAST_SYNC_FIX = "It only reports past syncs: delete it, and the next patchbook sync writes a new one.";
 
 export async function cmdCheck() {
   const book = await Book.find();
-  const upstreams = new Map<string, UpstreamCheck>();
+  const upstreams: UpstreamCheck[] = [];
   let moved = false;
   for (const u of book.upstreams) {
     const pin = u.pin();
     const head = u.head();
-    const r: UpstreamCheck = { pinned: pin.commit ?? null, head, moved: false, files: [] };
+    const r: UpstreamCheck = { name: u.name, pinned: pin.commit ?? null, head, moved: false, files: [] };
     const held = pin.commit ? u.healIfHeld(pin.commit) : false;
     if (head !== pin.commit) {
       u.fetch(head);
@@ -40,17 +51,17 @@ export async function cmdCheck() {
         if (r.moved) r.files = upstreamDelta(book.buildable(u, old, false), book.buildable(u, now));
       }
     }
-    upstreams.set(u.name, r);
+    upstreams.push(r);
     moved = moved || r.moved;
   }
-  const result: Written<CheckJson> = { version: 1, moved, upstreams };
-  process.stdout.write(dumps(result, 2) + "\n");
+  const doc: CheckJson = { version: 2, moved, upstreams };
+  verbatim(jsonText(doc));
   return moved ? EXIT_MOVED : 0;
 }
 
 export function upstreamDelta(old: ReadonlyMap<string, File>, now: ReadonlyMap<string, File>): string[] {
   const out: string[] = [];
-  for (const p of sorted(new Set([...old.keys(), ...now.keys()]))) {
+  for (const p of [...new Set([...old.keys(), ...now.keys()])].sort(byCodePoint)) {
     if (!now.has(p)) out.push(`deleted ${p}`);
     else if (!old.has(p)) out.push(`added ${p}`);
     else if (!sameFile(old.get(p), now.get(p))) out.push(`changed ${p}`);
@@ -75,24 +86,27 @@ function mergeFile(ours: Uint8Array, base: Uint8Array, theirs: Uint8Array): { me
   }
 }
 
+/** A write sync makes to a change's copy, saved in the journal first. No mode keeps the copy's. */
+type Write = { c: Change; side: Side; path: string; data: Uint8Array; mode?: Mode };
+
+function carryMode(c: Change, path: string, theirs: Mode): Write[] {
+  const base = c.file("base", path)!;
+  const ours = c.file("ours", path)!;
+  const writes: Write[] = [{ c, side: "base", path, data: base.data, mode: theirs }];
+  if (!setsMode(ours, base)) writes.push({ c, side: "ours", path, data: ours.data, mode: theirs });
+  return writes;
+}
+
 export async function cmdSync(args: { name: string | null; ref: string | null }) {
   const book = await Book.find();
+  book.refuseLinkedTop();
   installHookOrWarn(book);
   if (args.ref && !args.name && book.upstreams.length > 1) throw new Fail("name the upstream to sync to a ref: patchbook sync <name> <ref>");
   const targets = args.name ? [book.upstream(args.name)] : book.upstreams;
   const changes = readChanges(book, []);
   recoverAll(book);
-  const path = join(book.dir, REPORT);
-  const reports = savedReports(path);
-  const save = () => {
-    const current = new Map<string, SyncReport>();
-    for (const { name } of book.upstreams) {
-      const kept = reports.get(name);
-      if (kept) current.set(name, kept);
-    }
-    const written: Written<LastSync> = { version: 1, upstreams: current };
-    writeText(path, dumps(written, 2) + "\n");
-  };
+  const reports = new Map(readLastSync(book)?.upstreams.map((r) => [r.name, r]));
+  const save = () => writeLastSync(book, reports);
   const stale = [...reports.keys()].some((name) => !book.upstreams.some((u) => u.name === name));
   let synced = false;
   try {
@@ -105,9 +119,9 @@ export async function cmdSync(args: { name: string | null; ref: string | null })
     }
     if (stale && !synced) save();
   } finally {
-    if (exists(path)) ignoreReport(book);
+    if (exists(join(book.dir, REPORT))) ignoreReport(book);
   }
-  if (synced) process.stdout.write("Next: patchbook status\n");
+  if (synced) say("Next: patchbook status\n");
   return 0;
 }
 
@@ -121,21 +135,26 @@ function ignoreReport(book: Book): void {
     if (missing.length) appendFileSync(p, (kept.length && kept[kept.length - 1] !== 0x0a ? "\n" : "") + missing.join("\n") + "\n");
   } catch (e) {
     if (!(e instanceof Error && "errno" in e)) throw e;
-    process.stderr.write(`patchbook: couldn't add ${REPORT} to ${relative(book.root, p)} (${e.message}), so ${REPORT} stays untracked\n`);
+    warn(`patchbook: couldn't add ${REPORT} to ${relative(book.root, p)} (${e.message}), so ${REPORT} stays untracked\n`);
   }
 }
 
-/** The reports in `last-sync.json`, with or without `version`. Kept as read; nothing here reads their fields. */
-function savedReports(path: string): Map<string, SyncReport> {
-  if (!exists(path)) return new Map();
-  try {
-    const root = loads(readTextReplace(path));
-    const upstreams = root instanceof Map ? root.get("upstreams") : undefined;
-    return upstreams instanceof Map ? new Map(upstreams as unknown as ReadonlyMap<string, SyncReport>) : new Map();
-  } catch (e) {
-    if (e instanceof JsonError) return new Map();
-    throw e;
-  }
+export function parseLastSync(text: string): LastSync {
+  return readJson(text, LAST_SYNC, `${PB}/${REPORT}`, LAST_SYNC_FIX);
+}
+
+export function lastSyncText(doc: LastSync): string {
+  return jsonText(LAST_SYNC(doc, ""));
+}
+
+export function readLastSync(book: Book): LastSync | null {
+  const path = join(book.dir, REPORT);
+  return exists(path) ? parseLastSync(readTextReplace(path)) : null;
+}
+
+function writeLastSync(book: Book, reports: ReadonlyMap<string, SyncReport>): void {
+  const upstreams = book.upstreams.flatMap(({ name }) => reports.get(name) ?? []);
+  writeText(join(book.dir, REPORT), lastSyncText({ version: 2, upstreams }));
 }
 
 /** Move one upstream's pin and carry every change on its files forward. Returns the report, or null. */
@@ -149,7 +168,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     const rewrite = u.vendor !== null && (!isFolder(u.vendor) || u.vendorTree(u.vendor).tree !== tree);
     if (rewrite) rewriteVendor(book, u, u.vendor, pin, u.files(commit), tree);
     const rest = rewrite ? "Rewrote the vendored copy, which did not." : "Nothing to do.";
-    process.stdout.write(`${u.name}: upstream at ${commit.slice(0, 7)} matches the pin (tree ${tree.slice(0, 7)}). ${rest}\n`);
+    say(`${u.name}: upstream at ${commit.slice(0, 7)} matches the pin (tree ${tree.slice(0, 7)}). ${rest}\n`);
     warnLeft(book, u);
     return null;
   }
@@ -159,35 +178,40 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   const old = pin.tree ? book.buildable(u, u.mounted(u.files(u.heal(pinned(u, pin)))), false) : new Map<string, File>();
   const fresh = book.buildable(u, u.mounted(raw));
   const report: SyncReport = {
-    from: pin.commit ?? null, to: commit, upstream: upstreamDelta(old, fresh), merged: [], conflicts: [], gone: [],
-    replaced_upstream_changed: [],
+    name: u.name, from: pin.commit ?? null, to: commit, upstream: upstreamDelta(old, fresh), merged: [], conflicts: [], gone: [],
+    replacedUpstreamChanged: [],
   };
 
-  const writes: { c: Change; side: Side; path: string; data: Uint8Array }[] = [];
+  const writes: Write[] = [];
+  const unsure: { c: Change; path: string; lost: Lost }[] = [];
   const added = Array.from(fresh.keys()).filter((p) => !old.has(p));
   for (const c of changes) {
     for (const e of c.edits) {
       if (book.upstreamFor(e.path) !== u) continue;
       if (e.kind === "replace" && old.has(e.path) && !sameFile(old.get(e.path), fresh.get(e.path))) {
-        report.replaced_upstream_changed.push(`${c.name}: ${e.path}`);
+        report.replacedUpstreamChanged.push(`${c.name}: ${e.path}`);
       }
       if (e.kind !== "file") continue;
       const base = c.read("base", e.path);
       const ours = c.read("ours", e.path);
       const theirs = fresh.get(e.path)?.data;
       if (theirs === undefined) {
-        const ratio = (p: string) => new SequenceMatcher<string>(p, e.path).ratio();
-        const maybe = added.map((p) => [-ratio(p), p] as const).sort((x, y) => x[0] - y[0]).slice(0, 3).map(([, p]) => p);
+        const maybe = added.map((p) => [similarity(p, e.path), p] as const).sort((x, y) => y[0] - x[0]).slice(0, 3).map(([, p]) => p);
         report.gone.push({ change: c.name, path: e.path, maybe });
         continue;
       }
+      if (base !== null && ours !== null) writes.push(...carryMode(c, e.path, fresh.get(e.path)!.mode));
       if (base !== null && bytesEqual(theirs, base)) continue;
       if (base === null || ours === null) throw new Error(`${c.name} has no ${base === null ? "base" : "ours"} copy of ${e.path}`);
       if (!(isText(base) && isText(ours) && isText(theirs))) {
         report.conflicts.push({ change: c.name, path: e.path, detail: "binary file changed upstream" });
         continue;
       }
-      const { merged, conflicts } = mergeFile(ours, base, theirs);
+      const merge = mergeFile(ours, base, theirs);
+      const lost = merge.conflicts ? null : lostEdit(decode(base), decode(ours), decode(theirs), decode(merge.merged));
+      // Merged with no base, every line where ours and upstream differ is a conflict.
+      const { merged, conflicts } = lost ? mergeFile(ours, new Uint8Array(), theirs) : merge;
+      if (lost) unsure.push({ c, path: e.path, lost });
       writes.push({ c, side: "ours", path: e.path, data: merged }, { c, side: "base", path: e.path, data: theirs });
       if (conflicts) report.conflicts.push({ change: c.name, path: e.path, count: conflicts });
       else report.merged.push({ change: c.name, path: e.path });
@@ -200,14 +224,24 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     refuseMovedGit(book, u, join(j, "old"));
     if (u.vendor) writeVendor(u, u.vendor, raw, tree);
     saveBefore(book, j, writes.map((w) => w.c.content(w.side, w.path)));
-    for (const w of writes) w.c.write(w.side, w.path, w.data);
+    for (const w of writes) w.c.write(w.side, w.path, w.data, w.mode);
     beforePin?.(report);
     const lock = join(book.dir, "upstream.lock");
     writeFileSync(join(j, "lock"), lexists(lock) ? readFileSync(lock) : "");
     book.writeLock(u.name, commit, tree);
   });
-  process.stdout.write(`${u.name}: pinned ${commit.slice(0, 7)}. ${report.upstream.length} upstream files changed, `
+  say(`${u.name}: pinned ${commit.slice(0, 7)}. ${report.upstream.length} upstream files changed, `
     + `${report.merged.length} of ours merged cleanly, ${report.conflicts.length} conflicts, ${report.gone.length} gone.\n`);
+  for (const { c, path, lost } of unsure) {
+    const why = lost === "count"
+      ? "the merge would keep a different number of copies of a paragraph than the edit adds or removes, as when upstream moves a "
+        + "paragraph the edit deletes, so sync didn't merge it"
+      : "the edit is to a paragraph the file repeats, and upstream moved what lies around it, so sync can't tell which copy the edit "
+        + "is for and didn't merge it";
+    const fix = lost === "count" ? "the paragraphs as you mean them" : "the edit on the copy you mean";
+    warn(`patchbook: ${path} (change ${c.name}): ${why}. ${relative(book.root, c.content("ours", path))} holds our text `
+      + `and upstream's between conflict markers. Resolve them with ${fix}, then run patchbook build.\n`);
+  }
   warnLeft(book, u);
   return report;
 }
@@ -253,7 +287,7 @@ function userFiles(vendor: string, mirrored: ReadonlyMap<string, File>, unpinned
       else if (!mirrored.has(p) || (unpinned && !sameFile(readDisk(join(vendor, p)), mirrored.get(p)))) found.push(p);
     }
   }
-  return sorted(found);
+  return found.sort(byCodePoint);
 }
 
 function namedFiles(folder: string, found: string[]): string {
@@ -296,6 +330,7 @@ const journal = (book: Book, u: Upstream) => join(book.dir, `sync-${encodeURICom
 const spell = (pin: Pin) => `${pin.commit ?? ""} ${pin.tree ?? ""}`;
 
 type Journal = { from: string; to: string; rewrite: boolean; added: string; vendor: string; copy: boolean; made: string };
+const JOURNAL: Shape<Journal> = object({ from: string, to: string, rewrite: boolean, added: string, vendor: string, copy: boolean, made: string });
 
 const PAYLOADS = ["lock", "pin.tmp", "next", "old", "before"];
 
@@ -319,7 +354,7 @@ function begin(book: Book, u: Upstream, from: Pin, to: Required<Pin> | null): vo
     copy: u.vendor !== null && lexists(u.vendor),
     made: made && relative(book.root, made),
   };
-  writeText(join(j, "pin.tmp"), JSON.stringify(record));
+  writeText(join(j, "pin.tmp"), jsonText(record));
   renameSync(join(j, "pin.tmp"), join(j, "pin"));
 }
 
@@ -359,7 +394,56 @@ function takeVendor(vendor: string | null, to: string | null): void {
 /** Recover every upstream, torn locks first. Each journal saves last-sync.json, so none may start while another is pending. */
 function recoverAll(book: Book): void {
   const tore = (u: Upstream) => lexists(join(journal(book, u), "lock"));
-  for (const u of [...book.upstreams.filter(tore), ...book.upstreams.filter((u) => !tore(u))]) recover(book, u);
+  for (const u of [...book.upstreams.filter(tore), ...book.upstreams.filter((u) => !tore(u))]) {
+    const odd = misshapen(book, u);
+    if (odd) throw stuck(book, u, odd);
+    recover(book, u);
+  }
+}
+
+/**
+ * Why recovery must not trust a journal found on disk, or null: its `before/` holds what a sync never saves there, or recovery would read or write through a path outside the repo or in `.git`.
+ * A journal can be committed, so it is anyone's data. Recovery reads the lock and the report by their bytes and writes them back through whatever link is in place.
+ * A sync that fails as it runs recovers its own journal without this check, since what it puts back is what it found.
+ */
+function misshapen(book: Book, u: Upstream): string | null {
+  const j = journal(book, u);
+  if (!exists(join(j, "pin"))) return null;
+  const strayed = astray(book.root, j);
+  if (strayed) return `it ${strayed}, and recovery would read it and move what it holds`;
+  const pinStrayed = astray(book.root, join(j, "pin"));
+  if (pinStrayed) return `its pin ${pinStrayed}, and recovery would read it`;
+  const [lock, before, upstreamLock, lastSync] = [join(j, "lock"), join(j, "before"), join(book.dir, "upstream.lock"), join(book.dir, REPORT)];
+  const saved = lexists(before) && !astray(book.root, before) ? nonFolders(before) : [];
+  const odd = saved.find((rel) => rel !== REPORT && !(rel.startsWith("changes/") && rel.endsWith(".pb")));
+  if (odd) return `its before/${odd} is not one a sync saves`;
+  const report = saved.includes(REPORT);
+  const paths: [string, string, boolean, string][] = [
+    ["its lock", lock, lexists(lock), "recovery would read it"],
+    ["its before", before, lexists(before), "recovery would read it"],
+    ["its old", join(j, "old"), lexists(join(j, "old")), "recovery would move it back as the vendored copy"],
+    [`its before/${REPORT}`, join(before, REPORT), report, "recovery would read it"],
+    ...saved.filter((rel) => rel !== REPORT).map((rel): [string, string, boolean, string] => {
+      const folder = dirname(join(book.dir, rel));
+      return [relative(book.root, folder), folder, true, `recovery would put its before/${rel} back there`];
+    }),
+    [relative(book.root, upstreamLock), upstreamLock, lexists(lock) && locked(u) === null, "recovery would write its lock back through it"],
+    [relative(book.root, lastSync), lastSync, report, `recovery would write its before/${REPORT} back through it`],
+  ];
+  for (const [name, p, used, then] of paths) {
+    const leads = used && astray(book.root, p);
+    if (leads) return `${name} ${leads}, and ${then}`;
+  }
+  return null;
+}
+
+/** Where `p` goes when it leaves the repo or reaches `.git`, once every link on the way is followed, `p` itself included, or null. A link to nothing counts, since a write through it makes the file it names. */
+function astray(root: string, p: string): string | null {
+  if (lexists(p) && !exists(p)) return "leads nowhere";
+  const rel = relative(resolve(root), resolve(p));
+  if (under(rel, "..")) return "leads outside the repo";
+  if (rel.split("/").some(segmentNamesGit)) return `leads into ${GIT}`;
+  return null;
 }
 
 function recover(book: Book, u: Upstream): void {
@@ -368,14 +452,17 @@ function recover(book: Book, u: Upstream): void {
   if (exists(pin)) {
     let record: Journal;
     try {
-      record = JSON.parse(readText(pin));
+      record = readJson(readText(pin), JOURNAL, "its record");
     } catch {
       throw stuck(book, u, "its record can't be read");
     }
     const { from, to, rewrite, added, vendor: path, copy, made } = record;
     const vendor = path ? pjoin(book.root, path) : null;
     const unsafe = vendor && unsafeVendor(book.root, vendor);
-    if (unsafe) throw stuck(book, u, `its record names the vendor folder ${JSON.stringify(path)}, which ${unsafe}`);
+    if (unsafe) throw stuck(book, u, `its record names the vendor folder ${quote(path)}, which ${unsafe}`);
+    if (vendor && vendor !== u.vendor) {
+      throw stuck(book, u, `its record names the vendor folder ${quote(path)}, and config.toml ${u.vendor ? `sets ${quote(relative(book.root, u.vendor))}` : "sets no vendor folder"} for ${u.name}`);
+    }
     const old = join(j, "old");
     const newCopy = lexists(old) || !copy;
     if (vendor && newCopy) refuseNestedGit(book.root, u.name, vendor, relative(book.root, j));
@@ -389,10 +476,12 @@ function recover(book: Book, u: Upstream): void {
     }
     if (vendor && newCopy) refuseUserFilesInCopy(book, u, vendor, j, rewrite ? from : to);
     const before = join(j, "before");
-    const saved = lexists(before) ? readdirSync(before, { recursive: true, encoding: "utf8" }) : [];
-    for (const rel of saved.filter((rel) => rel !== REPORT)) {
-      if (!lstatSync(join(before, rel)).isDirectory()) putBack(join(book.dir, rel), readDisk(join(before, rel)));
-    }
+    const unreadable: string[] = [];
+    const saved = lexists(before) ? nonFolders(before, unreadable) : [];
+    if (unreadable.length) throw stuck(book, u, `${relative(book.root, join(before, unreadable[0]!))} can't be read`);
+    const files = saved.filter((rel) => rel !== REPORT);
+    const dests = files.map((rel) => book.data(rel));
+    files.forEach((rel, i) => putBack(dests[i]!, readDisk(join(before, rel))));
     if (lexists(before)) putReport(join(book.dir, REPORT), join(before, REPORT));
     if (torn) {
       const was = readFileSync(join(j, "lock"));
@@ -445,7 +534,6 @@ function putBack(p: string, was: File): void {
   if (readDisk(p).mode !== was.mode) chmodSync(p, was.mode);
 }
 
-/** The report is written through a link, like the lock, so it comes back by its bytes. */
 function putReport(p: string, was: string): void {
   if (!lexists(was)) return rmSync(p, { force: true });
   const data = readFileSync(was);
@@ -483,6 +571,6 @@ function ignoreAll(j: string): void {
 function warnLeft(book: Book, u: Upstream): void {
   const j = journal(book, u);
   if (!lexists(j)) return;
-  process.stderr.write(`patchbook: couldn't delete ${relative(book.root, j)}, which holds files a sync of ${u.name} no longer needs. `
+  warn(`patchbook: couldn't delete ${relative(book.root, j)}, which holds files a sync of ${u.name} no longer needs. `
     + "git ignores it, but it still takes disk space. Make it writable and delete it by hand; the next sync tries again.\n");
 }

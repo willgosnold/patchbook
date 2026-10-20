@@ -20,10 +20,14 @@ export type Problem =
   | ({ problem: "leak" } & ((InOutput & { line: number }) | InBlock) & { terms: string[] })
   | ({ problem: "missing" } & InBlock & { terms: string[]; upstream: string })
   | {
-    problem: "orphan"; file: string; hash: string; kind: string; rules: string; intent: string; upstream: string;
+    problem: "orphan"; file: string; hash: string; occurrence?: Occurrence; kind: string; rules: string; intent: string; upstream: string;
     patched: string; nearest: Nearest[];
   }
   | ({ problem: "check" } & InFile & Detail);
+
+/** Which of a file's identical paragraphs an entry patches: the nth from the top, of `of` in all, with `between` the hash of the
+ * paragraphs from the identical one before it, or the file's start, to the identical one after it, or the file's end. */
+export type Occurrence = { nth: number; of: number; between: string };
 
 /** A candidate for the new home of an orphaned entry. */
 export type Nearest = { line: number; hash: string; similarity: number };
@@ -42,13 +46,14 @@ export interface Hooks {
 
 /** `patchbook check` prints this and exits 10 if any upstream moved. */
 export type CheckJson = {
-  version: 1;
+  version: 2;
   moved: boolean;
-  /** By upstream name. */
-  upstreams: Record<string, UpstreamCheck>;
+  /** In the order of the config. */
+  upstreams: UpstreamCheck[];
 };
 
 export type UpstreamCheck = {
+  name: string;
   /** The pinned commit, or null when nothing is pinned. */
   pinned: string | null;
   head: string;
@@ -59,16 +64,14 @@ export type UpstreamCheck = {
 
 /** What `patchbook sync` writes to `.patchbook/last-sync.json`: for each upstream in the config that a sync has moved, the report of the latest sync that moved it. Entries can come from different runs. After a sync killed before it moves the pin, an entry names a move `upstream.lock` does not hold, until the next `sync` puts the report back. */
 export type LastSync = {
-  version: 1;
-  /** By upstream name. */
-  upstreams: Record<string, SyncReport>;
+  version: 2;
+  /** In the order of the config. */
+  upstreams: SyncReport[];
 };
-
-/** A `last-sync.json` from before it had a `version`. It has the shape of version 1. */
-export type UnversionedLastSync = Omit<LastSync, "version">;
 
 /** What one sync did to one upstream. */
 export type SyncReport = {
+  name: string;
   /** The commit pinned before that sync, or null when nothing was pinned before that sync. */
   from: string | null;
   /** The commit that sync pinned, unless that sync was killed before it moved the pin. Compare it with `upstream.lock` to tell. */
@@ -81,17 +84,23 @@ export type SyncReport = {
   /** Files an edit names that upstream no longer has, with up to three added paths that look like them. */
   gone: { change: string; path: string; maybe: string[] }[];
   /** `change: path` for each `replace` edit whose file changed upstream. */
-  replaced_upstream_changed: string[];
+  replacedUpstreamChanged: string[];
 };
+
+/** A pin in `upstream.lock` and in `status --json`. */
+export type UpstreamPin = { name: string; commit: string; tree: string };
+
+/** `.patchbook/upstream.lock`, which is committed. Upstreams are sorted by name, by code point. */
+export type UpstreamLock = { version: 1; upstreams: UpstreamPin[] };
 
 /** `patchbook status --json` prints this. It exits 1 if `problems` isn't empty. */
 export type StatusJson = {
-  version: 1;
-  /** `upstream.lock` as the file has it: the pin of each upstream, by name. */
-  upstreams: Record<string, { commit: string; tree: string }>;
+  version: 2;
+  /** The pin of each upstream in the config, as `upstream.lock` has them. */
+  upstreams: UpstreamPin[];
   /** Edits that apply at the pins. */
   applied: number;
   problems: Problem[];
-  /** `last-sync.json` as the file has it, or null if no sync wrote one. */
-  last_sync: LastSync | UnversionedLastSync | null;
+  /** The document in `last-sync.json`, or null if no sync wrote one. */
+  lastSync: LastSync | null;
 };

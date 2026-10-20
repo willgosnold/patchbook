@@ -2,16 +2,19 @@
 import { readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Hooks, Problem } from "./api.ts";
-import { SequenceMatcher } from "./lib/difflib.ts";
+import type { Hooks, Problem, UpstreamLock, UpstreamPin } from "./api.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, GITLINK, isDir, isMode, isSymlink, lexists, mkdirs, type Mode, normMode, pjoin, readDisk, readText, relative, resolve, writeText } from "./lib/fs.ts";
-import { dumps, loads } from "./lib/json.ts";
+import {
+  exists, type File, GITLINK, isDir, isMode, isSymlink, lexists, LINK, mkdirs, type Mode, normMode, parseGitMode, pjoin, readDisk, readText, relative, resolve,
+  rglob, type Seen, writeText,
+} from "./lib/fs.ts";
+import { similarity } from "./lib/match.ts";
 import { git, run, spawn } from "./lib/proc.ts";
-import { length, type PyValue, sortedBy, strRepr } from "./lib/py.ts";
-import { decode } from "./lib/text.ts";
+import { jsonText, named, object, oid, readJson, type Shape, string, versioned } from "./lib/shape.ts";
+import { warn } from "./lib/term.ts";
+import { byCodePoint, decode, quote } from "./lib/text.ts";
 import { isTable, parseToml, type Table } from "./settings.ts";
-import { stagedFolder, treeFiles, Upstream } from "./store.ts";
+import { stagedFolder, treeBlobs, Upstream } from "./store.ts";
 
 export const PB = ".patchbook";
 
@@ -46,8 +49,20 @@ const shown = (folder: string) => folder || "the repo root";
 const HFS_IGNORED = /[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g;
 /** git's `is_hfs_dotgit`, which stops reading at U+FFFE or U+FFFF. */
 const hfsDotGit = (segment: string) => /^\.git(?:$|[\ufffe\uffff])/i.test(segment.replace(HFS_IGNORED, ""));
+/** What Windows ignores after a name: trailing dots and spaces, then an alternate stream. */
+const NTFS_TAIL = "[. ]*(?::|$)";
 /** git's `is_ntfs_dotgit`, applied after each backslash as fsck does. */
-const ntfsDotGit = (segment: string) => segment.split("\\").some((part) => /^(?:\.git|git~1)[. ]*(?::|$)/i.test(part));
+const NTFS_DOT_GIT = new RegExp(`^(?:\\.git|git~1)${NTFS_TAIL}`, "i");
+const ntfsDotGit = (segment: string) => segment.split("\\").some((part) => NTFS_DOT_GIT.test(part));
+const NTFS_DOT_PATCHBOOK = new RegExp(`^\\.patchbook${NTFS_TAIL}`, "iu");
+/** Whether `path` is `.patchbook` or under it, in a spelling Windows or a Mac reads as the same folder. */
+const inPatchbook = (path: string) => NTFS_DOT_PATCHBOOK.test(path.split("/")[0]!.split("\\")[0]!);
+export function refuseFoldedUpstream(paths: Iterable<string>): void {
+  const folded = Array.from(paths).find((p) => inPatchbook(p) && !under(p, PB));
+  if (folded !== undefined) {
+    throw new Fail(`upstream has ${folded}, which is ${PB} on macOS and Windows. patchbook can't fork an upstream with a folder that is ${PB} on macOS and Windows.`);
+  }
+}
 /** Whether a part of path is a name git reads as `.git`. git's fsck warns `hasDotgit` on each one on every platform, and git refuses to stage most of them. */
 const namesGit = (path: string) => path.split("/").some((segment) => hfsDotGit(segment) || ntfsDotGit(segment));
 
@@ -56,9 +71,9 @@ const leftOut = new Map<string, Set<string>>();
 export function noticeLeftOut(): void {
   if (leftOut.size === 0) return;
   const total = Array.from(leftOut.values()).reduce((n, paths) => n + paths.size, 0);
-  const folders = sortedBy(leftOut, ([folder]) => folder).map(([folder, paths]) => `${folder} (${paths.size})`).join(", ");
+  const folders = [...leftOut].sort(([a], [b]) => byCodePoint(a, b)).map(([folder, paths]) => `${folder} (${paths.size})`).join(", ");
   leftOut.clear();
-  process.stderr.write(`patchbook: left ${total} upstream files out of the build because they would land in a vendored copy: ${folders}.\n`);
+  warn(`patchbook: left ${total} upstream files out of the build because they would land in a vendored copy: ${folders}.\n`);
 }
 
 const HOOKS = ["placeholder", "blockTerms", "finish", "check"] as const;
@@ -73,25 +88,20 @@ function hookFail(path: string, what: string): Fail {
 }
 
 function suggest(name: string): string {
-  const scored = HOOKS.map((h) => [new SequenceMatcher(name, h).ratio(), h] as const).sort((x, y) => y[0] - x[0]);
-  const [ratio, best] = scored[0]!;
-  return ratio >= 0.6 ? `; did you mean \`${best}\`?` : `. The hooks are ${HOOKS.join(", ")}.`;
+  const scored = HOOKS.map((h) => [similarity(name, h), h] as const).sort((x, y) => y[0] - x[0]);
+  const [score, best] = scored[0]!;
+  return score >= 0.6 ? `; did you mean \`${best}\`?` : `. The hooks are ${HOOKS.join(", ")}.`;
 }
 
 /** Load hooks.ts, checking each export is a hook, and what each hook returns. */
 async function loadHooks(dir: string): Promise<Hooks> {
   const path = join(dir, "hooks.ts");
-  if (!exists(path)) {
-    if (exists(join(dir, "hooks.py"))) {
-      throw new Fail(`${PB}/hooks.py is Python, and patchbook now runs ${PB}/hooks.ts instead. Port it: the hooks keep their names, except block_terms, which becomes blockTerms.`);
-    }
-    return {};
-  }
+  if (!exists(path)) return {};
   const module: unknown = await import(pathToFileURL(path).href);
   const hooks: Hooks = {};
   if (typeof module !== "object" || module === null) return hooks;
   for (const [name, fn] of Object.entries(module)) {
-    if (!isHookName(name)) throw hookFail(path, `\`${name}\` isn't a hook${suggest(name)}`);
+    if (!isHookName(name)) throw hookFail(path, `${quote(name)} isn't a hook${suggest(name)}`);
     if (typeof fn !== "function") throw hookFail(path, `\`${name}\` must be a function`);
     const call = (...args: unknown[]): unknown => fn(...args);
     switch (name) {
@@ -99,12 +109,13 @@ async function loadHooks(dir: string): Promise<Hooks> {
         hooks.placeholder = (kind, key) => {
           const value = call(kind, key);
           if (value === null || value === undefined || typeof value === "string") return value;
-          throw hookFail(path, `placeholder(${strRepr(kind)}, ${strRepr(key)}) returned ${typeof value}, not a string`);
+          throw hookFail(path, `placeholder(${quote(kind)}, ${quote(key)}) returned ${typeof value}, not a string`);
         };
         break;
       case "blockTerms":
         hooks.blockTerms = (file, block, outputs) => {
           const found = call(file, block, outputs);
+          if (typeof found === "string") throw hookFail(path, "blockTerms must return an array or iterable of strings, not a string");
           const terms = isIterable(found) ? Array.from(found) : null;
           if (terms === null || !terms.every((t) => typeof t === "string")) throw hookFail(path, "blockTerms must return strings");
           return terms;
@@ -126,7 +137,7 @@ async function loadHooks(dir: string): Promise<Hooks> {
           if (!isIterable(found)) throw hookFail(path, "check must return a list of problems");
           return Array.from(found, (p) => {
             if (isProblem(p)) return p;
-            throw hookFail(path, `check returned ${JSON.stringify(p)}, not a problem like { problem: "check", file, detail }`);
+            throw hookFail(path, `check returned ${quote(p)}, not a problem like { problem: "check", file, detail }`);
           });
         };
         break;
@@ -139,12 +150,11 @@ async function loadHooks(dir: string): Promise<Hooks> {
   return hooks;
 }
 
-/** Strings count: Python iterated one into its characters. */
 function isIterable(value: unknown): value is Iterable<unknown> {
-  return typeof value === "string" || (typeof value === "object" && value !== null && Symbol.iterator in value);
+  return typeof value === "object" && value !== null && Symbol.iterator in value;
 }
 
-/** Only the `problem` kind is checked. The rest of the fields are the hook's to get right, as in Python. */
+/** Only the `problem` kind is checked. The rest of the fields are the hook's to get right. */
 function isProblem(value: unknown): value is Problem {
   return isTable(value) && typeof value["problem"] === "string";
 }
@@ -154,6 +164,8 @@ export type Check = { files: RegExp[]; exclude: RegExp[]; pattern: RegExp };
 export type Placeholder = { file: string | null; format: string };
 export type Reserved = { place: string; refuse: boolean };
 export type Layout = { kind: "fork" } | { kind: "folder"; from: string; dir: string };
+/** Where the output is read from: the index the commit hook sees, or the working tree as `git add -A` would stage it. */
+export type OutputSource = "index" | "disk";
 
 /** How `path` spells the repo root: its outermost ancestor that resolves into the repo, or null when that one is a link into a folder of the repo. */
 function repoAsSpelled(realRoot: string, path: string): string | null {
@@ -169,10 +181,10 @@ function repoAsSpelled(realRoot: string, path: string): string | null {
 function checkOutputIsSafeToWipe(root: string, to: string, vendors: readonly string[]): string {
   const dir = pjoin(root, to);
   const rel = relative(resolve(root), resolve(dir));
-  const shown = strRepr(to);
+  const shown = quote(to);
   if (rel === ".") throw new Fail(`[output] to ${shown} is the repo root. Name a folder inside the repo.`);
   if (under(rel, "..")) throw new Fail(`[output] to ${shown} is outside the repo. Name a folder inside it.`);
-  if (under(rel, PB)) throw new Fail(`[output] to ${shown} is inside ${PB}. patchbook never builds into ${PB}, so those files would never land. Change [output] to.`);
+  if (inPatchbook(rel)) throw new Fail(`[output] to ${shown} is inside ${PB}. patchbook never builds into ${PB}, so those files would never land. Change [output] to.`);
   if (lexists(dir) && !exists(dir)) throw new Fail(`[output] to ${shown} is a link to nothing. Name a folder inside the repo.`);
   if (isSymlink(dir)) throw new Fail(`[output] to ${shown} is a link, and a build would replace it with a folder. Name the folder it points to.`);
   if (exists(dir) && !isDir(dir)) throw new Fail(`[output] to ${shown} is not a folder. Name a folder inside the repo.`);
@@ -262,6 +274,14 @@ function refuseGit(name: string, files: Iterable<string>, then: string): void {
   }
 }
 
+/** Refuses an upstream tree path with a part of `..`, `.` or nothing: `git mktree` can store one, and joined onto a folder it lands outside it. Runs where an upstream's tree is read, before any write. */
+export function refuseClimbingPaths(name: string, files: Iterable<string>): void {
+  for (const p of files) {
+    const part = p.split("/").find((s) => s === ".." || s === "." || s === "");
+    if (part !== undefined) throw new Fail(`upstream ${name} holds ${p}, which has a part named ${quote(part)}, so a write could land outside the folder it belongs in. Nothing was changed.`);
+  }
+}
+
 /** Refuses an upstream whose files hold a name git reads as `.git`: the copy would hold a repo of its own, and no sync could finish over it. Runs before the journal and any write. */
 export function refuseUpstreamGit(name: string, vendor: string, files: Iterable<string>): void {
   refuseGit(name, files, `so it can't be vendored into ${vendor}.`);
@@ -276,6 +296,16 @@ export function refuseExportedGit(name: string, dest: string, files: Iterable<st
 function refuseBuiltGit(u: Upstream, staged: string): void {
   refuseGit(u.name, [u.mount ? staged.slice(u.mount.length + 1) : staged], "so a build would put a git repo of its own in your tree.");
 }
+
+/** patchbook reads and writes through whatever sits at these paths, so a link takes that out of the repo, or to another part of
+ * the patchbook, while a review of the patchbook shows only the link. */
+function refuseLinked(root: string, links: string[], hint = ""): void {
+  if (links.length) {
+    throw new Fail(links.map((p) => `${relative(root, p)} is a link`).join(", ")
+      + `. patchbook reads and writes the patchbook through it, so replace the link with a copy of what it points to${hint}.`);
+  }
+}
+
 
 /** `**` matches any number of folders, `*` and `?` stay within one. */
 export function globRe(pattern: string): RegExp {
@@ -306,6 +336,17 @@ function text(table: Table, key: string, fallback: string, what: string): string
   return value;
 }
 
+const LOCK: Shape<UpstreamLock> = versioned(1, { upstreams: named(object({ name: string, commit: oid, tree: oid })) });
+const LOCK_FIX = 'It holds {"version": 1, "upstreams": [{"name": ..., "commit": ..., "tree": ...}]}, one entry per upstream, sorted by name.';
+
+export function parseLock(text: string): UpstreamPin[] {
+  return readJson(text, LOCK, `${PB}/upstream.lock`, LOCK_FIX).upstreams;
+}
+
+export function lockText(pins: readonly UpstreamPin[]): string {
+  return jsonText(LOCK({ version: 1, upstreams: pins.toSorted((a, b) => byCodePoint(a.name, b.name)) }, ""));
+}
+
 export class Book {
   readonly dir: string;
   readonly config: Table;
@@ -317,13 +358,14 @@ export class Book {
   readonly placeholders = new Map<string, Placeholder>();
   hooks: Hooks = {};
   private fileMode: boolean | undefined;
+  private linksRefused = false;
 
   private constructor(readonly root: string, config: string) {
     this.dir = join(root, PB);
     this.config = parseToml(config, join(this.dir, "config.toml"));
     const kind = Object.hasOwn(this.config, "layout") ? this.config["layout"] : "fork";
     if (kind !== "folder" && kind !== "fork") {
-      throw new Fail(`layout must be folder or fork, not ${typeof kind === "string" ? strRepr(kind) : JSON.stringify(kind)}`);
+      throw new Fail(`layout must be folder or fork, not ${quote(kind)}`);
     }
     const raw = this.config["upstream"];
     if (isTable(raw)) throw new Fail("config.toml has a single [upstream] table. Use [[upstream]] with a name instead.");
@@ -345,6 +387,7 @@ export class Book {
   }
 
   static async fromText(root: string, config: string): Promise<Book> {
+    refuseLinked(root, [join(root, PB)].filter(isSymlink));
     const book = new Book(root, config);
     book.hooks = await loadHooks(book.dir);
     return book;
@@ -368,6 +411,43 @@ export class Book {
     return Book.open(root);
   }
 
+  /** A path in what patchbook records: `blocks/`, `changes/`, `series` and `build.lock`. The first call refuses links there, and every call
+   * refuses a link in a folder above the path, so a name from a journal can't lead out of the repo. The last part may be a link, since
+   * writing it replaces it. */
+  data(...parts: string[]): string {
+    if (!this.linksRefused) this.refuseLinks();
+    const path = join(this.dir, ...parts);
+    const above = relative(this.dir, dirname(path)).split("/").filter(Boolean);
+    refuseLinked(this.root, above.map((_, i) => join(this.dir, ...above.slice(0, i + 1))).filter(isSymlink));
+    return path;
+  }
+
+  /** Before the first path in them is read or written, since a record writes paths no read reached, such as a new change. A recorded
+   * symlink is the one link allowed: a `.pb` copy in a change's `base` or `ours`, which the record replaces, and which no copy sits under
+   * (`Change.content`). */
+  refuseLinks(hint = ""): void {
+    const at = (name: string) => join(this.dir, name);
+    const inside = (dir: string) => (isSymlink(dir) ? [] : rglob(dir, "").map((p) => join(dir, p)));
+    const recorded = (p: string) => {
+      const [, side, ...path] = relative(at("changes"), p).split("/");
+      return (side === "base" || side === "ours") && path.length > 0 && p.endsWith(".pb");
+    };
+    const linked = [
+      ...["blocks", "changes", "series", "build.lock"].map(at),
+      ...inside(at("blocks")),
+      ...inside(at("changes")).filter((p) => !recorded(p)),
+    ].filter(isSymlink);
+    refuseLinked(this.root, linked, hint);
+    this.linksRefused = true;
+  }
+
+  /** `init`, `sync`, `track` and `config --project` write these through a link, so they call this before they write anything. */
+  refuseLinkedTop(): void {
+    const journals = isDir(this.dir) ? readdirSync(this.dir).filter((name) => name.startsWith("sync-")) : [];
+    const top = ["config.toml", "upstream.lock", "last-sync.json", "retired.md", ...journals];
+    refuseLinked(this.root, top.map((name) => join(this.dir, name)).filter(isSymlink));
+  }
+
   private checkMounts(): void {
     const names = this.upstreams.map((u) => u.name);
     if (new Set(names).size !== names.length) throw new Fail("two upstreams share a name");
@@ -381,7 +461,7 @@ export class Book {
     }
     for (const u of this.upstreams) {
       const out = this.outputFolder(u);
-      const own = out === null ? undefined : under(out, PB) ? PB : namesGit(out) ? GIT : undefined;
+      const own = out === null ? undefined : inPatchbook(out) ? PB : namesGit(out) ? GIT : undefined;
       if (own) {
         const where = this.layout.kind === "fork" ? `mounts at ${shown(u.mount)}` : `builds into ${shown(out ?? "")}`;
         throw new Fail(`${u.name} ${where}, inside ${own}. patchbook never builds into ${own}, so those files would never land. Change ${this.outputKnob(u)}.`);
@@ -469,7 +549,7 @@ export class Book {
     const vendored = this.heldBy(output);
     if (vendored !== null) return { place: `the vendored copy ${vendored}`, refuse: false };
     const inRepo = this.inRepo(output);
-    return under(inRepo.toLowerCase(), PB) ? { place: PB, refuse: true } : namesGit(inRepo) ? { place: GIT, refuse: true } : null;
+    return inPatchbook(inRepo) ? { place: PB, refuse: true } : namesGit(inRepo) ? { place: GIT, refuse: true } : null;
   }
 
   reservedHolding(staged: string): Reserved | null {
@@ -503,6 +583,9 @@ export class Book {
     for (const [kind, spec] of Object.entries(sources)) {
       if (!isTable(spec)) throw new Fail(`config.toml: [placeholders.${kind}] is a table`);
       const file = Object.hasOwn(spec, "file") ? text(spec, "file", "", `[placeholders.${kind}] file`) : null;
+      if (file !== null && under(relative(resolve(this.root), resolve(pjoin(this.root, file))), "..")) {
+        throw new Fail(`[placeholders.${kind}] file ${quote(file)} is outside the repo. Name a file inside it.`);
+      }
       this.placeholders.set(kind, { file, format: text(spec, "format", "json", `[placeholders.${kind}] format`) });
     }
   }
@@ -517,43 +600,35 @@ export class Book {
   upstreamFor(path: string): Upstream | null {
     let best: Upstream | null = null;
     for (const u of this.upstreams) {
-      if ((!u.mount || under(path, u.mount)) && (best === null || length(u.mount) > length(best.mount))) best = u;
+      if ((!u.mount || under(path, u.mount)) && (best === null || u.mount.length > best.mount.length)) best = u;
     }
     return best;
   }
 
-  lock(): Map<string, PyValue> {
+  lock(): UpstreamPin[] {
     const path = join(this.dir, "upstream.lock");
-    if (!exists(path)) return new Map();
-    const data = loads(readText(path));
-    if (!(data instanceof Map)) throw new Fail(`${path} isn't a JSON object`);
-    return new Map(Array.from(data).filter(([name]) => this.upstreams.some((u) => u.name === name)));
+    if (!exists(path)) return [];
+    return parseLock(readText(path))
+      .filter((p) => this.upstreams.some((u) => u.name === p.name))
+      .toSorted((a, b) => byCodePoint(a.name, b.name));
   }
 
   writeLock(name: string, commit: string, tree: string): void {
-    const data = this.lock();
-    data.set(name, new Map([["commit", commit], ["tree", tree]]));
-    this.saveLock(data);
+    this.saveLock([...this.lock().filter((p) => p.name !== name), { name, commit, tree }]);
   }
 
   dropPin(name: string): void {
-    const data = this.lock();
-    if (data.delete(name)) this.saveLock(data);
+    const pins = this.lock();
+    if (pins.some((p) => p.name === name)) this.saveLock(pins.filter((p) => p.name !== name));
   }
 
-  private saveLock(data: Map<string, PyValue>): void {
+  private saveLock(pins: readonly UpstreamPin[]): void {
     mkdirs(this.dir);
-    writeText(join(this.dir, "upstream.lock"), dumps(new Map(sortedBy(data, ([k]) => k)), 2) + "\n");
+    writeText(join(this.dir, "upstream.lock"), lockText(pins));
   }
 
   pins(): string {
-    return sortedBy(this.lock(), ([k]) => k)
-      .map(([name, pin]) => {
-        const commit = pin instanceof Map ? pin.get("commit") : undefined;
-        if (typeof commit !== "string") throw new Fail(`upstream.lock: ${name} has no commit`);
-        return `${name} ${commit.slice(0, 7)}`;
-      })
-      .join(", ");
+    return this.lock().map((p) => `${p.name} ${p.commit.slice(0, 7)}`).join(", ");
   }
 
   stagedUpstream(): Map<string, File> {
@@ -567,8 +642,9 @@ export class Book {
     return staged;
   }
 
-  /** Pass `noted = false` for a tree the build will not use, so the notice counts only what it leaves out and a path git reads as `.git` is not refused. */
+  /** Pass `noted = false` for a tree the build will not use, so the notice counts only what it leaves out and neither a path git reads as `.git` nor a folder that reads as `.patchbook` is refused. */
   buildable(u: Upstream, files: ReadonlyMap<string, File>, noted = true): Map<string, File> {
+    if (noted && this.layout.kind === "fork") refuseFoldedUpstream(files.keys());
     const kept = new Map<string, File>();
     for (const [p, f] of files) {
       const vendored = this.vendorHolding(p);
@@ -618,11 +694,39 @@ export class Book {
     return out;
   }
 
+  /** The output from `source`, each file marked with whether its exec bit is the user's. Under core.fileMode=false a
+   * disk read takes the index's mode, which is what `git add -A` stages. Each file is marked in place, since a copy
+   * would read the bytes of a staged file that `treeBlobs` reads only when asked. */
+  seen(source: OutputSource): Map<string, Seen> {
+    const files = source === "index" ? this.stagedOutput() : this.currentOutput();
+    if (this.tracksExecBit()) return new Map(Array.from(files, ([p, f]) => [p, Object.assign(f, { chosen: true })]));
+    const index = source === "index" ? new Map(Array.from(files, ([p, f]) => [p, f.mode])) : this.indexModes();
+    const since = this.stagedChanges();
+    const regular = (mode: Mode | null | undefined) => (mode === 0o644 || mode === 0o755 ? mode : undefined);
+    return new Map(Array.from(files, ([p, f]) => {
+      const c = since.get(p);
+      const chosen = c !== undefined && regular(c.staged) !== undefined && c.staged !== (regular(c.head) ?? 0o644);
+      return [p, Object.assign(f, { mode: f.mode === LINK ? LINK : regular(index.get(p)) ?? 0o644, chosen })];
+    }));
+  }
+
+  private indexModes(): Map<string, Mode> {
+    const root = this.outputRoot();
+    const rel = root !== this.root ? relative(this.root, root) : "";
+    const modes = new Map<string, Mode>();
+    for (const entry of decode(run(["git", "--literal-pathspecs", "ls-files", "-s", "-z", ...(rel ? ["--", rel] : [])], { cwd: this.root })).split("\0")) {
+      const tab = entry.indexOf("\t");
+      const mode = parseGitMode(entry.slice(0, tab).split(" ")[0]!);
+      if (tab > 0 && mode !== undefined) modes.set(rel ? entry.slice(tab + rel.length + 2) : entry.slice(tab + 1), mode);
+    }
+    return modes;
+  }
+
   /** The output a commit takes: the index as `write-tree` sees it, so paths only marked with `git add -N` are left out. */
   stagedOutput(): Map<string, File> {
     const root = this.outputRoot();
     const tree = git(["write-tree"], { cwd: this.root });
-    const files = treeFiles(this.root, tree, root !== this.root ? relative(this.root, root) : "");
+    const files = treeBlobs(this.root, tree, root !== this.root ? relative(this.root, root) : "");
     return new Map(Array.from(files).filter(([p]) => !this.isReserved(p)));
   }
 

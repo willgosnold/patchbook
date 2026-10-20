@@ -6,18 +6,54 @@ import {
 import { basename, dirname, join, relative as rel, resolve as absolute } from "node:path";
 import { getSystemErrorMessage } from "node:util";
 import { Fail } from "./fail.ts";
-import { compareParts } from "./py.ts";
-import { bytesEqual, decode, decodeReplace, encode } from "./text.ts";
+import { blobOid } from "./hash.ts";
+import { byCodePoint, bytesEqual, decode, decodeReplace, encode } from "./text.ts";
 
 export const LINK = 0o120000;
 export const GITLINK = 0o160000;
 export type Mode = 0o644 | 0o755 | typeof LINK;
 /** A file as git stores it: its bytes, or a symlink's target, and its mode. */
-export type File = { data: Uint8Array; mode: Mode };
+export type File = { data: Uint8Array; mode: Mode; oid?: string };
+
+export const fileOid = (f: File) => f.oid ?? blobOid(f.data);
 
 export function normMode(mode: number): Mode {
   if (mode === LINK) return LINK;
   return mode & 0o111 ? 0o755 : 0o644;
+}
+
+const GIT_MODES = new Map<string, Mode>([["100644", 0o644], ["100755", 0o755], ["120000", LINK]]);
+
+export const gitMode = (mode: Mode): string => Array.from(GIT_MODES).find(([, m]) => m === mode)![0];
+/** Whether a change's ours copy has a mode of its own, one that differs from its base copy's. */
+export const setsMode = (ours: File, base: File): boolean => ours.mode !== base.mode;
+
+/** The mode an output gets from a change's copy. It follows upstream's until the copy sets one of its own, which a base copy at upstream's mode marks. */
+export const outputMode = (ours: File, base: File | null, up: File | undefined): Mode =>
+  up === undefined || (base !== null && setsMode(ours, base)) ? ours.mode : up.mode;
+export const parseGitMode = (name: string): Mode | undefined => GIT_MODES.get(name);
+
+/** A file of the output as a commit would take it. `chosen` says whether its exec bit is the user's: always under
+ * core.fileMode=true; under false, only when the index holds a mode `git add` alone wouldn't give (HEAD's, or 644 for a
+ * new path). An unchosen bit says nothing about the mode the user wants, so it stands for the build's. */
+export type Seen = File & { readonly chosen: boolean };
+
+/** The mode the user means an output to have once `now` is recorded: `now`'s own when its bit was chosen, else the
+ * build's. A link, or a change between a link and a file, is always meant. */
+export const meantMode = (now: Seen, built: Mode | undefined): Mode =>
+  now.chosen || built === undefined || now.mode === LINK || built === LINK ? now.mode : built;
+
+/** A change's copies of one output, by mode. null for a copy the change doesn't have. */
+export type CopyModes = { ours: Mode | null; base: Mode | null };
+
+/** The copy modes a recording of `now` leaves, given the build's mode, upstream's mode and the copies the change had.
+ * outputMode at the returned modes, over upstream's, is meantMode(now, built). A copy the build already turns into the
+ * meant mode is left as it is, so a copy that follows upstream keeps following it. */
+export function recordedModes(now: Seen, built: Mode | undefined, up: Mode | undefined, had: CopyModes): { ours: Mode; base: Mode | null } {
+  const meant = meantMode(now, built);
+  if (had.ours !== null && meant === built) return { ours: had.ours, base: had.base };
+  if (up === undefined || meant === LINK || up === LINK) return { ours: meant, base: had.base };
+  return { ours: meant, base: had.base !== null || meant !== up ? up : null };
 }
 
 export function isMode(mode: unknown): mode is Mode {
@@ -28,7 +64,8 @@ export const sameMode = (a: Mode, b: Mode, tracksExecBit = true) => a === b || (
 
 export function sameFile(a: File | undefined, b: File | undefined, tracksExecBit = true): boolean {
   if (a === undefined || b === undefined) return a === b;
-  return sameMode(a.mode, b.mode, tracksExecBit) && bytesEqual(a.data, b.data);
+  if (!sameMode(a.mode, b.mode, tracksExecBit)) return false;
+  return a.oid === undefined && b.oid === undefined ? bytesEqual(a.data, b.data) : fileOid(a) === fileOid(b);
 }
 
 /** `Path(a) / b`: joined and normalised, with no trailing slash. An absolute part drops the ones before it. */
@@ -107,6 +144,18 @@ type FsError = Error & { errno: number; syscall: string; path: string; dest?: st
 const isFsError = (e: unknown): e is FsError =>
   e instanceof Error && "errno" in e && typeof e.errno === "number" && "syscall" in e && typeof e.syscall === "string" && "path" in e && typeof e.path === "string";
 
+const DID: ReadonlyMap<string, string> = new Map([
+  ["mkdir", "create"], ["rmdir", "remove"], ["unlink", "remove"], ["rm", "remove"], ["symlink", "link"], ["rename", "move"],
+  ["readlink", "read"], ["scandir", "list"], ["chmod", "change the mode of"],
+]);
+
+export function fsMessage(e: unknown): string | null {
+  if (e instanceof WriteFail) return e.message;
+  if (!(e instanceof Error && "errno" in e && typeof e.errno === "number" && "syscall" in e && typeof e.syscall === "string")) return null;
+  const at = [(e as Partial<FsError>).dest, (e as Partial<FsError>).path].find((p) => typeof p === "string");
+  return `couldn't ${DID.get(e.syscall) ?? e.syscall}${at ? ` ${at}` : ""}: ${getSystemErrorMessage(e.errno)}`;
+}
+
 function writing<T>(write: () => T): T {
   try {
     return write();
@@ -138,7 +187,7 @@ export function writeDisk(p: string, { data, mode }: File): void {
   });
 }
 
-/** `sorted(Path(dir).rglob("*" + suffix))`, relative to dir, in pathlib's order: by path component. A folder it can't read is skipped, and listed in `unreadable` when given. */
+/** The paths under dir that end in suffix, relative to dir, in code-point order. A folder it can't read is skipped, and listed in `unreadable` when given. */
 export function rglob(dir: string, suffix: string, unreadable?: string[]): string[] {
   const found: string[][] = [];
   const walk = (parts: string[]) => {
@@ -156,10 +205,10 @@ export function rglob(dir: string, suffix: string, unreadable?: string[]): strin
     }
   };
   walk([]);
-  return found.sort(compareParts).map((parts) => parts.join("/"));
+  return found.map((parts) => parts.join("/")).sort(byCodePoint);
 }
 
-/** The folders in dir that hold `name`, as `sorted(Path(dir).glob("*" + "/" + name))` orders them. */
+/** The folders in dir that hold `name`, in code-point order. */
 export function foldersWith(dir: string, name: string): string[] {
   let names: string[];
   try {
@@ -167,7 +216,7 @@ export function foldersWith(dir: string, name: string): string[] {
   } catch {
     return [];
   }
-  return names.filter((n) => lexists(join(dir, n, name))).sort((a, b) => compareParts([a], [b]));
+  return names.filter((n) => lexists(join(dir, n, name))).sort(byCodePoint);
 }
 
 export const isEmptyDir = (p: string) => readdirSync(p).length === 0;

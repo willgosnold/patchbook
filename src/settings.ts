@@ -4,11 +4,11 @@ import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { TomlDocument } from "@decimalturn/toml-patch";
 import { Book, NoBook } from "./book.ts";
-import { intentSettings, PROVIDERS } from "./intent.ts";
+import { intentSettings, NO_MODEL, PROVIDERS } from "./intent.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, mkdirs, pjoin, readBytes, readText, writeText } from "./lib/fs.ts";
-import { ljust, S, strRepr } from "./lib/py.ts";
-import { decode } from "./lib/text.ts";
+import { say } from "./lib/term.ts";
+import { decode, quote } from "./lib/text.ts";
 import { quoteToml } from "./lib/toml.ts";
 
 /** A parsed TOML table. Values stay unknown until a setting or the book's config reads them. */
@@ -48,11 +48,21 @@ const text: Kind<string> = {
   show: quoteToml,
 };
 
+const seconds: Kind<number> = {
+  parse(name, raw) {
+    const value = Number(raw);
+    if (!raw.trim() || !Number.isFinite(value) || value <= 0) throw new Fail(`${name} is a positive number of seconds, not ${quote(raw)}`);
+    return value;
+  },
+  accept: (v) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined),
+  show: String,
+};
+
 const flag: Kind<boolean> = {
   parse(name, raw) {
     const word = raw.toLowerCase();
     if (!["1", "0", "true", "false", "yes", "no", "on", "off"].includes(word)) {
-      throw new Fail(`${name} is true or false, not ${strRepr(raw)}`);
+      throw new Fail(`${name} is true or false, not ${quote(raw)}`);
     }
     return ["1", "true", "yes", "on"].includes(word);
   },
@@ -61,7 +71,7 @@ const flag: Kind<boolean> = {
 };
 
 const list: Kind<string[]> = {
-  parse: (_, raw) => raw.split(new RegExp(`[,${S}]+`, "u")).filter((v) => v),
+  parse: (_, raw) => raw.split(/[,\s]+/).filter((v) => v),
   accept: (v) => (Array.isArray(v) && v.every((x) => typeof x === "string") ? v : undefined),
   show: (v) => "[" + v.map(quoteToml).join(", ") + "]",
 };
@@ -72,6 +82,7 @@ type Values = {
   "intent.provider": string | null;
   "intent.model": string | null;
   "intent.effort": string | null;
+  "intent.timeout": number;
   "hook.enabled": boolean;
   "start.install_skill": boolean;
   "start.agents": string[];
@@ -84,9 +95,10 @@ export type Source = "env" | "project" | "user" | "default";
 // The most specific source wins: the env var, then the project's .patchbook/config.toml, then the
 // user's config, then the default.
 export const SETTINGS: { readonly [N in Name]: Setting<Values[N]> } = {
-  "intent.provider": { env: "PATCHBOOK_PROVIDER", kind: text, default: null, help: "claude or codex: the CLI that writes intents (default: claude if installed)" },
+  "intent.provider": { env: "PATCHBOOK_PROVIDER", kind: text, default: null, help: "claude or codex: the CLI that writes intents (default: claude if installed), or none to leave intents empty" },
   "intent.model": { env: "PATCHBOOK_MODEL", kind: text, default: null, help: "the model that writes intents (default: the provider's)" },
   "intent.effort": { env: "PATCHBOOK_EFFORT", kind: text, default: null, help: "its reasoning effort (default: the provider's)" },
+  "intent.timeout": { env: "PATCHBOOK_INTENT_TIMEOUT", kind: seconds, default: 60, help: "seconds to wait for the model before leaving the intent empty" },
   "hook.enabled": { env: "PATCHBOOK_HOOK", kind: flag, default: true, help: "record and build on each commit" },
   "start.install_skill": { env: "PATCHBOOK_SKILL", kind: flag, default: true, help: "clone and init install the patchbook-update skill" },
   "start.agents": { env: null, kind: list, default: ["claude-code", "codex"], help: "the agents clone and init install the skill for" },
@@ -114,7 +126,7 @@ export function configured<N extends Name>(name: N, config: Table, path: string)
   if (raw === undefined) return undefined;
   const kind: Kind<NonNullable<Values[N]>> = SETTINGS[name].kind;
   const value = kind.accept(raw);
-  if (value === undefined) throw new Fail(`${name} in ${path} can't be ${JSON.stringify(raw)}`);
+  if (value === undefined) throw new Fail(`${name} in ${path} can't be ${quote(raw)}`);
   return value;
 }
 
@@ -253,7 +265,7 @@ function withoutSetting(text: string, name: Name, refuse: (cause: string) => Fai
   for (const comment of commentsOf(out)) left.set(comment, (left.get(comment) ?? 0) + 1);
   for (const comment of commentsOf(text)) {
     const n = left.get(comment) ?? 0;
-    if (n === 0) throw refuse(`the TOML library would drop the comment ${JSON.stringify(comment)}`);
+    if (n === 0) throw refuse(`the TOML library would drop the comment ${quote(comment)}`);
     left.set(comment, n - 1);
   }
   return out;
@@ -314,7 +326,7 @@ function firstDifference(want: unknown, got: unknown, at: string): string | null
   if (isDeepStrictEqual(want, got)) return null;
   if (got === undefined) return `drop ${at}`;
   if (want === undefined) return `add ${at}`;
-  return `turn ${at} into ${JSON.stringify(got)}, not ${JSON.stringify(want)}`;
+  return `turn ${at} into ${quote(got)}, not ${quote(want)}`;
 }
 
 function withSetting(config: Table, name: Name, value: unknown): Table {
@@ -330,7 +342,7 @@ function listed<N extends Name>(name: N, book: Book | null): [string, Source] {
     const sources = new Map<string, Source>();
     const [provider, model, effort] = intentSettings(book, true, sources);
     const used = name === "intent.provider" ? provider : name === "intent.model" ? model : effort;
-    return [quoteToml(used), sources.get(name) ?? "default"];
+    return [provider === NO_MODEL && name !== "intent.provider" ? "(not used)" : quoteToml(used), sources.get(name) ?? "default"];
   }
   if (name === "store.path" && value === null) return [quoteToml(dirname(storeDir())), source];
   return [value === null ? "(not set)" : show(name, value), source];
@@ -354,27 +366,28 @@ export async function cmdConfig(args: { name: string | null; value: string | nul
   if (args.project && book === null) throw new Fail("--project needs a patchbook here or above");
   const path = args.project && book ? pjoin(book.dir, "config.toml") : USER_CONFIG;
   if ((args.unset || args.value !== null) && name === null) throw new Fail("name the setting to change");
+  if (args.project && book && (args.unset || args.value !== null)) book.refuseLinkedTop();
   if (args.unset && name !== null) {
     setToml(path, name, null);
     return 0;
   }
   if (args.value !== null && name !== null) {
     const value = parseValue(name, args.value);
-    if (name === "intent.provider" && typeof value === "string" && !PROVIDERS.has(value)) {
-      throw new Fail(`intent.provider is one of ${Array.from(PROVIDERS.keys()).join(", ")}`);
+    if (name === "intent.provider" && typeof value === "string" && value !== NO_MODEL && !PROVIDERS.has(value)) {
+      throw new Fail(`intent.provider is one of ${[...PROVIDERS.keys(), NO_MODEL].join(", ")}`);
     }
     const shown = show(name, value);
     setToml(path, name, value);
-    process.stdout.write(`${name} = ${shown} in ${path}\n`);
+    say(`${name} = ${shown} in ${path}\n`);
     return 0;
   }
   if (name === null) {
-    process.stdout.write(`user config: ${USER_CONFIG}` + (book ? `\nproject config: ${pjoin(book.dir, "config.toml")}` : "") + "\n");
+    say(`user config: ${USER_CONFIG}` + (book ? `\nproject config: ${pjoin(book.dir, "config.toml")}` : "") + "\n");
   }
   for (const n of name !== null ? [name] : NAMES) {
     const [shown, source] = listed(n, book);
     const env = SETTINGS[n].env;
-    process.stdout.write(`${ljust(n, 20)} ${ljust(shown, 28)} ${source}` + (env && name === null ? `  [${env}]` : "") + "\n");
+    say(`${n.padEnd(20)} ${shown.padEnd(28)} ${source}` + (env && name === null ? `  [${env}]` : "") + "\n");
   }
   return 0;
 }

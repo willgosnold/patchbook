@@ -4,11 +4,14 @@
 import { describe, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Case, Repo, partitionHead, replace, sh, shlexQuote as q, words } from "./helpers";
+import type { CheckJson, UpstreamCheck, UpstreamLock } from "../src/api.ts";
+import { shellQuote as q } from "../src/lib/proc.ts";
+import { Case, Repo, sh, words } from "./helpers";
 
 const TIMEOUT = 120_000;
 
 const read = (p: string): string => readFileSync(p, "utf8");
+const checked = (stdout: string, name: string): UpstreamCheck => (JSON.parse(stdout) as CheckJson).upstreams.find((u) => u.name === name)!;
 const lines = (text: string): string[] => text.split("\n").filter(Boolean);
 
 /** A stand-in for a model CLI: it keeps its arguments and stdin under `logs`, then answers. */
@@ -74,7 +77,7 @@ class Fork extends Sandbox {
   }
 
   edit(): void {
-    this.fork.write("app.txt", replace(this.fork.read("app.txt"), "two", "TWO"));
+    this.fork.write("app.txt", this.fork.read("app.txt").replaceAll("two", "TWO"));
   }
 
   record(args: string[] = [], code: number | null = 0) {
@@ -118,7 +121,8 @@ class Duo extends Sandbox {
   }
 
   lock(): Record<string, { commit: string; tree: string }> {
-    return JSON.parse(read(this.lockPath));
+    const lock: UpstreamLock = JSON.parse(read(this.lockPath));
+    return Object.fromEntries(lock.upstreams.map(({ name, ...pin }) => [name, pin]));
   }
 
   trackBeta(): void {
@@ -166,16 +170,16 @@ const docTest = (name: string, body: (t: Doc) => void): void => sandboxTest(() =
 describe("the codex provider", () => {
   forkTest("record calls codex as configured and takes its name and intent from the answer", (t) => {
     t.env["PATCHBOOK_PROVIDER"] = "codex";
-    t.fake("codex", `Here you go:\n${answer("codex-shout", "Shout the second line.")}\nAnything else?`);
+    t.fake("codex", answer("codex-shout", "Shout the second line."));
     t.edit();
     const out = t.record().stdout;
     const args = t.args("codex");
-    expect(args.slice(0, 8)).toEqual(["exec", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=high", "--skip-git-repo-check", "-s", "read-only"]);
-    expect(args[8]).toBe("-C");
-    expect(args).toHaveLength(11);
-    expect(args[10]).toBe("-");
-    expect(args[9]).not.toBe(t.fork.path);
-    expect(existsSync(args[9]!)).toBe(false);
+    expect(args.slice(0, 9)).toEqual(["exec", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=high", "--skip-git-repo-check", "-s", "read-only", "--ephemeral"]);
+    expect(args[9]).toBe("-C");
+    expect(args).toHaveLength(12);
+    expect(args[11]).toBe("-");
+    expect(args[10]).not.toBe(t.fork.path);
+    expect(existsSync(args[10]!)).toBe(false);
     const prompt = read(join(t.tmp, "codex.prompt"));
     expect(prompt).toContain("disk/app.txt");
     expect(prompt).toContain("-two\n+TWO");
@@ -208,12 +212,14 @@ describe("the codex provider", () => {
     expect(read(join(t.tmp, "codex.prompt"))).toContain("The change is new and called mine.");
   });
 
-  forkTest("a codex that fails is named in stderr, and no change takes a name or intent from it", (t) => {
+  forkTest("a codex that fails is named in the pending note, and no change takes a name or intent from it", (t) => {
     t.env["PATCHBOOK_PROVIDER"] = "codex";
     t.fake("codex", answer("codex-shout", "Shout."), 3, "codex: not logged in");
     t.edit();
-    const failed = t.record([], null);
-    expect(failed.stderr).toContain("codex: not logged in");
+    const out = t.record().stdout;
+    expect(out).toContain("pending  no intent yet for pending (codex failed: codex: not logged in). To fill it: patchbook intent pending");
+    expect(t.changes()).toEqual(["pending"]);
+    expect(t.fork.read(".patchbook/changes/pending/CHANGE.md")).toContain("\nintent:\n");
     expect(t.changeText()).not.toContain("codex-shout");
     expect(t.changeText()).not.toContain("Shout.");
   });
@@ -226,13 +232,15 @@ describe("the codex provider", () => {
     '{"change": 5, "intent": "Shout."}',
     '{"intent": "Shout."}',
   ]) {
-    forkTest(`an answer codex garbles (${reply}) is named in stderr, and no change takes a name or intent from it`, (t) => {
+    forkTest(`an answer codex garbles (${reply}) is named in the pending note, and no change takes a name or intent from it`, (t) => {
       t.env["PATCHBOOK_PROVIDER"] = "codex";
       t.fake("codex", reply);
       t.edit();
-      const failed = t.record([], null);
-      expect(failed.stderr).toContain(reply);
-      expect(t.changeText()).not.toMatch(/^intent: $/m);
+      const out = t.record().stdout;
+      expect(out).toContain("pending  no intent yet for pending (codex didn't return a usable name and intent). To fill it: patchbook intent pending");
+      expect(t.called("codex")).toBe(true);
+      expect(t.changes()).toEqual(["pending"]);
+      expect(t.fork.read(".patchbook/changes/pending/CHANGE.md")).toContain("\nintent:\n");
       for (const taken of ["Not Kebab Case", "not-kebab-case", "codex-shout", "Shout."]) expect(t.changeText()).not.toContain(taken);
     });
   }
@@ -309,11 +317,11 @@ describe("check before a pin", () => {
     const lock = read(t.lockPath);
     const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.beta.path }).stdout.trim();
     const r = t.check(10);
-    const report = JSON.parse(r.stdout);
+    const report: CheckJson = JSON.parse(r.stdout);
     expect(report.moved).toBe(true);
-    expect(report.upstreams.alpha).toMatchObject({ pinned: t.lock()["alpha"]!.commit, moved: false, files: [] });
-    expect(report.upstreams.beta).toMatchObject({ pinned: null, head, moved: true, files: ["added beta/c.md"] });
-    expect(Object.keys(report.upstreams)).toEqual(["alpha", "beta"]);
+    expect(checked(r.stdout, "alpha")).toMatchObject({ pinned: t.lock()["alpha"]!.commit, moved: false, files: [] });
+    expect(checked(r.stdout, "beta")).toMatchObject({ pinned: null, head, moved: true, files: ["added beta/c.md"] });
+    expect(report.upstreams.map((u) => u.name)).toEqual(["alpha", "beta"]);
     expect(read(t.lockPath)).toBe(lock);
     expect(existsSync(join(t.repo.path, ".patchbook/last-sync.json"))).toBe(false);
   });
@@ -322,18 +330,18 @@ describe("check before a pin", () => {
     t.followBetaByHand();
     t.check(10);
     t.pb(["sync", "beta"], { cwd: t.repo.path });
-    const report = JSON.parse(t.check(0).stdout);
-    expect(report.moved).toBe(false);
-    expect(report.upstreams.beta).toMatchObject({ pinned: t.lock()["beta"]!.commit, moved: false, files: [] });
+    const out = t.check(0).stdout;
+    expect(JSON.parse(out).moved).toBe(false);
+    expect(checked(out, "beta")).toMatchObject({ pinned: t.lock()["beta"]!.commit, moved: false, files: [] });
   });
 
   duoTest("with no lock at all, every upstream is moved", (t) => {
     t.followBetaByHand();
     rmSync(t.lockPath);
-    const report = JSON.parse(t.check(10).stdout);
-    expect(report.moved).toBe(true);
-    expect(report.upstreams.alpha).toMatchObject({ pinned: null, moved: true, files: ["added a.md", "added docs/b.md"] });
-    expect(report.upstreams.beta).toMatchObject({ pinned: null, moved: true, files: ["added beta/c.md"] });
+    const out = t.check(10).stdout;
+    expect(JSON.parse(out).moved).toBe(true);
+    expect(checked(out, "alpha")).toMatchObject({ pinned: null, moved: true, files: ["added a.md", "added docs/b.md"] });
+    expect(checked(out, "beta")).toMatchObject({ pinned: null, moved: true, files: ["added beta/c.md"] });
     expect(existsSync(t.lockPath)).toBe(false);
   });
 
@@ -437,8 +445,8 @@ pattern = '\bCursor\b'
 `);
     this.pb(["scaffold"], { cwd: this.repo.path });
     this.entries = join(this.repo.path, ".patchbook/blocks/guide.md.entries");
-    const text = replace(read(this.entries), "rules: \nintent: \n", "rules: t3\nintent: Speak T3.\n");
-    writeFileSync(this.entries, `${partitionHead(text, "--- patched\n")}--- patched\nOpen T3 and say hello.\n`);
+    const text = read(this.entries).replaceAll("rules: \nintent: \n", "rules: t3\nintent: Speak T3.\n");
+    writeFileSync(this.entries, `${text.split("--- patched\n")[0]!}--- patched\nOpen T3 and say hello.\n`);
     this.pb(["build"], { cwd: this.repo.path });
   }
 
@@ -447,7 +455,7 @@ pattern = '\bCursor\b'
   }
 
   edit(old: string, repl: string): void {
-    this.repo.write(this.guide, replace(this.repo.read(this.guide), old, repl));
+    this.repo.write(this.guide, this.repo.read(this.guide).replaceAll(old, repl));
   }
 
   record(args: string[] = []) {
@@ -496,6 +504,18 @@ describe("planning paragraph edits", () => {
     expect(read(t.entries)).toContain("kind: policy\nrules: \nintent: Shout the second line.\n--- upstream\nThen wave.\n--- patched\nThen wave twice.\n");
     expect(read(join(t.tmp, "prompt.txt"))).toContain("upstream/guide.md");
     expect(t.changes()).toEqual([]);
+  });
+
+  docTest("an edit recorded into a change with no intent writes an empty intent, never None, and status reports it missing", (t) => {
+    mkdirSync(join(t.repo.path, ".patchbook/changes/mine"), { recursive: true });
+    writeFileSync(join(t.repo.path, ".patchbook/changes/mine/CHANGE.md"), "# mine\n\nintent:\n\nedits:\n");
+    appendFileSync(join(t.repo.path, ".patchbook/series"), "mine\n");
+    t.edit("Then wave.", "Then wave twice.");
+    t.record(["mine"]);
+    const entries = read(t.entries);
+    expect(entries).toContain("kind: policy\nrules: \nintent: \n--- upstream\nThen wave.\n--- patched\nThen wave twice.\n");
+    expect(entries).not.toContain("None");
+    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout).toContain("it has no intent");
   });
 
   docTest("a paragraph put back as upstream wrote it loses its entry", (t) => {
