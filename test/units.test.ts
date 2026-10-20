@@ -1744,4 +1744,61 @@ describe("classify", () => {
     const w = { ...base, staged: new Map([...base.staged, ["zz/b/SKILL.md", up("skills/a/SKILL.md")]]) };
     expect(classify(w, ["b/SKILL.md"])).toMatchObject([{ kind: "follow", edit: copy("zz/b", "skills/b") }]);
   });
+
+  const A = "---\nname: a\n---\n\nFirst paragraph of a.\n\nSecond paragraph of a.\n\nThird paragraph of a.\n";
+  const A2 = A.replace("name: a\n", "name: a2\n");
+  const move = (path: string, dest: string) => ({ kind: "move" as const, path, dest });
+
+  test("a deleted output and a new output that builds the same are a move, of the folder when the whole folder moves", () => {
+    const whole = staging({ "skills/a/ref.md": "ref\n" }, { "a/SKILL.md": null, "a/ref.md": null, "a2/SKILL.md": "a\n", "a2/ref.md": "ref\n" });
+    expect(classify(whole, ["a/SKILL.md", "a/ref.md", "a2/SKILL.md", "a2/ref.md"]))
+      .toEqual([{ kind: "follow", path: "a2/SKILL.md", edit: move("skills/a", "skills/a2") }] as Edited[]);
+    const one = staging({ "skills/a/ref.md": "ref\n" }, { "a/SKILL.md": null, "b/SKILL.md": "a\n" });
+    expect(classify(one, ["a/SKILL.md", "b/SKILL.md"]))
+      .toEqual([{ kind: "follow", path: "b/SKILL.md", edit: move("skills/a/SKILL.md", "skills/b/SKILL.md") }] as Edited[]);
+  });
+
+  test("a renamed and edited output is a move, then a file edit of the file it moved", () => {
+    const w = staging({ "skills/a/SKILL.md": A, "skills/a/ref.md": "ref\n" }, { "a/SKILL.md": null, "a/ref.md": null, "a2/SKILL.md": A2, "a2/ref.md": "ref\n" });
+    expect(classify(w, ["a/SKILL.md", "a/ref.md", "a2/SKILL.md", "a2/ref.md"])).toMatchObject([
+      { kind: "follow", path: "a2/SKILL.md", edit: move("skills/a", "skills/a2") },
+      { kind: "file-edit", path: "a2/SKILL.md", rel: "skills/a/SKILL.md", now: { data: encode(A2) }, to: { kind: "recorded", base: f(A) } },
+    ]);
+  });
+
+  test("a renamed and edited output with block entries is a move, then a paragraph edit", () => {
+    const plan = { path: "", entries: new Map(), notes: [] };
+    const w = { ...staging({}, { "a/SKILL.md": null, "a2/SKILL.md": A2 }, { "skills/a/SKILL.md": A }), plan: () => plan };
+    expect(classify(w, ["a/SKILL.md", "a2/SKILL.md"])).toEqual([
+      { kind: "follow", path: "a2/SKILL.md", edit: move("skills/a", "skills/a2") },
+      { kind: "paragraph-edit", path: "a2/SKILL.md", plan, modeNotRecorded: null },
+    ] as Edited[]);
+  });
+
+  test("a renamed and edited output stays a delete and an add when its edit can't be recorded on the file it moved", () => {
+    const tpl = change("tpl", [{ kind: "file", path: "skills/a/SKILL.md" }], { "skills/a/SKILL.md": "{{snippet:v}}\n" });
+    const w = { ...staging({ "skills/a/SKILL.md": A }, { "a/SKILL.md": null, "a2/SKILL.md": A2 }), owners: new Map([["skills/a/SKILL.md", tpl]]) };
+    expect(classify(w, ["a/SKILL.md", "a2/SKILL.md"])).toMatchObject([{ kind: "delete-upstream", path: "a/SKILL.md" }, { kind: "add", path: "a2/SKILL.md" }]);
+  });
+
+  test("a deleted output and a new output that keep too little in common stay a delete and an add", () => {
+    for (const [old, now] of [["a guide\n", "ours\n"], ["# T\nfoo\n", "# T\nbar\n"], [A, "---\nname: b\n---\n\nSomething else.\n"]]) {
+      const w = staging({ "skills/a/SKILL.md": old! }, { "a/SKILL.md": null, "b/SKILL.md": now! });
+      expect(classify(w, ["a/SKILL.md", "b/SKILL.md"])).toMatchObject([{ kind: "delete-upstream", path: "a/SKILL.md" }, { kind: "add", path: "b/SKILL.md" }]);
+    }
+  });
+
+  test("an exact copy beats an edited move, and an exact move beats an exact copy", () => {
+    const edited = staging({ "skills/a/SKILL.md": A, "extra/skills/x/SKILL.md": A2 }, { "a/SKILL.md": null, "b/SKILL.md": A2 });
+    expect(classify(edited, ["a/SKILL.md", "b/SKILL.md"]))
+      .toMatchObject([{ kind: "delete-upstream", path: "a/SKILL.md" }, { kind: "follow", path: "b/SKILL.md", edit: copy("extra/skills/x", "skills/b") }]);
+    const exact = staging({ "skills/a/SKILL.md": A, "extra/skills/x/SKILL.md": A }, { "a/SKILL.md": null, "b/SKILL.md": A });
+    expect(classify(exact, ["a/SKILL.md", "b/SKILL.md"])).toEqual([{ kind: "follow", path: "b/SKILL.md", edit: move("skills/a", "skills/b") }] as Edited[]);
+  });
+
+  test("a new output that two deleted outputs of different upstream files match equally is moved from neither", () => {
+    const w = staging({ "skills/a/SKILL.md": A, "skills/c/SKILL.md": A }, { "a/SKILL.md": null, "c/SKILL.md": null, "b/SKILL.md": A });
+    expect(classify(w, ["a/SKILL.md", "b/SKILL.md", "c/SKILL.md"]))
+      .toMatchObject([{ kind: "delete-upstream", path: "a/SKILL.md" }, { kind: "add", path: "b/SKILL.md" }, { kind: "delete-upstream", path: "c/SKILL.md" }]);
+  });
 });
