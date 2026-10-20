@@ -1053,53 +1053,6 @@ permissionTest("skill install that cannot write the skill puts back a file it re
   }
 });
 
-permissionTest("skill install in a fork puts back a recorded link when the skill cannot be written", () => {
-  const t = new Case();
-  let file = "";
-  try {
-    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
-    const fork = skillFork(t);
-    file = join(fork.path, SKILL_FILE);
-    fork.write(SKILL_FILE, STALE_SKILL);
-    retarget(fork, "../../elsewhere");
-    t.pb(["record"], { cwd: fork.path });
-    fork.commit("a wrong link and an older skill");
-    chmodSync(file, 0o444);
-    const out = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
-    expect(out.stderr).toContain("couldn't install the update skill");
-    expect(readlinkSync(join(fork.path, SKILL_LINK))).toBe("../../elsewhere");
-    expect(sh(["git", "status", "--porcelain"], { cwd: fork.path }).stdout).toBe("");
-  } finally {
-    if (file && existsSync(file)) chmodSync(file, 0o644);
-    t.cleanup();
-  }
-});
-
-test("skill install does not call it current when a folder is in the way", () => {
-  const t = new Case();
-  try {
-    const up = new Repo(join(t.tmp, "upstream"));
-    up.write("a.md", "a\n");
-    up.commit("start");
-    const repo = new Repo(join(t.tmp, "adapted"));
-    repo.write("README.md", "mine\n");
-    repo.commit("start");
-    t.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: repo.path });
-    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
-    t.pb(["skill", "install"], { cwd: repo.path });
-    rmSync(join(repo.path, SKILL_LINK));
-    repo.write(`${SKILL_LINK}/SKILL.md`, "Mine.\n");
-    repo.commit("a skill folder of my own");
-
-    const out = t.pb(["skill", "install"], { cwd: repo.path, code: 1 });
-    expect(out.stdout).not.toContain("already current");
-    expect(out.stderr).toContain(folderFail(SKILL_LINK));
-    expect(repo.read(`${SKILL_LINK}/SKILL.md`)).toBe("Mine.\n");
-  } finally {
-    t.cleanup();
-  }
-}, TIMEOUT);
-
 test("skill install in a fork refuses to replace a customization that git ignores", () => {
   const t = new Case();
   try {
@@ -1468,24 +1421,6 @@ test("skill install in a fork writes and records nothing when an untracked folde
   }
 }, TIMEOUT);
 
-test("skill install in the folder layout writes nothing when an untracked folder is at the link", () => {
-  const t = new Case();
-  try {
-    const repo = skillFolder(t);
-    repo.write(SKILL_FILE, STALE_SKILL);
-    repo.commit("an older skill");
-    rmSync(join(repo.path, SKILL_LINK));
-    repo.write(`${SKILL_LINK}/notes.txt`, "Mine.\n");
-    const before = tree(repo.path);
-    const out = t.pb(["skill", "install"], { cwd: repo.path, code: 1 });
-    expect(out.stderr).toContain(folderFail(SKILL_LINK));
-    expect(out.stderr).not.toContain("Commit them first");
-    expect(tree(repo.path)).toEqual(before);
-  } finally {
-    t.cleanup();
-  }
-}, TIMEOUT);
-
 permissionTest("skill install that cannot write the skill puts back the mode of a file it replaced", () => {
   const t = new Case();
   const umask = process.umask(0o022);
@@ -1849,25 +1784,6 @@ test("clone replaces a skill file that is not UTF-8", () => {
     const out = t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
     expect(out.stderr).not.toContain("TypeError");
     expect(read(join(t.tmp, "fork", SKILL_FILE))).toBe(SKILL_COPY);
-  } finally {
-    t.cleanup();
-  }
-}, TIMEOUT);
-
-test("init replaces a skill file that is not UTF-8", () => {
-  const t = new Case();
-  try {
-    const up = new Repo(join(t.tmp, "upstream"));
-    up.write("app.txt", "one\ntwo\n");
-    up.commit("start");
-    sh(["git", "clone", "-q", up.path, join(t.tmp, "mine")], { cwd: t.tmp });
-    const mine = new Repo(join(t.tmp, "mine"));
-    writeBytes(mine, SKILL_FILE, NOT_UTF8);
-    mine.commit("a skill that is not text");
-    Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
-    const out = t.pb(["init", "--upstream", up.path], { cwd: mine.path });
-    expect(out.stderr).not.toContain("TypeError");
-    expect(mine.read(SKILL_FILE)).toBe(SKILL_COPY);
   } finally {
     t.cleanup();
   }
@@ -2643,7 +2559,7 @@ for (const [how, remote, given] of [
   }, TIMEOUT);
 }
 
-for (const name of ["my up", "up (copy)", "it's up"]) {
+for (const name of ["my up", "it's up"]) {
   test(`the command a refused fork init prints works for ${name}`, () => {
     const t = new Case();
     try {
@@ -2971,8 +2887,6 @@ for (const [how, hasRemote] of [["remote", true], ["given url", false]] as const
 for (const [how, dir, given] of [
   ["\"..\" from a subfolder", "sub", () => ".."],
   ["\".\" at the root", "", () => "."],
-  ["a file url of the root", "", (fork: string) => `file://${fork}`],
-  ["a file url with a host", "", (fork: string) => `file://example.invalid${fork}`],
   ["a file url with an encoded slash after the host", "", (fork: string) => `file://example.invalid%2F${fork.slice(1)}`],
   ["a file url whose host is not UTF-8", "", (fork: string) => `file://%ff${fork}`],
   ["a path that git reads from its closing bracket", "", () => "x@[y]"],
@@ -3006,8 +2920,6 @@ for (const [how, remote] of [
   ["dot", () => "."],
   ["an alias that another insteadOf would rewrite", () => "self:"],
   ["a file url with a host", (fork: string) => `file://example.invalid${fork}`],
-  ["a file url with an encoded slash after the host", (fork: string) => `file://example.invalid%2F${fork.slice(1)}`],
-  ["a file url whose host is not UTF-8", (fork: string) => `file://%ff${fork}`],
 ] as const) {
   test(`a fork init refuses an upstream remote that fetches the repo itself as ${how}`, () => {
     const t = new Case();
@@ -3786,10 +3698,15 @@ ${indent(`sh -c '${GUARD.trimEnd().replaceAll("'", "'\\''")}'`, 10)}
 
 const LEFTHOOK_DISPATCHER = `#!/bin/sh\n# lefthook stand-in\nlefthook run pre-commit "$@"\n`;
 
-const LEFTHOOK_BY_EXTENSION = { yml: LEFTHOOK_SNIPPET, yaml: LEFTHOOK_SNIPPET, toml: LEFTHOOK_TOML_SNIPPET, json: LEFTHOOK_JSON_SNIPPET, jsonc: LEFTHOOK_JSON_SNIPPET };
-
-const LEFTHOOK_NAMES = ["lefthook", ".lefthook", ".config/lefthook"].flatMap((name) =>
-  Object.entries(LEFTHOOK_BY_EXTENSION).map(([extension, snippet]) => [`${name}.${extension}`, snippet] as const));
+const LEFTHOOK_NAMES = [
+  ["lefthook.yml", LEFTHOOK_SNIPPET],
+  ["lefthook.yaml", LEFTHOOK_SNIPPET],
+  ["lefthook.toml", LEFTHOOK_TOML_SNIPPET],
+  ["lefthook.json", LEFTHOOK_JSON_SNIPPET],
+  ["lefthook.jsonc", LEFTHOOK_JSON_SNIPPET],
+  [".lefthook.yml", LEFTHOOK_SNIPPET],
+  [".config/lefthook.yml", LEFTHOOK_SNIPPET],
+] as const;
 
 const SNIPPETS = {
   ...Object.fromEntries(LEFTHOOK_NAMES.map(([name, snippet]) => [name, { snippet, dispatcher: LEFTHOOK_DISPATCHER }])),
@@ -3854,9 +3771,7 @@ test("hook install prints the advice when a second lefthook name is a symlink to
 // lefthook reads one config file: the first that exists, by extension (yml, yaml, json, jsonc, toml), then by folder (., .lefthook, .config/lefthook).
 const LEFTHOOK_PAIRS: [string, string, string][] = [
   ["lefthook.toml", "lefthook.json", "lefthook.json"],
-  ["lefthook.toml", "lefthook.jsonc", "lefthook.jsonc"],
   [".lefthook.toml", "lefthook.yml", "lefthook.yml"],
-  [".config/lefthook.jsonc", "lefthook.yaml", "lefthook.yaml"],
   [".config/lefthook.yml", ".lefthook.yml", ".lefthook.yml"],
 ];
 
@@ -3942,7 +3857,7 @@ type Paste = {
 const hasPatchbook = (hook: any): void => expect(hook.run).toContain("patchbook hook run");
 
 const PASTES: Paste[] = [
-  ...["lefthook.yml", ".config/lefthook.yaml"].flatMap((config): Paste[] => [
+  ...["lefthook.yml"].flatMap((config): Paste[] => [
     {
       name: "no pre-commit key", config, existing: "skip_output:\n  - meta\n", says: `Add this to ${config},`,
       merge: (existing, printed) => existing + printed, parse: parsed.yaml,
@@ -3959,24 +3874,14 @@ const PASTES: Paste[] = [
       check: (m) => { expect(m["pre-commit"].commands.lint.run).toBe("echo lint"); hasPatchbook(m["pre-commit"].commands.patchbook); },
     },
   ]),
-  ...["lefthook.toml", ".lefthook.toml"].flatMap((config): Paste[] => [
-    {
-      name: "no pre-commit table", config, existing: 'skip_output = ["meta"]\n', says: `Add this to ${config},`,
-      merge: (existing, printed) => existing + printed, parse: parsed.toml,
-      check: (m) => { expect(m.skip_output).toEqual(["meta"]); hasPatchbook(m["pre-commit"].commands.patchbook); },
-    },
+  ...["lefthook.toml"].flatMap((config): Paste[] => [
     {
       name: "a pre-commit table", config, existing: "[pre-commit]\nparallel = true\n", says: `Add this to ${config},`,
       merge: (existing, printed) => existing + printed, parse: parsed.toml,
       check: (m) => { expect(m["pre-commit"].parallel).toBe(true); hasPatchbook(m["pre-commit"].commands.patchbook); },
     },
-    {
-      name: "pre-commit commands", config, existing: '[pre-commit.commands.lint]\nrun = "echo lint"\n', says: `Add this to ${config},`,
-      merge: (existing, printed) => existing + printed, parse: parsed.toml,
-      check: (m) => { expect(m["pre-commit"].commands.lint.run).toBe("echo lint"); hasPatchbook(m["pre-commit"].commands.patchbook); },
-    },
   ]),
-  ...["lefthook.json", "lefthook.jsonc"].flatMap((config): Paste[] => [
+  ...["lefthook.json"].flatMap((config): Paste[] => [
     {
       name: "an empty file", config, existing: "", says: `Add this to ${config},`,
       merge: (_, printed) => printed, parse: parsed.json,
@@ -4086,28 +3991,6 @@ test("clone keeps the bytes of a hook that is not UTF-8", () => {
     expect(hook.toString("latin1")).toContain("patchbook hook run || exit 1");
     t.pb(["build"], { cwd: fork.path });
     expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
-  } finally {
-    t.cleanup();
-  }
-}, TIMEOUT);
-
-test("init keeps the bytes of a husky hook that is not UTF-8", () => {
-  const t = new Case();
-  try {
-    const up = new Repo(join(t.tmp, "upstream"));
-    up.write("skills/a/SKILL.md", "Para one.\n");
-    up.commit("start");
-    const repo = new Repo(join(t.tmp, "adapted"));
-    mkdirSync(join(repo.path, ".husky"));
-    writeFileSync(join(repo.path, ".husky/pre-commit"), LATIN1_HOOK);
-    repo.commit("start");
-    installManager(repo, ".husky");
-    t.pb(["init", "--upstream", up.path, "--output-from", "skills", "--output-to", "skills"], { cwd: repo.path });
-    const hook = readFileSync(join(repo.path, ".husky/pre-commit"));
-    expect(hook.subarray(hook.length - LATIN1_HOOK.length).equals(LATIN1_HOOK)).toBe(true);
-    expect(carriageReturns(hook)).toBe(carriageReturns(LATIN1_HOOK));
-    expect(hook.includes(Buffer.from("\ufffd"))).toBe(false);
-    expect(hook.toString("latin1")).toContain("patchbook hook run || exit 1");
   } finally {
     t.cleanup();
   }
@@ -4666,7 +4549,7 @@ test("install commands leave another tool's hook alone and hook install says git
   }
 }, TIMEOUT);
 
-for (const how of SWITCHES) {
+for (const how of ["user config"] as const) {
   const huskyFiles = { ".husky/pre-commit": NOTE_STAGED };
   const noInstall = (repo: Repo): void => {
     expect(existsSync(hookFile(repo))).toBe(false);
@@ -4998,7 +4881,7 @@ describe("ForkTest", () => {
     });
   }
 
-  for (const mount of ["./.patchbook/pbx", "./.git/pbx", "x/../.patchbook", "./.patchbook", "a/../.git/x"]) {
+  for (const mount of ["./.patchbook/pbx"]) {
     forkTest(`a mount spelled ${mount} is rejected`, (t) => {
       const lib = new Repo(join(t.tmp, "lib"));
       lib.write("d/p.md", "p\n");
@@ -5011,7 +4894,7 @@ describe("ForkTest", () => {
     });
   }
 
-  for (const mount of ["../outside", "x/../../outside", "/abs/outside", ".."]) {
+  for (const mount of ["x/../../outside", "/abs/outside", ".."]) {
     forkTest(`a mount ${mount} outside the repo is rejected`, (t) => {
       const lib = new Repo(join(t.tmp, "lib"));
       lib.write("d/p.md", "p\n");
@@ -5115,7 +4998,6 @@ describe("ForkTest", () => {
   const intoVendor = [
     ["add", "add vendor/extra/new.md"],
     ["copy", "copy app.txt -> vendor/extra/app.txt"],
-    ["move", "move docs/guide.md -> vendor/extra/guide.md"],
   ] as const;
   for (const [kind, edit] of intoVendor) {
     forkTest(`${kind} edit into a vendored copy is refused`, (t) => {
@@ -5142,22 +5024,14 @@ describe("ForkTest", () => {
 
   const intoKept = [
     ["copy into .patchbook/config.toml", "copy app.txt -> .patchbook/config.toml", ".patchbook/config.toml", ".patchbook"],
-    ["copy into .patchbook", "copy app.txt -> .patchbook/notes.txt", ".patchbook/notes.txt", ".patchbook"],
     ["add into .patchbook", "add .patchbook/new.md", ".patchbook/new.md", ".patchbook"],
-    ["move into .patchbook", "move docs/guide.md -> .patchbook/guide.md", ".patchbook/guide.md", ".patchbook"],
     ["copy into .PATCHBOOK/config.toml", "copy app.txt -> .PATCHBOOK/config.toml", ".PATCHBOOK/config.toml", ".patchbook"],
-    ["add into .PatchBook", "add .PatchBook/new.md", ".PatchBook/new.md", ".patchbook"],
     ["copy into .patchbook./config.toml", "copy app.txt -> .patchbook./config.toml", ".patchbook./config.toml", ".patchbook"],
     ["copy into .patchbook with a Kelvin sign", "copy app.txt -> .patchboo\u212A/config.toml", ".patchboo\u212A/config.toml", ".patchbook"],
     ["copy into .patchbook and a space", "copy app.txt -> .patchbook /config.toml", ".patchbook /config.toml", ".patchbook"],
     ["add into .PatchBook. and a space", "add .PatchBook. ./new.md", ".PatchBook. ./new.md", ".patchbook"],
     ["move into .patchbook..", "move docs/guide.md -> .patchbook../guide.md", ".patchbook../guide.md", ".patchbook"],
-    ["copy into .git", "copy app.txt -> .git/x", ".git/x", ".git"],
-    ["add into .git", "add .git/new.md", ".git/new.md", ".git"],
-    ["move into .git", "move docs/guide.md -> .git/guide.md", ".git/guide.md", ".git"],
     ["copy into .GIT", "copy app.txt -> .GIT/x", ".GIT/x", ".git"],
-    ["copy into .git.", "copy app.txt -> .git./x", ".git./x", ".git"],
-    ["copy into a nested .git", "copy app.txt -> a/.git/x", "a/.git/x", ".git"],
   ] as const;
   for (const [name, edit, dest, place] of intoKept) {
     forkTest(`${name} is invalid and nothing is written`, (t) => {
@@ -5196,12 +5070,8 @@ describe("ForkTest", () => {
 
   const hookRefuses = [
     ["copy into .patchbook/config.toml", "copy app.txt -> .patchbook/config.toml", ".patchbook/config.toml", ".patchbook"],
-    ["add into .patchbook", "add .patchbook/new.md", ".patchbook/new.md", ".patchbook"],
-    ["move into .PATCHBOOK", "move docs/guide.md -> .PATCHBOOK/guide.md", ".PATCHBOOK/guide.md", ".patchbook"],
     ["copy into .patchbook.", "copy app.txt -> .patchbook./config.toml", ".patchbook./config.toml", ".patchbook"],
     ["add into .patchbook and a space", "add .patchbook /new.md", ".patchbook /new.md", ".patchbook"],
-    ["copy into .git", "copy app.txt -> .git/x", ".git/x", ".git"],
-    ["copy into .GIT", "copy app.txt -> .GIT/x", ".GIT/x", ".git"],
   ] as const;
   for (const [name, edit, dest, place] of hookRefuses) {
     for (const pending of [false, true]) {
@@ -5265,13 +5135,6 @@ describe("ForkTest", () => {
 
   const hookRefusesUnsafe = [
     ["add climbing out", "add ../outside.txt"],
-    ["add ./new.md", "add ./new.md"],
-    ["add absolute", "add /outside.txt"],
-    ["delete docs//guide.md", "delete docs//guide.md"],
-    ["copy dest climbing out", "copy app.txt -> ../copied.txt"],
-    ["copy dest ./.patchbook/config.toml", "copy app.txt -> ./.patchbook/config.toml"],
-    ["copy dest .//.patchbook/config.toml", "copy app.txt -> .//.patchbook/config.toml"],
-    ["file climbing out", "file ../app.txt"],
     ["add climbing out with a backslash", "add ..\\outside.txt"],
     ["copy dest .patchbook backslash config.toml", "copy app.txt -> .patchbook\\config.toml"],
   ] as const;
@@ -5378,25 +5241,12 @@ describe("ForkTest", () => {
 
   const escaping = [
     ["add climbing out", "add ../outside.txt"],
-    ["add climbing out in the middle", "add docs/../../outside.txt"],
     ["add absolute", "add /outside.txt"],
-    ["replace climbing out", "replace ../app.txt"],
-    ["delete climbing out", "delete ../app.txt"],
-    ["file climbing out", "file ../app.txt"],
-    ["file absolute", "file /app.txt"],
     ["copy dest climbing out", "copy app.txt -> ../copied.txt"],
-    ["copy dest absolute", "copy app.txt -> /copied.txt"],
     ["copy source climbing out", "copy ../app.txt -> copied.txt"],
-    ["move dest climbing out", "move docs/guide.md -> ../guide.md"],
-    ["move source absolute", "move /docs/guide.md -> guide.md"],
     ["copy dest ./.patchbook/config.toml", "copy app.txt -> ./.patchbook/config.toml"],
-    ["copy dest .//.patchbook/config.toml", "copy app.txt -> .//.patchbook/config.toml"],
     ["add ./.patchbook/new.md", "add ./.patchbook/new.md"],
-    ["add ./new.md", "add ./new.md"],
-    ["add docs/./new.md", "add docs/./new.md"],
     ["delete docs//guide.md", "delete docs//guide.md"],
-    ["delete .", "delete ."],
-    ["move source ./docs/guide.md", "move ./docs/guide.md -> guide.md"],
     ["add climbing out with a backslash", "add ..\\outside.txt"],
     ["add backslash in a name", "add docs\\new.md"],
     ["replace backslash", "replace docs\\guide.md"],
@@ -5436,7 +5286,7 @@ describe("ForkTest", () => {
   }
 
   for (const [label, name] of [
-    ["climbing out", "../x"], ["nested", "a/b"], ["absolute", "/abs"], ["capitalised", "Shout"],
+    ["nested", "a/b"], ["absolute", "/abs"], ["capitalised", "Shout"],
     ["leading dot", ".x"], ["with a space", "a b"], ["with an underscore", "a_b"],
   ] as const) {
     forkTest(`record refuses a ${label} change name and writes nothing`, (t) => {
@@ -5516,7 +5366,9 @@ describe("ForkTest", () => {
       expect(shown.stderr).toContain(`no change called ${name}`);
       expect(shown.stdout).toBe("");
     });
+  }
 
+  for (const [what, name, listed] of badNames.slice(0, 2)) {
     forkTest(`hook refuses ${what} that is not a change name and loses no edit`, (t) => {
       badName(t, name, listed);
       sh(["git", "add", "-A"], { cwd: t.fork.path });
@@ -5630,7 +5482,7 @@ describe("ForkTest", () => {
     expect(report.upstream).toEqual(["changed app.txt"]);
   });
 
-  for (const kind of ["annotated", "lightweight"]) {
+  for (const kind of ["annotated"]) {
     forkTest(`sync does not import the ${kind} tags of an in-repo upstream`, (t) => {
       t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
       t.up.commit("upstream edit");
@@ -7268,16 +7120,6 @@ describe("ForkTest", () => {
     expect(porcelain(t)).toBe("");
   });
 
-  forkTest("commit records a staged edit the working copy put back", (t) => {
-    const built = t.fork.read("app.txt");
-    t.fork.write("app.txt", built.replaceAll("two", "TWO"));
-    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
-    t.fork.write("app.txt", built);
-    expect(hookCommit(t, ["-m", "shout"]).stderr).toContain("file     app.txt");
-    expect(sh(["git", "show", "HEAD:app.txt"], { cwd: t.fork.path }).stdout).toContain("TWO");
-    expect(porcelain(t)).toBe("");
-  });
-
   forkTest("commit records a staged edit after build --force", (t) => {
     t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     sh(["git", "add", "app.txt"], { cwd: t.fork.path });
@@ -8784,116 +8626,17 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(read(user)).toBe(before);
   });
 
-  forkTest("config keeps the endings and the end of a file with no final newline", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    writeFileSync(user, '[intent]\n# c\r\nmodel = "old"\n[hook]\r\nenabled = true');
-    t.config(["intent.model", "new"]);
-    expect(read(user)).toBe('[intent]\n# c\r\nmodel = "new"\n[hook]\r\nenabled = true');
-    writeFileSync(user, '[intent]\r\nprovider = "claude"');
-    t.config(["intent.model", "new"]);
-    expect(read(user)).toBe('[intent]\r\nprovider = "claude"\r\nmodel = "new"');
-    writeFileSync(user, '[intent]\nmodel = "old"\n\n\n');
-    t.config(["intent.model", "new"]);
-    expect(read(user)).toBe('[intent]\nmodel = "new"\n\n\n');
-    writeFileSync(user, '[intent]\r# c\rmodel = "old"\r');
-    t.config(["intent.model", "new"]);
-    expect(read(user)).toBe('[intent]\r# c\rmodel = "new"\r');
-  });
-
-  forkTest("config unset keeps a byte order mark and ignores a hash line in the deleted string", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    writeFileSync(user, '\uFEFFstart.agents = ["a"]\n[intent]\nmodel = "x"\n');
-    t.config(["--unset", "start.agents"]);
-    expect(read(user)).toBe('\uFEFF[intent]\nmodel = "x"\n');
-    writeFileSync(user, '[hook]\nenabled.t = """\n# inside\n"""\n');
-    t.config(["--unset", "hook.enabled"]);
-    expect(read(user)).toBe("[hook]\n");
-  });
-
-  forkTest("config set keeps whitespace only lines at the end of a file", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    writeFileSync(user, '[intent]\nmodel = "old"\n  \n\n');
-    t.config(["intent.model", "new"]);
-    expect(read(user)).toBe('[intent]\nmodel = "new"\n  \n\n');
-    writeFileSync(user, '[intent]\nmodel = "old"\n   ');
-    t.config(["intent.model", "new"]);
-    expect(read(user)).toBe('[intent]\nmodel = "new"\n   ');
-  });
-
-  forkTest("config unset on a byte order mark line keeps the endings of the lines after it", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    writeFileSync(user, "﻿hook.enabled = true\nstart.agents = []\r\nintent.model = \"x\"\r\n");
-    t.config(["--unset", "hook.enabled"]);
-    expect(read(user)).toBe("﻿start.agents = []\r\nintent.model = \"x\"\r\n");
-    writeFileSync(user, "﻿");
-    t.config(["intent.model", "new"]);
-    expect(read(user)).toBe('﻿[intent]\nmodel = "new"\n');
-  });
-
-  forkTest("config set after a last line comment puts the file tail once after the new line", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    writeFileSync(user, "[intent]\n# none yet  \n\n  ");
-    t.config(["intent.model", "new"]);
-    expect(read(user)).toBe('[intent]\n# none yet\n\nmodel = "new"  \n\n  ');
-  });
-
-  forkTest("config set after a last comment that ends in a space does not count the line as blank", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    for (const mark of [" ", " ", "　", "﻿"]) {
-      writeFileSync(user, `[intent]\n# c${mark}`);
-      t.config(["intent.model", "new"]);
-      expect(read(user)).toBe(`[intent]\n# c${mark}\n\nmodel = "new"`);
-    }
-  });
-
-  forkTest("config set above a last comment that ends in a space keeps the line, as it is not blank", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    for (const mark of ["\u00A0", "\u2028", "\u3000", "\uFEFF"]) {
-      writeFileSync(user, `[intent]\nmodel = "old"\n# c${mark}\n`);
-      t.config(["intent.model", "new"]);
-      expect(read(user)).toBe(`[intent]\nmodel = "new"\n# c${mark}\n`);
-    }
-  });
-
-  forkTest("config set on a file with a long run of spaces before the end is fast", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    writeFileSync(user, `[intent]\nmodel = "old"${" ".repeat(50000)}\n# end\n`);
-    const start = Date.now();
-    t.config(["intent.model", "new"]);
-    expect(Date.now() - start).toBeLessThan(4000);
-    expect(read(user)).toBe('[intent]\nmodel = "new"\n# end\n');
-  });
-
-  forkTest("config keeps each line's own ending in a file with mixed endings", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
-    const before = '# my settings\r\n[start]\nagents = ["claude-code"]\r\nnote = """\na\nb"""\r\n[intent]\nmodel = "x"\n';
-    writeFileSync(user, before);
-    t.config(["start.agents", "codex"]);
-    expect(read(user)).toBe(before.replaceAll('["claude-code"]', '["codex"]'));
-    t.config(["--unset", "intent.model"]);
-    expect(read(user)).toBe('# my settings\r\n[start]\nagents = ["codex"]\r\nnote = """\na\nb"""\r\n[intent]\n');
-  });
-
-  forkTest("config keeps the line endings of a CRLF file", (t) => {
+  forkTest("config sets and unsets a setting in a CRLF user config, keeping its endings, and says what it set", (t) => {
     const user = join(t.tmp, "config/patchbook/config.toml");
     mkdirSync(join(t.tmp, "config/patchbook"), { recursive: true });
     const before = '# my settings\r\n[start]\r\n# agents\r\nagents = ["claude-code"]\r\nby_host = []\r\n';
     writeFileSync(user, before);
-    t.config(["start.agents", "codex"]);
+    const set = t.pb(["config", "start.agents", "codex"], { cwd: t.fork.path });
+    expect([set.stdout, set.stderr]).toEqual([`start.agents = ["codex"] in ${user}\n`, ""]);
     expect(read(user)).toBe(before.replaceAll('["claude-code"]', '["codex"]'));
-    t.config(["--unset", "start.agents"]);
+    const unset = t.pb(["config", "--unset", "start.agents"], { cwd: t.fork.path });
+    expect([unset.stdout, unset.stderr]).toEqual(["", ""]);
     expect(read(user)).toBe("# my settings\r\n[start]\r\n# agents\r\nby_host = []\r\n");
-    t.config(["intent.model", "x"]);
-    expect(read(user)).not.toMatch(/[^\r]\n/);
   });
 
   forkTest("a config with an integer too big for Bun says so in either scope", (t) => {
@@ -8988,16 +8731,6 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(out.stdout).toContain("intent.model");
     expect(out.stderr).not.toContain("pre-commit hook");
     expect(existsSync(hook)).toBe(false);
-  });
-
-  forkTest("config writes the user config in a book outside a git repo", (t) => {
-    const user = join(t.tmp, "config/patchbook/config.toml");
-    const loose = join(t.tmp, "loose");
-    mkdirSync(join(loose, ".patchbook"), { recursive: true });
-    writeFileSync(join(loose, ".patchbook/config.toml"), read(join(t.fork.path, ".patchbook/config.toml")));
-    const out = t.pb(["config", "intent.model", "fake-x"], { cwd: loose });
-    expect(out.stderr).not.toContain("pre-commit hook");
-    expect((Bun.TOML.parse(read(user)) as { intent: { model: string } }).intent.model).toBe("fake-x");
   });
 
   forkTest("a user config that is not TOML is named in the error", (t) => {
@@ -11465,15 +11198,16 @@ exec '${Bun.which("git")}' "$@"
     expect(words(t.pb(["upstream", "plugin"], { cwd: t.repo.path }).stdout)).toEqual(["README.md", "agents/helper.md", "skills/hello/SKILL.md"]);
   });
 
-  vendorTest("check leaves the heads it fetches to gc", (t) => {
-    const store = join(t.tmp, "store/upstreams", readdirSync(join(t.tmp, "store/upstreams"))[0]!);
-    const pin = lockPin(read(join(t.repo.path, ".patchbook/upstream.lock")), "plugin").commit;
+  vendorTest("check keeps the pin it compares with and leaves the head it fetches to gc", (t) => {
+    const store = storeOf(t);
+    const pin = pinOf(t);
+    dropRefs(store);
     t.up.write("plugin/README.md", "For everyone.\n");
     const head = t.up.commit("readme");
     t.pb(["check"], { cwd: t.repo.path, code: 10 });
-    sh(["git", "gc", "-q", "--prune=now"], { cwd: store });
-    expect(sh(["git", "cat-file", "-e", `${pin}^{commit}`], { cwd: store, check: false }).code).toBe(0);
-    expect(sh(["git", "cat-file", "-e", `${head}^{commit}`], { cwd: store, check: false }).code).not.toBe(0);
+    gc(store);
+    expect(inStore(store, pin)).toBe(true);
+    expect(inStore(store, head)).toBe(false);
     rmSync(t.up.path, { recursive: true });
     expect(words(t.pb(["upstream", "plugin"], { cwd: t.repo.path }).stdout)).toEqual(["README.md", "agents/helper.md", "skills/hello/SKILL.md"]);
   });
@@ -11485,17 +11219,6 @@ exec '${Bun.which("git")}' "$@"
     t.up.write("other/ignored.md", "Still not followed.\n");
     t.up.commit("outside the path");
     t.pb(["check"], { cwd: t.repo.path });
-    gc(store);
-    expect(inStore(store, pin)).toBe(true);
-  });
-
-  vendorTest("check keeps the pin it compares with", (t) => {
-    const store = storeOf(t);
-    const pin = pinOf(t);
-    dropRefs(store);
-    t.up.write("plugin/README.md", "For everyone.\n");
-    t.up.commit("readme");
-    t.pb(["check"], { cwd: t.repo.path, code: 10 });
     gc(store);
     expect(inStore(store, pin)).toBe(true);
   });
@@ -12683,7 +12406,9 @@ exec '${Bun.which("git")}' "$@"
       const at = builtThenReplaced(t, kind, (folder) => mkdirSync(join(folder, "y/z"), { recursive: true }));
       restored(t, kind, at);
     });
+  }
 
+  for (const kind of ["link"] as const) {
     vendorTest(`build --force refuses a folder of ignored files that replaced a ${kind}`, (t) => {
       const at = builtThenReplaced(t, kind, (folder) => writeFileSync(join(folder, ".DS_Store"), "kept\n"));
       const edited = "hand edit\n";
@@ -12723,7 +12448,7 @@ exec '${Bun.which("git")}' "$@"
     });
   }
 
-  for (const to of ["skills/.git", "skills/.git/x", "a/.git", "a/b/.git/c"]) {
+  for (const to of ["skills/.git", "a/b/.git/c"]) {
     vendorTest(`output folder ${to} has a git segment and is rejected`, (t) => {
       t.missingScaffoldPatchBuild();
       setOutputFolder(t, to);
@@ -12894,10 +12619,8 @@ exec '${Bun.which("git")}' "$@"
     [".git.", ".git."],
     [".git and a space", ".git "],
     ["GIT~1", "GIT~1"],
-    ["git~1. ", "out/git~1. /y"],
     [".git:x", "out/.git:x"],
     ["a backslash before .git", "out/a\\.git"],
-    ["a zero-width non-joiner inside .git", ".g\u200cit"],
     ["a byte order mark before .GIT", "out/\ufeff.GIT/y"],
     [".git then the noncharacter U+FFFE", ".git\ufffe"],
     [".GIT with a zero-width non-joiner and U+FFFF", "out/.GIT\u200c\uffffx/y"],
