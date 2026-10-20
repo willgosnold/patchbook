@@ -14,11 +14,12 @@ const read = (p: string): string => readFileSync(p, "utf8");
 const checked = (stdout: string, name: string): UpstreamCheck => (JSON.parse(stdout) as CheckJson).upstreams.find((u) => u.name === name)!;
 const lines = (text: string): string[] => text.split("\n").filter(Boolean);
 
-/** A stand-in for a model CLI: it keeps its arguments and stdin under `logs`, then answers. */
+/** A stand-in for a model CLI: it keeps its arguments and stdin under `logs`, counts its calls, then answers. */
 function fakeCli(dir: string, name: string, logs: string, reply: string, code = 0, stderr = ""): void {
   mkdirSync(dir, { recursive: true });
   const fake = join(dir, name);
   writeFileSync(fake, `#!/bin/sh
+printf x >> ${q(join(logs, `${name}.calls`))}
 printf '%s\\n' "$@" > ${q(join(logs, `${name}.args`))}
 cat > ${q(join(logs, `${name}.prompt`))}
 printf '%s\\n' ${q(reply)}
@@ -50,6 +51,10 @@ class Sandbox extends Case {
 
   called(name: string): boolean {
     return existsSync(join(this.tmp, `${name}.args`));
+  }
+
+  calls(name: string): number {
+    return this.called(name) ? read(join(this.tmp, `${name}.calls`)).length : 0;
   }
 
   /** A PATH holding git, cat and these fake model CLIs, and nothing else. */
@@ -481,6 +486,31 @@ describe("planning paragraph edits", () => {
     expect(t.changes()).toEqual([]);
     t.pb(["build"], { cwd: t.repo.path });
     expect(t.repo.read(t.guide)).toContain("Open T3 and say hello. Smile.");
+  });
+
+  docTest("an edit to a patched paragraph has the model write its entry's intent again, in one call", (t) => {
+    const label = `guide.md [${/^=== entry (\S+)$/m.exec(read(t.entries))![1]}]`;
+    t.fake("claude", JSON.stringify({ change: null, intents: { [label]: "Speak T3, and smile." } }));
+    t.edit("Open T3 and say hello.", "Open T3 and say hello. Smile.");
+    const out = t.record().stdout;
+    expect(out).toContain(`entry    ${label} updated\nintent   ${label}: Speak T3, and smile.\n`);
+    expect(read(t.entries)).toContain("kind: translation\nrules: t3\nintent: Speak T3, and smile.\n");
+    expect(t.calls("claude")).toBe(1);
+    const prompt = read(join(t.tmp, "claude.prompt"));
+    expect(prompt).toContain("Speak T3.");
+    expect(prompt).toContain("-Open Cursor and say hello.\n+Open T3 and say hello. Smile.\n");
+  });
+
+  docTest("with no model, an edit to a patched paragraph keeps its entry's intent and says it may be stale", (t) => {
+    const label = `guide.md [${/^=== entry (\S+)$/m.exec(read(t.entries))![1]}]`;
+    t.fake("claude", JSON.stringify({ change: null, intents: { [label]: "Not this." } }));
+    t.env["PATCHBOOK_PROVIDER"] = "none";
+    t.edit("Open T3 and say hello.", "Open T3 and say hello. Smile.");
+    const out = t.record().stdout;
+    expect(out).toBe(`entry    ${label} updated\nintent   may be stale: ${label} (intent.provider is none). Edit them by hand to cover these edits\n`);
+    expect(read(t.entries)).toContain("kind: translation\nrules: t3\nintent: Speak T3.\n");
+    expect(t.calls("claude")).toBe(0);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
   });
 
   docTest("an edit across two neighbouring paragraphs goes into the first one's entry and empties the second's", (t) => {

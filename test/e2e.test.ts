@@ -425,8 +425,10 @@ test("skill install keeps the intent of the change it updates", () => {
     fork.write(SKILL_FILE, STALE_SKILL);
     t.pb(["record", "patchbook-update-skill", "--intent", "Let agents pull upstream."], { cwd: fork.path });
     fork.commit("an older skill");
-    t.pb(["skill", "install"], { cwd: fork.path });
-    expect(read(join(fork.path, ".patchbook/changes/patchbook-update-skill/CHANGE.md"))).toContain("Let agents pull upstream.");
+    const out = t.pb(["skill", "install"], { cwd: fork.path }).stdout;
+    expect(read(join(fork.path, ".patchbook/changes/patchbook-update-skill/CHANGE.md"))).toContain("intent: Let agents pull upstream.\n");
+    expect(out).not.toContain("intent ");
+    expect(modelWasAsked(t)).toBe(false);
     expect(fork.read(SKILL_FILE)).toBe(SKILL_COPY);
   } finally {
     t.cleanup();
@@ -15787,6 +15789,87 @@ describe("PendingIntentTest", () => {
       expect(changeText(t, "pending")).toContain("intent: Ship extra files.");
     });
   });
+});
+
+describe("StaleIntentTest", () => {
+  const FEATURE = "Shout the second line, add extra.txt, drop the guide.";
+  const changeText = (t: ForkCase, name: string): string => read(join(t.fork.path, ".patchbook/changes", name, "CHANGE.md"));
+
+  /** A fake claude that appends each prompt to a log and gives `reply`, or fails when `reply` is null. Returns the prompts so far. */
+  const model = (t: Case, reply: string | null): (() => string[]) => {
+    const log = join(t.tmp, "prompts.log");
+    writeFileSync(join(t.tmp, "reply.json"), reply ?? "");
+    const answer = reply === null ? "echo 'fake claude: offline' >&2\nexit 1" : `cat ${t.tmp}/reply.json`;
+    writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat >> ${log}\nprintf '\\0' >> ${log}\n${answer}\n`);
+    chmodSync(join(t.tmp, "bin/claude"), 0o755);
+    return () => (existsSync(log) ? read(log).split("\0").slice(0, -1) : []);
+  };
+  const reply = (change: string | null, intents: Record<string, string>): string => JSON.stringify({ change, intents });
+
+  forkTest("an edit to a file a change owns asks the model once, with the change's whole diff, and rewrites its intent", (t) => {
+    t.recordFeature();
+    const intent = "Shout the second and third lines, add extra.txt, drop the guide.";
+    const prompts = model(t, reply(null, { feature: intent }));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("three", "THREE"));
+    expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe(`file     app.txt (in feature)\nintent   feature: ${intent}\n`);
+    expect(changeText(t, "feature")).toContain(`intent: ${intent}\n`);
+    expect(prompts()).toHaveLength(1);
+    const [prompt] = prompts();
+    expect(prompt).toContain(FEATURE);
+    for (const edit of ["-two\n-three\n+TWO\n+THREE\n", "+++ ours/extra.txt\n@@ -0,0 +1 @@\n+ours\n", "delete docs/guide.md\n"]) expect(prompt).toContain(edit);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("owned edits to two changes in one record ask the model once and give each its own intent", (t) => {
+    t.recordFeature();
+    t.fork.write("bin/run.sh", "#!/bin/sh\necho RUN\n", 0o755);
+    t.pb(["record", "runner", "--intent", "Shout the run line."], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("runner");
+    const prompts = model(t, reply(null, { feature: "Shout two lines, add extra.txt, drop the guide.", runner: "Shout the run line twice." }));
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("three", "THREE"));
+    t.fork.write("bin/run.sh", "#!/bin/sh\necho RUN\necho RUN\n", 0o755);
+    const out = t.pb(["record"], { cwd: t.fork.path }).stdout;
+    expect(out).toContain("intent   feature: Shout two lines, add extra.txt, drop the guide.\n");
+    expect(out).toContain("intent   runner: Shout the run line twice.\n");
+    expect(changeText(t, "feature")).toContain("intent: Shout two lines, add extra.txt, drop the guide.\n");
+    expect(changeText(t, "runner")).toContain("intent: Shout the run line twice.\n");
+    expect(prompts()).toHaveLength(1);
+    expect(prompts()[0]).toContain("Shout the run line.");
+    expect(prompts()[0]).toContain(FEATURE);
+  });
+
+  forkTest("a model that files new edits into an existing change replaces its intent in the same call", (t) => {
+    t.recordFeature();
+    const intent = "Shout the second line, add extra.txt and more.txt, drop the guide.";
+    const prompts = model(t, reply("feature", { feature: intent }));
+    t.fork.write("more.txt", "more\n");
+    expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe(`adding to feature\nadd      more.txt\nintent   feature: ${intent}\n`);
+    expect(changeText(t, "feature")).toContain(`intent: ${intent}\n`);
+    expect(changeText(t, "feature")).toContain("- add more.txt");
+    expect(prompts()).toHaveLength(1);
+  });
+
+  for (const [what, setUp, args, calls, said] of [
+    ["provider none", (t: ForkCase) => { t.env["PATCHBOOK_PROVIDER"] = "none"; }, [], 0, "intent.provider is none"],
+    ["a failing model", () => {}, [], 1, "claude failed: fake claude: offline"],
+    ["a given intent", () => {}, ["--intent", "Make it louder."], 0, "the given intent is for the change being recorded"],
+  ] as const) {
+    forkTest(`with ${what}, an edit to a file a change owns keeps its intent and says it may be stale`, (t) => {
+      t.recordFeature();
+      const prompts = model(t, what === "a failing model" ? null : reply(null, { feature: "Not this." }));
+      setUp(t);
+      t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("three", "THREE"));
+      const out = t.pb(["record", ...args], { cwd: t.fork.path }).stdout;
+      expect(out).toContain(`intent   may be stale: feature (${said}). Edit them by hand to cover these edits\n`);
+      expect(out.split("\n").filter((l) => l.startsWith("intent   may be stale"))).toHaveLength(1);
+      expect(out).not.toContain("pending");
+      expect(changeText(t, "feature")).toContain(`intent: ${FEATURE}\n`);
+      expect(prompts()).toHaveLength(calls);
+      delete t.env["PATCHBOOK_PROVIDER"];
+      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    });
+  }
 });
 
 describe("RecordRollbackTest", () => {
