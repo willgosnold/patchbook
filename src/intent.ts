@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Assembly } from "./assemble.ts";
 import type { Book } from "./book.ts";
-import { CHANGE_NAME, type Change, editText, notAChangeName, type Roster } from "./changes.ts";
+import { CHANGE_NAME, type Change, type Edit, editText, notAChangeName, pathText, type Roster } from "./changes.ts";
 import { unifiedDiff } from "./lib/diff.ts";
 import { Fail } from "./lib/fail.ts";
 import type { File } from "./lib/fs.ts";
@@ -201,15 +201,58 @@ const REPLY: Shape<Answer> = (v, at) => {
 /** An intent on one line, with each run of whitespace a single space. */
 export const oneLine = (text: string): string => text.trim().replace(/\s+/g, " ");
 
-/** A kebab-case change name from at most the first four words of an intent, kept within `NAME_LENGTH`, that nothing in `changes/` already uses. */
-export function nameFromIntent(intent: string, roster: Roster): string {
+/** Words joined in kebab case, as many as fit within `NAME_LENGTH`. */
+function kebab(words: readonly string[]): string {
   let base = "";
-  for (const word of intent.toLowerCase().match(/[a-z0-9]+/g)?.slice(0, 4) ?? []) {
+  for (const word of words) {
     const next = base ? `${base}-${word}` : word;
     if (next.length > NAME_LENGTH) break;
     base = next;
   }
-  return roster.free(base || "change");
+  return base;
+}
+
+const words = (text: string): string[] => text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+
+/** A kebab-case change name from at most the first four words of an intent, kept within `NAME_LENGTH`, that nothing in `changes/` already uses. */
+export function nameFromIntent(intent: string, roster: Roster): string {
+  return roster.free(kebab(words(intent).slice(0, 4)) || "change");
+}
+
+const VERBS = {
+  file: { says: "Edits", names: "edit" }, add: { says: "Adds", names: "add" }, replace: { says: "Replaces", names: "replace" },
+  delete: { says: "Deletes", names: "delete" }, move: { says: "Moves", names: "move" }, rename: { says: "Renames", names: "rename" },
+  copy: { says: "Copies", names: "copy" },
+} as const;
+
+/** What an edit does: its verb, and what it does it to, with each path as an edit line writes it, so a path can't break the intent's
+ * line. A move within one folder is a rename, and a move or copy to the same path under another folder, as out of an upstream's mount,
+ * says only the folder it comes from. */
+function action(e: Edit): [keyof typeof VERBS, string] {
+  if (e.kind !== "move" && e.kind !== "copy") return [e.kind, pathText(e.path)];
+  const folder = (p: string) => p.slice(0, Math.max(p.lastIndexOf("/"), 0));
+  const verb = e.kind === "move" && folder(e.path) === folder(e.dest) ? "rename" : e.kind;
+  const what = e.path.endsWith("/" + e.dest) ? [e.dest, "from", e.path.slice(0, -e.dest.length - 1)] : [e.path, "to", e.dest];
+  return [verb, `${pathText(what[0]!)} ${what[1]} ${pathText(what[2]!)}`];
+}
+
+const LISTED = 3;
+
+/** The intent patchbook writes for edits when no model can: a sentence for each kind of edit, in the order they come, naming the
+ * first `LISTED` paths of each. */
+export function intentFromEdits(edits: readonly Edit[]): string {
+  const said = new Map<keyof typeof VERBS, string[]>();
+  for (const [verb, what] of edits.map(action)) said.set(verb, [...said.get(verb) ?? [], what]);
+  return Array.from(said, ([verb, all]) => {
+    const shown = all.length > LISTED ? [...all.slice(0, LISTED), `${all.length - LISTED} more`] : all;
+    return `${VERBS[verb].says} ${shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown.at(-1)}` : shown[0]}.`;
+  }).join(" ");
+}
+
+/** A kebab-case change name from the first of the edits, kept within `NAME_LENGTH`. */
+export function nameFromEdits(edits: readonly Edit[]): string {
+  const [verb, what] = action(edits[0]!);
+  return kebab([VERBS[verb].names, ...words(what)]);
 }
 
 const FENCE = /^```(?:json)?[ \t]*\r?\n([\s\S]*)\r?\n[ \t]*```$/;
@@ -234,7 +277,7 @@ export type Reply = { change: string | null; intents: ReadonlyMap<string, string
 export function writeIntents(book: Book, offered: ReadonlyMap<string, Change>, fresh: Fresh | null, refresh: readonly Refresh[]): Reply {
   const [provider, model, effort] = intentSettings(book);
   if (provider === NO_MODEL) throw new ModelFailed("intent.provider is none", "intent.provider is none, so no model writes intents. Pass --intent.");
-  const listed = Array.from(offered.values(), (c) => `${c.name}: ${c.intent || "(no intent yet)"}`).join("\n") || "(none yet)";
+  const listed = Array.from(offered.values(), (c) => `${c.name}: ${c.intent?.text ?? "(no intent yet)"}`).join("\n") || "(none yet)";
   const picking = fresh !== null && fresh.named && fresh.name === null;
   const said = [
     ...(fresh === null ? [] : [

@@ -2,7 +2,7 @@
 
 Each scenario in `scenarios/` is a user journey that spans several commands, such as ship skills from a second upstream, rename one, let upstream change it, sync, and read `status`. The journeys come from dogfooding patchbook on a real fork, where the bugs that `bun test` missed showed up. A scenario runs the real CLI in a [verify-patchbook](../.agents/skills/verify-patchbook/SKILL.md) sandbox and checks what a user sees: exit codes, `CHANGE.md`, that `build` and `sync` succeed, that synced output has upstream's revision, that no change is left `pending`, and that `status` agrees with `build`.
 
-The sandbox's fake model always replies in the shape patchbook asks for, so a bad reply from a real model can't show up in a fake run. To catch those, run the same scenarios with the real `claude` CLI several times and read the pass rate.
+The sandbox's fake model always replies in the shape patchbook asks for, so a bad reply from a real model can't show up in a fake run. To catch those, run the same scenarios with the real `claude` CLI several times and read the pass rate. To check what happens with no usable reply at all, a scenario sets `PB_FAKE_MODEL=fail`, so the fake fails like an offline CLI. In real runs, where the real CLI stands in for the fake, it sets `intent.provider` to `none` instead, so no model answers either.
 
 The scenarios, and the issues they come from:
 
@@ -16,6 +16,7 @@ The scenarios, and the issues they come from:
 | `copy-then-edit` | Copy a skill to a new folder and commit, then edit the copy. | #317 item 1 |
 | `rename-that-grows` | `git mv` a skill and add more lines than it had. | #317 item 7 |
 | `hand-deleted-output` | Delete an output by hand without recording it. | #317 item 5 |
+| `model-fails` | `git mv` a skill and edit its name while the model fails, then have the model write the intent once it answers. | #320 |
 
 ## Run the scenarios
 
@@ -88,7 +89,7 @@ check "CHANGE.md moves skills/a to skills/a2" listed "move skills/a -> skills/a2
 
 - `check DESC CMD...` runs the command into the transcript and ends the run as a failure if it exits nonzero.
 - `known ISSUE DESC CMD...` is a `check` that fails on `main` because of open issue `ISSUE`.
-- `expect_no_pending` checks that no change is `pending` or has an empty intent.
+- `expect_no_pending` checks that no change is `pending` or has an empty intent. An intent patchbook wrote, on an `intent (by patchbook):` line, isn't empty.
 - `listed EDIT...` checks that each edit is a line of some `CHANGE.md`.
 - `status_agrees_with_build` checks that `status` says "no problems" exactly when `build` succeeds.
 - `in_upstream NAME CMD...` runs the command in upstream `NAME` and commits the result.

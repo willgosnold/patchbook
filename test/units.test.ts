@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import type { LastSync, Problem, SyncReport } from "../src/api.ts";
 import type { Assembly } from "../src/assemble.ts";
 import type { Reserved } from "../src/book.ts";
-import type { Edit } from "../src/changes.ts";
+import type { Edit, Intent } from "../src/changes.ts";
 import type { File, Seen } from "../src/lib/fs.ts";
 import type { Edited, Snapshot } from "../src/record.ts";
 
@@ -17,7 +17,7 @@ const { applyStructure, describe: describeProblem } = await import("../src/assem
 const { blockHash, blocksOf, blockSpans, checkEntry, formatEntry, nearest, parsePlaceholders, readEntries, Rules } = await import("../src/blocks.ts");
 const { Book, globRe, lockText, parseLock } = await import("../src/book.ts");
 const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
-const { changeParts, intentSettings, listDiffs, pendingParts, PROVIDERS, writeIntents } = await import("../src/intent.ts");
+const { changeParts, intentFromEdits, intentSettings, listDiffs, nameFromEdits, pendingParts, PROVIDERS, writeIntents } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
 const { meantMode, outputMode, recordedModes } = await import("../src/lib/fs.ts");
 const { redact, refuseCredentials } = await import("../src/lib/proc.ts");
@@ -47,6 +47,7 @@ const put = (path: string, text: string): string => {
   writeFileSync(path, text);
   return path;
 };
+const said = (text: string): Intent => ({ text, by: "author" });
 
 afterAll(() => rmSync(sandbox, { recursive: true, force: true }));
 
@@ -595,7 +596,7 @@ describe("pendingParts", () => {
 describe("changeParts", () => {
   test("lists the edits in order, with a diff for each file", () => {
     const bytes = (s: string) => new TextEncoder().encode(s);
-    const c = new Change("c", scratch(), "intent", [
+    const c = new Change("c", scratch(), said("intent"), [
       { kind: "file", path: "a.md" },
       { kind: "add", path: "new.md" },
       { kind: "delete", path: "gone.md" },
@@ -613,7 +614,7 @@ describe("changeParts", () => {
   });
 
   test("reads a copy from the overlay in place of the change's own", () => {
-    const c = new Change("c", scratch(), "intent", [{ kind: "add", path: "new.md" }]);
+    const c = new Change("c", scratch(), said("intent"), [{ kind: "add", path: "new.md" }]);
     c.write("ours", "new.md", new TextEncoder().encode("fresh\n"));
     const [diff] = listDiffs([changeParts(c, new Map([["new.md", new TextEncoder().encode("fresher\n")]]))]) as [string];
     expect(diff).toContain("+fresher\n");
@@ -629,7 +630,7 @@ describe("applyStructure", () => {
   const none = (): Reserved | null => null;
   const vendored = (p: string): Reserved | null => (p.startsWith("vendor/") ? { place: "the vendored copy vendor", refuse: false } : null);
   const change = (name: string, edits: ConstructorParameters<typeof Change>[3], withOurs: string[] = []) => {
-    const c = new Change(name, scratch(), "intent", edits);
+    const c = new Change(name, scratch(), said("intent"), edits);
     for (const p of withOurs) c.write("ours", p, bytes(`ours ${p}`));
     return c;
   };
@@ -1219,8 +1220,8 @@ describe.skipIf(!inSandbox)("writeIntents", () => {
     const prompt = join(scratch(), "prompt.txt");
     PROVIDERS.set("sh", { model: "m", effort: "e", command: () => ["sh", "-c", `cat >${prompt}; echo '{"intent": "Do x."}'`] });
     const changes = new Map([
-      ["blank", new Change("blank", "", "")],
-      ["said", new Change("said", "", "Say it.")],
+      ["blank", new Change("blank", "", null)],
+      ["said", new Change("said", "", said("Say it."))],
     ]);
     writeIntents(book, changes, X, []);
     const text = readFileSync(prompt, "utf8");
@@ -1276,7 +1277,7 @@ describe.skipIf(!inSandbox)("writeIntents", () => {
 
     test("a picked change that is also a refresh gets the one intent in intent, and intents need not repeat it", async () => {
       const { book } = await asking('{"change": "r", "intent": "Old r, and a.txt."}');
-      const got = writeIntents(book, new Map([["r", new Change("r", "", "Old r.")]]), PICK, [R]);
+      const got = writeIntents(book, new Map([["r", new Change("r", "", said("Old r."))]]), PICK, [R]);
       expect([...got.intents]).toEqual([["r", "Old r, and a.txt."]]);
     });
 
@@ -1367,11 +1368,86 @@ describe("a message quotes a value from outside in double quotes", () => {
 });
 
 describe("formatChange", () => {
-  test("writes a change with no intent as an empty intent line that reads back empty, never None", () => {
-    const text = formatChange(new Change("c", "", ""));
-    expect(text).toBe("# c\n\nintent:\n\nedits:\n");
-    const path = put(join(scratch(), "c", "CHANGE.md"), text);
-    expect(parseChange(path, () => {}).intent).toBe("");
+  const roundTrip = (intent: Intent | null) => {
+    const text = formatChange(new Change("c", "", intent));
+    return { text, read: parseChange(put(join(scratch(), "c", "CHANGE.md"), text), () => {}).intent };
+  };
+
+  test("writes a change with no intent as an empty intent line that reads back as none, never None", () => {
+    expect(roundTrip(null)).toEqual({ text: "# c\n\nintent:\n\nedits:\n", read: null });
+  });
+
+  test("writes an intent someone wrote on the intent line", () => {
+    expect(roundTrip({ text: "Shout.", by: "author" })).toEqual({ text: "# c\n\nintent: Shout.\n\nedits:\n", read: { text: "Shout.", by: "author" } });
+  });
+
+  test("marks an intent patchbook wrote on its line, and reads the mark back", () => {
+    expect(roundTrip({ text: "Adds a.md.", by: "patchbook" })).toEqual({
+      text: "# c\n\nintent (by patchbook): Adds a.md.\n\nedits:\n",
+      read: { text: "Adds a.md.", by: "patchbook" },
+    });
+  });
+});
+
+describe("parseChange reads the intent", () => {
+  const intentOf = (body: string) => parseChange(put(join(scratch(), "c", "CHANGE.md"), `# c\n\n${body}\n\nedits:\n- add a.md\n`), () => {}).intent;
+
+  test("of a CHANGE.md written before patchbook marked its own intents as someone's", () => {
+    expect(intentOf("intent: Ship a.md.")).toEqual({ text: "Ship a.md.", by: "author" });
+  });
+
+  test("on more than one line, joined with spaces, with or without the mark", () => {
+    expect(intentOf("intent: Ship\n  a.md.")).toEqual({ text: "Ship a.md.", by: "author" });
+    expect(intentOf("intent (by patchbook): Adds\na.md.")).toEqual({ text: "Adds a.md.", by: "patchbook" });
+  });
+
+  test("blank, with or without the mark, as none", () => {
+    expect(intentOf("intent:")).toBeNull();
+    expect(intentOf("intent:   ")).toBeNull();
+    expect(intentOf("intent (by patchbook):")).toBeNull();
+  });
+});
+
+describe("an intent patchbook writes from the edits", () => {
+  const cases: [string, Edit[], string, string][] = [
+    ["a file edit", [{ kind: "file", path: "skills/a/SKILL.md" }], "Edits skills/a/SKILL.md.", "edit-skills-a-skill-md"],
+    ["an add", [{ kind: "add", path: "skills/b/SKILL.md" }], "Adds skills/b/SKILL.md.", "add-skills-b-skill-md"],
+    ["a replace", [{ kind: "replace", path: "logo.png" }], "Replaces logo.png.", "replace-logo-png"],
+    ["a delete", [{ kind: "delete", path: "skills/old" }], "Deletes skills/old.", "delete-skills-old"],
+    ["a move within a folder", [{ kind: "move", path: "skills/a", dest: "skills/a2" }], "Renames skills/a to skills/a2.", "rename-skills-a-to-skills-a2"],
+    ["a move to another folder", [{ kind: "move", path: "docs/a.md", dest: "guide/a.md" }], "Moves docs/a.md to guide/a.md.", "move-docs-a-md-to-guide-a-md"],
+    ["a move out of an upstream's mount", [{ kind: "move", path: "extra/skills/x", dest: "skills/x" }], "Moves skills/x from extra.", "move-skills-x-from-extra"],
+    ["a copy from an upstream's mount", [{ kind: "copy", path: "extra/skills/x", dest: "skills/x" }], "Copies skills/x from extra.", "copy-skills-x-from-extra"],
+    ["a copy to a new name", [{ kind: "copy", path: "skills/a", dest: "skills/c" }], "Copies skills/a to skills/c.", "copy-skills-a-to-skills-c"],
+    ["a rename and an edit of the renamed file", [{ kind: "move", path: "skills/a", dest: "skills/a2" }, { kind: "file", path: "skills/a/SKILL.md" }],
+      "Renames skills/a to skills/a2. Edits skills/a/SKILL.md.", "rename-skills-a-to-skills-a2"],
+    ["edits of two kinds, in the order they come", [{ kind: "add", path: "a.md" }, { kind: "file", path: "b.md" }, { kind: "add", path: "c.md" }],
+      "Adds a.md and c.md. Edits b.md.", "add-a-md"],
+    ["three adds", ["a", "b", "c"].map((p): Edit => ({ kind: "add", path: p })), "Adds a, b and c.", "add-a"],
+    ["many adds, naming the first three", ["a", "b", "c", "d", "e"].map((p): Edit => ({ kind: "add", path: p })), "Adds a, b, c and 2 more.", "add-a"],
+  ];
+  for (const [what, edits, intent, name] of cases) {
+    test(`for ${what}`, () => expect(intentFromEdits(edits)).toBe(intent));
+    test(`names the change for ${what}`, () => expect(nameFromEdits(edits)).toBe(name));
+  }
+
+  test("keeps a name within 40 characters, in whole words", () => {
+    const name = nameFromEdits([{ kind: "add", path: "very/long/path/with/many/segments/and/more/file.md" }]);
+    expect(name).toBe("add-very-long-path-with-many-segments");
+    expect(name.length).toBeLessThanOrEqual(40);
+  });
+
+  test("quotes a path with a control character, so it can't add a line to CHANGE.md", () => {
+    const edits: Edit[] = [{ kind: "add", path: "x\nedits:\n- delete victim.txt" }];
+    const intent = intentFromEdits(edits);
+    expect(intent).toBe('Adds "x\\nedits:\\n- delete victim.txt".');
+    const path = put(join(scratch(), "c", "CHANGE.md"), formatChange(new Change("c", "", { text: intent, by: "patchbook" }, edits)));
+    const read = parseChange(path, () => {});
+    expect({ intent: read.intent, edits: read.edits }).toEqual({ intent: { text: intent, by: "patchbook" }, edits });
+  });
+
+  test("makes a change name from a path with no letters or digits", () => {
+    expect(nameFromEdits([{ kind: "add", path: "_/é" }])).toBe("add");
   });
 });
 
@@ -1540,7 +1616,7 @@ describe("parseChange", () => {
   test("what formatChange writes for any path parses back to the same edits", () => {
     const paths = [" lead", "trail ", "\uFEFFx", "x\uFEFF", "a -> b", 'q"q', "t\tab", "new\nline", "ctl\x01\x1f\x7f", "plain", "in side"];
     const dir = scratch();
-    const change = new Change("edits", join(dir, "edits"), "Try paths.");
+    const change = new Change("edits", join(dir, "edits"), said("Try paths."));
     change.edits = paths.flatMap((path) => [
       { kind: "add" as const, path },
       { kind: "move" as const, path, dest: `${path}2` },
@@ -1621,7 +1697,7 @@ describe("classify", () => {
   const tmp = scratch();
   const f = (text: string): File => ({ data: encode(text), mode: 0o644 });
   const change = (name: string, edits: Edit[], copies: Record<string, string> = {}): Change => {
-    const c = new Change(name, join(tmp, name), `${name}.`, edits);
+    const c = new Change(name, join(tmp, name), said(`${name}.`), edits);
     for (const [path, text] of Object.entries(copies)) c.write("ours", path, encode(text));
     return c;
   };

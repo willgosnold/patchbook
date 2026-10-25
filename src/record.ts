@@ -5,9 +5,11 @@ import type { Occurrence, Problem } from "./api.ts";
 import { assemble, type Assembly, blockFiles, describe, handEdits, readBuildLock, refuseFolderToFile, type Source, stampOf, writeBuildLines } from "./assemble.ts";
 import { type Block, blocksOf, type Entry, entriesPath, entryKey, formatEntry, keyFor, patchBlocks, PLACEHOLDER_HINT, readEntries, Rules } from "./blocks.ts";
 import { Book, PB, under } from "./book.ts";
-import { appendSeries, CHANGE_NAME, Change, type Edit, editText, notAChangeName, readSeries, Roster, saveChange } from "./changes.ts";
+import { appendSeries, CHANGE_NAME, Change, type Edit, editText, type Intent, notAChangeName, readSeries, replaceIntent, Roster, saveChange } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
-import { changeParts, entryPart, type Fresh, ModelFailed, nameFromIntent, oneLine, PARAGRAPHS, type Part, pendingParts, type Reply, writeIntents } from "./intent.ts";
+import {
+  changeParts, entryPart, type Fresh, intentFromEdits, ModelFailed, nameFromEdits, nameFromIntent, oneLine, PARAGRAPHS, type Part, pendingParts, type Reply, writeIntents,
+} from "./intent.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, LINK, meantMode, type Mode, recordedModes, relative, sameFile, type Seen, writeText } from "./lib/fs.ts";
 import { type Changed, lineChanges } from "./lib/match.ts";
@@ -41,9 +43,8 @@ type Data = {
 type Kind = keyof Data;
 export type Edited<K extends Kind = Kind> = { [P in K]: { kind: P; path: string } & Data[P] }[K];
 
-/** A structural edit a row adds to the change it records into. A delete that stands in for a replace names the change it drops the
- * replace from. */
-type Written = Exclude<Edit, { kind: "file" }> & { drops?: Change };
+/** The edit a row adds to the change it records into. A delete that stands in for a replace names the change it drops the replace from. */
+type Written = Edit & { drops?: Change };
 
 /** A change a row writes a copy into without naming it, with the copy's new bytes. */
 type Join = { change: Change; path: string; data: Uint8Array };
@@ -128,7 +129,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     },
   },
   "file-edit": {
-    needs: (e) => (e.to.kind === "recorded" ? NAMED : { ...NOTHING, joins: { change: e.to.change, path: e.rel, data: e.now.data } }),
+    needs: (e) => (e.to.kind === "recorded" ? { ...NAMED, writes: { kind: "file", path: e.rel } } : { ...NOTHING, joins: { change: e.to.change, path: e.rel, data: e.now.data } }),
     apply: (e, r) => {
       if (e.to.kind === "owned") {
         const c = e.to.change;
@@ -500,7 +501,7 @@ function joined(ask: Asked, known: Change | null, newParts: () => Part[]): Joine
   if (known && ask.named.length && !changes.has(known)) changes.set(known, new Map());
   return [
     ...Array.from(changes, ([c, overlay]): Joined => ({
-      key: c.name, was: c.intent, parts: () => [...changeParts(c, overlay, ask.dropped.filter((d) => d.change === c)), ...(c === known && ask.named.length ? newParts() : [])],
+      key: c.name, was: c.intent?.text ?? "", parts: () => [...changeParts(c, overlay, ask.dropped.filter((d) => d.change === c)), ...(c === known && ask.named.length ? newParts() : [])],
     })),
     ...ask.updates.map(([label, d]): Joined => ({ key: label, was: d.was!, parts: () => [entryPart(label, d.upstream, d.patched)] })),
   ];
@@ -509,8 +510,9 @@ function joined(ask: Asked, known: Change | null, newParts: () => Part[]): Joine
 type Misfit = { edit: Edit; in: string } | "own";
 
 /** Why the change `name` can't take `w`: an edit on its path, a folder above it or a path under it, in a change later in the series,
- * which has to apply first; or, for an add or a replace, a copy of that path the change already keeps. */
+ * which has to apply first; or, for an add or a replace, a copy of that path the change already keeps. Any change takes a file edit. */
 function misfit(roster: Roster, name: string, w: Written): Misfit | null {
+  if (w.kind === "file") return null;
   const ends = "dest" in w ? [w.path, w.dest] : [w.path];
   const overlaps = (p: string) => ends.some((q) => under(p, q) || under(q, p));
   for (const later of roster.after(name).toReversed()) {
@@ -533,9 +535,11 @@ function refusal(name: string, misfits: readonly [Written, Misfit][]): string {
 type Authored =
   | { by: "given"; intent: string }
   | { by: "model"; fresh: string | null; intents: ReadonlyMap<string, string> }
-  | { by: "none"; why: string }
+  | { by: "failed"; why: string }
   | { by: "unasked" };
 type Naming = { name: string | null; authored: Authored; said: string | null; unused: boolean };
+
+const byAuthor = (text: string): Intent => ({ text, by: "author" });
 
 /** The new intent for a joined change or entry, or null to keep the one it has. */
 function rewritten(n: Naming, key: string): string | null {
@@ -543,10 +547,11 @@ function rewritten(n: Naming, key: string): string | null {
   return n.authored.by === "model" ? n.authored.intents.get(key) ?? null : null;
 }
 
-/** The intent for the record's new change and new entries: "" while pending, null when nothing asked for one. */
+/** The intent for the record's new change and new entries, null when nothing asked for one. Patchbook writes none for entries, so they
+ * get "", and a new change gets its intent once its edits apply. */
 function newIntent(n: Naming): string | null {
   const a = n.authored;
-  return a.by === "given" ? a.intent : a.by === "model" ? a.fresh : a.by === "none" ? "" : null;
+  return a.by === "given" ? a.intent : a.by === "model" ? a.fresh : a.by === "failed" ? "" : null;
 }
 
 function nameAndIntent(
@@ -586,7 +591,7 @@ function nameAndIntent(
     // The model sees only the changes that can take these edits, and a reply that names another starts a new change.
     reply = model(fresh, new Map(Array.from(changes).filter(([c]) => !misfits(c).length)));
   } catch (e) {
-    if (e instanceof ModelFailed) return pending(ask, name, roster, e.why);
+    if (e instanceof ModelFailed) return withoutModel(ask, name, roster, e.why);
     throw e;
   }
   const key = fresh === null ? name : fresh.named ? reply.change ?? name : PARAGRAPHS;
@@ -599,15 +604,13 @@ function nameAndIntent(
   return { name: chosen, authored, said: changes.has(chosen) ? `adding to ${chosen}` : `${chosen}: ${intent}`, unused: false };
 }
 
-/** Only new things go pending: a named change that exists keeps its name and its intent. */
-function pending(ask: Asked, name: string | null, roster: Roster, why: string): Naming {
+/** With no model, edits that need a name go to the change named, or to a new one named from the edits, since joining another change is
+ * the model's call. Patchbook writes the change's intent once the edits apply, and new block entries wait for one. */
+function withoutModel(ask: Asked, name: string | null, roster: Roster, why: string): Naming {
   const known = name !== null && roster.parsed.has(name);
-  const chosen = ask.named.length && !known ? roster.free(name ?? "pending") : null;
-  const entries = ask.drafts.length > 0;
-  const what = [chosen, entries ? "the new entries" : null].filter((x) => x !== null).join(" and ");
-  const fill = chosen && !entries ? `patchbook intent ${chosen}` : "patchbook intent";
-  const said = what ? `pending  no intent yet for ${what} (${why}). To fill it: ${fill}` : null;
-  return { name: known ? name : chosen, authored: { by: "none", why }, said, unused: false };
+  const chosen = known ? name : ask.named.length ? roster.free(name ?? nameFromEdits(ask.writes)) : null;
+  const said = ask.drafts.length ? `pending  no intent yet for the new entries (${why}). To fill it: patchbook intent` : null;
+  return { name: chosen, authored: { by: "failed", why }, said, unused: false };
 }
 
 /** What a recording says, and the copies whose mode it picked, repo-relative, for the commit hook to stage. */
@@ -630,11 +633,11 @@ export function fill(book: Book, change: string | null, intent: string | null): 
   const changes = Roster.read(book).parsed;
   const target = change === null ? null : changes.get(change);
   if (change !== null && !target) throw new Fail(`no change called ${change}`);
-  if (target?.intent) throw new Fail(`${change} already has an intent; to change it, edit ${PB}/changes/${change}/CHANGE.md`);
+  if (target?.intent?.by === "author") throw new Fail(`${change} already has an intent; to change it, edit ${PB}/changes/${change}/CHANGE.md`);
   const given = intent === null ? null : oneLine(intent) || null;
   if (given && change === null) throw new Fail("--intent needs a change name: patchbook intent <change> --intent ...");
 
-  const empty = target ? [target] : Array.from(changes.values()).filter((c) => !c.intent);
+  const empty = target ? [target] : Array.from(changes.values()).filter((c) => c.intent?.by !== "author");
   const filled = empty.map((c): [Change, string] => [c, given ?? writeIntents(book, changes, null, [{ key: c.name, was: "", parts: changeParts(c) }]).intents.get(c.name)!]);
   const files: { rel: string; entries: Map<string, Entry>; intent: string }[] = [];
   for (const rel of target ? [] : blockFiles(book)) {
@@ -646,9 +649,9 @@ export function fill(book: Book, change: string | null, intent: string | null): 
     files.push({ rel, entries: new Map(Array.from(entries, ([h, e]) => [h, e.intent ? e : { ...e, intent: text }])), intent: text });
   }
 
-  if (!filled.length && !files.length) return "no empty intents; nothing to fill\n";
+  if (!filled.length && !files.length) return "no intent is empty or by patchbook; nothing to fill\n";
   for (const [c, text] of filled) {
-    c.intent = text;
+    c.intent = byAuthor(text);
     saveChange(c);
   }
   for (const f of files) saveParagraphs(entriesPath(book, f.rel), f.entries);
@@ -685,13 +688,19 @@ export function record(
   const joins = joined(ask, change === null ? null : changes.get(change) ?? null, newParts);
   const naming = nameAndIntent(ask, change, given, roster, joins, (fresh, offered) =>
     writeIntents(book, offered, fresh && { ...fresh, parts: newParts() }, joins.map((j) => ({ key: j.key, was: j.was, parts: j.parts() }))));
-  const target = naming.name ? changes.get(naming.name) ?? new Change(naming.name, join(book.dir, "changes", naming.name), newIntent(naming) ?? "") : null;
-  for (const c of new Set([...ask.joins.map((j) => j.change), ...(target ? [target] : [])])) c.intent = rewritten(naming, c.name) ?? c.intent;
+  const fresh = newIntent(naming);
+  const target = naming.name ? changes.get(naming.name) ?? new Change(naming.name, join(book.dir, "changes", naming.name), fresh ? byAuthor(fresh) : null) : null;
+  for (const c of new Set([...ask.joins.map((j) => j.change), ...(target ? [target] : [])])) {
+    const text = rewritten(naming, c.name);
+    if (text !== null) c.intent = byAuthor(text);
+  }
 
   const touched = new Map<string, Change>();
   const notes: string[] = [];
   const copies = new Map<string, Mode>();
   const afterSave: (() => void)[] = [];
+  const drafted: string[] = [];
+  const redrafted: string[] = [];
   const undo = opts.undo ?? new Undo();
   undo.hold(book.dir);
   let after: Assembly | null = null;
@@ -704,6 +713,13 @@ export function record(
       if (done.afterSave) afterSave.push(done.afterSave);
     }
     if (target && (target.edits.length || (given && changes.has(target.name)))) touched.set(target.name, target);
+    for (const c of touched.values()) {
+      if (c.intent?.by === "author" || !c.edits.length) continue;
+      const text = intentFromEdits(c.edits);
+      if (changes.has(c.name) && text !== c.intent?.text) redrafted.push(`intent   ${c.name}: ${text}\n`);
+      c.intent = { text, by: "patchbook" };
+      drafted.push(c.name);
+    }
     for (const c of touched.values()) saveChange(c);
     if (target?.edits.length && !readSeries(book).includes(target.name)) appendSeries(book, target.name);
     for (const after of afterSave) after();
@@ -739,11 +755,15 @@ export function record(
   const keys = new Set([...(target && changes.has(target.name) ? [target.name] : []), ...joins.map((j) => j.key)]);
   const intents = naming.authored.by === "model" ? naming.authored.intents : new Map<string, string>();
   const rewrites = Array.from(keys).flatMap((k) => (intents.has(k) ? [`intent   ${k}: ${intents.get(k)}\n`] : []));
-  const kept = joins.filter((j) => j.was && rewritten(naming, j.key) === null).map((j) => j.key);
-  const why = naming.authored.by === "none" ? naming.authored.why : "the given intent is for the change being recorded";
-  const text = (naming.said !== null ? naming.said + "\n" : "") + notes.map((n) => n + "\n").join("") + rewrites.join("")
+  const kept = joins.filter((j) => j.was && rewritten(naming, j.key) === null && !drafted.includes(j.key)).map((j) => j.key);
+  const failed = naming.authored.by === "failed" ? naming.authored.why : null;
+  const why = failed ?? "the given intent is for the change being recorded";
+  const opened = target && !changes.has(target.name) && drafted.includes(target.name) ? `${target.name}: ${target.intent!.text}\n` : "";
+  const fix = drafted.length === 1 ? replaceIntent(drafted[0]!) : "To replace them, run `patchbook intent` or edit their lines to `intent: <yours>`";
+  const text = (naming.said !== null ? naming.said + "\n" : "") + opened + notes.map((n) => n + "\n").join("") + rewrites.join("") + redrafted.join("")
     + (dropped ? `intent   not used${owners ? `: the edits went to ${owners}` : ""}\n` : "")
-    + (kept.length ? `intent   may be stale: ${kept.join(", ")} (${why}). Edit them by hand to cover these edits\n` : "");
+    + (kept.length ? `intent   may be stale: ${kept.join(", ")} (${why}). Edit them by hand to cover these edits\n` : "")
+    + (drafted.length ? `intent   by patchbook for ${drafted.join(", ")}${failed ? ` (${failed})` : ""}. ${fix}\n` : "");
   return { text, copies, after };
 }
 
