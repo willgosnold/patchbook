@@ -188,7 +188,7 @@ describe("the codex provider", () => {
     const prompt = read(join(t.tmp, "codex.prompt"));
     expect(prompt).toContain("disk/app.txt");
     expect(prompt).toContain("-two\n+TWO");
-    expect(prompt).toContain('Reply with only a JSON object: {"change": "<name>", "intents": {"<key>": "<intent>", ...}}');
+    expect(prompt).toContain('Reply with only a JSON object: {"change": "<name>", "intent": "<intent>"}.');
     expect(out).toContain("codex-shout: Shout the second line.");
     expect(t.changes()).toEqual(["codex-shout"]);
     expect(t.fork.read(".patchbook/changes/codex-shout/CHANGE.md")).toContain("intent: Shout the second line.");
@@ -249,6 +249,16 @@ describe("the codex provider", () => {
       for (const taken of ["Not Kebab Case", "not-kebab-case", "codex-shout", "Shout."]) expect(t.changeText()).not.toContain(taken);
     });
   }
+});
+
+describe("an unusable reply", () => {
+  forkTest("the pending note says why, so the reply's fault can be told from the model's failure", (t) => {
+    t.env["PATCHBOOK_PROVIDER"] = "codex";
+    t.fake("codex", JSON.stringify({ change: "codex-shout", intents: { "app.txt": "Shout." } }));
+    t.edit();
+    const out = t.record().stdout;
+    expect(out).toContain("pending  no intent yet for pending (codex didn't return a usable name and intent: codex's reply: intent is missing). To fill it: patchbook intent pending");
+  });
 });
 
 describe("the model CLI patchbook picks when no provider is set", () => {
