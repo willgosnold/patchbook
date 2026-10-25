@@ -16735,6 +16735,28 @@ describe("PostHookTest", () => {
     expect(t.repo.read("skills/hello/SKILL.md")).toContain("Say goodbye in T3.");
   });
 
+  for (const submodule of ["deps", "sources/deps[1]"]) vendorTest(`recursive checkout rebuilds a placeholder inside submodule ${submodule}`, (t) => {
+    const strings = new Repo(join(t.tmp, "strings"));
+    strings.write("strings.json", '{"greet":"Say hello in T3."}\n');
+    strings.commit("before");
+    sh(["git", "-c", "protocol.file.allow=always", "submodule", "add", "-q", strings.path, submodule], { cwd: t.repo.path, env: t.env });
+    const config = join(t.repo.path, ".patchbook/config.toml");
+    writeFileSync(config, read(config).replace('file = ".patchbook/snippets.md"', `file = "${submodule}/strings.json"`).replace('format = "sections"', 'format = "json"'));
+    t.missingScaffoldPatchBuild();
+    t.repo.commit("build before");
+    sh(["git", "switch", "-qc", "data"], { cwd: t.repo.path, env: t.env });
+    const dep = new Repo(join(t.repo.path, submodule));
+    dep.write("strings.json", '{"greet":"Say goodbye in T3."}\n');
+    dep.commit("after");
+    t.repo.commit("gitlink only");
+    sh(["git", "checkout", "-q", "--recurse-submodules", "main"], { cwd: t.repo.path, env: t.env });
+    expect(t.repo.read("skills/hello/SKILL.md")).toContain("Say hello in T3.");
+    const switched = sh(["git", "checkout", "-q", "--recurse-submodules", "data"], { cwd: t.repo.path, env: hooked(t) });
+    expect(dep.read("strings.json")).toContain("Say goodbye in T3.");
+    expect(t.repo.read("skills/hello/SKILL.md")).toContain("Say goodbye in T3.");
+    expect(switched.stderr).toContain("patchbook: rebuilt 1 file from");
+  });
+
   forkTest("checkout treats a placeholder file inside the output as a build input", (t) => {
     t.up.write("strings.json", '{"greet":"before"}\n');
     t.up.commit("placeholder source");
