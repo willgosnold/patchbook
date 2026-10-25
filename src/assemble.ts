@@ -69,7 +69,7 @@ export type Assembly = {
   build(src: Source, at: string): File;
 };
 
-type Sink = { problems: Problem[]; used: Map<string, Set<string>>; unmatched: Map<string, Unmatched[]>; applied: number };
+type Sink = { problems: Problem[]; used: Map<string, Set<string>>; unmatched: Map<string, Unmatched[]>; applied: Set<string> };
 
 const CONFLICT = /^(?:<{7}|>{7})(?: |$)/;
 /** A line that starts with a conflict marker. Only `\n` ends a line. */
@@ -230,7 +230,7 @@ export function assemble(book: Book): Assembly {
           unmatched: unmatched.get(rel)!, problems,
         });
         text = patched.text;
-        sink.applied += patched.applied;
+        for (const key of patched.applied) sink.applied.add(`${rel}\0${key}`);
       }
       return { data: encode(text), mode };
     }
@@ -252,11 +252,11 @@ export function assemble(book: Book): Assembly {
     problems,
     used: new Map(Array.from(blocks.keys(), (rel) => [rel, new Set()])),
     unmatched: new Map(Array.from(blocks.keys(), (rel) => [rel, []])),
-    applied: 0,
+    applied: new Set(),
   };
   const { used, unmatched } = sink;
   for (const [outPath, src] of [...selected].sort(([a], [b]) => byCodePoint(a, b))) out.set(outPath, buildAt(src, outPath, sink));
-  applied += sink.applied;
+  applied += sink.applied.size;
   for (const [rel, entries] of blocks) {
     for (const [h, entry] of entries) {
       if (!used.get(rel)?.has(h)) problems.push(orphan(rel, entry, unmatched.get(rel) ?? []));
@@ -271,7 +271,7 @@ export function assemble(book: Book): Assembly {
       problems.push({ problem: "conflict", file: p, detail: "conflict marker in the output" });
     }
   }
-  const build = (src: Source, at: string) => buildAt(src, at, { problems: [], used: new Map(), unmatched: new Map(), applied: 0 });
+  const build = (src: Source, at: string) => buildAt(src, at, { problems: [], used: new Map(), unmatched: new Map(), applied: new Set() });
   return { out, sources: selected, problems, dropped, applied, staged, upstream, build };
 }
 
