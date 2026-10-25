@@ -14,5 +14,5 @@ check "build after sync succeeds" patchbook build
 check "skills/a2 follows upstream" grep -q "revised upstream" skills/a2/SKILL.md
 check "skills/a2 keeps its new name" grep -qx "name: a2" skills/a2/SKILL.md
 check "status agrees with build after sync" status_agrees_with_build
-known 320 "the intent prompt names the old path" grep -Eq '(^|[ /])a/SKILL\.md|skills/a -> skills/a2' "$SB/rename-prompt.txt"
-if real; then known 320 "the intent says the skill was renamed" says_renamed; fi
+check "the intent prompt names the old path" grep -Eq '(^|[ /])a/SKILL\.md|skills/a -> skills/a2' "$SB/rename-prompt.txt"
+if real; then check "the intent says the skill was renamed" says_renamed; fi

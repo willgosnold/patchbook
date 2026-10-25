@@ -13,4 +13,4 @@ check "sync takes extra's revision" patchbook sync
 check "build after sync succeeds" patchbook build
 check "skills/s05 follows upstream" grep -q "revised upstream" skills/s05/SKILL.md
 check "status agrees with build after sync" status_agrees_with_build
-known 321 "status counts the twelve copy edits" counts_copies
+check "status counts the twelve copy edits" counts_copies

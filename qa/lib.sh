@@ -20,8 +20,7 @@ known() {
 real() { [ "$QA_MODEL" = real ]; }
 
 expect_no_pending() {
-  if real; then known 319 "no change is left pending" no_pending
-  else check "no change is left pending" no_pending; fi
+  check "no change is left pending" no_pending
 }
 
 no_pending() {

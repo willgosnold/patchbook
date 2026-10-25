@@ -56,8 +56,14 @@ Real runs call the paid model once or twice per run, with patchbook's default mo
 
 ```
 scenario                     pass   result
-license-into-folders         4/5    known #319, no change is left pending (1)
-ship-upstream-skills         0/5    known #321, status counts the copy edits (3); known #319, no change is left pending (2)
+copy-then-edit               0/3    known #317, skills/c follows upstream (3)
+edit-joins-change            3/3    all checks pass
+hand-deleted-output          0/3    known #317, status agrees with build (3)
+license-into-folders         3/3    all checks pass
+many-large-skills            3/3    all checks pass
+rename-that-grows            0/3    known #317, CHANGE.md moves skills/a to skills/a2 (3)
+rename-then-upstream-edit    3/3    all checks pass
+ship-upstream-skills         3/3    all checks pass
 ```
 
 A run stops at its first failing check. `pass` counts the runs where every check passed. `result` names the check that stopped each run that didn't pass, with its count:
@@ -84,11 +90,11 @@ check "CHANGE.md moves skills/a to skills/a2" listed "move skills/a -> skills/a2
 
 - `check DESC CMD...` runs the command into the transcript and ends the run as a failure if it exits nonzero.
 - `known ISSUE DESC CMD...` is a `check` that fails on `main` because of open issue `ISSUE`.
-- `expect_no_pending` checks that no change is `pending` or has an empty intent. In real runs it is tagged #319.
+- `expect_no_pending` checks that no change is `pending` or has an empty intent.
 - `listed EDIT...` checks that each edit is a line of some `CHANGE.md`.
 - `status_agrees_with_build` checks that `status` says "no problems" exactly when `build` succeeds.
 - `in_upstream NAME CMD...` runs the command in upstream `NAME` and commits the result.
 - `sub FILE SED-EXPR` edits a file in place on both GNU and BSD `sed`.
 - `real` is true in real runs.
 
-Put a `known` check as late in the scenario as the journey allows, because the run stops there and the checks after it don't run. With the fake model, a `known` check that passes fails the run with `passes, so #N looks fixed`, so the PR that fixes an issue also changes its tags to `check`. Find them with `grep -rn 'known 319' qa/`.
+Put a `known` check as late in the scenario as the journey allows, because the run stops there and the checks after it don't run. With the fake model, a `known` check that passes fails the run with `passes, so #N looks fixed`, so the PR that fixes an issue also changes its tags to `check`. Find them with `grep -rn 'known 3' qa/`.
