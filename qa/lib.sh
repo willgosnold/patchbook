@@ -12,7 +12,9 @@ check() {
 known() {
   local issue=$1 desc=$2; shift 2
   echo "## check (#$issue): $desc"
-  rec "$@" || outcome known "#$issue" "$desc"
+  if ! rec "$@"; then outcome known "#$issue" "$desc"; fi
+  # The fake model is deterministic, so a known check that passes there has a stale tag that would hide a regression.
+  real || outcome fail "" "$desc passes, so #$issue looks fixed: change its known to check"
 }
 
 real() { [ "$QA_MODEL" = real ]; }

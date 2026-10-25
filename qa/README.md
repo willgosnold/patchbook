@@ -91,4 +91,4 @@ check "CHANGE.md moves skills/a to skills/a2" listed "move skills/a -> skills/a2
 - `sub FILE SED-EXPR` edits a file in place on both GNU and BSD `sed`.
 - `real` is true in real runs.
 
-Put a `known` check as late in the scenario as the journey allows, because the run stops there and the checks after it don't run. When an issue closes, find its tags with `grep -rn 'known 319' qa/` and change them to `check`.
+Put a `known` check as late in the scenario as the journey allows, because the run stops there and the checks after it don't run. With the fake model, a `known` check that passes fails the run with `passes, so #N looks fixed`, so the PR that fixes an issue also changes its tags to `check`. Find them with `grep -rn 'known 319' qa/`.
