@@ -52,6 +52,8 @@ Every fix and feature needs a test. CLI behaviour goes in `test/e2e.test.ts`, wh
 
 For a bug fix, the best PR has two commits. The first adds a test that fails on `main`, and the second makes it pass. That lets a reviewer check the test catches the bug.
 
+`qa/` runs user journeys that span several commands, with a fake model or the real `claude` CLI. If you found a bug by using patchbook, add a scenario for it there. [qa/README.md](qa/README.md) says how to run and write them.
+
 ## Pull requests
 
 - Solve one problem per PR. A second fix, or a cleanup the fix didn't need, goes in its own PR.
