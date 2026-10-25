@@ -27,7 +27,7 @@ const { setting, setToml, USER_CONFIG } = await import("../src/settings.ts");
 const { lastSyncText, parseLastSync } = await import("../src/sync.ts");
 
 type Entry = ReturnType<typeof readEntries> extends Map<string, infer E> ? E : never;
-type Source = ReturnType<typeof applyStructure> extends Map<string, infer S> ? S : never;
+type Source = ReturnType<typeof applyStructure>["tree"] extends Map<string, infer S> ? S : never;
 type Opened = Awaited<ReturnType<typeof Book.open>>;
 type Layers = NonNullable<Parameters<typeof intentSettings>[2]>;
 type Mode = ReturnType<typeof meantMode>;
@@ -635,9 +635,10 @@ describe("applyStructure", () => {
   };
   const apply = (changes: InstanceType<typeof Change>[], files: ReturnType<typeof upstream>, held: (p: string) => Reserved | null = none) => {
     const problems: Problem[] = [];
-    const tree = applyStructure(changes, files, problems, held);
+    const { tree } = applyStructure(changes, files, problems, held);
     return { tree: Object.fromEntries([...tree].sort(([a], [b]) => (a < b ? -1 : 1))), problems };
   };
+  const applied = (changes: InstanceType<typeof Change>[], files: ReturnType<typeof upstream>) => applyStructure(changes, files, [], none).applied;
 
   test("with no changes every file comes from upstream", () => {
     expect(apply([], upstream("a", "d/b")).tree).toEqual({ a: up("a"), "d/b": up("d/b") });
@@ -646,6 +647,30 @@ describe("applyStructure", () => {
   test("a file edit leaves the structure alone", () => {
     const r = apply([change("c", [{ kind: "file", path: "a" }])], upstream("a"));
     expect(r).toEqual({ tree: { a: up("a") }, problems: [] });
+  });
+
+  describe("applied", () => {
+    test("counts each add, replace, delete, move and copy that applies", () => {
+      const edits: Parameters<typeof change>[1] = [
+        { kind: "add", path: "new.txt" },
+        { kind: "replace", path: "a" },
+        { kind: "delete", path: "b" },
+        { kind: "move", path: "c", dest: "c2" },
+        { kind: "copy", path: "d", dest: "d2" },
+      ];
+      expect(applied([change("c", edits, ["new.txt", "a"])], upstream("a", "b", "c", "d"))).toBe(5);
+    });
+
+    test("counts a folder copy or move as one edit", () => {
+      const files = upstream("d/x", "d/y", "e/x", "e/y");
+      const edits: Parameters<typeof change>[1] = [{ kind: "copy", path: "d", dest: "d2" }, { kind: "move", path: "e", dest: "e2" }];
+      expect(applied([change("c", edits)], files)).toBe(2);
+    });
+
+    test("leaves out an edit that is refused, and a file edit", () => {
+      const edits: Parameters<typeof change>[1] = [{ kind: "file", path: "a" }, { kind: "add", path: "a" }, { kind: "delete", path: "gone" }];
+      expect(applied([change("c", edits, ["a"])], upstream("a"))).toBe(0);
+    });
   });
 
   describe("add", () => {

@@ -308,7 +308,7 @@ Printed on stdout. Exit 0 if `problems` is empty, 1 if not. Plain `patchbook sta
 | --- | --- | --- |
 | `version` | `2` | |
 | `upstreams` | list | The entries of `upstream.lock` for the upstreams in the config: `{name, commit, tree}`, sorted by name. |
-| `applied` | integer | The number of edits that apply at the pins. |
+| `applied` | integer | The number of edits that apply at the pins. An edit counts when it applies, at its turn in series order, without a problem of its own (gone, invalid, refused, clashing or orphan). A later edit that deletes, replaces or moves its file doesn't undo that. Each edit counts once, however many outputs it reaches: a `file` edit, a block entry, or a structure edit (`add`, `replace`, `delete`, `move` or `copy`, with a folder counting once). So `applied` plus the edits that report a problem equals the number of edits in the series. |
 | `problems` | list | The problems, as below. |
 | `lastSync` | object or null | The document in `last-sync.json`, or null if there is none. |
 

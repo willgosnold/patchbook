@@ -69,7 +69,7 @@ export type Assembly = {
   build(src: Source, at: string): File;
 };
 
-type Sink = { problems: Problem[]; used: Map<string, Set<string>>; unmatched: Map<string, Unmatched[]>; applied: number };
+type Sink = { problems: Problem[]; used: Map<string, Set<string>>; unmatched: Map<string, Unmatched[]>; applied: Set<string> };
 
 const CONFLICT = /^(?:<{7}|>{7})(?: |$)/;
 /** A line that starts with a conflict marker. Only `\n` ends a line. */
@@ -84,15 +84,16 @@ function intoReserved(where: InEdit, path: string, { place, refuse }: Reserved):
   return refuse ? { problem: "invalid", ...where, detail, refuse: true } : { problem: "invalid", ...where, detail };
 }
 
-/** Apply add, replace, delete, move and copy to a map of staged path to source. */
+/** Apply add, replace, delete, move and copy to a map of staged path to source, and count the edits that applied. */
 export function applyStructure(
   changes: readonly Change[],
   upstream: ReadonlyMap<string, File>,
   problems: Problem[],
   reservedHolding: (staged: string) => Reserved | null,
   dropped = new Set<string>(),
-): Map<string, Source> {
+): { tree: Map<string, Source>; applied: number } {
   const tree = new Map<string, Source>(Array.from(upstream.keys(), (p) => [p, { kind: "up", path: p }]));
+  let applied = 0;
   for (const c of changes) {
     for (const e of c.edits) {
       if (e.kind === "file") continue;
@@ -106,11 +107,17 @@ export function applyStructure(
         else if (c.read("ours", e.path) === null) {
           problems.push({ problem: "invalid", ...where, detail: "its ours copy is missing" });
           dropped.add(e.path);
-        } else tree.set(e.path, { kind: "ours", change: c.name, path: e.path });
+        } else {
+          tree.set(e.path, { kind: "ours", change: c.name, path: e.path });
+          applied++;
+        }
       } else if (e.kind === "replace") {
         if (!tree.has(e.path)) problems.push({ problem: "gone", ...where, detail: `${e.path} no longer exists` });
         else if (c.read("ours", e.path) === null) problems.push({ problem: "invalid", ...where, detail: "its ours copy is missing" });
-        else tree.set(e.path, { kind: "ours", change: c.name, path: e.path });
+        else {
+          tree.set(e.path, { kind: "ours", change: c.name, path: e.path });
+          applied++;
+        }
       } else if (!matched.length) problems.push({ problem: "gone", ...where, detail: `${e.path} no longer exists` });
       else {
         const dest = "dest" in e ? e.dest : "";
@@ -131,10 +138,11 @@ export function applyStructure(
         }
         if (e.kind === "delete" || e.kind === "move") for (const p of matched) tree.delete(p);
         for (const [p, s] of moved) tree.set(p, s);
+        applied++;
       }
     }
   }
-  return tree;
+  return { tree, applied };
 }
 
 export function blockFiles(book: Book): string[] {
@@ -191,7 +199,8 @@ export function assemble(book: Book): Assembly {
   }
 
   const lost = new Set<string>();
-  const staged = applyStructure(changes, upstream, problems, (p) => book.reservedHolding(p), lost);
+  const { tree: staged, applied: structural } = applyStructure(changes, upstream, problems, (p) => book.reservedHolding(p), lost);
+  applied += structural;
   const prefix = book.layout.kind === "folder" ? book.layout.from : "";
   const atOutput = (p: string) => (!prefix ? [p] : p.startsWith(prefix + "/") ? [p.slice(prefix.length + 1)] : []);
   const selected = new Map(Array.from(staged).flatMap(([p, s]) => atOutput(p).map((at) => [at, s] as const)));
@@ -221,7 +230,7 @@ export function assemble(book: Book): Assembly {
           unmatched: unmatched.get(rel)!, problems,
         });
         text = patched.text;
-        sink.applied += patched.applied;
+        for (const key of patched.applied) sink.applied.add(`${rel}\0${key}`);
       }
       return { data: encode(text), mode };
     }
@@ -243,11 +252,11 @@ export function assemble(book: Book): Assembly {
     problems,
     used: new Map(Array.from(blocks.keys(), (rel) => [rel, new Set()])),
     unmatched: new Map(Array.from(blocks.keys(), (rel) => [rel, []])),
-    applied: 0,
+    applied: new Set(),
   };
   const { used, unmatched } = sink;
   for (const [outPath, src] of [...selected].sort(([a], [b]) => byCodePoint(a, b))) out.set(outPath, buildAt(src, outPath, sink));
-  applied += sink.applied;
+  applied += sink.applied.size;
   for (const [rel, entries] of blocks) {
     for (const [h, entry] of entries) {
       if (!used.get(rel)?.has(h)) problems.push(orphan(rel, entry, unmatched.get(rel) ?? []));
@@ -262,7 +271,7 @@ export function assemble(book: Book): Assembly {
       problems.push({ problem: "conflict", file: p, detail: "conflict marker in the output" });
     }
   }
-  const build = (src: Source, at: string) => buildAt(src, at, { problems: [], used: new Map(), unmatched: new Map(), applied: 0 });
+  const build = (src: Source, at: string) => buildAt(src, at, { problems: [], used: new Map(), unmatched: new Map(), applied: new Set() });
   return { out, sources: selected, problems, dropped, applied, staged, upstream, build };
 }
 

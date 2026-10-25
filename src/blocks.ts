@@ -299,8 +299,9 @@ export function leakScan(rules: Rules, outPath: string, text: string, problems: 
   }
 }
 
-/** Swap each block that has an entry for its patched text, with the line ends of the block it replaces. If owners is given, it
- * gets, for each output line, the index of the upstream block it came from, or null for the lines between blocks. */
+/** Swap each block that has an entry for its patched text, with the line ends of the block it replaces, and name the keys of the
+ * valid entries it used. If owners is given, it gets, for each output line, the index of the upstream block it came from, or null
+ * for the lines between blocks. */
 export function patchBlocks(args: {
   rules: Rules;
   outPath: string;
@@ -311,14 +312,14 @@ export function patchBlocks(args: {
   unmatched?: Unmatched[];
   problems?: Problem[];
   owners?: (number | null)[];
-}): { text: string; applied: number } {
+}): { text: string; applied: string[] } {
   const { rules, outPath, rel, text, entries, used = new Set(), unmatched = [], problems = [], owners } = args;
-  if (!entries.size && owners === undefined && !rules.watches(outPath)) return { text, applied: 0 };
+  if (!entries.size && owners === undefined && !rules.watches(outPath)) return { text, applied: [] };
   const lines = text.split("\n");
   const blocks = blocksOf(lines);
   const out: string[] = [];
   let prev = 0;
-  let applied = 0;
+  const applied: string[] = [];
   const emit = (chunk: readonly string[], owner: number | null) => {
     for (const line of chunk) {
       out.push(line);
@@ -342,7 +343,7 @@ export function patchBlocks(args: {
     used.add(key);
     const error = checkEntry(entry);
     if (error) problems.push({ problem: "invalid", ...where, detail: error });
-    applied++;
+    else applied.push(key);
     const patched = rules.expand(entry.patched, (detail) => problems.push({ problem: "placeholder", ...where, detail }));
     if (entry.kind !== "keep") {
       const terms = rules.terms(outPath, patched);
