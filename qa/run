@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Run the QA scenarios, each in its own verify-patchbook sandbox, and print a pass rate per scenario.
+#
+#   qa/run [scenario...]       run every scenario in qa/scenarios, or only the named ones
+#   QA_MODEL=real qa/run       write intents with the real claude CLI instead of the fake model
+#   QA_RUNS=N                  runs per scenario (default 1 with the fake model, 5 with the real one)
+#   QA_JOBS=N                  runs at once (default 4)
+#
+# Exits 1 when a run fails a check that isn't tagged with a known issue.
+set -euo pipefail
+
+QA=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+H=$QA/../.agents/skills/verify-patchbook/scripts/pb-sandbox
+export QA_MODEL=${QA_MODEL:-fake}
+
+die() { echo "qa: $*" >&2; exit 2; }
+
+use_real_claude() {
+  cat > "$SB/bin/claude" <<F
+#!/bin/sh
+cat > "$SB/prompt.txt"
+echo "\$(date +%s) claude \$*" >> "$SB/model-calls.log"
+"$QA_REAL_CLAUDE" "\$@" < "$SB/prompt.txt" > "$SB/reply.txt"; code=\$?
+tee -a "$SB/replies.log" < "$SB/reply.txt"
+exit \$code
+F
+}
+
+run_one() {
+  local name=$1 n=$2 out=$3 env sb evidence
+  env=$("$H" new "qa-$name-$n")
+  sb=$(dirname "$env")
+  evidence=$(. "$env" && echo "$EVIDENCE")
+  set +e
+  (
+    . "$env"
+    export QA_RESULT="$out/$name.$n.result"
+    if [ "$QA_MODEL" = real ]; then use_real_claude; fi
+    . "$QA/lib.sh"
+    set -e
+    check "the sandbox is isolated" "$H" doctor
+    fixture
+    . "$QA/scenarios/$name.sh"
+    outcome pass "" ""
+  ) > "$out/$name.$n.log" 2>&1
+  set -e
+  [ -s "$out/$name.$n.result" ] || printf 'fail\t\ta command outside a check failed\n' > "$out/$name.$n.result"
+  [ -f "$sb/replies.log" ] && cp "$sb/replies.log" "$evidence/"
+  cp "$out/$name.$n.log" "$evidence/run.log"
+  "$H" clean "$sb" >/dev/null
+  if [ "$(cut -f1 "$out/$name.$n.result")" = pass ] && [[ $evidence == */patchbook-verify/qa-* ]]; then rm -rf "$evidence"; else printf '%s\n' "$evidence" > "$out/$name.$n.evidence"; fi
+}
+
+if [ "$QA_MODEL" = real ] && [ -n "${CI+x}" ]; then die "QA_MODEL=real calls a paid model, so it never runs in CI"; fi
+if [ "${1:-}" = --one ]; then shift; run_one "$@"; exit 0; fi
+
+case $QA_MODEL in
+  fake) runs=${QA_RUNS:-1} ;;
+  real)
+    QA_REAL_CLAUDE=$(command -v claude) || die "QA_MODEL=real needs the claude CLI on PATH"
+    export QA_REAL_CLAUDE
+    runs=${QA_RUNS:-5} ;;
+  *) die "QA_MODEL is fake or real, not $QA_MODEL" ;;
+esac
+
+if [ $# -gt 0 ]; then names=("$@"); else names=(); for f in "$QA"/scenarios/*.sh; do names+=("$(basename "$f" .sh)"); done; fi
+for name in "${names[@]}"; do [ -f "$QA/scenarios/$name.sh" ] || die "no scenario $name in qa/scenarios"; done
+
+out=${TMPDIR:-/tmp}/patchbook-qa/$(date +%Y%m%d-%H%M%S)-$$
+mkdir -p "$out"
+echo "qa: ${#names[@]} scenarios, $runs runs each, $QA_MODEL model; logs in $out"
+for name in "${names[@]}"; do for n in $(seq 1 "$runs"); do printf '%s %s\n' "$name" "$n"; done; done |
+  xargs -P "${QA_JOBS:-4}" -n 2 sh -c '"$0" --one "$1" "$2" "'"$out"'"' "$QA/run"
+
+failed=0
+printf '\n%-28s %-6s %s\n' scenario pass result
+for name in "${names[@]}"; do
+  pass=$(awk -F'\t' '$1 == "pass"' "$out/$name".*.result | wc -l | tr -d ' ')
+  notes=$(awk -F'\t' '
+    $1 == "known" { k["known " $2 ", " $3]++ }
+    $1 == "fail" { k["FAIL, " $3]++ }
+    END { s = ""; for (x in k) { printf "%s%s (%d)", s, x, k[x]; s = "; " } }' "$out/$name".*.result)
+  if grep -q '^fail' "$out/$name".*.result; then failed=1; fi
+  printf '%-28s %-6s %s\n' "$name" "$pass/$runs" "${notes:-all checks pass}"
+done
+if ls "$out"/*.evidence >/dev/null 2>&1; then
+  echo; echo "transcripts of the runs that didn't pass:"; cat "$out"/*.evidence | sed 's/^/  /'
+fi
+exit $failed
