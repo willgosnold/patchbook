@@ -62,7 +62,7 @@ function readQuoted(text: string, start: number): { path: string; end: number } 
   return null;
 }
 
-function pathText(path: string, place: "single" | "source" | "dest"): string {
+export function pathText(path: string, place: "single" | "source" | "dest" = "single"): string {
   try {
     const read = readPath(place === "source" ? path + ARROW : path, 0, "", place === "dest");
     if (read.path === path && read.end === path.length) return path;
@@ -78,11 +78,20 @@ export function editText(e: Edit): string {
 
 export type Side = "base" | "ours";
 
+/** A change's intent and who wrote it: the user or the model, or patchbook, from the edits alone, when no model could. A change with
+ * no intent has none, never a blank one. */
+export type Intent = { text: string; by: "author" | "patchbook" };
+
+const INTENT_LABEL = { author: "intent:", patchbook: "intent (by patchbook):" } as const;
+
+/** How to replace an intent patchbook wrote: with the model, or by hand. */
+export const replaceIntent = (name: string): string => `To replace it, run \`patchbook intent ${name}\` or edit its line to \`intent: <yours>\``;
+
 export class Change {
   constructor(
     readonly name: string,
     readonly dir: string,
-    public intent: string = "",
+    public intent: Intent | null = null,
     public edits: Edit[] = [],
     readonly held: string[] = [],
   ) {}
@@ -160,14 +169,16 @@ function readPath(rest: string, from: number, where: string, isDest = false): { 
 export function parseChange(path: string, reject: (edit: string, detail: string) => void): Change {
   const change = new Change(basename(dirname(path)), dirname(path));
   let section: "intent" | "edits" | null = null;
+  let intent: Intent = { text: "", by: "author" };
   for (const [i, line] of readText(path).split("\n").entries()) {
     const n = i + 1;
     if (line.startsWith("# ") && section === null) continue;
-    if (line.startsWith("intent:")) {
+    const by = (["author", "patchbook"] as const).find((b) => line.startsWith(INTENT_LABEL[b]));
+    if (by) {
       section = "intent";
-      change.intent = line.slice("intent:".length).trim();
+      intent = { text: line.slice(INTENT_LABEL[by].length).trim(), by };
     } else if (line.trim() === "edits:") section = "edits";
-    else if (section === "intent" && line.trim()) change.intent += " " + line.trim();
+    else if (section === "intent" && line.trim()) intent.text += " " + line.trim();
     else if (section === "edits" && line.trim()) {
       const where = `${path}:${n}`;
       const m = EDIT_START.exec(line);
@@ -189,12 +200,14 @@ export function parseChange(path: string, reject: (edit: string, detail: string)
       }
     }
   }
+  change.intent = intent.text ? intent : null;
   return change;
 }
 
 export function formatChange(change: Change): string {
   const edits = change.edits.map((e) => `- ${editText(e)}\n`).join("") + change.held.map((l) => `${l}\n`).join("");
-  return `# ${change.name}\n\nintent:${change.intent ? " " + change.intent : ""}\n\nedits:\n${edits}`;
+  const intent = change.intent ? `${INTENT_LABEL[change.intent.by]} ${change.intent.text}` : INTENT_LABEL.author;
+  return `# ${change.name}\n\n${intent}\n\nedits:\n${edits}`;
 }
 
 export function saveChange(change: Change): void {
@@ -236,7 +249,7 @@ export function readChanges(book: Book, problems: Problem[], names: readonly str
     );
   }
   for (const c of changes) {
-    if (!c.intent) problems.push({ problem: "invalid", file: `changes/${c.name}`, detail: `it has no intent; fill it with \`patchbook intent ${c.name}\`` });
+    if (c.intent === null) problems.push({ problem: "invalid", file: `changes/${c.name}`, detail: `it has no intent; fill it with \`patchbook intent ${c.name}\`` });
   }
   return changes;
 }
@@ -282,7 +295,7 @@ export async function cmdShow(args: { change: string }) {
   if (!CHANGE_NAME.test(args.change) || !exists(path)) throw new Fail(`no change called ${args.change}`);
   const rejected: string[] = [];
   const c = parseChange(path, (edit, detail) => rejected.push(`invalid ${edit}: ${detail}\n`));
-  say(`${c.name}: ${c.intent || "(no intent yet)"}\n\n`);
+  say(`${c.name}: ${c.intent?.text ?? "(no intent yet)"}\n\n`);
   say(rejected.join(""));
   for (const e of c.edits) {
     if (e.kind === "file") {

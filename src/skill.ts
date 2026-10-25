@@ -143,8 +143,8 @@ export const leftBehindSkill = (book: Book): string[] =>
 export async function recordSkill(book: Book): Promise<number> {
   process.chdir(book.root);
   // A given intent asks no model: a refresh keeps the change's own intent.
-  const intent = Roster.read(book).parsed.get(CHANGE)?.intent
-    || "Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.";
+  const intent = Roster.read(book).parsed.get(CHANGE)?.intent?.text
+    ?? "Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.";
   // An `init` that stopped early can leave this folder out of the series, and patchbook owns the name, so it adopts the folder.
   if (Roster.read(book).stray(CHANGE) === "folder") appendSeries(book, CHANGE);
   return cmdRecord({ change: CHANGE, intent, only: ownsSkill });

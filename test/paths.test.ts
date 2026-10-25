@@ -217,14 +217,14 @@ describe("the codex provider", () => {
     expect(read(join(t.tmp, "codex.prompt"))).toContain('For these edits: they are a new change called mine. Write its intent in "intent".');
   });
 
-  forkTest("a codex that fails is named in the pending note, and no change takes a name or intent from it", (t) => {
+  forkTest("a codex that fails is named in the note on patchbook's intent, and no change takes a name or intent from it", (t) => {
     t.env["PATCHBOOK_PROVIDER"] = "codex";
     t.fake("codex", answer("codex-shout", "Shout."), 3, "codex: not logged in");
     t.edit();
     const out = t.record().stdout;
-    expect(out).toContain("pending  no intent yet for pending (codex failed: codex: not logged in). To fill it: patchbook intent pending");
-    expect(t.changes()).toEqual(["pending"]);
-    expect(t.fork.read(".patchbook/changes/pending/CHANGE.md")).toContain("\nintent:\n");
+    expect(out).toContain("intent   by patchbook for edit-app-txt (codex failed: codex: not logged in). To replace it, run `patchbook intent edit-app-txt` or edit its line to `intent: <yours>`");
+    expect(t.changes()).toEqual(["edit-app-txt"]);
+    expect(t.fork.read(".patchbook/changes/edit-app-txt/CHANGE.md")).toContain("\nintent (by patchbook): Edits app.txt.\n");
     expect(t.changeText()).not.toContain("codex-shout");
     expect(t.changeText()).not.toContain("Shout.");
   });
@@ -239,28 +239,29 @@ describe("the codex provider", () => {
     '{"change": "codex-shout", "intents": {"codex-shout": "Shout."}}',
     '{"change": null, "intent": "Shout."}',
   ]) {
-    forkTest(`an answer codex garbles (${reply}) is named in the pending note, and no change takes a name or intent from it`, (t) => {
+    forkTest(`an answer codex garbles (${reply}) is named in the note on patchbook's intent, and no change takes a name or intent from it`, (t) => {
       t.env["PATCHBOOK_PROVIDER"] = "codex";
       t.fake("codex", reply);
       t.edit();
       const out = t.record().stdout;
-      expect(out).toContain("pending  no intent yet for pending (codex didn't return a usable name and intent: codex's reply");
-      expect(out).toContain(". To fill it: patchbook intent pending");
+      expect(out).toContain("intent   by patchbook for edit-app-txt (codex didn't return a usable name and intent: codex's reply");
+      expect(out).toContain(". To replace it, run `patchbook intent edit-app-txt` or edit its line to `intent: <yours>`");
       expect(t.called("codex")).toBe(true);
-      expect(t.changes()).toEqual(["pending"]);
-      expect(t.fork.read(".patchbook/changes/pending/CHANGE.md")).toContain("\nintent:\n");
+      expect(t.changes()).toEqual(["edit-app-txt"]);
+      expect(t.fork.read(".patchbook/changes/edit-app-txt/CHANGE.md")).toContain("\nintent (by patchbook): Edits app.txt.\n");
       for (const taken of ["Not Kebab Case", "not-kebab-case", "codex-shout", "Shout."]) expect(t.changeText()).not.toContain(taken);
     });
   }
 });
 
 describe("an unusable reply", () => {
-  forkTest("the pending note says why, so the reply's fault can be told from the model's failure", (t) => {
+  forkTest("the note on patchbook's intent says why, so the reply's fault can be told from the model's failure", (t) => {
     t.env["PATCHBOOK_PROVIDER"] = "codex";
     t.fake("codex", JSON.stringify({ change: "codex-shout", intents: { "app.txt": "Shout." } }));
     t.edit();
     const out = t.record().stdout;
-    expect(out).toContain("pending  no intent yet for pending (codex didn't return a usable name and intent: codex's reply: intent is missing). To fill it: patchbook intent pending");
+    expect(out).toContain("intent   by patchbook for edit-app-txt (codex didn't return a usable name and intent: codex's reply: intent is missing). "
+      + "To replace it, run `patchbook intent edit-app-txt` or edit its line to `intent: <yours>`");
   });
 });
 
