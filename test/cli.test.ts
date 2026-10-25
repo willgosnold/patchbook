@@ -49,7 +49,7 @@ commands:
   build       apply the patchbook to the pinned upstreams and write the output
   record      move edits to the output in the working tree into a change
   intent      fill empty intents and replace the ones patchbook wrote
-  hook        install the pre-commit hook, run it, or show which hook git runs
+  hook        install the git hooks, run one, or show which hook git runs
   skill       write this patchbook's update skill into the repo
   config      show settings and where each comes from, or set one
   show        print a change, with its file edits as diffs
@@ -191,13 +191,14 @@ options:
   -h, --help       show this help
 `,
   hook: `\
-usage: patchbook hook install|run|status [options]
+usage: patchbook hook install|run|build|status [options]
 
-install the pre-commit hook, run it, or show which hook git runs
+install the git hooks, run one, or show which hook git runs
 
 arguments:
-  install     install patchbook's pre-commit hook in this repo
-  run         run the hook, as git does before a commit
+  install     install patchbook's git hooks in this repo
+  run         run the pre-commit hook, as git does before a commit
+  build       rebuild the output, as the post hooks do after a merge or checkout
   status      show which pre-commit hook git runs
 
 options:
@@ -271,7 +272,7 @@ const ERRORS: { [K in Problem["kind"]]: [argv: string[], text: string][] } = {
     [[], `patchbook: missing <command>\n${TOP_HINT}`],
     [["show"], `patchbook show: missing <change>\n${hint("show")}`],
     [["track", "tools"], `patchbook track: missing <url>\n${hint("track")}`],
-    [["hook"], `patchbook hook: missing install|run|status\n${hint("hook")}`],
+    [["hook"], `patchbook hook: missing install|run|build|status\n${hint("hook")}`],
     [["init"], `patchbook init: missing --upstream <url>\n${hint("init")}`],
   ],
   "unknown-command": [
@@ -309,8 +310,8 @@ const ERRORS: { [K in Problem["kind"]]: [argv: string[], text: string][] } = {
     [["--version", "now"], `patchbook: extra argument "now"\n${TOP_HINT}`],
   ],
   "not-a-choice": [
-    [["hook", "inst"], `patchbook hook: expected install, run or status, not "inst"\n${hint("hook")}`],
-    [["hook", "__proto__"], `patchbook hook: expected install, run or status, not "__proto__"\n${hint("hook")}`],
+    [["hook", "inst"], `patchbook hook: expected install, run, build or status, not "inst"\n${hint("hook")}`],
+    [["hook", "__proto__"], `patchbook hook: expected install, run, build or status, not "__proto__"\n${hint("hook")}`],
     [["skill", "x"], `patchbook skill: expected install, not "x"\n${hint("skill")}`],
   ],
   "repeated-option": [
@@ -395,7 +396,7 @@ const REFUSED: [argv: string[], line: string][] = [
   [["init", "--bad", "--upstream"], 'patchbook init: unknown option "--bad"'],
   [["track", "--bad"], 'patchbook track: unknown option "--bad"'],
   [["track", "--mount", "m"], "patchbook track: missing <name>"],
-  [["hook", "inst", "extra"], 'patchbook hook: expected install, run or status, not "inst"'],
+  [["hook", "inst", "extra"], 'patchbook hook: expected install, run, build or status, not "inst"'],
 ];
 
 const HELPS: [argv: string[], page: string][] = [

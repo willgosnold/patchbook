@@ -3,9 +3,9 @@ import { chmodSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join } from "node:path";
 import type { Problem } from "./api.ts";
 import {
-  assemble, type Assembly, buildLockPath, type BuildLock, builtAs, type Changes, changesOf, describe, handEdits, inRepo, parseBuildLock, readBuildLock, refuseFolderToFile, writeOutput,
+  assemble, type Assembly, buildLockPath, type BuildLock, builtAs, type Changes, changesOf, cmdBuild, describe, handEdits, inRepo, parseBuildLock, readBuildLock, refuseFolderToFile, writeOutput,
 } from "./assemble.ts";
-import { Book, ATTRIBUTES_FILE, buildInputs, keepAttributes, PB, parseLock, placeholderOutputs, under } from "./book.ts";
+import { ATTRIBUTES_FILE, Book, buildInputs, keepAttributes, NoBook, PB, parseLock, placeholderOutputs, under } from "./book.ts";
 import { type Change, readChanges, SERIES_CONFLICT } from "./changes.ts";
 import { record } from "./record.ts";
 import { Fail } from "./lib/fail.ts";
@@ -41,11 +41,35 @@ if command -v patchbook >/dev/null; then exec patchbook hook run; fi
 echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
 `;
 
-function writeHook(path: string): void {
+function writeHook(path: string, text = SCRIPT): void {
   mkdirs(dirname(path));
-  writeText(path, SCRIPT);
+  writeText(path, text);
   chmodSync(path, 0o755);
 }
+
+/** The hooks git runs when it brings in changed patchbook data, which rebuild the output. Git ignores their exit codes, so a build that fails only warns.
+ * Only a branch checkout (`post-checkout` with `$3` = 1, and not the checkout of a rebase's onto commit, which would leave unstaged changes that stop the rebase) and a rebase (`post-rewrite` with `$1` = rebase) build: a file checkout changes no data, and the pre-commit hook has built an amend. */
+const POST_HOOKS = [
+  { name: "post-merge", when: "after a merge or a pull", skip: "git pull", test: null },
+  { name: "post-checkout", when: "after a branch checkout", skip: "git checkout <branch>", test: '[ "$3" = 1 ] && [ ! -d "$(git rev-parse --git-path rebase-merge)" ] && [ ! -d "$(git rev-parse --git-path rebase-apply)" ]' },
+  { name: "post-rewrite", when: "after a rebase", skip: "git rebase", test: '[ "$1" = rebase ]' },
+] as const;
+type PostHook = (typeof POST_HOOKS)[number];
+
+const postScript = ({ when, skip, test }: PostHook) => `#!/bin/sh
+# Installed by patchbook v2. It rebuilds the output from the patchbook ${when}. Skip it once with: PATCHBOOK_HOOK=0 ${skip}
+[ "$PATCHBOOK_HOOK" = 0 ] && exit 0
+${HAS_PATCHBOOK} || exit 0
+${test ? `${test} || exit 0\n` : ""}command -v patchbook >/dev/null && patchbook hook build
+exit 0
+`;
+
+/** The lines a hook manager's script gets, which a teammate without patchbook skips. */
+const postLines = ({ when, skip, test }: PostHook) => `# patchbook: rebuild the output from the patchbook ${when}. Skip it once with PATCHBOOK_HOOK=0 ${skip}
+if [ "$PATCHBOOK_HOOK" != 0 ] && ${HAS_PATCHBOOK}${test ? ` && ${test}` : ""} && command -v patchbook >/dev/null; then patchbook hook build || true; fi
+`;
+
+const CALLS_BUILD = /^[^#\n]*\bpatchbook hook build\b/m;
 
 const GUARD = `if [ "$PATCHBOOK_HOOK" != 0 ] && ${HAS_PATCHBOOK}; then
   if ! command -v patchbook >/dev/null; then
@@ -232,12 +256,15 @@ function findHook(root: string): Hook {
 
 const runsPatchbook = (hook: Hook) => exists(hook.path) && CALLS_PATCHBOOK.test(readTextReplace(hook.path));
 
-function withPatchbook(data: Uint8Array): Uint8Array {
-  if (CALLS_PATCHBOOK.test(decodeReplace(data))) return data;
+/** What `putFirst` puts into a manager's script, and how it tells and says so. */
+type Wire = { lines: string; calls: RegExp; intent: (m: ScriptManager, where: string) => string; put: (m: ScriptManager, where: string) => string };
+
+function withPatchbook(data: Uint8Array, wire: Wire): Uint8Array {
+  if (wire.calls.test(decodeReplace(data))) return data;
   const end = data[0] === 0x23 && data[1] === 0x21 ? data.indexOf(0x0a) + 1 || data.length : 0;
   const rest = data.subarray(end);
   const newline = encode("\n");
-  return concat(data.subarray(0, end), end > 0 && data[end - 1] !== 0x0a ? newline : new Uint8Array(), encode(HOOK_LINES), rest.length ? newline : new Uint8Array(), rest);
+  return concat(data.subarray(0, end), end > 0 && data[end - 1] !== 0x0a ? newline : new Uint8Array(), encode(wire.lines), rest.length ? newline : new Uint8Array(), rest);
 }
 
 function shown(root: string, path: string): string {
@@ -249,6 +276,19 @@ const hookIntent = (m: ScriptManager, where: string) =>
   `Run patchbook first in ${where}, the pre-commit script ${m.name} runs, so commits keep recording hand edits to the build output.`;
 
 const PUT_FIRST = (m: ScriptManager, where: string) => `patchbook: put \`patchbook hook run\` first in ${where}, which ${m.name} runs on each commit`;
+
+const PRE_COMMIT_WIRE: Wire = { lines: HOOK_LINES, calls: CALLS_PATCHBOOK, intent: hookIntent, put: PUT_FIRST };
+
+const postWire = (post: PostHook): Wire => ({
+  lines: postLines(post),
+  calls: CALLS_BUILD,
+  intent: (m, where) => `Run patchbook in ${where}, the ${post.name} script ${m.name} runs, so the output is rebuilt ${post.when}.`,
+  put: (m, where) => `patchbook: put \`patchbook hook build\` in ${where}, which ${m.name} runs ${post.when}`,
+});
+
+const ADD_POST = (posts: readonly PostHook[]) =>
+  `patchbook: to rebuild the output after a pull, a branch checkout or a rebase, call \`patchbook hook build\` from ${posts.map((p) => p.name).join(", ")}. Put these lines in each:\n\n`
+  + posts.map((p) => `${p.name}:\n${postLines(p)}`).join("\n");
 
 const ADD_TO_CONFIG = (m: ConfigManager, where: string, config: string) => {
   const snippet = m.snippets[extname(where).slice(1)]!;
@@ -284,22 +324,22 @@ function writesThroughALink(book: Book, path: string): boolean {
   return isSymlink(path) || inside === ".." || inside.startsWith("../") || resolve(dirname(path)) !== join(resolve(book.root), inside);
 }
 
-function isUnrecorded(book: Book, current: ReadonlyMap<string, File>, key: string): boolean {
+function isUnrecorded(book: Book, current: ReadonlyMap<string, File>, key: string, calls: RegExp): boolean {
   if (!current.has(key)) return false;
   const built = assemble(book).out.get(key);
-  return !built || !CALLS_PATCHBOOK.test(decodeReplace(built.data));
+  return !built || !calls.test(decodeReplace(built.data));
 }
 
 const NEW_SCRIPT_MODE: Mode = 0o755;
 
-async function putFirst(book: Book, hook: Extract<Hook, { kind: "script" }>, undo?: Undo): Promise<void> {
+async function putFirst(book: Book, hook: Extract<Hook, { kind: "script" }>, wire: Wire, undo?: Undo): Promise<void> {
   const where = shown(book.root, hook.path);
   if (writesThroughALink(book, hook.path)) {
     warn(ADD_TO_FOREIGN(where));
     return;
   }
   const text = exists(hook.path) ? readBytes(hook.path) : null;
-  const edited = withPatchbook(text ?? new Uint8Array());
+  const edited = withPatchbook(text ?? new Uint8Array(), wire);
   const wrote = text === null || !bytesEqual(edited, text);
   if (wrote) {
     undo?.hold(hook.path);
@@ -308,15 +348,15 @@ async function putFirst(book: Book, hook: Extract<Hook, { kind: "script" }>, und
     if (text === null) chmodSync(hook.path, NEW_SCRIPT_MODE);
   }
   const key = relative(book.root, hook.path);
-  if (book.layout.kind !== "fork" || !isUnrecorded(book, book.currentOutput(), key)) {
-    if (wrote) warn(PUT_FIRST(hook.manager, where) + "\n");
+  if (book.layout.kind !== "fork" || !isUnrecorded(book, book.currentOutput(), key, wire.calls)) {
+    if (wrote) warn(wire.put(hook.manager, where) + "\n");
     return;
   }
   const seen = book.seen("disk");
   const newScript = text === null ? seen.get(key) : undefined;
   if (newScript) seen.set(key, { ...newScript, mode: NEW_SCRIPT_MODE, chosen: true });
-  recordAndStage(book, seen, key, hookIntent(hook.manager, where), newScript !== undefined);
-  warn(`${PUT_FIRST(hook.manager, where)}, recorded the edit in the patchbook, and staged both\n`);
+  recordAndStage(book, seen, key, wire.intent(hook.manager, where), newScript !== undefined);
+  warn(`${wire.put(hook.manager, where)}, recorded the edit in the patchbook, and staged both\n`);
 }
 
 function recordAndStage(book: Book, seen: ReadonlyMap<string, Seen>, key: string, intent: string, newScript: boolean): void {
@@ -410,11 +450,7 @@ function updateScript(path: string): boolean {
   return true;
 }
 
-export function keepGitHook(book: Book, undo?: Undo): void {
-  if (keepAttributes(book.root, undo)) warn(`patchbook: added ${ATTRIBUTES_FILE}, so branches that each record a change merge without a conflict in series or build.lock. Commit it.\n`);
-  const { hooksPath, hookFile } = hookPaths(book.root);
-  if (hooksPath !== null || !hookEnabled(book) || !inBookRepo(book)) return;
-  undo?.hold(dirname(hookFile));
+function keepPreCommit(book: Book, hookFile: string): void {
   if (!exists(hookFile)) {
     writeHook(hookFile);
     warn("patchbook: installed a pre-commit hook that records and builds on each commit\n");
@@ -432,15 +468,69 @@ export function keepGitHook(book: Book, undo?: Undo): void {
   if (migrated !== undefined && exists(hookFile + migrated)) updateScript(hookFile + migrated);
 }
 
+/** A post hook that is there and isn't patchbook's is left alone, for `installHook` to say what to add to it. */
+function keepPostHooks(book: Book, hooks: string): void {
+  const added: string[] = [];
+  for (const post of POST_HOOKS) {
+    const path = join(hooks, post.name);
+    if (!exists(path)) {
+      writeHook(path, postScript(post));
+      added.push(post.name);
+    } else if (readTextReplace(path) === postScript(post) && !isExecutable(path)) {
+      chmodSync(path, 0o755);
+      warn(`patchbook: made ${shown(book.root, path)} executable, so git runs it\n`);
+    }
+  }
+  if (!added.length) return;
+  const names = added.length > 1 ? `${added.slice(0, -1).join(", ")} and ${added.at(-1)}` : added[0];
+  warn(`patchbook: installed ${names} ${added.length > 1 ? "hooks that rebuild" : "hook that rebuilds"} the output after a pull, a branch checkout or a rebase\n`);
+}
+
+export function keepGitHook(book: Book, undo?: Undo): void {
+  if (keepAttributes(book.root, undo)) warn(`patchbook: added ${ATTRIBUTES_FILE}, so branches that each record a change merge without a conflict in series or build.lock. Commit it.\n`);
+  const { hooksPath, hookFile } = hookPaths(book.root);
+  if (hooksPath !== null || !hookEnabled(book) || !inBookRepo(book)) return;
+  undo?.hold(dirname(hookFile));
+  keepPreCommit(book, hookFile);
+  keepPostHooks(book, dirname(hookFile));
+}
+
+/** Where git looks for the hook `name`: its hooks folder, or `core.hooksPath`. */
+function hookFileOf(root: string, name: string): string {
+  const path = git(["rev-parse", "--git-path", `hooks/${name}`], { cwd: root });
+  return isAbsolute(path) ? path : join(root, path);
+}
+
+/** Put the post hooks into a manager's scripts, or say what to add when patchbook can't edit the hook git runs. */
+async function installPostHooks(book: Book, hook: Hook, undo?: Undo): Promise<void> {
+  const manual: PostHook[] = [];
+  for (const post of POST_HOOKS) {
+    if (hook.kind === "script" && hook.gitRunsIt) {
+      await putFirst(book, { ...hook, path: join(dirname(hook.path), post.name) }, postWire(post), undo);
+      continue;
+    }
+    const file = hookFileOf(book.root, post.name);
+    const text = exists(file) ? readTextReplace(file) : null;
+    if (text === null || (text !== postScript(post) && !CALLS_BUILD.test(text))) manual.push(post);
+  }
+  if (manual.length) warn(ADD_POST(manual));
+}
+
 /** Make the hook git runs call patchbook, once `keepGitHook` has installed its own in `.git/hooks`. A config or foreign hook is printed every time, because patchbook can't check where its line sits. */
 export async function installHook(book: Book, undo?: Undo): Promise<boolean> {
   if (!hookEnabled(book) || !inBookRepo(book)) return true;
   const hook = findHook(book.root);
+  const recorded = await installPreCommit(book, hook, undo);
+  await installPostHooks(book, hook, undo);
+  return recorded;
+}
+
+async function installPreCommit(book: Book, hook: Hook, undo?: Undo): Promise<boolean> {
   switch (hook.kind) {
     case "git":
       return true;
     case "script":
-      await putFirst(book, hook, undo);
+      await putFirst(book, hook, PRE_COMMIT_WIRE, undo);
       return true;
     case "config": {
       const files = configFiles(book.root, hook.manager);
@@ -678,11 +768,26 @@ function stageVendors(book: Book): void {
   for (const { name, rel } of stale) warn(`patchbook: the pre-commit hook staged the pinned copy of ${name} under ${rel}, in place of what the index held\n`);
 }
 
-export async function cmdHook(args: { action: "install" | "run" | "status" }) {
+/** The build a post hook runs. Git has already merged, switched or rebased and ignores the exit code, so a build that can't run says why and exits 0. */
+async function buildAfterGit(): Promise<number> {
+  try {
+    const book = await Book.find();
+    if (!hookEnabled(book)) return 0;
+    return await cmdBuild({ force: false, commit: false, quiet: true });
+  } catch (e) {
+    if (e instanceof NoBook) return 0;
+    if (!(e instanceof Fail)) throw e;
+    warn(`patchbook: couldn't rebuild the output after this git command: ${e.message}\nThe output is behind the patchbook until you fix that and run \`patchbook build\`.\n`);
+    return 0;
+  }
+}
+
+export async function cmdHook(args: { action: "install" | "run" | "status" | "build" }) {
   if (args.action === "status") {
     printHookStatus(await Book.find());
     return 0;
   }
+  if (args.action === "build") return await buildAfterGit();
   if (args.action === "install") {
     const book = await Book.find();
     refuseOtherRepo(book);

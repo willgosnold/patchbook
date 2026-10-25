@@ -440,7 +440,8 @@ export function writeOutput(book: Book, out: ReadonlyMap<string, File>, changes:
   writeBuildLock(book, out);
 }
 
-export async function cmdBuild(args: { force: boolean; commit: boolean }) {
+/** `quiet` is for the post hooks, which say something only when the build changed a file or the lock. */
+export async function cmdBuild(args: { force: boolean; commit: boolean; quiet?: boolean }) {
   const book = await Book.find();
   refuseMergedUpstream(book, "build");
   installHookOrWarn(book);
@@ -456,10 +457,35 @@ export async function cmdBuild(args: { force: boolean; commit: boolean }) {
     throw new Fail(`these output files changed since the last build:\n  ${shown}\n`
       + "Move the edits into the patchbook with `patchbook record`, or pass --force to discard them.");
   }
-  writeOutput(book, a.out, changesOf(current, a.out, book.tracksExecBit()));
-  say(`built ${a.out.size} files from ${book.pins()} with ${a.applied} edits\n`);
+  const lockWas = exists(buildLockPath(book)) ? readText(buildLockPath(book)) : null;
+  const changes = changesOf(current, a.out, book.tracksExecBit());
+  writeOutput(book, a.out, changes);
+  if (!args.quiet) say(`built ${a.out.size} files from ${book.pins()} with ${a.applied} edits\n`);
+  else if (changes.stale.length + changes.changed.length) {
+    const n = changes.stale.length + changes.changed.length;
+    warn(`patchbook: rebuilt ${n} file${n === 1 ? "" : "s"} from ${book.pins()}\n`);
+  } else if (readText(buildLockPath(book)) !== lockWas) warn(`patchbook: rewrote ${PB}/build.lock\n`);
   if (args.commit) commitBuild(book, a);
   return 0;
+}
+
+/** The outputs a build would change that no hand edit explains, which is what a commit, merge or sync that skipped the build leaves. */
+function behindThePatchbook(book: Book, a: Assembly): string[] {
+  if (a.problems.length) return [];
+  try {
+    const current = book.seen("disk");
+    const { stale, changed } = changesOf(current, a.out, book.tracksExecBit());
+    const edited = new Set(handEdits(book, a.out, current));
+    return [...stale, ...changed].filter((p) => !edited.has(p)).sort(byCodePoint);
+  } catch (e) {
+    if (e instanceof Fail) return [];
+    throw e;
+  }
+}
+
+function behindNote(paths: string[]): string {
+  const shown = paths.length > 5 ? `${paths.slice(0, 5).join(", ")} and ${paths.length - 5} more` : paths.join(", ");
+  return `note      the output is behind the patchbook: ${shown} ${paths.length === 1 ? "differs" : "differ"} from a build. Run \`patchbook build\`.\n`;
 }
 
 function commitBuild(book: Book, a: Assembly): void {
@@ -518,6 +544,8 @@ export async function cmdStatus(args: { json: boolean }) {
     verbatim(jsonText(status));
   } else {
     for (const p of problems) say(describe(p) + "\n");
+    const behind = behindThePatchbook(book, a);
+    if (behind.length) say(behindNote(behind));
     for (const c of readChanges(book, [])) {
       if (c.intent?.by === "patchbook") say(`note      changes/${c.name}: patchbook wrote its intent from the edits. ${replaceIntent(c.name)}\n`);
     }

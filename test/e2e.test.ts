@@ -4028,7 +4028,7 @@ test("init leaves the bytes of a husky hook that is not UTF-8 and already runs p
     repo.commit("start");
     installManager(repo, ".husky");
     const init = t.pb(["init", "--upstream", up.path, "--output-from", "skills", "--output-to", "skills"], { cwd: repo.path });
-    expect(init.stderr).toBe("");
+    expect(init.stderr).not.toContain("pre-commit");
     expect(readFileSync(join(repo.path, ".husky/pre-commit"))).toEqual(hooked);
   } finally {
     t.cleanup();
@@ -5839,7 +5839,11 @@ describe("ForkTest", () => {
     const shallow = join(t.tmp, "shallow");
     const commits = (): string => sh(["git", "rev-list", "--count", "--all"], { cwd: shallow }).stdout.trim();
     expect(commits()).toBe("1");
-    expect(t.pb(["status"], { cwd: shallow }).stdout).toBe(`0 edits apply at upstream ${head.slice(0, 7)}; no problems\n`);
+    // The sync commit skipped the hook, so the output is behind the pin, as the note says.
+    expect(t.pb(["status"], { cwd: shallow }).stdout).toBe(
+      "note      the output is behind the patchbook: app.txt differs from a build. Run `patchbook build`.\n"
+      + `0 edits apply at upstream ${head.slice(0, 7)}; no problems\n`,
+    );
     expect(t.pb(["build"], { cwd: shallow }).stdout).toContain(`from upstream ${head.slice(0, 7)}`);
     expect(commits()).toBe("2");
   });
@@ -16585,6 +16589,228 @@ describe("MergeTest", () => {
     expect(attributesOf(t.fork)).toBe("series merge=union\n");
     expect(built.stderr).not.toContain(".gitattributes");
   });
+});
+
+describe("PostHookTest", () => {
+  const POST = ["post-merge", "post-checkout", "post-rewrite"];
+  const OURS = ".patchbook/changes/feature/ours/extra.txt.pb";
+  const hooked = (t: Case, env: Record<string, string> = {}): Record<string, string> => ({ ...t.env, PATCHBOOK_HOOK: "1", ...env });
+  const git = (t: ForkCase, args: string[], env?: Record<string, string>, check = true) => sh(["git", ...args], { cwd: t.fork.path, check, env: env ?? t.env });
+
+  /** Branch `data` holds a change to a change's file that nobody built, as a commit that skipped the hook leaves it. */
+  const staleBranch = (t: ForkCase): void => {
+    t.recordFeature();
+    git(t, ["switch", "-qc", "data"]);
+    t.fork.write(OURS, "changed\n");
+    t.fork.commit("data, without a build");
+    git(t, ["switch", "-q", "main"]);
+  };
+
+  forkTest("clone installs post-merge, post-checkout and post-rewrite hooks next to pre-commit", (t) => {
+    for (const name of ["pre-commit", ...POST]) {
+      const path = join(t.fork.path, ".git/hooks", name);
+      expect(existsSync(path)).toBe(true);
+      expect(isExecutable(path)).toBe(true);
+    }
+    for (const name of POST) expect(read(join(t.fork.path, ".git/hooks", name))).toContain('[ "$PATCHBOOK_HOOK" = 0 ] && exit 0');
+    expect(read(join(t.fork.path, ".git/hooks/post-checkout"))).toContain('[ "$3" = 1 ] && ');
+    expect(read(join(t.fork.path, ".git/hooks/post-rewrite"))).toContain('[ "$1" = rebase ] || exit 0');
+  });
+
+  forkTest("build installs the post hooks in a fork that has only the pre-commit hook, and keeps a post hook that isn't patchbook's", (t) => {
+    for (const name of POST) rmSync(join(t.fork.path, ".git/hooks", name));
+    writeFileSync(join(t.fork.path, ".git/hooks/post-merge"), "#!/bin/sh\necho mine\n", { mode: 0o755 });
+    const built = t.pb(["build"], { cwd: t.fork.path });
+    expect(built.stderr).toContain("installed post-checkout and post-rewrite hooks");
+    expect(read(join(t.fork.path, ".git/hooks/post-merge"))).toBe("#!/bin/sh\necho mine\n");
+    expect(isExecutable(join(t.fork.path, ".git/hooks/post-checkout"))).toBe(true);
+    expect(t.pb(["build"], { cwd: t.fork.path }).stderr).not.toContain("installed");
+  });
+
+  forkTest("git merge rebuilds the output from the patchbook", (t) => {
+    staleBranch(t);
+    const merged = git(t, ["merge", "-q", "data"], hooked(t));
+    expect(merged.stderr).toContain("patchbook: rebuilt 1 file from");
+    expect(t.fork.read("extra.txt")).toBe("changed\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).not.toContain("behind");
+  });
+
+  forkTest("git checkout of a branch rebuilds the output, and a file checkout does not", (t) => {
+    staleBranch(t);
+    git(t, ["checkout", "-q", "data", "--", OURS], hooked(t));
+    expect(t.fork.read("extra.txt")).toBe("ours\n");
+    git(t, ["reset", "-q", "--hard"]);
+    const switched = git(t, ["checkout", "-q", "data"], hooked(t));
+    expect(switched.stderr).toContain("patchbook: rebuilt 1 file from");
+    expect(t.fork.read("extra.txt")).toBe("changed\n");
+    git(t, ["switch", "-q", "main"], hooked(t));
+    expect(t.fork.read("extra.txt")).toBe("ours\n");
+  });
+
+  forkTest("the post-rewrite hook rebuilds after a rebase, not after an amend", (t) => {
+    staleBranch(t);
+    git(t, ["switch", "-q", "data"]);
+    const hook = join(t.fork.path, ".git/hooks/post-rewrite");
+    sh(["sh", hook, "amend"], { cwd: t.fork.path, env: hooked(t) });
+    expect(t.fork.read("extra.txt")).toBe("ours\n");
+    sh(["sh", hook, "rebase"], { cwd: t.fork.path, env: hooked(t) });
+    expect(t.fork.read("extra.txt")).toBe("changed\n");
+  });
+
+  forkTest("git rebase rebuilds the output", (t) => {
+    staleBranch(t);
+    git(t, ["commit", "-q", "--allow-empty", "-m", "main moves on"]);
+    git(t, ["switch", "-q", "data"]);
+    git(t, ["rebase", "-q", "main"], hooked(t));
+    expect(git(t, ["log", "--format=%s", "-2"]).stdout).toBe("data, without a build\nmain moves on\n");
+    expect(t.fork.read("extra.txt")).toBe("changed\n");
+  });
+
+  forkTest("a git rebase onto a commit whose outputs were never built completes, and ends with rebuilt outputs", (t) => {
+    staleBranch(t);
+    git(t, ["switch", "-qc", "topic"]);
+    git(t, ["commit", "-qm", "topic", "--allow-empty"]);
+    git(t, ["rebase", "-q", "data"], hooked(t));
+    expect(git(t, ["log", "--format=%s", "-2"]).stdout).toBe("topic\ndata, without a build\n");
+    expect(t.fork.read("extra.txt")).toBe("changed\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).not.toContain("behind");
+  });
+
+  forkTest("a git pull --rebase onto a commit whose outputs were never built completes, and ends with rebuilt outputs", (t) => {
+    const origin = join(t.tmp, "origin.git");
+    sh(["git", "init", "-q", "--bare", "-b", "main", origin], { cwd: t.tmp });
+    t.recordFeature();
+    git(t, ["remote", "add", "origin", origin]);
+    git(t, ["push", "-q", "origin", "main"]);
+    sh(["git", "clone", "-q", origin, "second"], { cwd: t.tmp });
+    const second = new Repo(join(t.tmp, "second"));
+    second.write(OURS, "pulled\n");
+    second.commit("data, without a build");
+    sh(["git", "push", "-q", "origin", "main"], { cwd: second.path });
+    git(t, ["commit", "-qm", "local", "--allow-empty"]);
+    git(t, ["pull", "-q", "--rebase", "origin", "main"], hooked(t));
+    expect(t.fork.read("extra.txt")).toBe("pulled\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).not.toContain("behind");
+  });
+
+  forkTest("a git pull from a clone that recorded a change rebuilds the output", (t) => {
+    const origin = join(t.tmp, "origin.git");
+    sh(["git", "init", "-q", "--bare", "-b", "main", origin], { cwd: t.tmp });
+    t.recordFeature();
+    git(t, ["remote", "add", "origin", origin]);
+    git(t, ["push", "-q", "origin", "main"]);
+    sh(["git", "clone", "-q", origin, "second"], { cwd: t.tmp });
+    const second = new Repo(join(t.tmp, "second"));
+    second.write(OURS, "pulled\n");
+    second.commit("data, without a build");
+    sh(["git", "push", "-q", "origin", "main"], { cwd: second.path });
+    git(t, ["pull", "-q", "origin", "main"], hooked(t));
+    expect(t.fork.read("extra.txt")).toBe("pulled\n");
+  });
+
+  forkTest("the branches of the #334 repro merge and rebuild with no manual build", (t) => {
+    git(t, ["switch", "-qc", "b1"]);
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
+    sh(["git", "commit", "-qam", "b1"], { cwd: t.fork.path, env: hooked(t, { PATCHBOOK_INTENT: "Shout the second line." }) });
+    git(t, ["switch", "-q", "main"]);
+    git(t, ["switch", "-qc", "b2"]);
+    t.fork.write("app2.txt", "second\n");
+    git(t, ["add", "-A"]);
+    sh(["git", "commit", "-qm", "b2"], { cwd: t.fork.path, env: hooked(t, { PATCHBOOK_INTENT: "Add app2.txt." }) });
+    git(t, ["switch", "-q", "main"]);
+    git(t, ["merge", "-q", "b1"], hooked(t));
+    git(t, ["merge", "-q", "b2", "-m", "merge b2"], hooked(t));
+    const paths = read(join(t.fork.path, ".patchbook/build.lock")).split("\n").filter(Boolean).map((l) => l.replace(/^\d{6} [0-9a-f]{40} /, ""));
+    expect(new Set(paths).size).toBe(paths.length);
+    expect(paths).toContain("app2.txt");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("a build that fails after a merge says why and leaves the merge done", (t) => {
+    staleBranch(t);
+    git(t, ["switch", "-q", "data"]);
+    writeFileSync(join(t.fork.path, ".patchbook/series"), read(join(t.fork.path, ".patchbook/series")) + "bogus\n");
+    t.fork.commit("a series naming no change");
+    git(t, ["switch", "-q", "main"]);
+    const merged = git(t, ["merge", "-q", "data"], hooked(t), false);
+    expect(merged.code).toBe(0);
+    expect(merged.stderr).toContain("no change called bogus");
+    expect(merged.stderr).toContain("patchbook: couldn't rebuild the output after this git command");
+    expect(git(t, ["rev-parse", "HEAD"]).stdout).toBe(git(t, ["rev-parse", "data"]).stdout);
+  });
+
+  forkTest("a merge over a hand edit says the build was refused, and keeps the edit", (t) => {
+    staleBranch(t);
+    t.fork.write("docs/new.txt", "hand edit\n");
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("three", "THREE"));
+    const merged = git(t, ["merge", "-q", "data"], hooked(t), false);
+    expect(merged.code).toBe(0);
+    expect(merged.stderr).toContain("these output files changed since the last build");
+    expect(t.fork.read("app.txt")).toContain("THREE");
+  });
+
+  forkTest("PATCHBOOK_HOOK=0 and hook.enabled turn the post hooks off", (t) => {
+    staleBranch(t);
+    git(t, ["merge", "-q", "data"], hooked(t, { PATCHBOOK_HOOK: "0" }));
+    expect(t.fork.read("extra.txt")).toBe("ours\n");
+    git(t, ["reset", "-q", "--hard", "ORIG_HEAD"]);
+    t.pb(["config", "hook.enabled", "false"], { cwd: t.fork.path });
+    const env = { ...t.env };
+    delete env["PATCHBOOK_HOOK"];
+    git(t, ["checkout", "-q", "data"], env);
+    expect(t.fork.read("extra.txt")).toBe("ours\n");
+  });
+
+  forkTest("status notes the output is behind the patchbook, and not after a build", (t) => {
+    staleBranch(t);
+    git(t, ["switch", "-q", "data"]);
+    const behind = t.pb(["status"], { cwd: t.fork.path });
+    expect(behind.stdout).toContain("note      the output is behind the patchbook: extra.txt differs from a build. Run `patchbook build`.\n");
+    expect(behind.stdout).toContain("no problems");
+    expect(behind.code).toBe(0);
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).not.toContain("behind");
+  });
+
+  forkTest("status does not call a hand edit behind the patchbook", (t) => {
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).not.toContain("behind");
+  });
+
+  test("hook install puts the post hooks first in the scripts a hook manager runs", () => {
+    const t = new Case();
+    try {
+      const fork = forkWith(t, { ".husky/pre-commit": NOTE_STAGED });
+      installManager(fork, ".husky");
+      const install = t.pb(["hook", "install"], { cwd: fork.path }).stderr;
+      expect(install).toContain("recorded the edit in the patchbook");
+      for (const name of POST) {
+        expect(fork.read(`.husky/${name}`)).toContain("patchbook hook build");
+        expect(isExecutable(join(fork.path, ".husky", name))).toBe(true);
+      }
+      expect(fork.read(".husky/post-checkout")).toContain('[ "$3" = 1 ]');
+      expect(t.pb(["hook", "install"], { cwd: fork.path }).stderr).not.toContain("put `patchbook hook build`");
+      t.pb(["build"], { cwd: fork.path });
+      expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+
+  test("hook install prints what to add when another tool's post hook is in the way", () => {
+    const t = new Case();
+    try {
+      const fork = forkWith(t, {});
+      for (const name of POST) rmSync(join(fork.path, ".git/hooks", name));
+      writeFileSync(join(fork.path, ".git/hooks/post-merge"), "#!/bin/sh\necho theirs\n", { mode: 0o755 });
+      const install = t.pb(["hook", "install"], { cwd: fork.path }).stderr;
+      expect(install).toContain("post-merge");
+      expect(install).toContain("patchbook hook build");
+      expect(fork.read(".git/hooks/post-merge")).toBe("#!/bin/sh\necho theirs\n");
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
 });
 
 describe("CrashInjection", () => {
