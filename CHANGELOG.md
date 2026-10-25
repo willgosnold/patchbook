@@ -2,6 +2,34 @@
 
 The hand-written part of each release's notes. GitHub's generated notes list the pull requests. This file says what a user needs to know. Paste a release's section at the top of its GitHub release notes.
 
+## 0.0.3
+
+### A new change gets its intent instead of going to `pending`
+
+When a record started a new change, the model had to put the intent under the name it had just chosen for the change. It often put it under the changed paths instead, as on a rename or a commit that touched many files. `record` then couldn't use the reply, put the edits in a change called `pending` with an empty intent, and `build` refused until you ran `patchbook intent`. Now the reply has its own field for the new change's intent, so the model has no key to guess. Replaying real prompts, a one-file rename went from 10 of 10 replies unusable to 0 of 10 (#319).
+
+### The model sees a rename or a copy as one
+
+The intent for a recorded `move` was written from a diff that showed the new path as an added file, listed twice, and never named the old path. A `copy` showed as a whole new file. So the intent described a new skill instead of the rename or where the files came from. Now the model sees the edit line, such as `move skills/a -> skills/a2` or `copy extra/skills/x -> skills/x`, and only what you changed in the file, diffed against the moved file (#320).
+
+### Status and build count every edit
+
+`status` and `build` printed `<n> edits apply`, and `status --json` reported `applied`, but the count left out `add`, `replace`, `delete`, `move` and `copy` edits. A change that vendored a skill with a `copy` edit reported 0. Now the count includes every edit that applies, once, however many outputs it reaches, and a later edit that deletes, replaces or moves its file doesn't undo it: a block entry in a file that a `copy` also writes elsewhere is one edit. A `copy` or `move` of a folder is one edit, as `CHANGE.md` lists it (#321).
+
+### Record names the change and writes its intent when the model can't
+
+When the model failed, as with a reply patchbook can't use, a timeout, no `claude` or `codex` CLI, or `intent.provider = none`, `record` and the commit hook put the edits in a change called `pending` with an empty intent. `status` reported it as a problem, and `build` and the hook's build refused until you ran `patchbook intent`. Now patchbook names the change from its edits and writes an intent that says what they do, so the build goes ahead:
+
+```
+$ PATCHBOOK_PROVIDER=none git commit -qm "rename a"
+rename-skills-a-to-skills-a2: Renames skills/a to skills/a2. Edits skills/a/SKILL.md.
+move     skills/a -> skills/a2
+file     a2/SKILL.md
+intent   by patchbook for rename-skills-a-to-skills-a2 (intent.provider is none). To replace it, run `patchbook intent rename-skills-a-to-skills-a2` or edit its line to `intent: <yours>`
+```
+
+`CHANGE.md` labels that line `intent (by patchbook):`, and `status` lists the change as a note, not a problem. To replace the intent, run `patchbook intent <name>`, or rewrite the line as `intent: ...`. While the model fails, the edits always go to a new change or the one you name, never to an existing change the model would have picked. A new block entry still gets an empty intent, and `build` refuses until `patchbook intent` fills it. A `pending` change that 0.0.1 recorded keeps its name, and its intent stays empty until you fill it or a later record adds to that change.
+
 ## 0.0.2
 
 ### Record writes a copy for a file copied from upstream
@@ -33,10 +61,6 @@ file     a2/SKILL.md
 
 A rename is still recorded as a `delete` and an `add` when the old and new versions keep, in order, less than half of the non-blank lines of the longer one, or when its edit can't be recorded on the moved file, as in a file whose copy uses placeholders. Renames recorded with 0.0.1 keep their `delete` and `add` lines.
 
-### Status and build count every edit
-
-`status` and `build` printed `<n> edits apply`, and `status --json` reported `applied`, but the count left out `add`, `replace`, `delete`, `move` and `copy` edits. A change that vendored a skill with a `copy` edit reported 0. Now the count includes every edit that applies, once, however many outputs it reaches, and a later edit that deletes, replaces or moves its file doesn't undo it: a block entry in a file that a `copy` also writes elsewhere is one edit. A `copy` or `move` of a folder is one edit, as `CHANGE.md` lists it (#321).
-
 ### Intents cover every file in a large record
 
 The model was given the diff cut at 40,000 characters, with no list of paths, so on a large record it never saw the later files and the intent named only the first ones. Now the prompt lists every changed path first, and each file's diff gets its own share of the budget. A long record loses detail in its diffs, never whole files (#309).
@@ -52,20 +76,6 @@ intent   may be stale: <change> (<why>)
 (#310)
 
 `record` also no longer writes two blank lines after an entry with an empty patched side (#311).
-
-### Record names the change and writes its intent when the model can't
-
-When the model failed, as with a reply patchbook can't use, a timeout, no `claude` or `codex` CLI, or `intent.provider = none`, `record` and the commit hook put the edits in a change called `pending` with an empty intent. `status` reported it as a problem, and `build` and the hook's build refused until you ran `patchbook intent`. Now patchbook names the change from its edits and writes an intent that says what they do, so the build goes ahead:
-
-```
-$ PATCHBOOK_PROVIDER=none git commit -qm "rename a"
-rename-skills-a-to-skills-a2: Renames skills/a to skills/a2. Edits skills/a/SKILL.md.
-move     skills/a -> skills/a2
-file     a2/SKILL.md
-intent   by patchbook for rename-skills-a-to-skills-a2 (intent.provider is none). To replace it, run `patchbook intent rename-skills-a-to-skills-a2` or edit its line to `intent: <yours>`
-```
-
-`CHANGE.md` labels that line `intent (by patchbook):`, and `status` lists the change as a note, not a problem. To replace the intent, run `patchbook intent <name>`, or rewrite the line as `intent: ...`. While the model fails, the edits always go to a new change or the one you name, never to an existing change the model would have picked. A new block entry still gets an empty intent, and `build` refuses until `patchbook intent` fills it. A `pending` change that 0.0.1 recorded keeps its name, and its intent stays empty until you fill it or a later record adds to that change.
 
 ## 0.0.1
 
