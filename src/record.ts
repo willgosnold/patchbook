@@ -481,6 +481,14 @@ function asked(edits: readonly Edited[]): Asked {
   return ask;
 }
 
+/** The edits that need a change name, as the model reads them: a move or copy as its line with no diff, and every other edit by its output
+ * path. A file edited after a move is diffed against the moved file as the build writes it at its new path, so only the edit shows. */
+function pendingEdits(a: Assembly, current: ReadonlyMap<string, Seen>, edits: readonly Edited[]): Part[] {
+  const moved = new Map(edits.flatMap((e): [string, File][] => (e.kind === "file-edit" && !a.out.has(e.path) ? [[e.path, a.build({ kind: "up", path: e.rel }, e.path)]] : [])));
+  const built = { ...a, out: new Map([...a.out, ...moved]) };
+  return edits.filter((e) => needOf(e).named).flatMap((e): Part[] => (e.kind === "follow" ? [{ line: editText(e.edit), diff: "" }] : pendingParts(built, current, [e.path])));
+}
+
 /** An existing change or block entry this record adds to, by its key in the model's reply, with the intent it has. */
 type Joined = { key: string; was: string; parts(): Part[] };
 
@@ -673,7 +681,7 @@ export function record(
 
   const given = intent === null ? null : oneLine(intent) || null;
   const ask = asked(edits);
-  const newParts = () => [...pendingParts(a, current, ask.named), ...ask.drafts.map(([p, d]) => entryPart(p, d.upstream, d.patched))];
+  const newParts = () => [...pendingEdits(a, current, edits), ...ask.drafts.map(([p, d]) => entryPart(p, d.upstream, d.patched))];
   const joins = joined(ask, change === null ? null : changes.get(change) ?? null, newParts);
   const naming = nameAndIntent(ask, change, given, roster, joins, (fresh, offered) =>
     writeIntents(book, offered, fresh && { ...fresh, parts: newParts() }, joins.map((j) => ({ key: j.key, was: j.was, parts: j.parts() }))));
