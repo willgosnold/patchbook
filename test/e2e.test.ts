@@ -9161,6 +9161,61 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("0 edits apply");
   });
 
+  const patchedEntry = (t: ForkCase, rel: string, text: string, kind: "policy" | "keep", hash = "0850995b29fd"): void => {
+    mkdirSync(dirname(join(t.fork.path, `.patchbook/blocks/${rel}`)), { recursive: true });
+    writeFileSync(join(t.fork.path, `.patchbook/blocks/${rel}.entries`),
+      `=== entry ${hash}\nkind: ${kind}\nrules: \nintent: Reword it.\n--- upstream\n${text}\n--- patched\n${kind === "keep" ? text : "the guide"}\n`);
+  };
+  const applies = (t: ForkCase, n: number): void => {
+    expect(JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path }).stdout)).toMatchObject({ applied: n, problems: [] });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain(`${n} edits apply`);
+    expect(t.pb(["build"], { cwd: t.fork.path }).stdout).toContain(`with ${n} edits`);
+  };
+
+  forkTest("status counts a block entry once when a copy gives its file a second output", (t) => {
+    patchedEntry(t, "docs/guide.md", "a guide", "policy");
+    handChange(t, "copy-guide", "Copy the guide.", ["copy docs/guide.md -> manual/guide.md"]);
+    applies(t, 2);
+    expect([t.fork.read("docs/guide.md"), t.fork.read("manual/guide.md")]).toEqual(["the guide\n", "the guide\n"]);
+  });
+
+  forkTest("status counts a keep entry once when a copy gives its file a second output", (t) => {
+    patchedEntry(t, "docs/guide.md", "a guide", "keep");
+    handChange(t, "copy-guide", "Copy the guide.", ["copy docs/guide.md -> manual/guide.md"]);
+    applies(t, 2);
+  });
+
+  forkTest("status counts a block entry once across a copy of a copy and a move", (t) => {
+    patchedEntry(t, "docs/guide.md", "a guide", "policy");
+    handChange(t, "spread", "Spread the guide.", [
+      "copy docs/guide.md -> a/guide.md",
+      "copy a/guide.md -> b/guide.md",
+      "move docs/guide.md -> c/guide.md",
+    ]);
+    applies(t, 4);
+    expect(["a", "b", "c"].map((d) => t.fork.read(`${d}/guide.md`))).toEqual(["the guide\n", "the guide\n", "the guide\n"]);
+  });
+
+  forkTest("status counts a block entry once when it matches two identical paragraphs", (t) => {
+    upstreamFile(t, "dup.md", DUP);
+    patchedEntry(t, "dup.md", "Example:", "policy", "872887e563e7");
+    applies(t, 1);
+  });
+
+  forkTest("status counts a file edit once when a copy gives its file a second output", (t) => {
+    t.fork.write("docs/guide.md", "my guide\n");
+    t.pb(["record", "own", "--intent", "Own the guide."], { cwd: t.fork.path });
+    handChange(t, "copy-guide", "Copy the guide.", ["copy docs/guide.md -> manual/guide.md"]);
+    applies(t, 2);
+    expect([t.fork.read("docs/guide.md"), t.fork.read("manual/guide.md")]).toEqual(["my guide\n", "my guide\n"]);
+  });
+
+  forkTest("status does not count a block entry whose file a delete removes", (t) => {
+    patchedEntry(t, "docs/guide.md", "a guide", "policy");
+    handChange(t, "drop-guide", "Drop the guide.", ["delete docs/guide.md"]);
+    expect(JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path, code: 1 }).stdout)).toMatchObject({ applied: 1 });
+  });
+
   forkTest("record records an edit to a CRLF file with block entries", (t) => {
     const crlf = "---\r\nname: crlf\r\n---\r\n# Title\r\n\r\nBody one.\r\n\r\nBody two.\r\n";
     upstreamFile(t, "crlf.md", crlf);
