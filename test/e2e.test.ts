@@ -11104,6 +11104,37 @@ describe("VendorTest", () => {
     expect(existsSync(join(change, "ours"))).toBe(false);
   });
 
+  vendorTest("record of a renamed and edited skill shows the model the move and the edit alone", (t) => {
+    committedSkillA(t);
+    sh(["git", "mv", "skills/a", "skills/a2"], { cwd: t.repo.path });
+    t.repo.write("skills/a2/SKILL.md", t.repo.read("skills/a2/SKILL.md").replace("name: a\n", "name: a2\n"));
+    t.pb(["record"], { cwd: t.repo.path });
+    const prompt = read(join(t.tmp, "prompt.txt"));
+    expect(prompt).toContain("Changed paths:\nmove skills/a -> skills/a2\na2/SKILL.md: changed, +1 -1 lines\n\n"
+      + "--- built/a2/SKILL.md\n+++ disk/a2/SKILL.md\n@@ -1,5 +1,5 @@\n ---\n-name: a\n+name: a2\n ---\n \n First paragraph of a.\n");
+    expect(prompt).not.toContain("added");
+    expect(prompt).not.toContain("/dev/null");
+    expect(prompt.split("a2/SKILL.md: ")).toHaveLength(2);
+  });
+
+  vendorTest("record of a renamed skill with no edit shows the model the move and no diff", (t) => {
+    committedSkillA(t);
+    sh(["git", "mv", "skills/a", "skills/a2"], { cwd: t.repo.path });
+    t.pb(["record"], { cwd: t.repo.path });
+    expect(read(join(t.tmp, "prompt.txt"))).toContain("Changed paths:\nmove skills/a -> skills/a2\n\n");
+    expect(read(join(t.tmp, "prompt.txt"))).not.toContain("added");
+  });
+
+  vendorTest("record of a skill copied from another upstream shows the model the copy and no diff", (t) => {
+    extraSkill(t);
+    t.repo.write("skills/x/SKILL.md", SKILL_X);
+    t.pb(["record"], { cwd: t.repo.path });
+    const prompt = read(join(t.tmp, "prompt.txt"));
+    expect(prompt).toContain("Changed paths:\ncopy extra/skills/x -> skills/x\n\n");
+    expect(prompt).not.toContain("added");
+    expect(prompt).not.toContain("/dev/null");
+  });
+
   vendorTest("hook records a renamed skill that holds an empty file as one folder move, and the empty file follows upstream", (t) => {
     committedSkillA(t, { "empty.keep": "" });
     expect(t.repo.read("skills/a/empty.keep")).toBe("");
