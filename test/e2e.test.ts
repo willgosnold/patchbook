@@ -16647,6 +16647,18 @@ describe("PostHookTest", () => {
     expect(t.fork.read("extra.txt")).toBe("ours\n");
   });
 
+  forkTest("a branch checkout with unchanged build inputs does not run a build", (t) => {
+    t.fork.write(".patchbook/series", "bogus\n");
+    t.fork.commit("invalid data on both branches");
+    git(t, ["switch", "-qc", "same-inputs"]);
+    t.fork.write("app.txt", "only the output changed\n");
+    t.fork.commit("output only");
+    const switched = git(t, ["checkout", "-q", "main"], hooked(t));
+    expect(switched.stderr).toBe("");
+    expect(t.fork.read("app.txt")).toContain("two");
+    expect(git(t, ["status", "--porcelain"]).stdout).toBe("");
+  });
+
   forkTest("the post-rewrite hook rebuilds after a rebase, not after an amend", (t) => {
     staleBranch(t);
     git(t, ["switch", "-q", "data"]);
