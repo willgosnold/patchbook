@@ -6219,7 +6219,7 @@ describe("ForkTest", () => {
     ["has no JSON object", "I could not decide.", "claude's reply isn't JSON: "],
     ["is not JSON", '{"change": null, "intents": }', "claude's reply isn't JSON: "],
     ["has a second object", '{"change": null, "intents": {"pending": "x"}} {"y"}', "claude's reply isn't JSON: "],
-    ["has no intents", '{"change": null}', "claude's reply: intents is missing.\n"],
+    ["has no intents", '{"change": null}', "claude's reply: intents.pending is missing.\n"],
     ["has a change that is not a string", '{"change": 1, "intents": {"pending": "Shout."}}', "claude's reply: change must be a string, not 1.\n"],
     ["has an intent that is null", '{"change": null, "intents": {"pending": null}}', "claude's reply: intents.pending must be a string, not null.\n"],
     ["has no intent for the change", '{"change": null, "intents": {"other": "Shout."}}', "claude's reply: intents.pending is missing.\n"],
@@ -6339,17 +6339,17 @@ describe("ForkTest", () => {
     const intents = ["null", "7", "true", '{"a": 1}', "[]"];
     for (const [i, intent] of intents.entries()) {
       t.fork.write(`extra${i}.txt`, "ours\n");
-      writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "model-name", "intents": {"model-name": ${intent}}}'\n`);
+      writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "model-name", "intent": ${intent}}'\n`);
       const run = t.pb(["record"], { cwd: t.fork.path });
       expect(run.stdout).toContain("no intent yet for ");
-      expect(run.stdout).toContain("claude didn't return a usable name and intent)");
+      expect(run.stdout).toContain("claude didn't return a usable name and intent: claude's reply");
     }
     expect(readdirSync(join(t.fork.path, ".patchbook/changes")).sort()).toEqual(["pending", "pending-2", "pending-3", "pending-4", "pending-5"]);
     expect(read(join(t.fork.path, ".patchbook/series"))).not.toContain("model-name");
   });
 
   forkTest("record lets the model pick a name the series lists without a folder", (t) => {
-    writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "ghost", "intents": {"ghost": "Ghost intent."}}'\n`);
+    writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "ghost", "intent": "Ghost intent."}'\n`);
     writeFileSync(join(t.fork.path, ".patchbook/series"), "ghost\n");
     t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
     expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toContain("ghost: Ghost intent.");
@@ -9157,7 +9157,7 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
       + "  delete docs/guide2.md: copy docs/guide.md -> docs/guide2.md in second, later in the series, has to come before it\n"
       + "Record into second or a change after it, or into a new change.\n");
     expect(changeText(t, "first")).toBe(first);
-    writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > ${t.tmp}/prompt.txt\necho '{"change": "first", "intents": {"first": "Add a first file."}}'\n`);
+    writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > ${t.tmp}/prompt.txt\necho '{"change": "first", "intent": "Add a first file."}'\n`);
     expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe("first-2: Add a first file.\ndelete   docs/guide2.md\n");
     expect(read(join(t.tmp, "prompt.txt"))).toContain("second: Copy the guide.");
     expect(read(join(t.tmp, "prompt.txt"))).not.toContain("first: Add a first file.");
@@ -11179,9 +11179,9 @@ describe("VendorTest", () => {
   vendorTest("record of a paragraph leaves the intent empty for a model reply whose intent is not a string", (t) => {
     const entries = t.missingScaffoldPatchBuild();
     t.repo.write("skills/hello/SKILL.md", t.repo.read("skills/hello/SKILL.md").replaceAll("Then wave.", "Then wave twice."));
-    writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": null, "intents": {"paragraphs": null}}'\n`);
+    writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"intent": null}'\n`);
     const run = t.pb(["record"], { cwd: t.repo.path });
-    expect(run.stdout).toContain("no intent yet for the new entries (claude didn't return a usable name and intent)");
+    expect(run.stdout).toContain("no intent yet for the new entries (claude didn't return a usable name and intent: claude's reply: intent is null)");
     expect(read(entries)).toMatch(/--- patched\nThen wave twice\./);
     expect(read(entries)).toMatch(/kind: policy\nrules: \nintent: \n/);
   });
@@ -15425,7 +15425,7 @@ describe("PendingIntentTest", () => {
       const body = {
         exit: "echo 'fake claude: offline' >&2\nexit 1",
         unusable: "echo 'I cannot help with that.'",
-        timeout: `sleep 3\necho '{"change": "slow", "intents": {"slow": "Too late."}}'`,
+        timeout: `sleep 3\necho '{"change": "slow", "intent": "Too late."}'`,
       }[kind];
       writeFileSync(claude, `#!/bin/sh\ncat > /dev/null\n${body}\n`);
       if (kind === "timeout") t.env["PATCHBOOK_INTENT_TIMEOUT"] = "1";
@@ -15526,14 +15526,14 @@ describe("PendingIntentTest", () => {
   ] as const) {
     forkTest(`record with a working model prints the line for ${what}`, (t) => {
       t.recordFeature();
-      writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "${picked}", "intents": {"${picked}": "Make it louder."}}'\n`);
+      writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "${picked}", "intent": "Make it louder."}'\n`);
       t.fork.write("more.txt", "more\n");
       expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe(said + "add      more.txt\n" + rewrote);
     });
 
     forkTest(`hook with a working model prints the line for ${what}`, (t) => {
       t.recordFeature();
-      writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "${picked}", "intents": {"${picked}": "Make it louder."}}'\n`);
+      writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "${picked}", "intent": "Make it louder."}'\n`);
       t.fork.write("more.txt", "more\n");
       const run = hookCommit(t);
       expect(run.code).toBe(0);
@@ -15575,7 +15575,7 @@ describe("PendingIntentTest", () => {
     t.fork.write("more.txt", "more\n");
     t.pb(["record"], { cwd: t.fork.path });
     delete t.env["PATCHBOOK_PROVIDER"];
-    writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "pending", "intents": {"pending": "Ship more files."}}'\n`);
+    writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"change": "pending", "intent": "Ship more files."}'\n`);
     chmodSync(join(t.tmp, "bin/claude"), 0o755);
     t.fork.write("third.txt", "third\n");
     expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe("adding to pending\nadd      third.txt\nintent   pending: Ship more files.\n");
@@ -15587,7 +15587,7 @@ describe("PendingIntentTest", () => {
   describe("provider none", () => {
     const marker = (t: Case): string => {
       const file = join(t.tmp, "model-ran");
-      writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ntouch ${file}\necho '{"change": "x", "intents": {"x": "y"}}'\n`);
+      writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ntouch ${file}\necho '{"change": "x", "intent": "y"}'\n`);
       return file;
     };
 
@@ -15838,7 +15838,7 @@ describe("PendingIntentTest", () => {
   });
 
   describe("the model call", () => {
-    const REPLY = '{"change": "louder", "intents": {"louder": "Make it louder."}}';
+    const REPLY = '{"change": "louder", "intent": "Make it louder."}';
 
     const fakeReplying = (t: Case, provider: string, reply: string): void => {
       const file = join(t.tmp, "bin", provider);
@@ -15882,9 +15882,9 @@ describe("PendingIntentTest", () => {
       ["a JSON fence", "```json\n" + REPLY + "\n```", "louder: Make it louder."],
       ["a bare fence", "```\n" + REPLY + "\n```", "louder: Make it louder."],
       ["a fence with blank lines around it", "\n```json\n" + REPLY + "\n```\n\n", "louder: Make it louder."],
-      ["an object over several lines", '{\n  "change": "louder",\n  "intents": {\n    "louder": "Make it louder."\n  }\n}', "louder: Make it louder."],
-      ["an intent with a closing brace", '{"change": "louder", "intents": {"louder": "Close the } in the header."}}', "louder: Close the } in the header."],
-      ["an intent with braces in a fence", '```json\n{"change": "louder", "intents": {"louder": "Use {braces} and a } here."}}\n```', "louder: Use {braces} and a } here."],
+      ["an object over several lines", '{\n  "change": "louder",\n  "intent": "Make it louder."\n}', "louder: Make it louder."],
+      ["an intent with a closing brace", '{"change": "louder", "intent": "Close the } in the header."}', "louder: Close the } in the header."],
+      ["an intent with braces in a fence", '```json\n{"change": "louder", "intent": "Use {braces} and a } here."}\n```', "louder: Use {braces} and a } here."],
     ];
     for (const [what, reply, line] of USABLE) {
       forkTest(`record takes the name and intent from ${what}`, (t) => {
@@ -15909,10 +15909,10 @@ describe("PendingIntentTest", () => {
       ["prose after the object", `${REPLY}\nHope that helps.`],
       ["prose on both sides of the object", `Sure.\n${REPLY}\nHope that helps.`],
       ["prose on the same line as the object", `Sure. ${REPLY}`],
-      ["two objects", `${REPLY}\n{"change": "other", "intents": {"other": "Something else."}}`],
+      ["two objects", `${REPLY}\n{"change": "other", "intent": "Something else."}`],
       ["an object followed by a stray brace", `${REPLY}\n}`],
       ["a fence with prose around it", "Here:\n```json\n" + REPLY + "\n```\nDone."],
-      ["two fences", "```json\n" + REPLY + "\n```\n```json\n{\"change\": \"other\", \"intents\": {\"other\": \"Something else.\"}}\n```"],
+      ["two fences", "```json\n" + REPLY + "\n```\n```json\n{\"change\": \"other\", \"intent\": \"Something else.\"}\n```"],
       ["a fence of another language", "```js\n" + REPLY + "\n```"],
       ["a fence around text", "```\nnot json\n```"],
       ["an unclosed fence", "```json\n" + REPLY],
@@ -15920,7 +15920,7 @@ describe("PendingIntentTest", () => {
       ["an array nested too deep to decode", "[".repeat(32768) + "0" + "]".repeat(32768)],
       ["an object with no intents", '{"change": "louder"}'],
       ["an object with no intent for the change it picks", '{"change": "louder", "intents": {"other": "Make it louder."}}'],
-      ["an object that picks no change", '{"change": null, "intents": {"louder": "Make it louder."}}'],
+      ["an object that picks no change", '{"change": null, "intent": "Make it louder."}'],
       ["text that is not JSON", "I cannot help with that."],
       ["an empty reply", ""],
       ["a reply of only whitespace", "   \n\n"],
@@ -15930,7 +15930,7 @@ describe("PendingIntentTest", () => {
         fakeReplying(t, "claude", reply);
         t.fork.write("extra.txt", "ours\n");
         const run = t.pb(["record"], { cwd: t.fork.path });
-        expect(run.stdout).toBe("pending  no intent yet for pending (claude didn't return a usable name and intent). To fill it: patchbook intent pending\nadd      extra.txt\n");
+        expect(run.stdout).toMatch(/^pending  no intent yet for pending \(claude didn't return a usable name and intent: claude's reply[^\n]+\)\. To fill it: patchbook intent pending\nadd      extra\.txt\n$/);
         expectPending(t, "pending");
       });
 
@@ -15939,7 +15939,7 @@ describe("PendingIntentTest", () => {
         t.fork.write("extra.txt", "ours\n");
         const run = hookCommit(t);
         expect(run.code).toBe(0);
-        expect(run.stderr).toContain("pending  no intent yet for pending (claude didn't return a usable name and intent)");
+        expect(run.stderr).toContain("pending  no intent yet for pending (claude didn't return a usable name and intent: claude's reply");
         expect(committed(t)).toContain("extra.txt");
         expect(committed(t)).toContain(".patchbook/changes/pending/CHANGE.md");
         expectPending(t, "pending");
@@ -15983,7 +15983,7 @@ describe("StaleIntentTest", () => {
     chmodSync(join(t.tmp, "bin/claude"), 0o755);
     return () => (existsSync(log) ? read(log).split("\0").slice(0, -1) : []);
   };
-  const reply = (change: string | null, intents: Record<string, string>): string => JSON.stringify({ change, intents });
+  const reply = (change: string | null, intents: Record<string, string>, intent?: string): string => JSON.stringify({ change, ...(intent ? { intent } : {}), intents });
 
   forkTest("an edit to a file a change owns asks the model once, with the change's whole diff, and rewrites its intent", (t) => {
     t.recordFeature();
@@ -16021,7 +16021,7 @@ describe("StaleIntentTest", () => {
   forkTest("a model that files new edits into an existing change replaces its intent in the same call", (t) => {
     t.recordFeature();
     const intent = "Shout the second line, add extra.txt and more.txt, drop the guide.";
-    const prompts = model(t, reply("feature", { feature: intent }));
+    const prompts = model(t, reply("feature", {}, intent));
     t.fork.write("more.txt", "more\n");
     expect(t.pb(["record"], { cwd: t.fork.path }).stdout).toBe(`adding to feature\nadd      more.txt\nintent   feature: ${intent}\n`);
     expect(changeText(t, "feature")).toContain(`intent: ${intent}\n`);

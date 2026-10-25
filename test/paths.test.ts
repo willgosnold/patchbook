@@ -28,7 +28,7 @@ ${stderr ? `printf '%s\\n' ${q(stderr)} >&2\n` : ""}exit ${code}
   chmodSync(fake, 0o755);
 }
 
-const answer = (change: string, intent: string): string => JSON.stringify({ change, intents: { [change]: intent } });
+const answer = (change: string, intent: string): string => JSON.stringify({ change, intent });
 
 /** A case with no model settings from the environment, so each test sets the ones it means to use. */
 class Sandbox extends Case {
@@ -188,7 +188,7 @@ describe("the codex provider", () => {
     const prompt = read(join(t.tmp, "codex.prompt"));
     expect(prompt).toContain("disk/app.txt");
     expect(prompt).toContain("-two\n+TWO");
-    expect(prompt).toContain('Reply with only a JSON object: {"change": "<name>", "intents": {"<key>": "<intent>", ...}}');
+    expect(prompt).toContain('Reply with only a JSON object: {"change": "<name>", "intent": "<intent>"}.');
     expect(out).toContain("codex-shout: Shout the second line.");
     expect(t.changes()).toEqual(["codex-shout"]);
     expect(t.fork.read(".patchbook/changes/codex-shout/CHANGE.md")).toContain("intent: Shout the second line.");
@@ -209,12 +209,12 @@ describe("the codex provider", () => {
 
   forkTest("a name given to record wins over the one codex picks", (t) => {
     t.env["PATCHBOOK_PROVIDER"] = "codex";
-    t.fake("codex", JSON.stringify({ change: "codex-pick", intents: { mine: "Shout the second line." } }));
+    t.fake("codex", JSON.stringify({ change: "codex-pick", intent: "Shout the second line." }));
     t.edit();
     t.record(["mine"]);
     expect(t.changes()).toEqual(["mine"]);
     expect(t.fork.read(".patchbook/changes/mine/CHANGE.md")).toContain("intent: Shout the second line.");
-    expect(read(join(t.tmp, "codex.prompt"))).toContain('For "mine": these edits are a new change called mine.');
+    expect(read(join(t.tmp, "codex.prompt"))).toContain('For these edits: they are a new change called mine. Write its intent in "intent".');
   });
 
   forkTest("a codex that fails is named in the pending note, and no change takes a name or intent from it", (t) => {
@@ -234,21 +234,34 @@ describe("the codex provider", () => {
     "{not json}",
     answer("Not Kebab Case", "Shout."),
     answer("codex-shout", ""),
-    '{"change": 5, "intents": {"5": "Shout."}}',
-    '{"intents": {"codex-shout": "Shout."}}',
+    '{"change": 5, "intent": "Shout."}',
+    '{"intent": "Shout."}',
+    '{"change": "codex-shout", "intents": {"codex-shout": "Shout."}}',
+    '{"change": null, "intent": "Shout."}',
   ]) {
     forkTest(`an answer codex garbles (${reply}) is named in the pending note, and no change takes a name or intent from it`, (t) => {
       t.env["PATCHBOOK_PROVIDER"] = "codex";
       t.fake("codex", reply);
       t.edit();
       const out = t.record().stdout;
-      expect(out).toContain("pending  no intent yet for pending (codex didn't return a usable name and intent). To fill it: patchbook intent pending");
+      expect(out).toContain("pending  no intent yet for pending (codex didn't return a usable name and intent: codex's reply");
+      expect(out).toContain(". To fill it: patchbook intent pending");
       expect(t.called("codex")).toBe(true);
       expect(t.changes()).toEqual(["pending"]);
       expect(t.fork.read(".patchbook/changes/pending/CHANGE.md")).toContain("\nintent:\n");
       for (const taken of ["Not Kebab Case", "not-kebab-case", "codex-shout", "Shout."]) expect(t.changeText()).not.toContain(taken);
     });
   }
+});
+
+describe("an unusable reply", () => {
+  forkTest("the pending note says why, so the reply's fault can be told from the model's failure", (t) => {
+    t.env["PATCHBOOK_PROVIDER"] = "codex";
+    t.fake("codex", JSON.stringify({ change: "codex-shout", intents: { "app.txt": "Shout." } }));
+    t.edit();
+    const out = t.record().stdout;
+    expect(out).toContain("pending  no intent yet for pending (codex didn't return a usable name and intent: codex's reply: intent is missing). To fill it: patchbook intent pending");
+  });
 });
 
 describe("the model CLI patchbook picks when no provider is set", () => {

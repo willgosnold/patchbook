@@ -1192,7 +1192,7 @@ describe.skipIf(!inSandbox)("writeIntents", () => {
   test("lists a change with no intent as (no intent yet) in the prompt, never None or nothing", async () => {
     const book = await answering("true");
     const prompt = join(scratch(), "prompt.txt");
-    PROVIDERS.set("sh", { model: "m", effort: "e", command: () => ["sh", "-c", `cat >${prompt}; echo '{"change": null, "intents": {"x": "Do x."}}'`] });
+    PROVIDERS.set("sh", { model: "m", effort: "e", command: () => ["sh", "-c", `cat >${prompt}; echo '{"intent": "Do x."}'`] });
     const changes = new Map([
       ["blank", new Change("blank", "", "")],
       ["said", new Change("said", "", "Say it.")],
@@ -1201,6 +1201,75 @@ describe.skipIf(!inSandbox)("writeIntents", () => {
     const text = readFileSync(prompt, "utf8");
     expect(text).toContain("blank: (no intent yet)\nsaid: Say it.");
     expect(text).not.toContain("None");
+  });
+
+  describe("the reply shape", () => {
+    const PICK = { name: null, named: true, parts: [{ line: "a.txt: added, +1 -0 lines", diff: "" }] };
+    const PARAGRAPHS = { name: null, named: false, parts: [] };
+    const R = { key: "r", was: "Old r.", parts: [] };
+
+    const asking = async (reply: string) => {
+      const book = await answering("true");
+      const prompt = join(scratch(), "prompt.txt");
+      PROVIDERS.set("sh", { model: "m", effort: "e", command: () => ["sh", "-c", `cat >${prompt}; echo '${reply}'`] });
+      return { book, prompt };
+    };
+
+    test("a picked change's intent is the reply's intent, not a key of intents", async () => {
+      const { book } = await asking('{"change": "new-name", "intent": "Do it."}');
+      const got = writeIntents(book, new Map(), PICK, []);
+      expect(got.change).toBe("new-name");
+      expect([...got.intents]).toEqual([["new-name", "Do it."]]);
+    });
+
+    test("an intents key for a path is no substitute for the intent", async () => {
+      const { book } = await asking('{"change": "new-name", "intents": {"a.txt": "Do it."}}');
+      expect(() => writeIntents(book, new Map(), PICK, [])).toThrow("intent is missing");
+    });
+
+    test("a blank or null intent is unusable", async () => {
+      for (const [intent, why] of [['""', "blank"], ["null", "null"]]) {
+        const { book } = await asking(`{"change": "new-name", "intent": ${intent}}`);
+        expect(() => writeIntents(book, new Map(), PICK, [])).toThrow(`intent is ${why}`);
+      }
+    });
+
+    test("new block entries take their intent from intent, and each refresh from intents under its own key", async () => {
+      const { book } = await asking('{"intent": "Tweak.", "intents": {"r": "New r."}}');
+      expect([...writeIntents(book, new Map(), PARAGRAPHS, [R]).intents]).toEqual([["paragraphs", "Tweak."], ["r", "New r."]]);
+    });
+
+    test("a refresh with no fresh edits is read from intents alone", async () => {
+      const { book } = await asking('{"intents": {"r": "New r."}}');
+      expect([...writeIntents(book, new Map(), null, [R]).intents]).toEqual([["r", "New r."]]);
+    });
+
+    test("a refresh that intents leaves out is unusable", async () => {
+      const { book } = await asking('{"change": "new-name", "intent": "Do it."}');
+      expect(() => writeIntents(book, new Map(), PICK, [R])).toThrow("intents.r is missing");
+    });
+
+    test("a picked change that is also a refresh gets the one intent in intent, and intents need not repeat it", async () => {
+      const { book } = await asking('{"change": "r", "intent": "Old r, and a.txt."}');
+      const got = writeIntents(book, new Map([["r", new Change("r", "", "Old r.")]]), PICK, [R]);
+      expect([...got.intents]).toEqual([["r", "Old r, and a.txt."]]);
+    });
+
+    test("intent wins over a contradicting intents entry for the change it picked", async () => {
+      const { book } = await asking('{"change": "r", "intent": "Old r, and a.txt.", "intents": {"r": "Other."}}');
+      expect(writeIntents(book, new Map(), PICK, [R]).intents.get("r")).toBe("Old r, and a.txt.");
+    });
+
+    test("the prompt asks for intent beside change, and for intents only when a refresh is named", async () => {
+      const alone = await asking('{"change": "n", "intent": "i"}');
+      writeIntents(alone.book, new Map(), PICK, []);
+      expect(readFileSync(alone.prompt, "utf8")).toContain('Reply with only a JSON object: {"change": "<name>", "intent": "<intent>"}.');
+      const joined = await asking('{"change": "n", "intent": "i", "intents": {"r": "j"}}');
+      writeIntents(joined.book, new Map(), PICK, [R]);
+      const text = readFileSync(joined.prompt, "utf8");
+      expect(text).toContain('{"change": "<name>", "intent": "<intent>", "intents": {"<name>": "<intent>", ...}}');
+      expect(text).toContain('If you pick a change named below, put its intent in "intent" and leave it out of "intents".');
+    });
   });
 });
 
