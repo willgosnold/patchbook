@@ -342,7 +342,7 @@ export function patchBlocks(args: {
     used.add(key);
     const error = checkEntry(entry);
     if (error) problems.push({ problem: "invalid", ...where, detail: error });
-    applied++;
+    else applied++;
     const patched = rules.expand(entry.patched, (detail) => problems.push({ problem: "placeholder", ...where, detail }));
     if (entry.kind !== "keep") {
       const terms = rules.terms(outPath, patched);
