@@ -21,6 +21,11 @@ export const CHANGE_NAME = /^[a-z0-9][a-z0-9-]*$/;
 export const notAChangeName = (name: string) =>
   `${quote(name)} isn't a valid change name; use lowercase letters, digits and hyphens, starting with a letter or digit`;
 
+/** A line git leaves in a file it couldn't merge: `<<<<<<<`, `|||||||` (diff3), `=======` or `>>>>>>>`, then a space and a label or the line's end. */
+const MERGE_MARKER = /^(?:<{7}|\|{7}|={7}|>{7})(?: |\r?$)/;
+export const isMergeMarker = (line: string) => MERGE_MARKER.test(line);
+export const SERIES_CONFLICT = "has a merge conflict; keep both sides' change names, then run `patchbook build`";
+
 const ESCAPES: Record<string, number> = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, '"': 34, "\\": 92 };
 
 function quotePath(path: string): string {
@@ -227,7 +232,13 @@ export function appendSeries(book: Book, name: string): void {
 
 export function readChanges(book: Book, problems: Problem[], names: readonly string[] = readSeries(book)): Change[] {
   const changes: Change[] = [];
+  let merging = false;
   for (const name of names) {
+    if (isMergeMarker(name)) {
+      if (!merging) problems.push({ problem: "conflict", file: "series", detail: SERIES_CONFLICT, refuse: true });
+      merging = true;
+      continue;
+    }
     if (!CHANGE_NAME.test(name)) {
       problems.push({ problem: "invalid", file: "series", detail: notAChangeName(name), refuse: true });
       continue;

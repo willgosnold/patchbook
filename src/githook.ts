@@ -5,8 +5,8 @@ import type { Problem } from "./api.ts";
 import {
   assemble, type Assembly, buildLockPath, type BuildLock, builtAs, type Changes, changesOf, describe, handEdits, inRepo, parseBuildLock, readBuildLock, refuseFolderToFile, writeOutput,
 } from "./assemble.ts";
-import { Book, buildInputs, PB, parseLock, placeholderOutputs, under } from "./book.ts";
-import { type Change, readChanges } from "./changes.ts";
+import { Book, ATTRIBUTES_FILE, buildInputs, keepAttributes, PB, parseLock, placeholderOutputs, under } from "./book.ts";
+import { type Change, readChanges, SERIES_CONFLICT } from "./changes.ts";
 import { record } from "./record.ts";
 import { Fail } from "./lib/fail.ts";
 import {
@@ -411,6 +411,7 @@ function updateScript(path: string): boolean {
 }
 
 export function keepGitHook(book: Book, undo?: Undo): void {
+  if (keepAttributes(book.root, undo)) warn(`patchbook: added ${ATTRIBUTES_FILE}, so branches that each record a change merge without a conflict in series or build.lock. Commit it.\n`);
   const { hooksPath, hookFile } = hookPaths(book.root);
   if (hooksPath !== null || !hookEnabled(book) || !inBookRepo(book)) return;
   undo?.hold(dirname(hookFile));
@@ -761,12 +762,14 @@ async function runHook(undo: Undo) {
       + `To record what is staged, run \`git --literal-pathspecs checkout -- ${paths}\`, which puts it in the working copy. Then commit again.`);
   }
   const refused = a.problems.filter((p) => "refuse" in p);
-  const named = refused.filter((p) => p.file === "series");
+  const merging = refused.filter((p) => p.problem === "conflict");
+  const named = refused.filter((p) => p.file === "series" && p.problem !== "conflict");
   const edits = refused.filter((p) => p.file !== "series");
   if (refused.length) {
     const lines = (ps: Problem[]) => ps.map((p) => `  ${describe(p)}\n`).join("");
     const skip = "or skip the hook once with PATCHBOOK_HOOK=0.";
     throw new Fail([
+      ...(merging.length ? [`refusing this commit: series ${SERIES_CONFLICT}, ${skip}`] : []),
       ...(named.length ? [`refusing this commit: a change name isn't valid.\n${lines(named)}Rename it to lowercase letters, digits and dashes in series and changes/, ${skip}`] : []),
       ...(edits.length ? [`refusing this commit: a change writes where a build must not.\n${lines(edits)}Edit or remove that line in the change's CHANGE.md, ${skip}`] : []),
     ].join("\n"));
@@ -808,7 +811,7 @@ async function runHook(undo: Undo) {
     }
     if (built.length || written.length) warn(`patchbook: built from ${book.pins()}\n`);
   }
-  const wrote = [...unstaged(book.root, buildInputs(book)), ...built.map((p) => inRepo(book, p))];
+  const wrote = [...unstaged(book.root, [...buildInputs(book), ATTRIBUTES_FILE]), ...built.map((p) => inRepo(book, p))];
   const recordedIgnored = Array.from(ignoredInPatchbook(book.root)).filter(([p, oid]) => ignored.get(p) !== oid).map(([p]) => p);
   const adds: string[][] = [];
   if (wrote.length) adds.push(["--literal-pathspecs", "add", "-A", "--", ...wrote]);

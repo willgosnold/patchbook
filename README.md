@@ -71,7 +71,7 @@ That's why the intent matters most. It's how your change gets redone later, if u
 
 - [DESIGN.md](DESIGN.md) explains how patchbook works, in full. Good places to start:
   - [Layouts](DESIGN.md#layouts), for forks and folder builds.
-  - [Working with git](DESIGN.md#working-with-git), for merges, hook managers and commits that skip the hook.
+  - [Working with git](DESIGN.md#working-with-git), for merging branches that each record a change, hook managers and commits that skip the hook.
   - [Settings](DESIGN.md#settings) and [Config](DESIGN.md#config).
   - [The update skill](DESIGN.md#the-update-skill).
   - [Tool](DESIGN.md#tool), for building from source and running the tests.

@@ -4,7 +4,7 @@ import { basename, dirname, join } from "node:path";
 import pkg from "../package.json" with { type: "json" };
 import { cmdBuild, cmdScaffold, cmdStatus, writeBuildLock } from "./assemble.ts";
 import { cmdBlocks } from "./blocks.ts";
-import { Book, noticeLeftOut, PB, refuseFoldedUpstream, refuseNestedGit } from "./book.ts";
+import { Book, keepAttributes, noticeLeftOut, PB, refuseFoldedUpstream, refuseNestedGit } from "./book.ts";
 import { cmdShow } from "./changes.ts";
 import { cmdHook, commitAdvice, installHook, installHookOrWarn, keepGitHook } from "./githook.ts";
 import { arg, command, flag, option, parseArgv, type Program } from "./lib/args.ts";
@@ -46,6 +46,7 @@ function writeConfig(root: string, text: string): void {
   writeText(join(d, "series"), "");
   writeText(join(d, "retired.md"), "# Retired changes\n\nChanges dropped because upstream made them unnecessary or impossible, and why.\n");
   writeText(join(d, "config.toml"), text);
+  keepAttributes(root);
 }
 
 const noHook = () => ({ ...process.env, PATCHBOOK_HOOK: "0" });

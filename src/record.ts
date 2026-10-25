@@ -667,7 +667,10 @@ export function record(
   const roster = Roster.read(book, problems);
   const changes = roster.parsed;
   const badName = problems.find((p) => p.file === "series" && "refuse" in p);
-  if (badName) throw new Fail(`refusing to record: ${describe(badName)}\nRename it to lowercase letters, digits and dashes in series and changes/ first.`);
+  if (badName) {
+    throw new Fail(`refusing to record: ${describe(badName)}\n`
+      + (badName.problem === "conflict" ? "Keep both sides' change names in series, then run `patchbook build` first." : "Rename it to lowercase letters, digits and dashes in series and changes/ first."));
+  }
   const a = opts.assembly ?? assemble(book);
   const current = opts.seen;
   // Only files edited by hand since the last build. Others differ because the patchbook changed.

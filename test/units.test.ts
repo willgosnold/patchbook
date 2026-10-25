@@ -13,7 +13,7 @@ const sandbox = mkdtempSync(join(tmpdir(), "units"));
 const ambientConfigHome = process.env["XDG_CONFIG_HOME"];
 process.env["XDG_CONFIG_HOME"] = join(sandbox, "config");
 
-const { applyStructure, describe: describeProblem } = await import("../src/assemble.ts");
+const { applyStructure, describe: describeProblem, parseBuildLock } = await import("../src/assemble.ts");
 const { blockHash, blocksOf, blockSpans, checkEntry, formatEntry, nearest, parsePlaceholders, readEntries, Rules } = await import("../src/blocks.ts");
 const { Book, globRe, lockText, parseLock } = await import("../src/book.ts");
 const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
@@ -810,6 +810,21 @@ describe("formats", () => {
   const ID = "a".repeat(40);
   const OTHER = "b".repeat(40);
   const pin = (name: string, commit = ID, tree = OTHER) => ({ name, commit, tree });
+
+  describe("build.lock", () => {
+    const line = (mode: string, oid: string, path: string) => `${mode} ${oid.repeat(40)} ${path}\n`;
+
+    test("merge conflict markers are not entries", () => {
+      const text = "<<<<<<< HEAD\n" + line("100644", "a", "a.txt") + "||||||| base\n" + line("100644", "c", "a.txt") + "=======\n"
+        + line("100755", "b", "b.sh") + ">>>>>>> b2\n";
+      expect([...parseBuildLock(text)].map(([path, stamp]) => [path, stamp.oid[0]])).toEqual([["a.txt", "c"], ["b.sh", "b"]]);
+      expect(parseBuildLock("<<<<<<<\n=======\r\n>>>>>>>\n").size).toBe(0);
+    });
+
+    test("a path that only looks like a marker is still an entry", () => {
+      expect([...parseBuildLock(line("100644", "a", "======= x") + line("100644", "b", "<<<<<<<x"))].map(([path]) => path)).toEqual(["======= x", "<<<<<<<x"]);
+    });
+  });
 
   describe("upstream.lock", () => {
     const entry = (name: string) => `    {\n      "name": ${JSON.stringify(name)},\n      "commit": "${ID}",\n      "tree": "${OTHER}"\n    }`;
