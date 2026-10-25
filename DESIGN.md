@@ -308,7 +308,7 @@ Printed on stdout. Exit 0 if `problems` is empty, 1 if not. Plain `patchbook sta
 | --- | --- | --- |
 | `version` | `2` | |
 | `upstreams` | list | The entries of `upstream.lock` for the upstreams in the config: `{name, commit, tree}`, sorted by name. |
-| `applied` | integer | The number of edits that apply at the pins. |
+| `applied` | integer | The number of edits that apply at the pins, of every kind, plus one for each block entry that matches a paragraph. A copy or move of a folder is one edit. An edit that reports a problem as `gone` or `invalid` isn't counted. |
 | `problems` | list | The problems, as below. |
 | `lastSync` | object or null | The document in `last-sync.json`, or null if there is none. |
 

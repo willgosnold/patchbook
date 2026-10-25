@@ -33,6 +33,10 @@ file     a2/SKILL.md
 
 A rename is still recorded as a `delete` and an `add` when the old and new versions keep, in order, less than half of the non-blank lines of the longer one, or when its edit can't be recorded on the moved file, as in a file whose copy uses placeholders. Renames recorded with 0.0.1 keep their `delete` and `add` lines.
 
+### Status and build count every edit
+
+`status` and `build` printed `<n> edits apply`, and `status --json` reported `applied`, but the count left out `add`, `replace`, `delete`, `move` and `copy` edits. A change that vendored a skill with a `copy` edit reported 0. Now the count includes every edit that applies. A `copy` or `move` of a folder is one edit, as `CHANGE.md` lists it (#321).
+
 ### Intents cover every file in a large record
 
 The model was given the diff cut at 40,000 characters, with no list of paths, so on a large record it never saw the later files and the intent named only the first ones. Now the prompt lists every changed path first, and each file's diff gets its own share of the budget. A long record loses detail in its diffs, never whole files (#309).
