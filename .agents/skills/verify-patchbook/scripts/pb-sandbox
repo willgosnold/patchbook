@@ -10,7 +10,8 @@
 # checkout's src/cli.ts (or $PATCHBOOK_CMD) and a fake `claude`, so no real model is ever called.
 set -euo pipefail
 
-ROOT=${TMPDIR:-/tmp}/patchbook-verify
+ROOT=${TMPDIR:-/tmp}
+ROOT=${ROOT%/}/patchbook-verify  # macOS sets TMPDIR with a trailing slash, and clean compares against ROOT
 EVIDENCE_ROOT=${XDG_STATE_HOME:-$HOME/.local/state}/patchbook-verify
 CHECKOUT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)
 
