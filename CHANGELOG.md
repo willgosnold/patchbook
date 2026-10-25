@@ -35,7 +35,7 @@ A rename is still recorded as a `delete` and an `add` when the old and new versi
 
 ### Status and build count every edit
 
-`status` and `build` printed `<n> edits apply`, and `status --json` reported `applied`, but the count left out `add`, `replace`, `delete`, `move` and `copy` edits. A change that vendored a skill with a `copy` edit reported 0. Now the count includes every edit that applies, once, however many outputs it reaches: a block entry in a file that a `copy` also writes elsewhere is one edit. A `copy` or `move` of a folder is one edit, as `CHANGE.md` lists it (#321).
+`status` and `build` printed `<n> edits apply`, and `status --json` reported `applied`, but the count left out `add`, `replace`, `delete`, `move` and `copy` edits. A change that vendored a skill with a `copy` edit reported 0. Now the count includes every edit that applies, once, however many outputs it reaches, and a later edit that deletes, replaces or moves its file doesn't undo it: a block entry in a file that a `copy` also writes elsewhere is one edit. A `copy` or `move` of a folder is one edit, as `CHANGE.md` lists it (#321).
 
 ### Intents cover every file in a large record
 

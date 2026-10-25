@@ -9210,6 +9210,13 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect([t.fork.read("docs/guide.md"), t.fork.read("manual/guide.md")]).toEqual(["my guide\n", "my guide\n"]);
   });
 
+  forkTest("status counts a file edit whose file a later change deletes", (t) => {
+    t.fork.write("docs/guide.md", "my guide\n");
+    t.pb(["record", "shout", "--intent", "Own the guide."], { cwd: t.fork.path });
+    handChange(t, "drop", "Drop the guide.", ["delete docs/guide.md"]);
+    applies(t, 2);
+  });
+
   forkTest("status does not count a block entry whose file a delete removes", (t) => {
     patchedEntry(t, "docs/guide.md", "a guide", "policy");
     handChange(t, "drop-guide", "Drop the guide.", ["delete docs/guide.md"]);
