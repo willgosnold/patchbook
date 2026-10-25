@@ -38,7 +38,7 @@ Patchbook needs git, and the `claude` or `codex` CLI to write intents.
    patchbook init --upstream <url> --path <folder> --output-to <folder>
    ```
 
-   By default, either one installs a pre-commit hook and the `patchbook-update` skill for agents.
+   By default, either one installs a pre-commit hook, hooks that rebuild after a pull, a branch checkout or a rebase, and the `patchbook-update` skill for agents.
 
 2. **Make your changes.** Edit files as usual, stage them and `git commit`. The hook records each edit as a change, and a model writes its intent. To write it yourself, commit with `PATCHBOOK_INTENT="..." git commit`.
 

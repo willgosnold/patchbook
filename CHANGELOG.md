@@ -32,6 +32,23 @@ conflict  series: has a merge conflict; keep both sides' change names, then run 
 
 (#334)
 
+### A plain `git pull`, `git checkout` or `git rebase` rebuilds the output
+
+Patchbook installed only a pre-commit hook. After a pull, a branch checkout or a rebase brought in changed `.patchbook` data, the built files stayed as they were until the next commit or `patchbook build`, and `status` said nothing. Now `clone`, `init`, `build` and `hook install` also install `post-merge`, `post-checkout` and `post-rewrite` hooks that run `patchbook hook build`. It rebuilds the output and `build.lock`, quietly unless a file changed. `post-checkout` builds for a branch checkout, not `git checkout -- <file>`, and `post-rewrite` for a rebase, not an amend. `PATCHBOOK_HOOK=0 git pull` skips them once, and `hook.enabled` turns them off. Husky and Vite+ get the lines in their `post-*` scripts, and lefthook, the pre-commit framework or a hook of your own get the lines to add, as for pre-commit. Git ignores a post hook's exit code, so a build that can't run, such as one that finds problems or hand edits it won't overwrite, says why and leaves the git command done (part 1 of #303).
+
+```
+$ git pull
+patchbook: rebuilt 1 file from extra a86baa4, up 3635d41
+```
+
+`status` also notes an output that is behind the patchbook, which covers a commit, a sync or a merge that skipped the hooks:
+
+```
+$ patchbook status
+note      the output is behind the patchbook: skills/x/SKILL.md differs from a build. Run `patchbook build`.
+2 edits apply at extra a86baa4, up 3635d41; no problems
+```
+
 ## 0.0.3
 
 ### A new change gets its intent instead of going to `pending`

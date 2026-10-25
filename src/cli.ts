@@ -287,11 +287,12 @@ export const PROGRAM: Program = {
       run: cmdIntent,
     }),
     hook: command({
-      summary: "install the pre-commit hook, run it, or show which hook git runs",
+      summary: "install the git hooks, run one, or show which hook git runs",
       args: {
         action: arg.oneOf({
-          install: "install patchbook's pre-commit hook in this repo",
-          run: "run the hook, as git does before a commit",
+          install: "install patchbook's git hooks in this repo",
+          run: "run the pre-commit hook, as git does before a commit",
+          build: "rebuild the output, as the post hooks do after a merge or checkout",
           status: "show which pre-commit hook git runs",
         }),
       },
