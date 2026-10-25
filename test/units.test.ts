@@ -1192,7 +1192,7 @@ describe.skipIf(!inSandbox)("writeIntents", () => {
   test("lists a change with no intent as (no intent yet) in the prompt, never None or nothing", async () => {
     const book = await answering("true");
     const prompt = join(scratch(), "prompt.txt");
-    PROVIDERS.set("sh", { model: "m", effort: "e", command: () => ["sh", "-c", `cat >${prompt}; echo '{"change": null, "intents": {"x": "Do x."}}'`] });
+    PROVIDERS.set("sh", { model: "m", effort: "e", command: () => ["sh", "-c", `cat >${prompt}; echo '{"intent": "Do x."}'`] });
     const changes = new Map([
       ["blank", new Change("blank", "", "")],
       ["said", new Change("said", "", "Say it.")],

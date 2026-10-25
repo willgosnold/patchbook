@@ -9,7 +9,7 @@ import { unifiedDiff } from "./lib/diff.ts";
 import { Fail } from "./lib/fail.ts";
 import type { File } from "./lib/fs.ts";
 import { spawn, which } from "./lib/proc.ts";
-import { nullable, object, readJson, type Shape, string, table } from "./lib/shape.ts";
+import { nullable, readJson, type Shape, string, table } from "./lib/shape.ts";
 import { decodeReplace, encode, isText, quote } from "./lib/text.ts";
 import { configured, readToml, type Source, setting, SETTINGS, type Table, USER_CONFIG } from "./settings.ts";
 
@@ -37,7 +37,7 @@ export const PROVIDERS = new Map<string, Provider>([
   }],
 ]);
 
-const intentPrompt = (changes: string, picking: boolean, subjects: string) =>
+const intentPrompt = (changes: string, reply: string, subjects: string) =>
   `You name and describe changes someone made to their copy of an upstream repo.
 Each change is kept as a patch over upstream. When upstream changes, an agent redoes a change from
 its intent alone, so an intent must say what the change does and why, in one or two plain
@@ -46,9 +46,16 @@ sentences, without line numbers or code. Don't describe upstream.
 Existing changes, one per line as \`name: intent\`:
 ${changes}
 
-Reply with only a JSON object: {"change": ${picking ? '"<name>"' : "null"}, "intents": {"<key>": "<intent>", ...}}, with an intent for each key below.
+Reply with only a JSON object: ${reply}
 
 ${subjects}`;
+
+/** The reply the prompt asks for. The new edits' intent is `intent`, never an entry of `intents`: asked to key it by a name it had just
+ * invented, the model often keyed it by a changed path. `intents` is only for the names the prompt quotes. */
+const replyShape = (picking: boolean, fresh: boolean, refreshing: boolean): string => {
+  const fields = [...(picking ? ['"change": "<name>"'] : []), ...(fresh ? ['"intent": "<intent>"'] : []), ...(refreshing ? ['"intents": {"<name>": "<intent>", ...}'] : [])];
+  return `{${fields.join(", ")}}.` + (refreshing ? ' "intents" has an intent for each name in quotes below, under that name.' : "");
+};
 
 const DIFF_LIMIT = 40000;
 const CUT = "\n[diff truncated]\n";
@@ -182,7 +189,14 @@ const NAME_LENGTH = 40;
 
 const strings: Shape<Map<string, string>> = (v, at) => new Map(Object.entries(table(v, at)).map(([k, x]) => [k, string(x, `${at}.${k}`)]));
 
-const REPLY = object({ change: nullable(string), intents: strings });
+/** A field the prompt may not ask for is undefined when the reply leaves it out. */
+type Answer = { change: string | null | undefined; intent: string | null | undefined; intents: Map<string, string> };
+
+const REPLY: Shape<Answer> = (v, at) => {
+  const reply = table(v, at);
+  const field = <T>(key: string, shape: Shape<T>): T | undefined => (Object.hasOwn(reply, key) ? shape(reply[key], at ? `${at}.${key}` : key) : undefined);
+  return { change: field("change", nullable(string)), intent: field("intent", nullable(string)), intents: field("intents", strings) ?? new Map() };
+};
 
 /** An intent on one line, with each run of whitespace a single space. */
 export const oneLine = (text: string): string => text.trim().replace(/\s+/g, " ");
@@ -212,7 +226,8 @@ export const PARAGRAPHS = "paragraphs";
 export type Refresh = { key: string; was: string; parts: readonly Part[] };
 /** A record's new edits and new block entries. With `named` and no `name`, the model files them into an existing change or names a new one. */
 export type Fresh = { name: string | null; named: boolean; parts: readonly Part[] };
-/** The picked change, when Fresh asked for a pick, and an intent for every key asked: each Refresh's, and Fresh's change name or PARAGRAPHS. */
+/** The picked change, when Fresh asked for a pick, and an intent for every key asked: each Refresh's, and Fresh's change name or PARAGRAPHS.
+ * The model writes Fresh's in `intent` and each Refresh's in `intents`; this map is where record finds them all. */
 export type Reply = { change: string | null; intents: ReadonlyMap<string, string> };
 
 /** Ask the chosen model, in one call, for the intent of the fresh edits and of every refresh. */
@@ -224,11 +239,12 @@ export function writeIntents(book: Book, offered: ReadonlyMap<string, Change>, f
   const said = [
     ...(fresh === null ? [] : [
       !fresh.named
-        ? `For "${PARAGRAPHS}": these edits rewrite paragraphs in place, and each changed paragraph keeps this intent.`
+        ? `For these edits: they rewrite paragraphs in place, and each changed paragraph keeps one intent. Put it in "intent".`
         : fresh.name
-        ? `For ${JSON.stringify(fresh.name)}: these edits are a new change called ${fresh.name}. Write its intent.`
+        ? `For these edits: they are a new change called ${fresh.name}. Write its intent in "intent".`
         : "For these edits: if they serve the purpose of one existing change, set change to its name and write its intent again, to cover what it "
-          + "did and these edits. Otherwise set change to a new short kebab-case name and write its intent. Put the intent under that name.",
+          + `did and these edits. Otherwise set change to a new short kebab-case name and write its intent. Put its intent in "intent".`
+          + (refresh.length ? ' If you pick a change named below, put its intent in "intent" and leave it out of "intents".' : ""),
     ]),
     ...refresh.map((r) => `For ${JSON.stringify(r.key)}: ${r.was ? "write its intent again" : "write its intent"}, to cover all of its edits below. `
       + `Its intent now: ${r.was || "(no intent yet)"}`),
@@ -236,9 +252,9 @@ export function writeIntents(book: Book, offered: ReadonlyMap<string, Change>, f
   const diffs = listDiffs([...(fresh ? [fresh.parts] : []), ...refresh.map((r) => r.parts)]);
   const subjects = said.map((line, i) => `${line}\n${diffs[i]}`).join("\n");
   const [seconds] = setting("intent.timeout", book);
-  const reply = askModel(provider, PROVIDERS.get(provider)!, model, effort, seconds, intentPrompt(listed, picking, subjects));
+  const reply = askModel(provider, PROVIDERS.get(provider)!, model, effort, seconds, intentPrompt(listed, replyShape(picking, fresh !== null, refresh.length > 0), subjects));
   const unusable = (why: string) => new ModelFailed(
-    `${provider} didn't return a usable name and intent`,
+    `${provider} didn't return a usable name and intent: ${why.split("\n")[0]!.replace(/\.$/, "")}`,
     `${provider} didn't return a usable name and intent. ${why}\n${Array.from(reply.trim()).slice(0, 500).join("")}\nPass a name and --intent instead.`,
   );
   let answer;
@@ -247,15 +263,16 @@ export function writeIntents(book: Book, offered: ReadonlyMap<string, Change>, f
   } catch (e) {
     throw e instanceof Fail ? unusable(e.message) : e;
   }
-  const change = picking ? answer.change : null;
-  if (picking && change === null) throw unusable(`${provider}'s reply: change is null.`);
+  const change = picking ? answer.change ?? null : null;
+  if (picking && change === null) throw unusable(`${provider}'s reply: change is ${answer.change === undefined ? "missing" : "null"}.`);
   if (change !== null && !CHANGE_NAME.test(change)) throw unusable(`${provider}'s reply: ${notAChangeName(change)}.`);
-  const keys = [...(fresh ? [change ?? fresh.name ?? PARAGRAPHS] : []), ...refresh.map((r) => r.key)];
   const intents = new Map<string, string>();
-  for (const key of keys) {
-    const intent = oneLine(answer.intents.get(key) ?? "");
-    if (!intent) throw unusable(`${provider}'s reply: intents.${key} is ${answer.intents.has(key) ? "blank" : "missing"}.`);
-    intents.set(key, intent);
-  }
+  const take = (key: string, intent: string | null | undefined, at: string) => {
+    const text = oneLine(intent ?? "");
+    if (!text) throw unusable(`${provider}'s reply: ${at} is ${intent === undefined ? "missing" : intent === null ? "null" : "blank"}.`);
+    intents.set(key, text);
+  };
+  if (fresh) take(change ?? fresh.name ?? PARAGRAPHS, answer.intent, "intent");
+  for (const r of refresh) if (r.key !== change) take(r.key, answer.intents.get(r.key), `intents.${r.key}`);
   return { change, intents };
 }

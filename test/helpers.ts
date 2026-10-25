@@ -150,11 +150,11 @@ export class Repo {
   }
 }
 
-/** A fake claude CLI that keeps the prompt it got in `tmp`, names the change shout, and gives every key the prompt asks for the same intent. */
+/** A fake claude CLI that keeps the prompt it got in `tmp`, names the change shout, and gives it, and every quoted name the prompt asks to rewrite, the same intent. */
 export const fakeClaude = (tmp: string): string => `#!/bin/sh
 cat > ${tmp}/prompt.txt
 keys=$(sed -n 's/^For \\("[^"]*"\\):.*/\\1: "Shout the second line.", /p' ${tmp}/prompt.txt | tr -d '\\n')
-echo "{\\"change\\": \\"shout\\", \\"intents\\": {$keys\\"shout\\": \\"Shout the second line.\\"}}"
+echo "{\\"change\\": \\"shout\\", \\"intent\\": \\"Shout the second line.\\", \\"intents\\": {$keys\\"shout\\": \\"Shout the second line.\\"}}"
 `;
 
 export class Case {

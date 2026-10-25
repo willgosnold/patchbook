@@ -36,7 +36,7 @@ cmd_new() {
   printf '#!/bin/sh\nexec %s "$@"\n' "$cmd" > "$sb/bin/patchbook"
 
   # The fake model. Default answer matches the repro scripts in the audit issues: it names the change
-  # model-name and gives it, and every key the prompt asks for, the same intent.
+  # model-name and gives it, and every quoted name the prompt asks to rewrite, the same intent.
   # PB_FAKE_MODEL=fail makes it exit 1, like an offline or missing CLI. PB_FAKE_REPLY is the whole reply.
   cat > "$sb/bin/claude" <<F
 #!/bin/sh
@@ -48,7 +48,7 @@ name=\${PB_FAKE_CHANGE:-model-name} intent=\${PB_FAKE_INTENT:-MODEL WROTE THIS.}
 while IFS= read -r k; do [ -n "\$k" ] && keys="\$keys\$k: \"\$intent\", "; done <<K
 \$(sed -n 's/^For \\("[^"]*"\\):.*/\\1/p' "$sb/prompt.txt")
 K
-echo "{\"change\": \"\$name\", \"intents\": {\$keys\"\$name\": \"\$intent\"}}"
+echo "{\"change\": \"\$name\", \"intent\": \"\$intent\", \"intents\": {\$keys\"\$name\": \"\$intent\"}}"
 F
   chmod +x "$sb/bin/patchbook" "$sb/bin/claude"
 
