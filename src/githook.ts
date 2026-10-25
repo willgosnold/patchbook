@@ -786,6 +786,13 @@ function checkoutKeptInputs(book: Book, { before, after }: Checkout): boolean {
     PB, ...buildInputs(book), ...placeholderOutputs(book).map((p) => inRepo(book, p)),
   ])];
   if (paths.some((p) => p.split("/").some((_, i, parts) => isSymlink(join(book.root, ...parts.slice(0, i + 1)))))) return false;
+  const tree = spawn(["git", "ls-tree", "-rz", "--full-tree", after], { cwd: book.root });
+  if (tree.code !== 0) return false;
+  if (decodeReplace(tree.stdout).split("\0").some((entry) => {
+    if (!entry.startsWith("160000 ")) return false;
+    const path = entry.slice(entry.indexOf("\t") + 1);
+    return paths.some((p) => p === path || p.startsWith(`${path}/`));
+  })) return false;
   return spawn(["git", "--literal-pathspecs", "diff-tree", "--quiet", "-r", "--no-renames", "--ignore-submodules=none", "--end-of-options", before, after, "--", ...paths], { cwd: book.root }).code === 0;
 }
 

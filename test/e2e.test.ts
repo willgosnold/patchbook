@@ -16671,6 +16671,18 @@ describe("PostHookTest", () => {
     expect(t.pb(["build"], { cwd: t.fork.path, code: 1 }).stderr).toContain("no change called bogus");
   });
 
+  forkTest("an unrelated submodule does not prevent an unchanged-input checkout from skipping the build", (t) => {
+    const dep = new Repo(join(t.tmp, "dep"));
+    dep.write("README.md", "unrelated\n");
+    dep.commit("start");
+    git(t, ["-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.path, "deps"]);
+    t.fork.write(".patchbook/series", "bogus\n");
+    t.fork.commit("unchanged invalid data and unrelated submodule");
+    const switched = git(t, ["checkout", "-qb", "same-inputs"], hooked(t));
+    expect(switched.stderr).toBe("");
+    expect(git(t, ["status", "--porcelain"]).stdout).toBe("");
+  });
+
   for (const [name, old, next] of [
     ["zero old revision", "0".repeat(40), "HEAD"],
     ["missing old revision", "missing", "HEAD"],
