@@ -10,6 +10,7 @@
   "scripts": {
     "test": "bun test --isolate",
     "typecheck": "tsc --noEmit",
+    "qa": "qa/run",
     "build": "bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig src/cli.ts --outfile dist/patchbook"
   },
   "devDependencies": {
