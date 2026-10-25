@@ -49,24 +49,26 @@ function writeHook(path: string, text = SCRIPT): void {
 
 /** The hooks git runs when it brings in changed patchbook data, which rebuild the output. Git ignores their exit codes, so a build that fails only warns.
  * Only a branch checkout (`post-checkout` with `$3` = 1, and not the checkout of a rebase's onto commit, which would leave unstaged changes that stop the rebase) and a rebase (`post-rewrite` with `$1` = rebase) build: a file checkout changes no data, and the pre-commit hook has built an amend. */
+const POST_BUILD = "patchbook hook build";
 const POST_HOOKS = [
-  { name: "post-merge", when: "after a merge or a pull", skip: "git pull", test: null },
-  { name: "post-checkout", when: "after a branch checkout", skip: "git checkout <branch>", test: '[ "$3" = 1 ] && [ ! -d "$(git rev-parse --git-path rebase-merge)" ] && [ ! -d "$(git rev-parse --git-path rebase-apply)" ]' },
-  { name: "post-rewrite", when: "after a rebase", skip: "git rebase", test: '[ "$1" = rebase ]' },
+  { name: "post-merge", when: "after a merge or a pull", skip: "git pull", test: null, build: POST_BUILD },
+  { name: "post-checkout", when: "after a branch checkout", skip: "git checkout <branch>", test: '[ "$3" = 1 ] && [ ! -d "$(git rev-parse --git-path rebase-merge)" ] && [ ! -d "$(git rev-parse --git-path rebase-apply)" ]', build: `PATCHBOOK_CHECKOUT_BEFORE="$1" PATCHBOOK_CHECKOUT_AFTER="$2" ${POST_BUILD}` },
+  { name: "post-rewrite", when: "after a rebase", skip: "git rebase", test: '[ "$1" = rebase ]', build: POST_BUILD },
 ] as const;
 type PostHook = (typeof POST_HOOKS)[number];
+type PostCommand = Pick<PostHook, "when" | "skip" | "test"> & { build: string };
 
-const postScript = ({ when, skip, test }: PostHook) => `#!/bin/sh
+const postScript = ({ when, skip, test, build }: PostCommand) => `#!/bin/sh
 # Installed by patchbook v2. It rebuilds the output from the patchbook ${when}. Skip it once with: PATCHBOOK_HOOK=0 ${skip}
 [ "$PATCHBOOK_HOOK" = 0 ] && exit 0
 ${HAS_PATCHBOOK} || exit 0
-${test ? `${test} || exit 0\n` : ""}command -v patchbook >/dev/null && patchbook hook build
+${test ? `${test} || exit 0\n` : ""}command -v patchbook >/dev/null && ${build}
 exit 0
 `;
 
 /** The lines a hook manager's script gets, which a teammate without patchbook skips. */
-const postLines = ({ when, skip, test }: PostHook) => `# patchbook: rebuild the output from the patchbook ${when}. Skip it once with PATCHBOOK_HOOK=0 ${skip}
-if [ "$PATCHBOOK_HOOK" != 0 ] && ${HAS_PATCHBOOK}${test ? ` && ${test}` : ""} && command -v patchbook >/dev/null; then patchbook hook build || true; fi
+const postLines = ({ when, skip, test, build }: PostCommand) => `# patchbook: rebuild the output from the patchbook ${when}. Skip it once with PATCHBOOK_HOOK=0 ${skip}
+if [ "$PATCHBOOK_HOOK" != 0 ] && ${HAS_PATCHBOOK}${test ? ` && ${test}` : ""} && command -v patchbook >/dev/null; then ${build} || true; fi
 `;
 
 const CALLS_BUILD = /^[^#\n]*\bpatchbook hook build\b/m;
@@ -257,10 +259,15 @@ function findHook(root: string): Hook {
 const runsPatchbook = (hook: Hook) => exists(hook.path) && CALLS_PATCHBOOK.test(readTextReplace(hook.path));
 
 /** What `putFirst` puts into a manager's script, and how it tells and says so. */
-type Wire = { lines: string; calls: RegExp; intent: (m: ScriptManager, where: string) => string; put: (m: ScriptManager, where: string) => string };
+type Wire = { lines: string; previous: string | null; calls: RegExp; intent: (m: ScriptManager, where: string) => string; put: (m: ScriptManager, where: string) => string };
 
 function withPatchbook(data: Uint8Array, wire: Wire): Uint8Array {
-  if (wire.calls.test(decodeReplace(data))) return data;
+  const text = decodeReplace(data);
+  if (wire.calls.test(text)) {
+    const previous = wire.previous === null ? null : encode(wire.previous);
+    const at = previous === null ? -1 : Buffer.from(data).indexOf(previous);
+    return previous !== null && at >= 0 ? concat(data.subarray(0, at), encode(wire.lines), data.subarray(at + previous.length)) : data;
+  }
   const end = data[0] === 0x23 && data[1] === 0x21 ? data.indexOf(0x0a) + 1 || data.length : 0;
   const rest = data.subarray(end);
   const newline = encode("\n");
@@ -277,10 +284,11 @@ const hookIntent = (m: ScriptManager, where: string) =>
 
 const PUT_FIRST = (m: ScriptManager, where: string) => `patchbook: put \`patchbook hook run\` first in ${where}, which ${m.name} runs on each commit`;
 
-const PRE_COMMIT_WIRE: Wire = { lines: HOOK_LINES, calls: CALLS_PATCHBOOK, intent: hookIntent, put: PUT_FIRST };
+const PRE_COMMIT_WIRE: Wire = { lines: HOOK_LINES, previous: null, calls: CALLS_PATCHBOOK, intent: hookIntent, put: PUT_FIRST };
 
 const postWire = (post: PostHook): Wire => ({
   lines: postLines(post),
+  previous: post.build === POST_BUILD ? null : postLines({ ...post, build: POST_BUILD }),
   calls: CALLS_BUILD,
   intent: (m, where) => `Run patchbook in ${where}, the ${post.name} script ${m.name} runs, so the output is rebuilt ${post.when}.`,
   put: (m, where) => `patchbook: put \`patchbook hook build\` in ${where}, which ${m.name} runs ${post.when}`,
@@ -473,10 +481,11 @@ function keepPostHooks(book: Book, hooks: string): void {
   const added: string[] = [];
   for (const post of POST_HOOKS) {
     const path = join(hooks, post.name);
-    if (!exists(path)) {
+    const text = exists(path) ? readTextReplace(path) : null;
+    if (text === null || (text !== postScript(post) && text === postScript({ ...post, build: POST_BUILD }))) {
       writeHook(path, postScript(post));
       added.push(post.name);
-    } else if (readTextReplace(path) === postScript(post) && !isExecutable(path)) {
+    } else if (text === postScript(post) && !isExecutable(path)) {
       chmodSync(path, 0o755);
       warn(`patchbook: made ${shown(book.root, path)} executable, so git runs it\n`);
     }
@@ -768,11 +777,26 @@ function stageVendors(book: Book): void {
   for (const { name, rel } of stale) warn(`patchbook: the pre-commit hook staged the pinned copy of ${name} under ${rel}, in place of what the index held\n`);
 }
 
+type Checkout = { before: string; after: string };
+
+function checkoutKeptInputs(book: Book, { before, after }: Checkout): boolean {
+  const oid = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+  if (!oid.test(before) || !oid.test(after) || lexists(join(book.dir, "hooks.ts")) || book.vendors().length) return false;
+  const paths = [...new Set([
+    PB, ...buildInputs(book), ...placeholderOutputs(book).map((p) => inRepo(book, p)),
+  ])];
+  if (paths.some((p) => p.split("/").some((_, i, parts) => isSymlink(join(book.root, ...parts.slice(0, i + 1)))))) return false;
+  return spawn(["git", "--literal-pathspecs", "diff-tree", "--quiet", "-r", "--no-renames", "--ignore-submodules=none", "--end-of-options", before, after, "--", ...paths], { cwd: book.root }).code === 0;
+}
+
 /** The build a post hook runs. Git has already merged, switched or rebased and ignores the exit code, so a build that can't run says why and exits 0. */
 async function buildAfterGit(): Promise<number> {
   try {
     const book = await Book.find();
     if (!hookEnabled(book)) return 0;
+    const before = process.env["PATCHBOOK_CHECKOUT_BEFORE"];
+    const after = process.env["PATCHBOOK_CHECKOUT_AFTER"];
+    if (before !== undefined && after !== undefined && checkoutKeptInputs(book, { before, after })) return 0;
     return await cmdBuild({ force: false, commit: false, quiet: true });
   } catch (e) {
     if (e instanceof NoBook) return 0;
