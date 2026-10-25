@@ -48,9 +48,7 @@ Real runs call the paid model once or twice per run, with patchbook's default mo
 
 ## When to run them
 
-- CI runs the fake model on every pull request.
-- Before each release, run `QA_MODEL=real bun run qa` and compare the pass rates with the last release.
-- When dogfooding finds a bug, add a scenario that fails on it. Tag the check with the issue (see below), so the suite stays green until the fix lands.
+Nothing runs them automatically, and CI doesn't either. Run them by hand when you want to check that these journeys work, with `bun run qa` or `QA_MODEL=real bun run qa`.
 
 ## Read the table
 
