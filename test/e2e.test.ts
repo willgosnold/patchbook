@@ -8908,6 +8908,26 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(out.stdout).toBe("delete   notes/n.txt\n");
   });
 
+  forkTest("status and build count add, replace, copy, move and delete edits, a folder copy as one", (t) => {
+    handChange(t, "all", "Every kind.", [
+      "add notes/n.txt",
+      "replace docs/guide.md",
+      "copy docs -> manual/docs",
+      "move bin -> tools",
+      "delete app.txt",
+    ], { "notes/n.txt": "new\n", "docs/guide.md": "mine\n" });
+    const status = t.pb(["status", "--json"], { cwd: t.fork.path });
+    expect(JSON.parse(status.stdout)).toMatchObject({ applied: 5, problems: [] });
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("5 edits apply");
+    expect(t.pb(["build"], { cwd: t.fork.path }).stdout).toContain("with 5 edits");
+  });
+
+  forkTest("status does not count a structure edit that does not apply", (t) => {
+    handChange(t, "gone", "Gone.", ["delete missing.txt", "copy missing -> there"]);
+    const status = t.pb(["status"], { cwd: t.fork.path, code: 1 });
+    expect(status.stdout).toContain("0 edits apply");
+  });
+
   forkTest("record unadd that empties the named change saves it and keeps it", (t) => {
     t.fork.write("extra.txt", "ours\n");
     t.pb(["record", "ch", "--intent", "Add extra."], { cwd: t.fork.path });
