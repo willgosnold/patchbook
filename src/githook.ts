@@ -48,10 +48,10 @@ function writeHook(path: string, text = SCRIPT): void {
 }
 
 /** The hooks git runs when it brings in changed patchbook data, which rebuild the output. Git ignores their exit codes, so a build that fails only warns.
- * Only a branch checkout (`post-checkout` with `$3` = 1) and a rebase (`post-rewrite` with `$1` = rebase) build: a file checkout changes no data, and the pre-commit hook has built an amend. */
+ * Only a branch checkout (`post-checkout` with `$3` = 1, and not the checkout of a rebase's onto commit, which would leave unstaged changes that stop the rebase) and a rebase (`post-rewrite` with `$1` = rebase) build: a file checkout changes no data, and the pre-commit hook has built an amend. */
 const POST_HOOKS = [
   { name: "post-merge", when: "after a merge or a pull", skip: "git pull", test: null },
-  { name: "post-checkout", when: "after a branch checkout", skip: "git checkout <branch>", test: '[ "$3" = 1 ]' },
+  { name: "post-checkout", when: "after a branch checkout", skip: "git checkout <branch>", test: '[ "$3" = 1 ] && [ ! -d "$(git rev-parse --git-path rebase-merge)" ] && [ ! -d "$(git rev-parse --git-path rebase-apply)" ]' },
   { name: "post-rewrite", when: "after a rebase", skip: "git rebase", test: '[ "$1" = rebase ]' },
 ] as const;
 type PostHook = (typeof POST_HOOKS)[number];

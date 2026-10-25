@@ -16613,7 +16613,7 @@ describe("PostHookTest", () => {
       expect(isExecutable(path)).toBe(true);
     }
     for (const name of POST) expect(read(join(t.fork.path, ".git/hooks", name))).toContain('[ "$PATCHBOOK_HOOK" = 0 ] && exit 0');
-    expect(read(join(t.fork.path, ".git/hooks/post-checkout"))).toContain('[ "$3" = 1 ] || exit 0');
+    expect(read(join(t.fork.path, ".git/hooks/post-checkout"))).toContain('[ "$3" = 1 ] && ');
     expect(read(join(t.fork.path, ".git/hooks/post-rewrite"))).toContain('[ "$1" = rebase ] || exit 0');
   });
 
@@ -16664,6 +16664,33 @@ describe("PostHookTest", () => {
     git(t, ["rebase", "-q", "main"], hooked(t));
     expect(git(t, ["log", "--format=%s", "-2"]).stdout).toBe("data, without a build\nmain moves on\n");
     expect(t.fork.read("extra.txt")).toBe("changed\n");
+  });
+
+  forkTest("a git rebase onto a commit whose outputs were never built completes, and ends with rebuilt outputs", (t) => {
+    staleBranch(t);
+    git(t, ["switch", "-qc", "topic"]);
+    git(t, ["commit", "-qm", "topic", "--allow-empty"]);
+    git(t, ["rebase", "-q", "data"], hooked(t));
+    expect(git(t, ["log", "--format=%s", "-2"]).stdout).toBe("topic\ndata, without a build\n");
+    expect(t.fork.read("extra.txt")).toBe("changed\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).not.toContain("behind");
+  });
+
+  forkTest("a git pull --rebase onto a commit whose outputs were never built completes, and ends with rebuilt outputs", (t) => {
+    const origin = join(t.tmp, "origin.git");
+    sh(["git", "init", "-q", "--bare", "-b", "main", origin], { cwd: t.tmp });
+    t.recordFeature();
+    git(t, ["remote", "add", "origin", origin]);
+    git(t, ["push", "-q", "origin", "main"]);
+    sh(["git", "clone", "-q", origin, "second"], { cwd: t.tmp });
+    const second = new Repo(join(t.tmp, "second"));
+    second.write(OURS, "pulled\n");
+    second.commit("data, without a build");
+    sh(["git", "push", "-q", "origin", "main"], { cwd: second.path });
+    git(t, ["commit", "-qm", "local", "--allow-empty"]);
+    git(t, ["pull", "-q", "--rebase", "origin", "main"], hooked(t));
+    expect(t.fork.read("extra.txt")).toBe("pulled\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).not.toContain("behind");
   });
 
   forkTest("a git pull from a clone that recorded a change rebuilds the output", (t) => {
