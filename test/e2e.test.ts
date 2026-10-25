@@ -9151,6 +9151,16 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(status).toContain("invalid   dup.md:7 [872887e563e7]: it has no intent; fill it with `patchbook intent`\n");
   });
 
+  forkTest("status does not count a block entry that is invalid", (t) => {
+    upstreamFile(t, "dup.md", DUP);
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    writeFileSync(config, read(config) + "\n[[check]]\nname = \"example\"\nfiles = [\"dup.md\"]\npattern = 'Example'\n");
+    t.pb(["scaffold"], { cwd: t.fork.path });
+    const status = t.pb(["status", "--json"], { cwd: t.fork.path, code: 1 });
+    expect(JSON.parse(status.stdout)).toMatchObject({ applied: 0 });
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("0 edits apply");
+  });
+
   forkTest("record records an edit to a CRLF file with block entries", (t) => {
     const crlf = "---\r\nname: crlf\r\n---\r\n# Title\r\n\r\nBody one.\r\n\r\nBody two.\r\n";
     upstreamFile(t, "crlf.md", crlf);
