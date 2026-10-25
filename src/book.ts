@@ -12,6 +12,7 @@ import { similarity } from "./lib/match.ts";
 import { git, run, spawn } from "./lib/proc.ts";
 import { jsonText, named, object, oid, readJson, type Shape, string, versioned } from "./lib/shape.ts";
 import { warn } from "./lib/term.ts";
+import type { Undo } from "./undo.ts";
 import { byCodePoint, decode, quote } from "./lib/text.ts";
 import { isTable, parseToml, type Table } from "./settings.ts";
 import { stagedFolder, treeBlobs, Upstream } from "./store.ts";
@@ -24,6 +25,21 @@ export const GIT = ".git";
 const placeholderFiles = (book: Book) =>
   Array.from(book.placeholders.values(), (s) => s.file).filter((f) => f !== null).map((f) => pjoin(book.root, f));
 const inOutput = (book: Book, f: string) => under(f, book.outputRoot()) && !book.isReserved(relative(book.outputRoot(), f));
+
+/** Branches that each record a change both append to `series` and rewrite lines of `build.lock`. Git's own union driver keeps both sides' lines, so
+ * the merge goes through. A name is never lost, and the next build rewrites the lock, which can list a path twice until then. */
+const ATTRIBUTES = "series merge=union\nbuild.lock merge=union\n";
+export const ATTRIBUTES_FILE = `${PB}/.gitattributes`;
+
+/** Write the `.gitattributes` of the data folder unless something is there already, so a copy the user edited stays. True when it wrote one. */
+export function keepAttributes(root: string, undo?: Undo): boolean {
+  const path = join(root, ATTRIBUTES_FILE);
+  if (lexists(path)) return false;
+  undo?.hold(path);
+  mkdirs(dirname(path));
+  writeText(path, ATTRIBUTES);
+  return true;
+}
 
 /** A placeholder file in the output is output, so it isn't listed here but in `placeholderOutputs`. */
 export function buildInputs(book: Book): string[] {

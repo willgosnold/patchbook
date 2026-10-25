@@ -6,8 +6,8 @@ import type { InChange, InEdit, InOutput, Problem, StatusJson } from "./api.ts";
 import {
   entriesPath, type Entry, entryKey, formatEntry, leakScan, orphan, patchBlocks, readEntries, Rules, type Unmatched,
 } from "./blocks.ts";
-import { Book, buildInputs, GIT, PB, type Reserved, under } from "./book.ts";
-import { type Change, editText, readChanges, replaceIntent } from "./changes.ts";
+import { ATTRIBUTES_FILE, Book, buildInputs, GIT, PB, type Reserved, under } from "./book.ts";
+import { type Change, editText, isMergeMarker, readChanges, replaceIntent } from "./changes.ts";
 import { installHookOrWarn, stageModes, upstreamModes, warnUnhooked } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import {
@@ -293,7 +293,7 @@ export function readBuildLock(book: Book): Map<string, Stamp> | null {
 export function parseBuildLock(text: string): Map<string, Stamp> {
   const entries = new Map<string, Stamp>();
   for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
+    if (!line.trim() || isMergeMarker(line)) continue;
     const [, name, oid, at] = LOCK_LINE.exec(line) ?? [];
     const mode = name === undefined ? undefined : parseGitMode(name);
     if (mode !== undefined) {
@@ -305,6 +305,13 @@ export function parseBuildLock(text: string): Map<string, Stamp> {
     else entries.set(line.slice(sep + 1), { oid: line.slice(0, sep), mode: null });
   }
   return entries;
+}
+
+/** A build.lock git couldn't merge. This is only reported by `status`: `build` reads past the markers and rewrites the lock, which is the fix. */
+function conflictedLock(book: Book): Problem[] {
+  const path = buildLockPath(book);
+  if (!exists(path) || !readText(path).split("\n").some(isMergeMarker)) return [];
+  return [{ problem: "conflict", file: "build.lock", detail: "has merge conflict markers; run `patchbook build` to rewrite it" }];
 }
 
 export function writeBuildLines(book: Book, lock: ReadonlyMap<string, Stamp>): void {
@@ -464,7 +471,7 @@ function commitBuild(book: Book, a: Assembly): void {
     const output = matchable([relative(root, book.outputRoot()), ...book.vendors()]).map((p) => `:(literal)${p}`);
     if (output.length) run(["git", "add", "-A", "--", ...output, `:(exclude,literal)${PB}`], { cwd: root, env: { ...env, GIT_LITERAL_PATHSPECS: "0" } });
     stageModes(root, modes, env);
-    const inputs = matchable([...buildInputs(book), `${PB}/retired.md`]);
+    const inputs = matchable([...buildInputs(book), `${PB}/retired.md`, ATTRIBUTES_FILE]);
     const ignored = new Set(decode(run(["git", "--literal-pathspecs", "ls-files", "-z", "-o", "-i", "--exclude-standard", "--", ...inputs], { cwd: root, env })).split("\0"));
     const addable = inputs.filter((p) => !ignored.has(p));
     if (addable.length) git(["--literal-pathspecs", "add", "-A", "--", ...addable], { cwd: root, env });
@@ -505,20 +512,21 @@ export async function cmdStatus(args: { json: boolean }) {
   const book = await Book.find();
   warnUnhooked(book);
   const a = assemble(book);
+  const problems = [...a.problems, ...conflictedLock(book)];
   if (args.json) {
-    const status: StatusJson = { version: 2, upstreams: book.lock(), applied: a.applied, problems: a.problems, lastSync: readLastSync(book) };
+    const status: StatusJson = { version: 2, upstreams: book.lock(), applied: a.applied, problems, lastSync: readLastSync(book) };
     verbatim(jsonText(status));
   } else {
-    for (const p of a.problems) say(describe(p) + "\n");
+    for (const p of problems) say(describe(p) + "\n");
     for (const c of readChanges(book, [])) {
       if (c.intent?.by === "patchbook") say(`note      changes/${c.name}: patchbook wrote its intent from the edits. ${replaceIntent(c.name)}\n`);
     }
     const counts = new Map<string, number>();
-    for (const p of a.problems) counts.set(p.problem, (counts.get(p.problem) ?? 0) + 1);
+    for (const p of problems) counts.set(p.problem, (counts.get(p.problem) ?? 0) + 1);
     const summary = [...counts].sort(([a], [b]) => byCodePoint(a, b)).map(([k, n]) => `${n} ${k}`).join(", ") || "no problems";
     say(`${a.applied} edits apply at ${book.pins()}; ${summary}\n`);
   }
-  return a.problems.length ? 1 : 0;
+  return problems.length ? 1 : 0;
 }
 
 /** Append a skeleton entry for each missing block, to be filled in by hand or by an agent. */

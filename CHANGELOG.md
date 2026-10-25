@@ -2,6 +2,36 @@
 
 The hand-written part of each release's notes. GitHub's generated notes list the pull requests. This file says what a user needs to know. Paste a release's section at the top of its GitHub release notes.
 
+## Unreleased
+
+### Branches that each record a change merge without a conflict
+
+Two branches that each recorded a change conflicted in `.patchbook/series` and `.patchbook/build.lock`, even when the changes touched unrelated files, because every record and build writes both files. `init` and `clone` now write `.patchbook/.gitattributes`, which tells git to merge `series` and `build.lock` with its built-in `union` driver, so a merge keeps both sides' lines and needs no git config. `build` adds the file to a fork that lacks it, and the next commit stages it. After the merge, run `patchbook build`: the unioned `build.lock` can list a path twice until it rewrites the lock (#334).
+
+```
+$ git merge b2
+Auto-merging .patchbook/build.lock
+Auto-merging .patchbook/series
+Merge made by the 'ort' strategy.
+```
+
+### A conflicted `build.lock` or `series` is reported
+
+`status` said "no problems" when only `build.lock` had conflict markers, because every marker line was read as a lock entry (`<<<<<<< HEAD` as a path `HEAD`, `=======` as an empty path), and `build` read the same lock without a word. A marker is no longer an entry. `status` reports it, and `build` rewrites the lock:
+
+```
+$ patchbook status
+conflict  build.lock: has merge conflict markers; run `patchbook build` to rewrite it
+```
+
+In `series`, `status` reports one conflict instead of an invalid change name for each marker line, and `build` and the commit hook refuse until you keep both sides' names:
+
+```
+conflict  series: has a merge conflict; keep both sides' change names, then run `patchbook build`
+```
+
+(#334)
+
 ## 0.0.3
 
 ### A new change gets its intent instead of going to `pending`
