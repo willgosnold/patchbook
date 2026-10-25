@@ -48,7 +48,7 @@ commands:
   status      list what is broken
   build       apply the patchbook to the pinned upstreams and write the output
   record      move edits to the output in the working tree into a change
-  intent      fill the empty intents that record left when the model failed
+  intent      fill empty intents and replace the ones patchbook wrote
   hook        install the pre-commit hook, run it, or show which hook git runs
   skill       write this patchbook's update skill into the repo
   config      show settings and where each comes from, or set one
@@ -167,7 +167,7 @@ usage: patchbook record [<change>] [options]
 
 move edits to the output in the working tree into a change
 The commit hook records only what is staged. This records the working tree.
-If the model can't write an intent, the change keeps an empty one.
+If the model can't write an intent, patchbook writes one from the edits.
 
 arguments:
   <change>         the change to add to (default: the model picks or names one)
@@ -179,8 +179,9 @@ options:
   intent: `\
 usage: patchbook intent [<change>] [options]
 
-fill the empty intents that record left when the model failed
-With no <change>, it fills every change and block entry with an empty intent.
+fill empty intents and replace the ones patchbook wrote
+With no <change>, it fills every change and block entry with an empty intent,
+and every change whose intent patchbook wrote.
 
 arguments:
   <change>         only this change

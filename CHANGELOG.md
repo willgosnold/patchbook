@@ -53,6 +53,20 @@ intent   may be stale: <change> (<why>)
 
 `record` also no longer writes two blank lines after an entry with an empty patched side (#311).
 
+### Record names the change and writes its intent when the model can't
+
+When the model failed, as with a reply patchbook can't use, a timeout, no `claude` or `codex` CLI, or `intent.provider = none`, `record` and the commit hook put the edits in a change called `pending` with an empty intent. `status` reported it as a problem, and `build` and the hook's build refused until you ran `patchbook intent`. Now patchbook names the change from its edits and writes an intent that says what they do, so the build goes ahead:
+
+```
+$ PATCHBOOK_PROVIDER=none git commit -qm "rename a"
+rename-skills-a-to-skills-a2: Renames skills/a to skills/a2. Edits skills/a/SKILL.md.
+move     skills/a -> skills/a2
+file     a2/SKILL.md
+intent   by patchbook for rename-skills-a-to-skills-a2 (intent.provider is none). To replace it, run `patchbook intent rename-skills-a-to-skills-a2` or edit its line to `intent: <yours>`
+```
+
+`CHANGE.md` labels that line `intent (by patchbook):`, and `status` lists the change as a note, not a problem. To replace the intent, run `patchbook intent <name>`, or rewrite the line as `intent: ...`. While the model fails, the edits always go to a new change or the one you name, never to an existing change the model would have picked. A new block entry still gets an empty intent, and `build` refuses until `patchbook intent` fills it. A `pending` change that 0.0.1 recorded keeps its name, and its intent stays empty until you fill it or a later record adds to that change.
+
 ## 0.0.1
 
 The first release.

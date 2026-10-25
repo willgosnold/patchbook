@@ -7,7 +7,7 @@ import {
   entriesPath, type Entry, entryKey, formatEntry, leakScan, orphan, patchBlocks, readEntries, Rules, type Unmatched,
 } from "./blocks.ts";
 import { Book, buildInputs, GIT, PB, type Reserved, under } from "./book.ts";
-import { type Change, editText, readChanges } from "./changes.ts";
+import { type Change, editText, readChanges, replaceIntent } from "./changes.ts";
 import { installHookOrWarn, stageModes, upstreamModes, warnUnhooked } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import {
@@ -510,6 +510,9 @@ export async function cmdStatus(args: { json: boolean }) {
     verbatim(jsonText(status));
   } else {
     for (const p of a.problems) say(describe(p) + "\n");
+    for (const c of readChanges(book, [])) {
+      if (c.intent?.by === "patchbook") say(`note      changes/${c.name}: patchbook wrote its intent from the edits. ${replaceIntent(c.name)}\n`);
+    }
     const counts = new Map<string, number>();
     for (const p of a.problems) counts.set(p.problem, (counts.get(p.problem) ?? 0) + 1);
     const summary = [...counts].sort(([a], [b]) => byCodePoint(a, b)).map(([k, n]) => `${n} ${k}`).join(", ") || "no problems";

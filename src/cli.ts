@@ -272,15 +272,15 @@ export const PROGRAM: Program = {
       summary: "move edits to the output in the working tree into a change",
       about: [
         "The commit hook records only what is staged. This records the working tree.",
-        "If the model can't write an intent, the change keeps an empty one.",
+        "If the model can't write an intent, patchbook writes one from the edits.",
       ],
       args: { change: arg.optional("the change to add to (default: the model picks or names one)") },
       options: { intent: option("text", "what the change is for (default: the model writes it)") },
       run: cmdRecord,
     }),
     intent: command({
-      summary: "fill the empty intents that record left when the model failed",
-      about: ["With no <change>, it fills every change and block entry with an empty intent."],
+      summary: "fill empty intents and replace the ones patchbook wrote",
+      about: ["With no <change>, it fills every change and block entry with an empty intent,", "and every change whose intent patchbook wrote."],
       args: { change: arg.optional("only this change") },
       options: { intent: option("text", "the intent for <change> (default: the model writes it)") },
       run: cmdIntent,
