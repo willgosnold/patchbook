@@ -435,6 +435,23 @@ test("skill install keeps the intent of the change it updates", () => {
   }
 }, TIMEOUT);
 
+test("skill install replaces an intent patchbook wrote with the skill's own", () => {
+  const t = new Case();
+  try {
+    Object.assign(t.env, { PATCHBOOK_SKILL: "0", PATCHBOOK_PROVIDER: "none" });
+    const fork = skillFork(t);
+    fork.write(SKILL_FILE, STALE_SKILL);
+    t.pb(["record", "patchbook-update-skill"], { cwd: fork.path });
+    expect(read(join(fork.path, ".patchbook/changes/patchbook-update-skill/CHANGE.md"))).toContain("intent (by patchbook): ");
+    fork.commit("an older skill");
+    t.env["PATCHBOOK_SKILL"] = "1";
+    t.pb(["skill", "install"], { cwd: fork.path });
+    expect(read(join(fork.path, ".patchbook/changes/patchbook-update-skill/CHANGE.md"))).toContain("intent: Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.\n");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("skill install in a fork refuses to replace an uncommitted edit to the skill", () => {
   const t = new Case();
   try {

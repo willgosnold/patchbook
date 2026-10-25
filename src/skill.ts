@@ -142,9 +142,9 @@ export const leftBehindSkill = (book: Book): string[] =>
 /** Record the skill files as the `patchbook-update-skill` change, and leave every other edit waiting. */
 export async function recordSkill(book: Book): Promise<number> {
   process.chdir(book.root);
-  // A given intent asks no model: a refresh keeps the change's own intent.
-  const intent = Roster.read(book).parsed.get(CHANGE)?.intent?.text
-    ?? "Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.";
+  // A given intent asks no model: a refresh keeps an intent someone wrote, and replaces one patchbook wrote from the edits.
+  const own = Roster.read(book).parsed.get(CHANGE)?.intent;
+  const intent = own?.by === "author" ? own.text : "Install the patchbook-update skill, so an agent can pull upstream and carry these changes forward.";
   // An `init` that stopped early can leave this folder out of the series, and patchbook owns the name, so it adopts the folder.
   if (Roster.read(book).stray(CHANGE) === "folder") appendSeries(book, CHANGE);
   return cmdRecord({ change: CHANGE, intent, only: ownsSkill });
