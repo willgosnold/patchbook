@@ -6,7 +6,7 @@ The hand-written part of each release's notes. GitHub's generated notes list the
 
 ### A failed track can be retried, and a missing change copy gets a message
 
-When `patchbook track` failed after its sync, such as when `.patchbook/config.toml` couldn't be written, it left the new upstream's pin in `upstream.lock` and its vendored copy behind. Running it again with another URL was then refused, since the pin was left without its config entry. Now a failed track puts the lock, the vendored copy and the config back as they were, and the same name can be tracked again.
+When `patchbook track` failed after its sync, such as when `.patchbook/config.toml` couldn't be written, it left the new upstream's pin in `upstream.lock` and its vendored copy behind. Running it again with another URL was then refused, because the vendored copy it left behind was in the way. Now a failed track puts the lock, the vendored copy and the config back as they were, and the same name can be tracked again.
 
 `patchbook sync` used to stop with a stack trace when a change's `base/<file>.pb` or `ours/<file>.pb` was missing. Now it fails with a `patchbook:` message that names each change, file and missing copy, both copies when both are gone, and changes nothing. Restore the copies, or remove the edit from the change, and sync again (#10).
 
