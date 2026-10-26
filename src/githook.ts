@@ -786,17 +786,20 @@ type Checkout = { before: string; after: string };
 function checkoutKeptInputs(book: Book, { before, after }: Checkout): boolean {
   const oid = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
   if (!oid.test(before) || !oid.test(after) || lexists(join(book.dir, "hooks.ts")) || book.vendors().length) return false;
-  const paths = [...new Set([
+  const inputs = [
     PB, ...buildInputs(book), ...placeholderOutputs(book).map((p) => inRepo(book, p)),
-  ])];
-  if (paths.some((p) => p.split("/").some((_, i, parts) => isSymlink(join(book.root, ...parts.slice(0, i + 1)))))) return false;
-  const tree = spawn(["git", "ls-tree", "-rz", "--full-tree", after], { cwd: book.root });
-  if (tree.code !== 0) return false;
-  if (decodeReplace(tree.stdout).split("\0").some((entry) => {
-    if (!entry.startsWith("160000 ")) return false;
-    const path = entry.slice(entry.indexOf("\t") + 1);
-    return paths.some((p) => p === path || p.startsWith(`${path}/`));
-  })) return false;
+  ];
+  if (inputs.some((p) => p.split("/").some((_, i, parts) => isSymlink(join(book.root, ...parts.slice(0, i + 1)))))) return false;
+  const paths = new Set(inputs);
+  for (const revision of [before, after]) {
+    const tree = spawn(["git", "ls-tree", "-rz", "--full-tree", revision], { cwd: book.root });
+    if (tree.code !== 0) return false;
+    for (const entry of decodeReplace(tree.stdout).split("\0")) {
+      if (!entry.startsWith("160000 ")) continue;
+      const path = entry.slice(entry.indexOf("\t") + 1);
+      if (inputs.some((p) => p === path || p.startsWith(`${path}/`))) paths.add(path);
+    }
+  }
   return spawn(["git", "--literal-pathspecs", "diff-tree", "--quiet", "-r", "--no-renames", "--ignore-submodules=none", "--end-of-options", before, after, "--", ...paths], { cwd: book.root }).code === 0;
 }
 
