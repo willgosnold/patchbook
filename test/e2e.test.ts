@@ -6933,6 +6933,76 @@ describe("ForkTest", () => {
     return path;
   };
 
+  forkTest("status reports every unlisted change entry without writing", (t) => {
+    const dir = join(t.fork.path, ".patchbook/changes");
+    mkdirSync(join(dir, "ours-only/ours"), { recursive: true });
+    writeFileSync(join(dir, "ours-only/ours/app.txt.pb"), "saved copy\n");
+    mkdirSync(join(dir, "empty-only"));
+    writeFileSync(join(dir, "plain-file"), "saved file\n");
+    mkdirSync(join(dir, "bad name"));
+    const before = tree(t.fork.path);
+    const folders = ["empty-only", "ours-only"];
+    const others = ["plain-file"];
+    const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
+    for (const name of folders) expect(status).toContain(`change ${name} is not in the series`);
+    for (const name of others) expect(status).toContain(`changes/${name}: not a change folder`);
+    expect(status).toContain('"bad name" isn\'t a valid change name');
+    const problems = JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path, code: 1 }).stdout).problems;
+    expect(problems).toHaveLength(4);
+    expect(tree(t.fork.path)).toEqual(before);
+    expect(readdirSync(join(dir, "empty-only"))).toEqual([]);
+    t.fork.write("app.txt", "changed\n");
+    for (const name of folders) {
+      expect(t.pb(["record", name], { cwd: t.fork.path, code: 1 }).stderr).toContain(`change ${name} is not in the series`);
+    }
+    for (const name of others) {
+      expect(t.pb(["record", name], { cwd: t.fork.path, code: 1 }).stderr).toContain(`changes/${name} is not a change folder`);
+    }
+  });
+
+  forkTest("status and record refuse linked change entries without writing", (t) => {
+    const dir = join(t.fork.path, ".patchbook/changes");
+    mkdirSync(join(t.tmp, "outside"));
+    writeFileSync(join(t.tmp, "outside-file"), "saved\n");
+    t.fork.write("app.txt", "hand edited\n");
+    for (const target of ["outside", "outside-file", "missing"]) {
+      mkdirSync(dir, { recursive: true });
+      symlinkSync(join(t.tmp, target), join(dir, "linked"));
+      const before = tree(t.fork.path);
+      for (const args of [["status"], ["status", "--json"], ["record", "linked"]]) {
+        expect(t.pb(args, { cwd: t.fork.path, code: 1 }).stderr).toContain(".patchbook/changes/linked is a link");
+      }
+      expect(tree(t.fork.path)).toEqual(before);
+      unlinkSync(join(dir, "linked"));
+    }
+    expect(read(join(t.tmp, "outside-file"))).toBe("saved\n");
+    expect(readdirSync(join(t.tmp, "outside"))).toEqual([]);
+  });
+
+  forkTest("status reports unrecorded output edits and deletions until record", (t) => {
+    t.fork.write("app.txt", "hand edited\n");
+    t.fork.rm("docs/guide.md");
+    const before = tree(t.fork.path);
+    const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
+    expect(status).toContain("unrecorded app.txt:");
+    expect(status).toContain("unrecorded docs/guide.md:");
+    expect(status).toContain("patchbook record");
+    expect(status).not.toContain("behind the patchbook");
+    expect(status).toContain("2 unrecorded");
+    const json = JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path, code: 1 }).stdout);
+    expect(json.version).toBe(2);
+    expect(json.problems.map((p: { problem: string; file: string }) => [p.problem, p.file])).toEqual([
+      ["unrecorded", "app.txt"], ["unrecorded", "docs/guide.md"],
+    ]);
+    expect(tree(t.fork.path)).toEqual(before);
+    expect(t.pb(["build"], { cwd: t.fork.path, code: 1 }).stderr).toContain("changed since the last build");
+    t.pb(["record", "edit-and-delete", "--intent", "Keep the edit and deletion."], { cwd: t.fork.path });
+    expect(JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path }).stdout).problems).toEqual([]);
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app.txt")).toBe("hand edited\n");
+    expect(existsSync(join(t.fork.path, "docs/guide.md"))).toBe(false);
+  });
+
   forkTest("record refuses a name whose folder is not in the series", (t) => {
     const path = unlisted(t, "ghost");
     const before = readFileSync(path);
@@ -11752,6 +11822,12 @@ describe("VendorTest", () => {
     expect(out).toContain("skipped  hello/SKILL.md: its block entry uses {{snippet:none}}, which is empty, so the edit can't show where it goes; edit its block entries directly");
     expect(read(entries)).toBe(recorded);
     expect(t.repo.read(skill)).toContain("Say hello in T3. Smile.");
+    const before = tree(t.repo.path);
+    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout).toContain(`unrecorded ${skill}:`);
+    const json = JSON.parse(t.pb(["status", "--json"], { cwd: t.repo.path, code: 1 }).stdout);
+    expect(json.problems).toMatchObject([{ problem: "unrecorded", file: skill }]);
+    expect(tree(t.repo.path)).toEqual(before);
+    expect(t.pb(["build"], { cwd: t.repo.path, code: 1 }).stderr).toContain("changed since the last build");
   });
 
   vendorTest("record paragraph edit with an intent keeps the intent of a change named unnamed", (t) => {
