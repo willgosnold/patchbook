@@ -24,6 +24,12 @@ After a conflicted `patchbook sync`, the commit hook now refuses the commit and 
 
 Markers that upstream itself holds don't stop a commit. For a copy that the last sync reported as conflicted in `.patchbook/last-sync.json`, the hook refuses while the copy holds a conflict block, from a `<<<<<<<` line through the next `>>>>>>>` line, that its base copy holds fewer times. So it catches the conflict even when upstream's file holds marker text of its own. That holds only until the sync is committed, meaning HEAD's `upstream.lock` pins the report's `to` commit for that upstream. Once you have resolved the copy and committed, a later edit inside upstream's literal block commits as before. For any other copy, or for every copy when `last-sync.json` is missing or can't be read, it refuses only when the copy holds more marker lines than its base copy. A HEAD with no commit, no `upstream.lock`, an `upstream.lock` that is a link or doesn't parse, or no entry for that upstream pins nothing, so a listed copy gets the block rule. It refuses a paragraph entry whose patched text holds more marker lines than its upstream text.
 
+### `status` reports unrecorded output and stray entries in `changes/`
+
+`status` said "no problems" while `build` refused output files that were edited, added or deleted by hand since the last build, including a paragraph edit that `record` skipped. Now `status` lists each one as `unrecorded <path>` and exits 1, and `status --json` carries the same problems. Run `patchbook record` to keep the edits, or edit the block entries when `record` skips the paragraph. An output that is only behind the patchbook stays a note and exits 0 (#255).
+
+`status` also reports every entry in `.patchbook/changes/` that the series doesn't list and that holds no `CHANGE.md`: an ours-only or empty folder, a plain file, a dotfile or a bad name. Its wording matches `record`'s. Only `status` changes. `record`, `build`, `skill install` and the commit hook treat these entries as before, so an ignored `.DS_Store` in `changes/` doesn't block a record or a commit (#106).
+
 ### A failed model call no longer leaves new paragraph entries without an intent
 
 When the model failed, `record` and the commit hook wrote a new paragraph entry with an empty intent. `status` reported the entry as a problem, and `build` refused until you ran `patchbook intent`. Now patchbook writes the entry's intent from the paragraph edit and labels it `intent (by patchbook):` in the entries file, as it does for a change, so the build goes ahead:
@@ -44,6 +50,18 @@ The intent names the start of upstream's paragraph and says whether the edit rew
 ### Hook manager lines paste into your existing config
 
 `patchbook hook install` prints the lines to add to a lefthook or pre-commit config. Pasted as printed, they broke some configs: a four-space lefthook YAML, pre-commit's own `sample-config` layout with items at column 0, and lefthook JSON where another hook holds the `commands` all failed to validate. It now reads the config, writes the lines in its indent, and says where they go: at the end of the file, directly below a line, or as the first member of a JSON object with its comma. Patchbook also runs first in lefthook when another command has priority 1 or the hook uses `jobs`. The `post-merge`, `post-checkout` and `post-rewrite` lines for lefthook and pre-commit are now a command or a hook in the config, not shell to paste into a script. Patchbook recognizes its own hook, whatever the entry is named, when it is the lines it printed or a bare `patchbook hook run` that nothing skips or limits to some files. In lefthook the bare call may end in `|| exit 1` or `|| true`. In pre-commit the hook must run at the commit stage, set on the hook or inherited from `default_stages`, and have no `args`, which pre-commit adds to the entry and patchbook rejects. Text that only mentions the call, such as an `echo`, gets the lines printed, and so does an unrelated entry named `patchbook`, which is named in the by-hand merge instead of leaving you with nothing. The pre-commit entry has `stages: [commit]` so it records on a commit and not after a merge. That spelling works on every pre-commit version, but pre-commit 4 warns on each commit that `commit` is a deprecated stage name. From pre-commit 3.2 you can silence the warning by writing `stages: [pre-commit]`, which pre-commit 3.1 and older reject (#126).
+
+### `--path .` names the upstream root
+
+`patchbook init --path .` and `patchbook track --path .` failed with git's raw `rev-parse` text. Now `.`, `./` and `./sub/` mean the upstream root or `sub`, so `--path .` is the same as leaving `--path` out, and `.` never becomes the upstream's name. A path that climbs out with `..` is refused before anything is written, with `--path "../x" must name a folder inside the upstream, not one that climbs out with ..` (#233).
+
+### Messages no longer print an upstream remote's password
+
+With an upstream remote like `https://user:pw@example.com/x.git`, commands that reach the remote, such as `check` and `sync`, printed `user:pw@` in the remote's label, in git's error output and in config errors. These messages now drop the user name and password from the URL, as other messages already did (#214).
+
+### `record --intent` fills an empty paragraph-entry intent
+
+`record --intent` said a paragraph entry was `updated` but left its intent empty, so `status` reported the entry and `build` refused. Now `--intent` fills an empty intent as it does for a new entry. An intent that someone wrote stays as it was (#254).
 
 ### Skip checkout builds when the inputs stay the same
 
