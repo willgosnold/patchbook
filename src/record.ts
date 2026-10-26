@@ -43,14 +43,11 @@ type Data = {
 type Kind = keyof Data;
 export type Edited<K extends Kind = Kind> = { [P in K]: { kind: P; path: string } & Data[P] }[K];
 
-/** The edit a row adds to the change it records into. A delete that stands in for a replace, or for a file edit on a copy's
- * destination, names the change it drops that edit from. */
 type Written = Edit & { drops?: Change };
 
 /** A change a row writes a copy into without naming it, with the copy's new bytes. */
 type Join = { change: Change; path: string; data: Uint8Array };
 
-/** An edit a row takes out of the change that has it. */
 type Dropped = { change: Change; kind: "add" | "replace" | "file"; path: string };
 
 /** `updates` are the existing entries a row rewrites, by their label. */
@@ -212,31 +209,31 @@ export type Snapshot = {
   build(src: Source, at: string): File;
 };
 
-/** An edit to an output whose source builds another output still on disk applies to that output alone, since an edit to the source
- * would change the other output too: a file edit on its own path at the destination of a copy or move of an upstream file, which keeps
- * it following that file, and a replace anywhere else. A destination edited this way no longer builds from the source. A new output
- * that builds as a copy of a staged file is recorded as that copy. A new output that a deleted output's upstream file builds, as is or
- * with a content edit that keeps at least half its lines, is recorded as a move of that file plus the edit. */
+/** A new output that builds as a copy of a staged file is recorded as that copy. A new output that a deleted output's upstream file
+ * builds, as is or with a content edit that keeps at least half its lines, is recorded as a move of that file plus the edit. */
 export function classify(s: Snapshot, paths: readonly string[]): Edited[] {
   return follow(s, each(s, paths));
 }
 
 function each(s: Snapshot, paths: readonly string[]): Edited[] {
   const edited = new Set(paths);
-  const destination = (p: string, src: Source) => src.kind === "up" && src.path !== s.prefix + p;
+  const isDestination = (p: string, src: Source) => src.kind === "up" && src.path !== s.prefix + p;
   return paths.map((path) => {
     const now = s.current.get(path);
     const built = s.out.get(path);
     const src = now && built ? s.sources.get(path) : undefined;
     if (!now || !built || !src) return classifyOne(s, path);
     const outputs = builtFrom(s, src);
+    const others = outputs.filter((p) => p !== path && s.current.has(p));
     const staged = s.prefix + path;
-    if (destination(path, src)) {
-      if (!outputs.some((p) => p !== path && s.current.has(p))) return classifyOne(s, path);
-      const unread = s.blocks.has(src.path) && outputs.every((p) => edited.has(p) && (destination(p, src) || !s.current.has(p)));
-      return { kind: "file-edit", path, rel: staged, now, built, to: { kind: "recorded", base: s.upstream.get(src.path)! }, entries: unread ? s.entriesAt(src.path) : null };
+    if (isDestination(path, src)) {
+      if (!others.length) return classifyOne(s, path);
+      const nothingReadsEntries = outputs.every((p) => edited.has(p) && (isDestination(p, src) || !s.current.has(p)));
+      const entries = s.blocks.has(src.path) && nothingReadsEntries ? s.entriesAt(src.path) : null;
+      return { kind: "file-edit", path, rel: staged, now, built, to: { kind: "recorded", base: s.upstream.get(src.path)! }, entries };
     }
-    if (!outputs.some((p) => p !== path && s.current.has(p) && !(edited.has(p) && destination(p, src)))) return classifyOne(s, path);
+    const editedDestination = (p: string) => edited.has(p) && isDestination(p, src);
+    if (others.every(editedDestination)) return classifyOne(s, path);
     return { kind: "replace", path, staged, now, built: built.mode, up: s.upstream.get(staged) };
   });
 }

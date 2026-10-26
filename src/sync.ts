@@ -187,19 +187,16 @@ function writeLastSync(book: Book, reports: ReadonlyMap<string, SyncReport>): vo
   writeText(join(book.dir, REPORT), lastSyncText({ version: 2, upstreams }));
 }
 
-/** An upstream's files at its pin, as the build stages them. None before its first sync. */
 function pinnedFiles(book: Book, u: Upstream): Map<string, File> {
   const pin = u.pin();
   return pin.tree ? book.buildable(u, u.mounted(u.files(u.heal(pinned(u, pin)))), false) : new Map();
 }
 
-/** The upstream file each file edit on a copy's or move's destination merges with, by the path it edits, as the build stages them at
- * the pins. `old` is `u`'s files at its pin. */
-function destinationSources(book: Book, u: Upstream, old: ReadonlyMap<string, File>, changes: readonly Change[]): Map<string, string> {
+function destinationSources(book: Book, changes: readonly Change[], atPin: (u: Upstream) => ReadonlyMap<string, File>): Map<string, string> {
   const ends = changes.flatMap((c) => c.edits.flatMap((e) => (e.kind === "copy" || e.kind === "move" ? [e.dest] : [])));
   const paths = changes.flatMap((c) => c.edits.flatMap((e) => (e.kind === "file" && ends.some((d) => under(e.path, d)) ? [e.path] : [])));
   if (!paths.length) return new Map();
-  const upstream = new Map(book.upstreams.flatMap((x) => [...(x === u ? old : pinnedFiles(book, x))]));
+  const upstream = new Map(book.upstreams.flatMap((u) => [...atPin(u)]));
   const { tree } = applyStructure(changes, upstream, [], (p) => book.reservedHolding(p));
   return new Map(paths.flatMap((p) => {
     const from = editedUpstream(p, upstream, tree);
@@ -237,7 +234,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   const missing: string[] = [];
   let copies = 0;
   const added = Array.from(fresh.keys()).filter((p) => !old.has(p));
-  const sources = destinationSources(book, u, old, changes);
+  const sources = destinationSources(book, changes, (x) => (x === u ? old : pinnedFiles(book, x)));
   for (const c of changes) {
     for (const e of c.edits) {
       if (e.kind === "replace" && book.upstreamFor(e.path) === u && old.has(e.path) && !sameFile(old.get(e.path), fresh.get(e.path))) {

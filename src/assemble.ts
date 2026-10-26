@@ -173,8 +173,6 @@ export function applyStructure(
   return { tree, applied };
 }
 
-/** The upstream file a file edit on `path` merges with: the one at `path`, or, on a path upstream doesn't have, the one the copies and
- * moves in `staged` build there. */
 export function editedUpstream(path: string, upstream: ReadonlyMap<string, File>, staged: ReadonlyMap<string, Source>): string | undefined {
   if (upstream.has(path)) return path;
   const src = staged.get(path);
@@ -207,7 +205,6 @@ export function assemble(book: Book): Assembly {
   // Content edits, keyed by upstream path. One owner per path.
   const content = new Map(upstream);
   const owner = new Map<string, string>();
-  /** A file edit's copies, once the upstream file it edits is known. */
   const copiesOver = (c: Change, path: string, up: File): { base: File; ours: File } | null => {
     const where: InChange = { file: path, change: c.name };
     const base = c.file("base", path);
@@ -259,7 +256,6 @@ export function assemble(book: Book): Assembly {
   const lost = new Set<string>();
   const { tree: staged, applied: structural } = applyStructure(changes, upstream, problems, (p) => book.reservedHolding(p), lost);
   applied += structural;
-  // A file edit on a copy's or move's destination applies after them and builds that output alone from its ours copy.
   for (const { c, path } of destinations) {
     const from = editedUpstream(path, upstream, staged);
     if (from === undefined) problems.push({ problem: "gone", file: path, change: c.name, detail: "upstream no longer has it" });

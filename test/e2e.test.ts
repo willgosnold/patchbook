@@ -10592,7 +10592,6 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(outputs(t)).toEqual(disk);
   });
 
-  // #317: an edit to a copy's destination is a file edit there, so the copy keeps following upstream.
   const copiedApp = (t: ForkCase): void => {
     handChange(t, "second", "Copy the app.", ["copy app.txt -> app2.txt"]);
     t.pb(["build"], { cwd: t.fork.path });
