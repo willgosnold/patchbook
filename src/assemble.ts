@@ -549,6 +549,11 @@ export async function cmdStatus(args: { json: boolean }) {
     for (const c of readChanges(book, [])) {
       if (c.intent?.by === "patchbook") say(`note      changes/${c.name}: patchbook wrote its intent from the edits. ${replaceIntent(c.name)}\n`);
     }
+    for (const rel of blockFiles(book)) {
+      for (const [key, e] of readEntries(entriesPath(book, rel))) {
+        if (e.intent.by === "patchbook") say(`note      ${rel} [${key}]: patchbook wrote its intent from the paragraph edit. ${replaceIntent()}\n`);
+      }
+    }
     const counts = new Map<string, number>();
     for (const p of problems) counts.set(p.problem, (counts.get(p.problem) ?? 0) + 1);
     const summary = [...counts].sort(([a], [b]) => byCodePoint(a, b)).map(([k, n]) => `${n} ${k}`).join(", ") || "no problems";
@@ -573,7 +578,7 @@ export async function cmdScaffold(args: { file: string[] }) {
     const path = entriesPath(book, rel);
     mkdirs(dirname(path));
     const existing = exists(path) ? readText(path).replace(/\n+$/, "") + "\n\n" : "";
-    const skeletons = Array.from(found.values(), (p) => formatEntry({ hash: p.hash, kind: "translation", rules: "", intent: "", upstream: p.upstream, patched: p.upstream }));
+    const skeletons = Array.from(found.values(), (p) => formatEntry({ hash: p.hash, kind: "translation", rules: "", intent: { text: "", by: "author" }, upstream: p.upstream, patched: p.upstream }));
     count += skeletons.length;
     writeText(path, existing + skeletons.join("\n"));
   }

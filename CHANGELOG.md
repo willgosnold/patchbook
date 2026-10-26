@@ -4,6 +4,21 @@ The hand-written part of each release's notes. GitHub's generated notes list the
 
 ## Unreleased
 
+### A failed model call no longer leaves new paragraph entries without an intent
+
+When the model failed, `record` and the commit hook wrote a new paragraph entry with an empty intent. `status` reported the entry as a problem, and `build` refused until you ran `patchbook intent`. Now patchbook writes the entry's intent from the paragraph edit and labels it `intent (by patchbook):` in the entries file, as it does for a change, so the build goes ahead:
+
+```
+$ PATCHBOOK_PROVIDER=none patchbook record
+entry    hello/SKILL.md [58aa0fcd3b7e] added
+intent   by patchbook for hello/SKILL.md [58aa0fcd3b7e] (intent.provider is none). To replace it, run `patchbook intent` or edit its line to `intent: <yours>`
+$ patchbook status
+note      skills/hello/SKILL.md [58aa0fcd3b7e]: patchbook wrote its intent from the paragraph edit. To replace it, run `patchbook intent` or edit its line to `intent: <yours>`
+1 edits apply at 2c5f1e8; no problems
+```
+
+The intent names the start of upstream's paragraph and says whether the edit rewrote or deleted it, as in `Rewrites the paragraph that starts "Then wave." in hello/SKILL.md.`, so two paragraphs of one file get two intents. `patchbook intent` replaces it through the model, or you can rewrite the line as `intent: ...`. A later record that edits the same paragraph with no model writes it again, and an entry whose intent someone wrote keeps its intent. An entry that already has an empty intent still keeps it empty after a failed model call (#349) (#331).
+
 ### Skip checkout builds when the inputs stay the same
 
 The post-checkout hook now compares the old and new commits before it rebuilds. It skips the build when `.patchbook` and configured placeholder files are unchanged, including placeholder files inside the output. Missing revisions, custom build hooks, vendored upstreams and linked inputs still trigger a build. Existing patchbook-owned checkout hooks and hook-manager snippets are upgraded when hooks are installed (#338).

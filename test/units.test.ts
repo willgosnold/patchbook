@@ -17,7 +17,7 @@ const { applyStructure, describe: describeProblem, parseBuildLock } = await impo
 const { blockHash, blocksOf, blockSpans, checkEntry, formatEntry, nearest, parsePlaceholders, readEntries, Rules } = await import("../src/blocks.ts");
 const { Book, globRe, lockText, parseLock } = await import("../src/book.ts");
 const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
-const { changeParts, intentFromEdits, intentSettings, listDiffs, nameFromEdits, pendingParts, PROVIDERS, writeIntents } = await import("../src/intent.ts");
+const { changeParts, intentFromEdits, intentFromParagraph, intentSettings, listDiffs, nameFromEdits, pendingParts, PROVIDERS, writeIntents } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
 const { meantMode, outputMode, recordedModes } = await import("../src/lib/fs.ts");
 const { redact, refuseCredentials } = await import("../src/lib/proc.ts");
@@ -432,7 +432,7 @@ describe("blocksOf", () => {
 
 describe("entries", () => {
   const entry = (over: Partial<Entry> = {}): Entry => ({
-    hash: "0123456789ab", kind: "translation", rules: "t3", intent: "Say T3.", upstream: "Open Cursor.", patched: "Open T3.", ...over,
+    hash: "0123456789ab", kind: "translation", rules: "t3", intent: said("Say T3."), upstream: "Open Cursor.", patched: "Open T3.", ...over,
   });
   const file = (...entries: Entry[]): string => put(join(scratch(), "x.entries"), entries.map(formatEntry).join("\n"));
   const roundTrip = (...entries: Entry[]): Entry[] => Array.from(readEntries(file(...entries)).values());
@@ -470,28 +470,51 @@ describe("entries", () => {
 
   test("a blank line around a text is trimmed", () => {
     const path = put(join(scratch(), "x.entries"), "=== entry 0123456789ab\nkind: keep\nrules: \nintent: Same.\n--- upstream\n\nkeep\n\n--- patched\n\nkeep\n\n");
-    expect(readEntries(path).get("0123456789ab")).toEqual(entry({ kind: "keep", rules: "", intent: "Same.", upstream: "keep", patched: "keep" }));
+    expect(readEntries(path).get("0123456789ab")).toEqual(entry({ kind: "keep", rules: "", intent: said("Same."), upstream: "keep", patched: "keep" }));
   });
 
   test("a wrapped intent is joined with single spaces", () => {
     const path = put(join(scratch(), "x.entries"), "=== entry 0123456789ab\nkind: policy\nrules: \nintent: First part\n  second part\n\n   third\n--- upstream\nu\n--- patched\np\n");
-    expect(readEntries(path).get("0123456789ab")?.intent).toBe("First part second part third");
+    expect(readEntries(path).get("0123456789ab")?.intent).toEqual(said("First part second part third"));
   });
 
   test("the fields can come in any order", () => {
     const path = put(join(scratch(), "x.entries"), "=== entry 0123456789ab\nintent: I\nrules: r\nkind: translation\n--- upstream\nu\n--- patched\np\n");
-    expect(readEntries(path).get("0123456789ab")).toEqual(entry({ intent: "I", rules: "r", upstream: "u", patched: "p" }));
+    expect(readEntries(path).get("0123456789ab")).toEqual(entry({ intent: said("I"), rules: "r", upstream: "u", patched: "p" }));
   });
 
   test("an entry with an empty intent reads back empty, and checkEntry says it has none", () => {
     const upstream = "Open Cursor.";
-    const e = entry({ hash: blockHash(upstream), upstream, intent: "" });
+    const e = entry({ hash: blockHash(upstream), upstream, intent: said("") });
     const written = formatEntry(e);
     expect(written).toContain("\nintent: \n");
     expect(written).not.toContain("None");
     const [read] = roundTrip(e);
-    expect(read?.intent).toBe("");
+    expect(read?.intent).toEqual(said(""));
     expect(checkEntry(read!)).toBe("it has no intent; fill it with `patchbook intent`");
+  });
+
+  test("an intent patchbook wrote keeps its label through a round trip, and checkEntry takes it", () => {
+    const upstream = "Open Cursor.";
+    const e = entry({ hash: blockHash(upstream), upstream, intent: { text: "Rewrites the paragraph that starts \"Open Cursor.\" in a.md.", by: "patchbook" } });
+    expect(formatEntry(e)).toContain("\nintent (by patchbook): Rewrites the paragraph that starts \"Open Cursor.\" in a.md.\n");
+    expect(roundTrip(e)).toEqual([e]);
+    expect(checkEntry(roundTrip(e)[0]!)).toBeNull();
+  });
+
+  test("a wrapped intent patchbook wrote keeps its label", () => {
+    const path = put(join(scratch(), "x.entries"), "=== entry 0123456789ab\nkind: policy\nrules: \nintent (by patchbook): Rewrites\n  a paragraph.\n--- upstream\nu\n--- patched\np\n");
+    expect(readEntries(path).get("0123456789ab")?.intent).toEqual({ text: "Rewrites a paragraph.", by: "patchbook" });
+  });
+
+  test("a label with no intent after it is no intent", () => {
+    const path = put(join(scratch(), "x.entries"), "=== entry 0123456789ab\nkind: policy\nrules: \nintent (by patchbook):\n--- upstream\nu\n--- patched\np\n");
+    expect(readEntries(path).get("0123456789ab")?.intent).toEqual(said(""));
+  });
+
+  test("an edit of the label to intent: makes the intent someone's", () => {
+    const path = put(join(scratch(), "x.entries"), "=== entry 0123456789ab\nkind: policy\nrules: \nintent: Mine.\n--- upstream\nu\n--- patched\np\n");
+    expect(readEntries(path).get("0123456789ab")?.intent).toEqual(said("Mine."));
   });
 
   test("status shows an orphan entry with no intent as (no intent yet)", () => {
@@ -1466,6 +1489,28 @@ describe("an intent patchbook writes from the edits", () => {
   });
 });
 
+describe("intentFromParagraph", () => {
+  test("says a rewritten paragraph is rewritten, and a deleted one deleted, named by the start of upstream's text", () => {
+    expect(intentFromParagraph("a.md", "Example one:", "Example 1:")).toBe('Rewrites the paragraph that starts "Example one:" in a.md.');
+    expect(intentFromParagraph("a.md", "Example one:", "")).toBe('Deletes the paragraph that starts "Example one:" in a.md.');
+  });
+
+  test("names the paragraph by its first line only, on one line, cut at 40 characters", () => {
+    expect(intentFromParagraph("a.md", "first   line\nsecond line", "x")).toBe('Rewrites the paragraph that starts "first line" in a.md.');
+    expect(intentFromParagraph("a.md", "x".repeat(60), "y")).toBe(`Rewrites the paragraph that starts "${"x".repeat(40)}..." in a.md.`);
+  });
+
+  test("tells two paragraphs of one file apart", () => {
+    expect(intentFromParagraph("a.md", "Example one:", "x")).not.toBe(intentFromParagraph("a.md", "Example two:", "x"));
+  });
+
+  test("quotes a path or a paragraph with a control character, so the intent stays on its line", () => {
+    const intent = intentFromParagraph("x\ny.md", "bad\u0007\"quote\" \\ end", "z");
+    expect(intent).toBe('Rewrites the paragraph that starts "bad\\u0007\\"quote\\" \\\\ end" in "x\\ny.md".');
+    expect(intent).not.toContain("\n");
+  });
+});
+
 describe("parseChange", () => {
   const parse = (edits: string[]) => {
     const dir = scratch();
@@ -1727,7 +1772,7 @@ describe("classify", () => {
   const up = (path: string): Source => ({ kind: "up", path });
   const ours = (c: Change, path: string): Source => ({ kind: "ours", change: c.name, path });
 
-  const draft = (hash: string, intent: string | null) => ({ hash, kind: "policy", rules: "", intent, upstream: "up", patched: "ours" });
+  const draft = (hash: string, intent: string | null) => ({ hash, kind: "policy", rules: "", intent: intent === null ? null : said(intent), upstream: "up", patched: "ours" });
   const kept = draft("aaaaaaaaaaaa", "Speak T3.");
   const fresh = draft("bbbbbbbbbbbb", null);
   const plans = new Map([
@@ -1791,7 +1836,7 @@ describe("classify", () => {
       sources: new Map([["para-new.md", up("skills/para-new.md")]]) };
     expect(needOf(one(w, "para-new.md"))).toEqual({ named: false, drafts: [fresh], updates: [] });
     expect(needOf(one(world, "para.md"))).toEqual({ named: false, drafts: [], updates: [] });
-    const updated = { ...draft("cccccccccccc", null), was: "Speak T3." };
+    const updated = { ...draft("cccccccccccc", null), was: said("Speak T3.") };
     const u = { ...w, plan: () => ({ path: "", entries: new Map([[kept.hash, kept], [updated.hash, updated]]), notes: [] }) };
     expect(needOf(one(u, "para-new.md"))).toEqual({ named: false, drafts: [], updates: [["para-new.md [cccccccccccc]", updated]] });
   });

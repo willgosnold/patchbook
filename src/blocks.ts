@@ -3,6 +3,7 @@
 // Also the rules a block is checked against: [[check]] patterns, placeholders and the hooks.
 import type { InBlock, InOutput, Nearest, Occurrence, Problem } from "./api.ts";
 import { Book, type Check, escape } from "./book.ts";
+import { INTENT_LABEL, type Intent } from "./changes.ts";
 import { Fail } from "./lib/fail.ts";
 import { pjoin, readText } from "./lib/fs.ts";
 import { sha256 } from "./lib/hash.ts";
@@ -11,14 +12,16 @@ import { list, readJson, type Shape, ShapeError, shown, string, table } from "./
 import { verbatim } from "./lib/term.ts";
 import { byCodePoint, decode, quote } from "./lib/text.ts";
 
-export const ENTRY_FIELDS = ["kind", "rules", "intent"] as const;
+const PLAIN_FIELDS = ["kind", "rules"] as const;
+export const ENTRY_FIELDS = [...PLAIN_FIELDS, "intent"] as const;
 export const ENTRY_KINDS = ["translation", "policy", "keep"];
 export const PLACEHOLDER_HINT = /\{\{[\p{L}\p{N}_]+:[^}]+\}\}/gu;
 const FENCE = /^\s*(`{3,}|~{3,})/;
 const ENTRY_HEAD = /^=== entry ([0-9a-f]{12})(?: ([1-9][0-9]*) of ([1-9][0-9]*) between ([0-9a-f]{12}))?$/;
 
-/** An entry with `at` patches only that occurrence of its paragraph. One without patches every occurrence that has no entry of its own. */
-export type Entry = { hash: string; at?: Occurrence; kind: string; rules: string; intent: string; upstream: string; patched: string };
+/** An entry with `at` patches only that occurrence of its paragraph. One without patches every occurrence that has no entry of its own.
+ * An entry with no intent has a blank one. */
+export type Entry = { hash: string; at?: Occurrence; kind: string; rules: string; intent: Intent; upstream: string; patched: string };
 /** A block of a file: lines [start, end), its text with no CR at the line ends, the hash of that text, and which of the file's
  * blocks with that text it is. */
 export type Block = { start: number; end: number; text: string; hash: string } & Occurrence;
@@ -146,7 +149,7 @@ export function entriesPath(book: Book, rel: string): string {
 
 /** Parse an entries file into {key: entry}, keyed as entryKey names them. Field problems are left for checkEntry. */
 export function readEntries(path: string): Map<string, Entry> {
-  type Draft = { [K in "hash" | (typeof ENTRY_FIELDS)[number]]: string } & { at?: Occurrence; upstream: string[]; patched: string[] };
+  type Draft = { [K in "hash" | (typeof PLAIN_FIELDS)[number]]: string } & { at?: Occurrence; intent: Intent; upstream: string[]; patched: string[] };
   const drafts = new Map<string, Draft>();
   let entry: Draft | null = null;
   let section: "fields" | "upstream" | "patched" = "fields";
@@ -158,7 +161,7 @@ export function readEntries(path: string): Map<string, Entry> {
       const at = m[2] ? { nth: Number(m[2]), of: Number(m[3]), between: m[4]! } : undefined;
       const key = entryKey(m[1]!, at);
       if (drafts.has(key)) throw new Fail(`${path}:${n}: duplicate entry ${key}`);
-      entry = { hash: m[1]!, ...(at && { at }), kind: "", rules: "", intent: "", upstream: [], patched: [] };
+      entry = { hash: m[1]!, ...(at && { at }), kind: "", rules: "", intent: { text: "", by: "author" }, upstream: [], patched: [] };
       drafts.set(key, entry);
       section = "fields";
       lastField = null;
@@ -168,28 +171,38 @@ export function readEntries(path: string): Map<string, Entry> {
     else if (section === "fields") {
       const sep = line.indexOf(": ");
       const name = sep === -1 ? line : line.slice(0, sep);
-      const field = ENTRY_FIELDS.find((f) => f === name);
-      if (field && sep !== -1) {
+      const field = PLAIN_FIELDS.find((f) => f === name);
+      const by = (["author", "patchbook"] as const).find((b) => line.startsWith(INTENT_LABEL[b]));
+      if (by) {
+        entry.intent = { text: line.slice(INTENT_LABEL[by].length).trim(), by };
+        lastField = "intent";
+      } else if (field && sep !== -1) {
         entry[field] = line.slice(sep + 2).trim();
         lastField = field;
-      } else if (line.trim() && lastField === "intent") entry.intent += " " + line.trim();
+      } else if (line.trim() && lastField === "intent") entry.intent.text += " " + line.trim();
       else if (line.trim()) throw new Fail(`${path}:${n}: expected one of ${ENTRY_FIELDS.join(", ")}`);
     } else entry[section].push(line);
   }
   return new Map(
-    Array.from(drafts, ([h, d]) => [h, { ...d, upstream: d.upstream.join("\n").replace(/^\n+|\n+$/g, ""), patched: d.patched.join("\n").replace(/^\n+|\n+$/g, "") }]),
+    Array.from(drafts, ([h, d]) => [h, {
+      ...d,
+      intent: d.intent.text ? d.intent : { text: "", by: "author" as const },
+      upstream: d.upstream.join("\n").replace(/^\n+|\n+$/g, ""),
+      patched: d.patched.join("\n").replace(/^\n+|\n+$/g, ""),
+    }]),
   );
 }
 
 export function formatEntry(e: Entry): string {
-  return `=== entry ${entryKey(e.hash, e.at)}\n` + ENTRY_FIELDS.map((f) => `${f}: ${e[f]}\n`).join("")
+  return `=== entry ${entryKey(e.hash, e.at)}\n` + PLAIN_FIELDS.map((f) => `${f}: ${e[f]}\n`).join("")
+    + `${INTENT_LABEL[e.intent.by]} ${e.intent.text}\n`
     + `--- upstream\n${e.upstream}\n--- patched\n${e.patched ? `${e.patched}\n` : ""}`;
 }
 
 export function checkEntry(e: Entry): string | null {
   if (blockHash(e.upstream) !== e.hash) return "its upstream text does not match its hash";
   if (!ENTRY_KINDS.includes(e.kind)) return `kind must be one of ${ENTRY_KINDS.join(", ")}`;
-  if (!e.intent) return "it has no intent; fill it with `patchbook intent`";
+  if (!e.intent.text) return "it has no intent; fill it with `patchbook intent`";
   if (e.kind === "translation" && !e.rules) return "a translation must name its rules";
   if (e.kind === "keep" && e.patched !== e.upstream) return "a keep entry must leave the block unchanged";
   return null;
@@ -205,7 +218,7 @@ export function nearest(text: string, candidates: readonly Unmatched[], limit = 
 export function orphan(rel: string, entry: Entry, candidates: readonly Unmatched[]): Problem {
   return {
     problem: "orphan", file: rel, hash: entry.hash, ...(entry.at && { occurrence: entry.at }), kind: entry.kind, rules: entry.rules,
-    intent: entry.intent, upstream: entry.upstream, patched: entry.patched, nearest: nearest(entry.upstream, candidates),
+    intent: entry.intent.text, upstream: entry.upstream, patched: entry.patched, nearest: nearest(entry.upstream, candidates),
   };
 }
 

@@ -237,6 +237,7 @@ function action(e: Edit): [keyof typeof VERBS, string] {
 }
 
 const LISTED = 3;
+const LEAD = 40;
 
 /** The intent patchbook writes for edits when no model can: a sentence for each kind of edit, in the order they come, naming the
  * first `LISTED` paths of each. */
@@ -247,6 +248,14 @@ export function intentFromEdits(edits: readonly Edit[]): string {
     const shown = all.length > LISTED ? [...all.slice(0, LISTED), `${all.length - LISTED} more`] : all;
     return `${VERBS[verb].says} ${shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown.at(-1)}` : shown[0]}.`;
   }).join(" ");
+}
+
+/** The intent patchbook writes for a paragraph edit when no model can: whether the paragraph was rewritten or deleted, named by the start
+ * of upstream's text, and the output file it is in. */
+export function intentFromParagraph(path: string, upstream: string, patched: string): string {
+  const first = Array.from(oneLine(upstream.split("\n")[0]!));
+  const start = first.length > LEAD ? `${first.slice(0, LEAD).join("")}...` : first.join("");
+  return `${patched === "" ? "Deletes" : "Rewrites"} the paragraph that starts ${quote(start)} in ${pathText(path)}.`;
 }
 
 /** A kebab-case change name from the first of the edits, kept within `NAME_LENGTH`. */

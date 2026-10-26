@@ -83,14 +83,15 @@ export function editText(e: Edit): string {
 
 export type Side = "base" | "ours";
 
-/** A change's intent and who wrote it: the user or the model, or patchbook, from the edits alone, when no model could. A change with
- * no intent has none, never a blank one. */
+/** A change's or block entry's intent and who wrote it: the user or the model, or patchbook, from the edits alone, when no model could.
+ * A change with no intent has none, never a blank one. A block entry with none has a blank one. */
 export type Intent = { text: string; by: "author" | "patchbook" };
 
-const INTENT_LABEL = { author: "intent:", patchbook: "intent (by patchbook):" } as const;
+export const INTENT_LABEL = { author: "intent:", patchbook: "intent (by patchbook):" } as const;
 
-/** How to replace an intent patchbook wrote: with the model, or by hand. */
-export const replaceIntent = (name: string): string => `To replace it, run \`patchbook intent ${name}\` or edit its line to \`intent: <yours>\``;
+/** How to replace an intent patchbook wrote: with the model, or by hand. A block entry has no name to give `patchbook intent`. */
+export const replaceIntent = (name?: string): string =>
+  `To replace it, run \`patchbook intent${name === undefined ? "" : ` ${name}`}\` or edit its line to \`intent: <yours>\``;
 
 export class Change {
   constructor(

@@ -283,7 +283,7 @@ export const PROGRAM: Program = {
     }),
     intent: command({
       summary: "fill empty intents and replace the ones patchbook wrote",
-      about: ["With no <change>, it fills every change and block entry with an empty intent,", "and every change whose intent patchbook wrote."],
+      about: ["With no <change>, it fills every change and block entry with an empty intent,", "and every change or block entry whose intent patchbook wrote."],
       args: { change: arg.optional("only this change") },
       options: { intent: option("text", "the intent for <change> (default: the model writes it)") },
       run: cmdIntent,
