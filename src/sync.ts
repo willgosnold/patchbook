@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
 import { type Lost, lostEdit } from "./blocks.ts";
-import { Book, GIT, PB, refuseNestedGit, refuseUpstreamGit, segmentNamesGit, under, unsafeVendor } from "./book.ts";
+import { Book, GIT, parseLock, PB, refuseNestedGit, refuseUpstreamGit, segmentNamesGit, under, unsafeVendor } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
@@ -152,10 +152,14 @@ export function readLastSync(book: Book): LastSync | null {
   return exists(path) ? parseLastSync(readTextReplace(path)) : null;
 }
 
-/** The report only records past syncs, so one that can't be read names no conflicts. */
+/** The report only records past syncs, so a report or a HEAD lock that can't be read names no conflicts. */
 export function syncConflicts(book: Book): Set<string> {
   try {
-    return new Set(readLastSync(book)?.upstreams.flatMap((r) => r.conflicts.map((c) => `${c.change}\0${c.path}`)));
+    const listed = readLastSync(book)?.upstreams.filter((r) => r.conflicts.length) ?? [];
+    if (!listed.length) return new Set();
+    const found = spawn(["git", "cat-file", "blob", `HEAD:${relative(book.root, join(book.dir, "upstream.lock"))}`], { cwd: book.root });
+    const committed = new Map(found.code === 0 ? parseLock(decode(found.stdout)).map((p) => [p.name, p.commit]) : []);
+    return new Set(listed.filter((r) => committed.get(r.name) !== r.to).flatMap((r) => r.conflicts.map((c) => `${c.change}\0${c.path}`)));
   } catch (e) {
     if (e instanceof Fail || (e instanceof Error && "errno" in e)) return new Set();
     throw e;
