@@ -7,7 +7,7 @@ import {
   entriesPath, type Entry, entryKey, formatEntry, leakScan, orphan, patchBlocks, readEntries, Rules, type Unmatched,
 } from "./blocks.ts";
 import { ATTRIBUTES_FILE, Book, buildInputs, GIT, PB, type Reserved, under } from "./book.ts";
-import { type Change, editText, isMergeMarker, readChanges, replaceIntent } from "./changes.ts";
+import { type Change, editText, isMergeMarker, readChanges, replaceIntent, strayProblems } from "./changes.ts";
 import { installHookOrWarn, stageModes, upstreamModes, warnUnhooked } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import {
@@ -541,7 +541,7 @@ export async function cmdStatus(args: { json: boolean }) {
   warnUnhooked(book);
   const a = assemble(book);
   const drift = outputDrift(book, a);
-  const problems: Problem[] = [...a.problems, ...conflictedLock(book), ...drift.edited.map((p): Problem => ({
+  const problems: Problem[] = [...a.problems, ...conflictedLock(book), ...strayProblems(book), ...drift.edited.map((p): Problem => ({
     problem: "unrecorded", file: inRepo(book, p),
     detail: "changed since the last build; move the edits into the patchbook with `patchbook record`, or edit its block entries directly if record skips it",
   }))];

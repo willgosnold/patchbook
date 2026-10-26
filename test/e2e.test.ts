@@ -6966,6 +6966,78 @@ describe("ForkTest", () => {
     expect(tree(t.fork.path)).toEqual(recording);
   });
 
+  const hookedCommit = (t: ForkCase, ...args: string[]) =>
+    sh(["git", "commit", "-qm", "work", ...args], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Shout two." }, check: false });
+
+  forkTest("an ignored dotfile and an empty bad-named folder leave record and a commit working while status reports them", (t) => {
+    const dir = join(t.fork.path, ".patchbook/changes");
+    mkdirSync(join(dir, "bad name"), { recursive: true });
+    writeFileSync(join(dir, ".DS_Store"), "finder\n");
+    appendFileSync(join(t.fork.path, ".git/info/exclude"), ".DS_Store\n");
+    t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
+    t.pb(["record", "--intent", "Shout the second line."], { cwd: t.fork.path });
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    const commit = hookedCommit(t);
+    expect(commit.stderr).not.toContain("wasn't rebuilt");
+    expect(commit.stderr).not.toContain("refusing");
+    expect(commit.code).toBe(0);
+    const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
+    expect(status).toContain('".DS_Store" isn\'t a valid change name');
+    expect(status).toContain('"bad name" isn\'t a valid change name');
+  });
+
+  const strayShapes: [string, (dir: string) => void, string][] = [
+    ["an ours-only folder", (dir) => {
+      mkdirSync(join(dir, "ours-only/ours"), { recursive: true });
+      writeFileSync(join(dir, "ours-only/ours/app.txt.pb"), "saved copy\n");
+    }, "change ours-only is not in the series"],
+    ["an empty folder", (dir) => mkdirSync(join(dir, "empty-only")), "change empty-only is not in the series"],
+    ["a plain file", (dir) => writeFileSync(join(dir, "plain-file"), "saved file\n"), "changes/plain-file: not a change folder"],
+  ];
+  for (const [shape, make, message] of strayShapes) {
+    forkTest(`build, skill install and a commit ignore ${shape} in changes while status reports it`, (t) => {
+      const dir = join(t.fork.path, ".patchbook/changes");
+      mkdirSync(dir, { recursive: true });
+      make(dir);
+      sh(["git", "add", "-A"], { cwd: t.fork.path });
+      const built = t.pb(["build"], { cwd: t.fork.path });
+      expect(built.stderr).not.toContain("nothing built");
+      Object.assign(t.env, { PATCHBOOK_SKILL: "1" });
+      const installed = t.pb(["skill", "install"], { cwd: t.fork.path });
+      expect(installed.stdout).toContain(`wrote ${SKILL_FILE}`);
+      expect(installed.stderr).not.toContain("problems");
+      delete t.env["PATCHBOOK_SKILL"];
+      sh(["git", "add", "-A"], { cwd: t.fork.path });
+      const first = hookedCommit(t);
+      expect(first.code).toBe(0);
+      t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("three", "THREE"));
+      const commit = hookedCommit(t, "-a");
+      expect(commit.code).toBe(0);
+      expect(commit.stderr).not.toContain("wasn't rebuilt");
+      expect(commit.stderr).not.toContain("refusing");
+      const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
+      expect(status).toContain(message);
+      expect(status).toContain("1 invalid");
+    });
+  }
+
+  forkTest("status reports an unlisted change entry together with an unrecorded output edit", (t) => {
+    const dir = join(t.fork.path, ".patchbook/changes");
+    mkdirSync(join(dir, "ours-only/ours"), { recursive: true });
+    writeFileSync(join(dir, "ours-only/ours/app.txt.pb"), "saved copy\n");
+    writeFileSync(join(dir, "plain-file"), "saved file\n");
+    t.fork.write("app.txt", "hand edited\n");
+    const before = tree(t.fork.path);
+    const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
+    expect(status).toContain("change ours-only is not in the series");
+    expect(status).toContain("changes/plain-file: not a change folder");
+    expect(status).toContain("unrecorded app.txt:");
+    expect(status).toContain("2 invalid, 1 unrecorded");
+    const problems = JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path, code: 1 }).stdout).problems;
+    expect(problems.map((p: { problem: string }) => p.problem)).toEqual(["invalid", "invalid", "unrecorded"]);
+    expect(tree(t.fork.path)).toEqual(before);
+  });
+
   forkTest("status and record refuse linked change entries without writing", (t) => {
     const dir = join(t.fork.path, ".patchbook/changes");
     mkdirSync(join(t.tmp, "outside"));
