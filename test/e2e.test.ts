@@ -4075,6 +4075,10 @@ const PASTES: Paste[] = [
   },
 ];
 
+test("the paste helper shares no code with src", () => {
+  expect(read(join(import.meta.dir, "paste.ts"))).not.toMatch(/from\s+["'][^"']*src\//);
+});
+
 for (const { name, config, existing, parse, check } of PASTES) {
   test(`hook install prints what goes into ${config} with ${name}`, () => {
     const t = new Case();
@@ -4096,7 +4100,6 @@ function installDispatchers(fork: Repo, events: string[], dispatcher: string): v
   for (const event of events) writeFileSync(join(fork.path, ".git/hooks", event), dispatcher, { mode: 0o755 });
 }
 
-/** Runs the script a manager would run for a post hook, with a `patchbook` that only writes down how it was called. */
 function postCalls(t: Case, fork: Repo, script: string, env: Record<string, string>, rebasing = false): string[] {
   const bin = join(t.tmp, "calls-bin");
   const log = join(t.tmp, "calls.log");

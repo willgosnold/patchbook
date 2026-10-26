@@ -1,13 +1,9 @@
-// Where a hook manager's config takes patchbook's hook, and the exact text to paste there.
-// A paste is checked before it is printed: the config with the text added must parse and hold patchbook's hook, or the caller says why it can't place one.
+import { readJson, string as stringShape } from "./lib/shape.ts";
 
-/** What a manager runs for patchbook: the git hook it runs on, and the shell script. */
 export type Entry = { event: string; run: string };
 
-/** `into` finishes "Add this ...". `merged` is the config once the text is pasted. */
-export type Placed = { into: string; text: string; merged: string };
+export type Placed = { location: string; text: string; merged: string };
 export type Unplaced = { why: string };
-/** The config already has patchbook's hook for this event, so nothing needs adding. */
 export const PRESENT = "present";
 export type Placement = Placed | Unplaced | typeof PRESENT;
 export type Format = (config: string, entry: Entry, where: string) => Placement;
@@ -20,7 +16,6 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 const lines = (text: string) => text.replace(/\r\n/g, "\n").split("\n");
 const endsLine = (text: string) => (text === "" ? "" : text.replace(/\n?$/, "\n"));
 
-/** How much of an event's section the config has, which sets how much the pasted text has to add. */
 type Spot = "file" | "hook" | "commands" | "jobs";
 
 function spot(doc: unknown, event: string): Spot | undefined {
@@ -68,7 +63,6 @@ const lefthookFirst = (event: string, at: Spot) => (doc: unknown): boolean => {
 
 const shape = (event: string) => `its ${event} isn't a map of commands or a list of jobs`;
 
-// YAML is placed by lines, because a paste has to match the file's indent.
 const indentOf = (l: string) => l.length - l.trimStart().length;
 const skippable = (l: string) => /^\s*(#.*)?$/.test(l);
 const escaped = (key: string) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -84,7 +78,6 @@ function keyAt(ls: string[], from: number, to: number, key: string, at: number):
   return -1;
 }
 
-/** The lines under the key at `parent`, and the indent of the first. */
 function underKey(ls: string[], parent: number): { indent: number | null; end: number } {
   const base = indentOf(ls[parent]!);
   let found: number | null = null;
@@ -119,14 +112,14 @@ function lefthookYaml(config: string, entry: Entry, where: string): Placement {
   const u = yamlUnit(ls);
   const p = priority(doc, entry.event);
   const command = (n: number) => indent(`${COMMAND}:\n${indent(`priority: ${p}\nrun: |\n${indent(entry.run, u)}`, u)}`, n);
-  const place = (line: number, into: string, text: string): Placement => {
+  const place = (line: number, location: string, text: string): Placement => {
     const merged = after(ls, line, text);
-    return checked(merged, Bun.YAML.parse, lefthookFirst(entry.event, at)) ? { into, text, merged } : { why: `its ${entry.event} is laid out in a way patchbook can't add to` };
+    return checked(merged, Bun.YAML.parse, lefthookFirst(entry.event, at)) ? { location, text, merged } : { why: `its ${entry.event} is laid out in a way patchbook can't add to` };
   };
   if (at === "file") {
     const text = `${entry.event}:\n${indent(`commands:\n${command(u)}`, u)}`;
     const merged = endsLine(config) + text;
-    return { into: `at the end of ${where}`, text, merged };
+    return { location: `at the end of ${where}`, text, merged };
   }
   const hookAt = keyAt(ls, 0, ls.length, entry.event, 0);
   if (hookAt < 0 || !bare(ls[hookAt]!, entry.event)) return { why: `its ${entry.event} key is written inline` };
@@ -137,14 +130,13 @@ function lefthookYaml(config: string, entry: Entry, where: string): Placement {
   const key = at === "jobs" ? "jobs" : "commands";
   const keyLine = keyAt(ls, hookAt + 1, inHook.end, key, ci);
   if (keyLine < 0 || !bare(ls[keyLine]!, key)) return { why: `its ${key} key in ${entry.event} is written inline` };
-  const into = `directly below the \`${key}:\` line under ${hookLine} in ${where}`;
-  if (at === "commands") return place(keyLine, into, command(underKey(ls, keyLine).indent ?? ci + u));
+  const location = `directly below the \`${key}:\` line under ${hookLine} in ${where}`;
+  if (at === "commands") return place(keyLine, location, command(underKey(ls, keyLine).indent ?? ci + u));
   const firstJob = ls.slice(keyLine + 1).find((l) => !skippable(l));
   if (firstJob === undefined || !/^\s*-(\s|$)/.test(firstJob)) return { why: `its jobs list in ${entry.event} is empty` };
-  return place(keyLine, into, indent(`- name: ${COMMAND}\n  run: |\n${indent(entry.run, 4)}`, indentOf(firstJob)));
+  return place(keyLine, location, indent(`- name: ${COMMAND}\n  run: |\n${indent(entry.run, 4)}`, indentOf(firstJob)));
 }
 
-// JSON is placed as the first member of the object that holds it, so the text carries the comma that follows it.
 function openingAt(text: string, path: readonly string[]): number {
   let i = 0;
   const skip = () => {
@@ -183,7 +175,7 @@ function openingAt(text: string, path: readonly string[]): number {
     i++;
     for (;;) {
       skip();
-      const name: unknown = JSON.parse(string());
+      const name = readJson(string(), stringShape, "a key in the config");
       skip();
       i++;
       skip();
@@ -205,7 +197,7 @@ function lefthookJson(config: string, entry: Entry, where: string): Placement {
   };
   if (config.trim() === "") {
     const text = `{\n${indent(member("  ", 1, "file"), "  ")}\n}\n`;
-    return { into: `to ${where}`, text, merged: text };
+    return { location: `to ${where}`, text, merged: text };
   }
   let doc: unknown;
   try {
@@ -229,7 +221,7 @@ function lefthookJson(config: string, entry: Entry, where: string): Placement {
   if (!checked(merged, Bun.JSONC.parse, lefthookFirst(entry.event, at))) return { why: `its ${entry.event} is laid out in a way patchbook can't add to` };
   const named = at === "file" ? "the top-level object" : at === "hook" ? `"${entry.event}"` : `"${at}" in "${entry.event}"`;
   const first = at === "jobs" ? "item" : "member";
-  return { into: `as the first ${first} of ${named} in ${where}, right after its opening ${at === "jobs" ? "bracket" : "brace"}`, text, merged };
+  return { location: `as the first ${first} of ${named} in ${where}, right after its opening ${at === "jobs" ? "bracket" : "brace"}`, text, merged };
 }
 
 function lefthookToml(config: string, entry: Entry, where: string): Placement {
@@ -246,9 +238,10 @@ function lefthookToml(config: string, entry: Entry, where: string): Placement {
   const text = `[${entry.event}.commands.${COMMAND}]\npriority = ${priority(doc, entry.event)}\nrun = '''\n${entry.run}'''\n`;
   const merged = endsLine(config) + text;
   if (!checked(merged, Bun.TOML.parse, lefthookFirst(entry.event, at))) return { why: `its ${entry.event} is laid out in a way patchbook can't add to` };
-  return { into: `at the end of ${where}`, text, merged };
+  return { location: `at the end of ${where}`, text, merged };
 }
 
+/** The keys run in the order lefthook looks for them, and it reads the first file it finds. */
 export const LEFTHOOK: Readonly<Record<string, Format>> = { yml: lefthookYaml, yaml: lefthookYaml, json: lefthookJson, jsonc: lefthookJson, toml: lefthookToml };
 
 const hookId = (entry: Entry) => (entry.event === "pre-commit" ? COMMAND : `${COMMAND}-${entry.event}`);
@@ -290,12 +283,12 @@ function preCommit(config: string, entry: Entry, where: string): Placement {
   if (at < 0) {
     if (repos !== undefined) return failed;
     const merged = endsLine(config) + whole;
-    return checked(merged, Bun.YAML.parse, firstIs) ? { into: `at the end of ${where}`, text: whole, merged } : failed;
+    return checked(merged, Bun.YAML.parse, firstIs) ? { location: `at the end of ${where}`, text: whole, merged } : failed;
   }
   const rest = ls[at]!.slice(ls[at]!.indexOf(":") + 1);
   if (/^\s*\[\s*\]\s*(#.*)?$/.test(rest)) {
     const merged = [...ls.slice(0, at), ...whole.replace(/\n$/, "").split("\n"), ...ls.slice(at + 1)].join("\n");
-    return checked(merged, Bun.YAML.parse, firstIs) ? { into: `in place of the \`repos: []\` line in ${where}`, text: whole, merged } : failed;
+    return checked(merged, Bun.YAML.parse, firstIs) ? { location: `in place of the \`repos: []\` line in ${where}`, text: whole, merged } : failed;
   }
   if (!bare(ls[at]!, "repos")) return failed;
   const first = ls.slice(at + 1).find((l) => !skippable(l));
@@ -303,7 +296,7 @@ function preCommit(config: string, entry: Entry, where: string): Placement {
   if (first !== undefined && indentOf(first) > 0 && !items) return failed;
   const text = indent(item, items ? indentOf(first!) : 2);
   const merged = after(ls, at, text);
-  return checked(merged, Bun.YAML.parse, firstIs) ? { into: `directly below the \`repos:\` line in ${where}`, text, merged } : failed;
+  return checked(merged, Bun.YAML.parse, firstIs) ? { location: `directly below the \`repos:\` line in ${where}`, text, merged } : failed;
 }
 
 export const PRE_COMMIT: Readonly<Record<string, Format>> = { yaml: preCommit };

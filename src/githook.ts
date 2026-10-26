@@ -93,7 +93,7 @@ const CALLS_PATCHBOOK = /^[^#\n]*\bpatchbook hook run\b/m;
 const PRE_COMMIT_ENTRY: Entry = { event: "pre-commit", run: GUARD };
 const HOOK_CHANGE = "patchbook-hook";
 
-/** lefthook reads each of its config names in every format. The keys run in the order lefthook looks for them, and it reads the first file it finds. */
+/** lefthook reads each of its config names in every format. */
 const LEFTHOOK_FILES = Object.keys(LEFTHOOK).flatMap((ext) => ["lefthook", ".lefthook", ".config/lefthook"].map((name) => `${name}.${ext}`));
 
 /** Git runs `<dir>/_/pre-commit`, which runs `<dir>/pre-commit`. */
@@ -227,7 +227,6 @@ const postWire = (post: PostHook): Wire => ({
   put: (m, where) => `patchbook: put \`patchbook hook build\` in ${where}, which ${m.name} runs ${post.when}`,
 });
 
-/** The lines a hook manager's config runs for a post hook. The manager gives its scripts a git hook's arguments in its own way. */
 const postRun = (m: ConfigManager, post: PostHook) => {
   const names = m.args(post.name);
   const named = (script: string) => script.replace(/\$([123])/g, (_, n: string) => names[Number(n) - 1] ?? `$${n}`);
@@ -240,16 +239,15 @@ const ADD_POST = (posts: readonly ManualPost[]) =>
   `patchbook: to rebuild the output after a pull, a branch checkout or a rebase, call \`patchbook hook build\` from ${posts.map((p) => p.post.name).join(", ")}. Put these lines at the top of each file, below its #! line:\n\n`
   + posts.map(({ post, where, exists }) => `${where}${exists ? "" : " (it isn't there; create it with #!/bin/sh as the first line, then run chmod +x on it)"}:\n${postLines(post)}`).join("\n");
 
-/** What to tell a user to add to a manager's config for one hook, and the config once they have. A hook the config already has needs no advice. */
 function adviseConfig(m: ConfigManager, where: string, config: string, entry: Entry, post: PostHook | null): { said: string | null; config: string } {
   const format = m.formats[extname(where).slice(1)]!;
   const placed = format(config, entry, where);
   if (placed === PRESENT) return { said: null, config };
   const intro = `${m.name} runs this repo's ${entry.event} hook${post ? "" : "s"}`;
-  if ("into" in placed) {
+  if ("location" in placed) {
     const note = post ? "\n" : m.note ? `\n${m.note}\n` : "";
     const why = post ? `so it rebuilds the output ${post.when}` : `so ${m.name} runs patchbook first for everyone who commits here, and your checks see the rebuilt output`;
-    return { said: `patchbook: ${intro}. Add this ${placed.into}, ${why}:\n\n${placed.text}${note}`, config: placed.merged };
+    return { said: `patchbook: ${intro}. Add this ${placed.location}, ${why}:\n\n${placed.text}${note}`, config: placed.merged };
   }
   const whole = format("", entry, where) as { text: string };
   const said = `patchbook: ${intro}, but patchbook can't tell where in ${where} to add its lines, because ${placed.why}. Merge this into ${where} by hand, keep your own entries, and keep patchbook's first:\n\n${whole.text}`;

@@ -1,6 +1,3 @@
-// Follows the config advice that `patchbook hook install` prints the way a person would: find the place the words name, put the printed text there, change nothing else.
-// It shares no code with src/, so a test that pastes through it checks the printed words and text, not the code that wrote them.
-
 type Block = { header: string; snippet: string };
 
 function blocks(advice: string): Block[] {
@@ -39,7 +36,6 @@ function blockEnd(lines: string[], start: number): number {
   return lines.length;
 }
 
-/** The offset of the `{` or `[` that opens the JSONC value at `path`. */
 function locate(src: string, path: string[]): number {
   let i = 0;
   const skip = () => {
@@ -86,7 +82,6 @@ function pasteJson(text: string, header: string, snippet: string): string {
   return text.slice(0, open + 1) + "\n" + snippet.replace(/\n$/, "") + "\n" + text.slice(open + 1);
 }
 
-/** `config` after every config paste in `advice` is made, in order. Throws when the words name a place the file doesn't have. */
 export function paste(config: string, advice: string): string {
   let text = config;
   for (const { header, snippet } of blocks(advice)) {
