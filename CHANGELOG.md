@@ -4,6 +4,10 @@ The hand-written part of each release's notes. GitHub's generated notes list the
 
 ## Unreleased
 
+### A partial commit can't move the upstream pin without its vendored copy
+
+`git commit -- note.txt .patchbook/upstream.lock` after a `patchbook sync` used to commit the new pin and leave the vendored copy at the old one, and a clone's `status` then failed with `vendor/extra (tree ...) differs from the pin`. The hook now refuses that commit before it records or builds anything, and names the upstream, the lock and the vendor folder. Add the lock and the folder to the paths you name, or make a full commit, where the hook stages the pinned copy. When the lock is a link to a file in the repo, name that file too. A refused commit leaves HEAD, your index and your working files as they were. A partial commit that doesn't move the pin, such as one that only names `note.txt`, commits as before. The message for an unstaged `upstream.lock` no longer says that naming the lock alone is enough (#227).
+
 ### Resolve change conflicts before committing
 
 After a conflicted `patchbook sync`, the commit hook now refuses the commit and names the change's `ours/<file>.pb` to resolve. Previously it warned and committed the conflict markers. The check covers every change, including a copy hidden by a later edit, and patched paragraph entries. Resolve the markers in the named file, stage it, and commit again. A refused commit leaves HEAD, the index and the working files unchanged. If recording staged output would introduce markers, the hook restores that recording, refuses the commit and names the staged file to fix (#276).

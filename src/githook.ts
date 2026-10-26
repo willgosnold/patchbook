@@ -697,6 +697,50 @@ function headTree(root: string): string {
   return decode(run(["git", "hash-object", "-t", "tree", "--stdin"], { cwd: root, input: new Uint8Array() })).trim();
 }
 
+/** The tree each upstream is pinned to by the upstream.lock in HEAD, read through a committed link to a file in the repo, or null when HEAD holds no lock it can read. */
+function committedPins(book: Book): Map<string, string> | null {
+  const blobAt = (path: string, followed: boolean): Uint8Array | null => {
+    const entry = spawn(["git", "ls-tree", "HEAD", "--", path], { cwd: book.root });
+    const [, mode, sha] = /^(\d+) blob (\w+)\t/.exec(decode(entry.stdout)) ?? [];
+    const blob = entry.code === 0 && sha ? spawn(["git", "cat-file", "blob", sha], { cwd: book.root }) : null;
+    if (!blob || blob.code !== 0) return null;
+    if (mode !== "120000") return blob.stdout;
+    const text = decodeReplace(blob.stdout);
+    const target = join(dirname(path), text);
+    return followed || isAbsolute(text) || target.startsWith("..") ? null : blobAt(target, true);
+  };
+  const lock = blobAt(relative(book.root, join(book.dir, "upstream.lock")), false);
+  if (!lock) return null;
+  try {
+    return new Map(parseLock(decodeReplace(lock)).map((p) => [p.name, p.tree]));
+  } catch (e) {
+    if (e instanceof Fail) return null;
+    throw e;
+  }
+}
+
+/**
+ * Git builds a partial commit's index from HEAD and the paths named, and the hook can't add the pinned copy to it without committing a
+ * path the user left out. So a commit that moves a pin must also hold the matching copy, and one that doesn't is refused.
+ */
+function refuseSplitPin(book: Book): void {
+  if (partialCommit(book.root) === null) return;
+  const pins = stagedPins(book);
+  if (!pins) return;
+  const was = committedPins(book);
+  const split = book.upstreams.flatMap((u) => {
+    const tree = pins.get(u.name);
+    const rel = u.vendor ? relative(book.root, u.vendor) : null;
+    return rel && tree && was?.get(u.name) !== tree && stagedTree(book.root, rel) !== tree ? [{ name: u.name, rel }] : [];
+  });
+  if (!split.length) return;
+  const lock = relative(book.root, join(book.dir, "upstream.lock"));
+  const paths = [...new Set([lock, ...linkTargets(book, [lock]), ...split.map((s) => s.rel)])].map(shellQuote).join(" ");
+  throw new Fail(`refusing this commit: ${split.map((s) => `it moves the pin of ${s.name} in ${lock} but not its vendored copy, ${s.rel}`).join(", and ")}. `
+    + "A clone of it would fail `patchbook status`.\n"
+    + `Commit both: add these to the paths you named: ${paths}, or make a full commit with \`git commit\` and no paths, or skip the hook once with PATCHBOOK_HOOK=0.`);
+}
+
 /**
  * Put the pinned copy into the index for each vendor folder where the index holds anything else. The pin is the one the index's own
  * upstream.lock names, and a folder whose upstream the index has no pin for is left alone. Git has already decided what the commit holds
@@ -838,7 +882,15 @@ async function runHook(undo: Undo) {
   const readEdits = placeholderOutputs(book).filter((p) => !leftByLastBuild(book, lock, p)).map((p) => inRepo(book, p));
   const inputs = buildInputs(book);
   const loose = unstaged(book.root, [...inputs, ...linkTargets(book, inputs), ...readEdits]);
-  if (loose.length) throw new Fail("the patchbook has changes that aren't in this commit:\n  " + loose.join("\n  ") + "\nThe build reads them, so stage them (or name them in `git commit <path>`) or stash them, or skip the hook once with PATCHBOOK_HOOK=0.");
+  if (loose.length) {
+    const lock = relative(book.root, join(book.dir, "upstream.lock"));
+    const copies = loose.includes(lock) || linkTargets(book, [lock]).some((p) => loose.includes(p)) ? book.upstreams.flatMap((u) => u.vendor ? [relative(book.root, u.vendor)] : []) : [];
+    const stage = copies.length
+      ? `stage them (naming ${lock} in \`git commit <path>\` records its pin, so name the vendored ${copies.length > 1 ? "copies" : "copy"} ${copies.join(", ")} with it, or make a full commit)`
+      : "stage them (or name them in `git commit <path>`)";
+    throw new Fail("the patchbook has changes that aren't in this commit:\n  " + loose.join("\n  ") + `\nThe build reads them, so ${stage} or stash them, or skip the hook once with PATCHBOOK_HOOK=0.`);
+  }
+  refuseSplitPin(book);
   const ignored = ignoredInPatchbook(book.root);
   const staged = book.seen("index");
   const committed = committedBuildLock(book);
