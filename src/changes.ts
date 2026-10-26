@@ -1,13 +1,13 @@
 // Changes: a CHANGE.md with an intent and a list of edits, and the files those edits carry.
-import { appendFileSync, chmodSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Problem } from "./api.ts";
-import { Book } from "./book.ts";
+import { Book, PB } from "./book.ts";
 import { unifiedDiff } from "./lib/diff.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, foldersWith, isDir, isSymlink, LINK, lexists, mkdirs, type Mode, readDisk, readText, relative, writeDisk, writeText } from "./lib/fs.ts";
 import { escaped, say, verbatim } from "./lib/term.ts";
-import { decode, encode, quote } from "./lib/text.ts";
+import { byCodePoint, decode, encode, quote } from "./lib/text.ts";
 
 export const EDIT_KINDS = ["file", "add", "replace", "delete", "move", "copy"] as const;
 type EditKind = (typeof EDIT_KINDS)[number];
@@ -266,6 +266,29 @@ export function readChanges(book: Book, problems: Problem[], names: readonly str
   return changes;
 }
 
+/** The entries of changes/ that hold no CHANGE.md and that the series doesn't list, which status reports and assembly ignores. */
+export function strayProblems(book: Book): Problem[] {
+  const dir = book.data("changes");
+  const series = readSeries(book);
+  const found: Problem[] = [];
+  for (const name of isDir(dir) ? readdirSync(dir).sort(byCodePoint) : []) {
+    const stray = strayChange(dir, name, series);
+    if (stray === null || lexists(join(dir, name, "CHANGE.md"))) continue;
+    found.push(!CHANGE_NAME.test(name)
+      ? { problem: "invalid", file: "series", detail: notAChangeName(name) }
+      : stray === "folder"
+        ? { problem: "invalid", file: "series", detail: `change ${name} is not in the series` }
+        : { problem: "invalid", file: `changes/${name}`, detail: `not a change folder; move it out of ${PB}/changes` });
+  }
+  return found;
+}
+
+function strayChange(dir: string, name: string, series: readonly string[]): "folder" | "other" | null {
+  const path = join(dir, name);
+  if (series.includes(name) || !lexists(path)) return null;
+  return isDir(path) ? "folder" : "other";
+}
+
 export class Roster {
   private constructor(
     readonly parsed: ReadonlyMap<string, Change>,
@@ -289,9 +312,7 @@ export class Roster {
   }
 
   stray(name: string): "folder" | "other" | null {
-    const path = join(this.dir, name);
-    if (this.known(name) || !lexists(path)) return null;
-    return isDir(path) ? "folder" : "other";
+    return strayChange(this.dir, name, this.series);
   }
 
   free(base: string): string {
