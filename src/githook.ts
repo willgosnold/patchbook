@@ -264,9 +264,13 @@ type Wire = { lines: string; previous: string | null; calls: RegExp; intent: (m:
 function withPatchbook(data: Uint8Array, wire: Wire): Uint8Array {
   const text = decodeReplace(data);
   if (wire.calls.test(text)) {
-    const previous = wire.previous === null ? null : encode(wire.previous);
-    const at = previous === null ? -1 : Buffer.from(data).indexOf(previous);
-    return previous !== null && at >= 0 ? concat(data.subarray(0, at), encode(wire.lines), data.subarray(at + previous.length)) : data;
+    if (wire.previous === null) return data;
+    for (const eol of ["\n", "\r\n"]) {
+      const previous = encode(wire.previous.replaceAll("\n", eol));
+      const at = Buffer.from(data).indexOf(previous);
+      if (at >= 0) return concat(data.subarray(0, at), encode(wire.lines.replaceAll("\n", eol)), data.subarray(at + previous.length));
+    }
+    return data;
   }
   const end = data[0] === 0x23 && data[1] === 0x21 ? data.indexOf(0x0a) + 1 || data.length : 0;
   const rest = data.subarray(end);
