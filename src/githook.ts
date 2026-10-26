@@ -667,10 +667,12 @@ function refuseOtherRepo(book: Book): void {
     + `Run \`patchbook hook install\` in ${book.root}, or start a patchbook here with \`patchbook init\`.`);
 }
 
+const lockPath = (book: Book): string => relative(book.root, join(book.dir, "upstream.lock"));
+
 /** The tree each upstream is pinned to by the upstream.lock in the index, or null when the index holds no lock.
  * The index holds only the path of a staged link, so the lock it points to is read, as the build reads it. */
 function stagedPins(book: Book): Map<string, string> | null {
-  const rel = relative(book.root, join(book.dir, "upstream.lock"));
+  const rel = lockPath(book);
   const staged = spawn(["git", "cat-file", "blob", `:${rel}`], { cwd: book.root });
   if (staged.code !== 0) return null;
   const linked = git(["ls-files", "-s", "--", rel], { cwd: book.root }).startsWith("120000 ");
@@ -709,7 +711,7 @@ function committedPins(book: Book): Map<string, string> | null {
     const target = join(dirname(path), text);
     return followed || isAbsolute(text) || target.startsWith("..") ? null : blobAt(target, true);
   };
-  const lock = blobAt(relative(book.root, join(book.dir, "upstream.lock")), false);
+  const lock = blobAt(lockPath(book), false);
   if (!lock) return null;
   try {
     return new Map(parseLock(decodeReplace(lock)).map((p) => [p.name, p.tree]));
@@ -734,7 +736,7 @@ function refuseSplitPin(book: Book): void {
     return rel && tree && was?.get(u.name) !== tree && stagedTree(book.root, rel) !== tree ? [{ name: u.name, rel }] : [];
   });
   if (!split.length) return;
-  const lock = relative(book.root, join(book.dir, "upstream.lock"));
+  const lock = lockPath(book);
   const paths = [...new Set([lock, ...linkTargets(book, [lock]), ...split.map((s) => s.rel)])].map(shellQuote).join(" ");
   throw new Fail(`refusing this commit: ${split.map((s) => `it moves the pin of ${s.name} in ${lock} but not its vendored copy, ${s.rel}`).join(", and ")}. `
     + "A clone of it would fail `patchbook status`.\n"
@@ -883,7 +885,7 @@ async function runHook(undo: Undo) {
   const inputs = buildInputs(book);
   const loose = unstaged(book.root, [...inputs, ...linkTargets(book, inputs), ...readEdits]);
   if (loose.length) {
-    const lock = relative(book.root, join(book.dir, "upstream.lock"));
+    const lock = lockPath(book);
     const copies = loose.includes(lock) || linkTargets(book, [lock]).some((p) => loose.includes(p)) ? book.upstreams.flatMap((u) => u.vendor ? [relative(book.root, u.vendor)] : []) : [];
     const stage = copies.length
       ? `stage them (naming ${lock} in \`git commit <path>\` records its pin, so name the vendored ${copies.length > 1 ? "copies" : "copy"} ${copies.join(", ")} with it, or make a full commit)`
