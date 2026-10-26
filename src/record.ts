@@ -577,7 +577,7 @@ function nameAndIntent(
   const known = name !== null && changes.has(name);
   if (given) {
     const authored: Authored = { by: "given", intent: given };
-    const unused = !named && !ask.drafts.length && !known;
+    const unused = !named && !ask.drafts.length && !known && !ask.updates.some(([, d]) => !d.was);
     if (name) return { name, authored, said: null, unused };
     if (!named) return { name: null, authored, said: null, unused };
     const derived = nameFromIntent(given, roster);
@@ -873,7 +873,7 @@ function planParagraphs(
         continue;
       }
       if (entry && entry.kind !== "keep") {
-        result.set(key, { ...entry, ...at, patched: piece, intent: null, ...(entry.intent && { was: entry.intent }) });
+        result.set(key, entry.intent === null ? { ...entry, ...at, patched: piece } : { ...entry, ...at, patched: piece, intent: null, was: entry.intent });
         notes.push([key, "updated"]);
       } else {
         result.set(key, { hash: b.hash, ...at, kind: "policy", rules: "", intent: null, upstream, patched: piece });
@@ -909,10 +909,10 @@ function mapLine(changed: readonly Changed[], i: number): number {
   return i + shift;
 }
 
-/** Each entry with its intent: new ones take `intent`, and an updated one takes its rewrite or keeps the one it had. */
+/** Each entry with its intent: new ones take `intent`, and an updated one takes its rewrite or keeps the one it had, unless it had none. */
 function withIntent(plan: Plan, intent: string | null, rewrite: (key: string) => string | null): Map<string, Entry> {
   return new Map(Array.from(plan.entries, ([h, { was, ...d }]) => {
-    const own = d.intent ?? (was === undefined ? intent : rewrite(h) ?? was);
+    const own = d.intent ?? (was === undefined ? intent : rewrite(h) ?? (was || (intent ?? was)));
     if (own === null) throw new Fail(`${plan.path}: the entry [${h}] has no intent`);
     return [h, { ...d, intent: own }];
   }));
