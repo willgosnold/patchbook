@@ -7,7 +7,7 @@ import { Book, PB, refuseClimbingPaths, refuseExportedGit } from "./book.ts";
 import { Fail } from "./lib/fail.ts";
 import { exists, type File, isDir, isSymlink, lexists, mkdirs, type Mode, normMode, pjoin, readDisk, relative, resolve, writeDisk } from "./lib/fs.ts";
 import { sha1 } from "./lib/hash.ts";
-import { git, run, spawn } from "./lib/proc.ts";
+import { git, redact, run, spawn } from "./lib/proc.ts";
 import { say, verbatim, warn } from "./lib/term.ts";
 import { byCodePoint, decode, decodeReplace, encode, quote } from "./lib/text.ts";
 import { storeDir, type Table } from "./settings.ts";
@@ -66,18 +66,18 @@ export class Upstream {
     this.branch = field(spec, "branch", "main");
     this.name = field(spec, "name", "") || defaultName(this.remote, this.path);
     if (this.remote.startsWith("-")) {
-      throw new Fail(`upstream ${this.name}'s remote ${quote(this.remote)} starts with "-", so git would read it as an option.`);
+      throw new Fail(`upstream ${this.name}'s remote ${quote(redact(this.remote))} starts with "-", so git would read it as an option.`);
     }
     const transport = /^(ssh|git)::/.exec(this.remote)?.[1];
     if (transport) {
       throw new Fail(
-        `upstream ${this.name}'s remote ${quote(this.remote)} names git's own ${transport} transport as a remote helper. `
+        `upstream ${this.name}'s remote ${quote(redact(this.remote))} names git's own ${transport} transport as a remote helper. `
           + `git ships no git-remote-${transport} and allows ${transport} always, so it would run whatever git-remote-${transport} is on PATH. Write ${transport}:// instead.`,
       );
     }
     if (isLocalPath(this.remote) && !posix.isAbsolute(this.remote)) {
       throw new Fail(
-        `upstream ${this.name}'s remote ${quote(this.remote)} is a relative path, so it names a different repo from each folder. `
+        `upstream ${this.name}'s remote ${quote(redact(this.remote))} is a relative path, so it names a different repo from each folder. `
           + "Set remote in .patchbook/config.toml to an absolute path or a URL.",
       );
     }
@@ -126,7 +126,7 @@ export class Upstream {
     const shallow = !this.inRepo || git(["rev-parse", "--is-shallow-repository"], { cwd }) === "true" ? ["--depth=1"] : [];
     const landing = `refs/patchbook/tmp/${process.pid}-${randomUUID()}`;
     try {
-      this.onRemote(["fetch", "--quiet", "--no-tags", ...shallow, "--end-of-options", this.source(), `+${ref}:${landing}`], `git fetch ${quote(this.source())} ${ref}`, cwd);
+      this.onRemote(["fetch", "--quiet", "--no-tags", ...shallow, "--end-of-options", this.source(), `+${ref}:${landing}`], `git fetch ${quote(redact(this.source()))} ${ref}`, cwd);
       return git(["rev-parse", `${landing}^{commit}`], { cwd });
     } finally {
       spawn(["git", "update-ref", "-d", landing], { cwd });
@@ -207,7 +207,7 @@ export class Upstream {
 
   head(): string {
     const ref = `refs/heads/${this.branch}`;
-    const out = this.onRemote(["ls-remote", "--end-of-options", this.source(), ref], `git ls-remote ${quote(this.source())} ${ref}`, this.gitDir());
+    const out = this.onRemote(["ls-remote", "--end-of-options", this.source(), ref], `git ls-remote ${quote(redact(this.source()))} ${ref}`, this.gitDir());
     if (!out) throw new Fail(`upstream ${this.name} has no branch ${this.branch}`);
     return out.split("\t", 1)[0]!;
   }
@@ -221,7 +221,7 @@ export class Upstream {
     const done = namesNoHelper(this.source())
       ? spawn(["git", ...args], { cwd })
       : spawn(["git", "-c", "protocol.ext.allow=never", ...args], { cwd, env: { ...process.env, GIT_PROTOCOL_FROM_USER: "0" } });
-    if (done.code !== 0) throw new Fail(`${asTyped} failed:\n${decodeReplace(done.stderr).trim()}`);
+    if (done.code !== 0) throw new Fail(redact(`${asTyped} failed:\n${decodeReplace(done.stderr).trim()}`));
     return decode(done.stdout).trim();
   }
 

@@ -17177,3 +17177,12 @@ describe("CrashInjection", () => {
     }
   }, TIMEOUT);
 });
+
+for (const command of ["check", "status", "sync"]) {
+  forkTest(`${command} does not print the password of an upstream remote it cannot reach`, (t) => {
+    setRemote(join(t.fork.path, ".patchbook/config.toml"), "https://user:s3cretpw@127.0.0.1:1/x.git");
+    const out = t.pb([command], { cwd: t.fork.path, code: null });
+    if (command !== "status") expect(out.stderr).toContain("127.0.0.1:1/x.git");
+    expect(out.stderr + out.stdout).not.toContain("s3cretpw");
+  });
+}
