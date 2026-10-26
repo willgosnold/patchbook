@@ -14963,17 +14963,14 @@ exec '${Bun.which("git")}' "$@"
     expect(out.stderr).toContain("its old ");
   });
 
-  permissionTest("track refuses a vendor folder that holds a git repo before it drops a pin an earlier track left", (t) => {
+  vendorTest("track refuses a vendor folder that holds a git repo before it drops a pin left without its config", (t) => {
     const extra = new Repo(join(t.tmp, "extra"));
     extra.write("a.md", "a\n");
     extra.commit("a");
     const config = join(t.repo.path, ".patchbook/config.toml");
-    sh(["chmod", "a-w", config], { cwd: t.repo.path });
-    try {
-      t.pb(["track", "extra", extra.path], { cwd: t.repo.path, code: 1 });
-    } finally {
-      sh(["chmod", "u+w", config], { cwd: t.repo.path });
-    }
+    const unfollowed = read(config);
+    t.pb(["track", "extra", extra.path], { cwd: t.repo.path });
+    writeFileSync(config, unfollowed);
     const lock = join(t.repo.path, ".patchbook/upstream.lock");
     const pins = read(lock);
     expect(lockNames(pins)).toContain("extra");
@@ -14982,7 +14979,7 @@ exec '${Bun.which("git")}' "$@"
     const out = t.pb(["track", "extra", extra.path, "--vendor", "lib"], { cwd: t.repo.path, code: 1 });
     expect(out.stderr).toContain("holds lib/.git");
     expect(read(lock)).toBe(pins);
-  }, VendorCase);
+  });
 
   const gitFile = "gitdir: ../elsewhere\n";
   const nestedGits: [string, string, string, (repo: { path: string }) => void][] = [
