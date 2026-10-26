@@ -1942,7 +1942,7 @@ test("clone keeps the patchbook and exits 1 when a folder is at the skill file",
     renameSync(join(fork.path, SKILL_FILE), join(t.tmp, "my-skill-folder"));
     const early = t.pb(["skill", "install"], { cwd: fork.path, code: 1 });
     expect(early.stderr).toContain(`the patchbook still holds a folder where it goes:\n  ${SKILL_FILE}\n`);
-    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+    expect(t.pb(["status"], { cwd: fork.path, code: 1 }).stdout).toContain(`unrecorded ${SKILL_FILE}/notes.txt`);
     t.pb(["record", "my-folder", "--intent", "Drop my skill folder."], { cwd: fork.path });
     t.pb(["skill", "install"], { cwd: fork.path });
     expect(fork.read(SKILL_FILE)).toBe(SKILL_COPY);
@@ -1979,7 +1979,8 @@ for (const layout of ["fork", "folder"]) {
       expect(repo.read(`${SKILL_FILE}/notes.txt`)).toBe("Mine.\n");
       expect(existsSync(join(repo.path, ".claude"))).toBe(false);
       expect(existsSync(join(repo.path, ".patchbook/config.toml"))).toBe(true);
-      expect(t.pb(["status"], { cwd: repo.path }).stdout).toContain("no problems");
+      const first = t.pb(["status"], { cwd: repo.path, code: layout === "fork" ? 1 : 0 }).stdout;
+      expect(first).toContain(layout === "fork" ? `unrecorded ${SKILL_FILE}/notes.txt` : "no problems");
 
       renameSync(join(repo.path, SKILL_FILE), join(t.tmp, "my-skill-folder"));
       t.pb(["skill", "install"], { cwd: repo.path });
@@ -2694,7 +2695,7 @@ test("a fork init names a fix for an upstream remote with no URL", () => {
     expect(existsSync(join(fork.path, ".patchbook"))).toBe(false);
     sh(["git", "config", "--replace-all", "remote.upstream.url", up.path], { cwd: fork.path });
     t.pb(["init", "--upstream", up.path], { cwd: fork.path });
-    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+    expect(t.pb(["status"], { cwd: fork.path, code: 1 }).stdout).toContain("unrecorded mine.txt");
   } finally {
     t.cleanup();
   }
@@ -2947,7 +2948,7 @@ test("clone and init name the upstream after the host of a URL with no path", ()
     t.pb(["init", "--upstream", url], { cwd: fork.path });
     for (const dir of [join(t.tmp, "host.invalid"), fork.path]) {
       expect(read(join(dir, ".patchbook/config.toml"))).toContain('name = "host.invalid"');
-      expect(t.pb(["status"], { cwd: dir }).stdout).toContain("at host.invalid ");
+      expect(t.pb(["status"], { cwd: dir, code: dir === fork.path ? 1 : 0 }).stdout).toContain("at host.invalid ");
     }
   } finally {
     t.cleanup();
@@ -3122,7 +3123,7 @@ test("init loads hooks.ts before it writes anything", () => {
     expect(readdirSync(join(fork.path, ".patchbook"))).toEqual(["hooks.ts"]);
     fork.rm(".patchbook/hooks.ts");
     t.pb(["init", "--upstream", up.path], { cwd: fork.path });
-    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+    expect(t.pb(["status"], { cwd: fork.path, code: 1 }).stdout).toContain("unrecorded mine.txt");
   } finally {
     t.cleanup();
   }
@@ -3138,7 +3139,7 @@ test("a hooks.js beside .patchbook is a file patchbook does not know about", () 
     const stray = "export const placeholder = () => null;\n";
     fork.write(".patchbook/hooks.js", stray);
     t.pb(["init", "--upstream", up.path], { cwd: fork.path });
-    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+    expect(t.pb(["status"], { cwd: fork.path, code: 1 }).stdout).toContain("unrecorded mine.txt");
     expect(fork.read(".patchbook/hooks.js")).toBe(stray);
   } finally {
     t.cleanup();
@@ -3163,7 +3164,7 @@ for (const layout of ["fork", "folder"]) {
       sh(["git", "commit", "-q", "-m", "more"], { cwd: fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1" } });
       rmSync(join(fork.path, ".patchbook/series"));
       t.pb(["init", "--upstream", up.path, ...output], { cwd: fork.path });
-      expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+      expect(t.pb(["status"], { cwd: fork.path, code: layout === "fork" ? 1 : 0 }).stdout).toContain(layout === "fork" ? "unrecorded more.txt" : "no problems");
     } finally {
       t.cleanup();
     }
@@ -3526,7 +3527,7 @@ for (const layout of ["fork", "folder"]) {
       expect(init.stderr).toContain("couldn't install the update skill");
       expect(readdirSync(folder)).toEqual([]);
       expect(existsSync(join(repo.path, ".claude"))).toBe(false);
-      expect(t.pb(["status"], { cwd: repo.path }).stdout).toContain("no problems");
+      expect(t.pb(["status"], { cwd: repo.path, code: layout === "fork" ? 1 : 0 }).stdout).toContain(layout === "fork" ? "unrecorded mine.txt" : "no problems");
     } finally {
       sh(["chmod", "-R", "u+w", t.tmp], { cwd: t.tmp, check: false });
       t.cleanup();
@@ -3825,7 +3826,9 @@ for (const [config, { snippet, dispatcher }] of Object.entries(SNIPPETS)) {
       Object.assign(t.env, { PATCHBOOK_HOOK: "1" });
       expect(t.pb(["status"], { cwd: fork.path }).stderr).toContain(config);
       fork.write(config, snippet);
-      expect(t.pb(["status"], { cwd: fork.path }).stderr).not.toContain(config);
+      const added = t.pb(["status"], { cwd: fork.path, code: 1 });
+      expect(added.stdout).toContain(`unrecorded ${config}`);
+      expect(added.stderr).not.toContain(config);
     } finally {
       t.cleanup();
     }
@@ -5836,7 +5839,7 @@ describe("ForkTest", () => {
       expect(tree(t.fork.path)).toEqual(files);
       expect(gitState(t)).toBe(state);
       expect(existsSync(join(t.fork.path, ".patchbook/changes"))).toBe(false);
-      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+      expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("unrecorded odd\\name.txt");
     });
   }
 
@@ -7283,7 +7286,7 @@ describe("ForkTest", () => {
     expect(t.pb(["record", "--intent", "Keep the guide."], { cwd: t.fork.path }).stdout)
       .toBe("skipped  docs/guide.md: a hook leaves it out of the build; change the hook to keep it\n");
     expect(existsSync(join(t.fork.path, ".patchbook/changes/keep-the-guide"))).toBe(false);
-    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("unrecorded docs/guide.md");
   });
 
   forkTest("record replaces each of two outputs that share one upstream file when both are edited", (t) => {
@@ -8894,7 +8897,7 @@ describe("ForkTest", () => {
     expect(out.stderr).toContain(FOLDER_TO_FILE);
     expect(out.stderr).not.toContain("PATCHBOOK_HOOK");
     expect(tree(t.fork.path)).toEqual(before);
-    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("unrecorded docs:");
   });
 
   forkTest("record refuses a nested output folder replaced by a file", (t) => {
@@ -9184,7 +9187,9 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     Object.assign(t.env, { PATCHBOOK_HOOK: "1" });
     expect(t.pb(["status"], { cwd: t.fork.path }).stderr).toContain(".githooks/pre-commit");
     t.fork.write(".githooks/pre-commit", "patchbook hook run || exit 1\n", 0o755);
-    expect(t.pb(["status"], { cwd: t.fork.path }).stderr).not.toContain(".githooks/pre-commit");
+    const added = t.pb(["status"], { cwd: t.fork.path, code: 1 });
+    expect(added.stdout).toContain("unrecorded .githooks/pre-commit");
+    expect(added.stderr).not.toContain(".githooks/pre-commit");
   });
 
   forkTest("a setting comes from the default, the user config, the project config, then the environment, in that order", (t) => {
@@ -12152,7 +12157,7 @@ describe("VendorTest", () => {
     expect(t.pb(["record", "--intent", "Keep the skill."], { cwd: t.repo.path }).stdout)
       .toBe("skipped  hello/SKILL.md: a hook leaves it out of the build; change the hook to keep it\n");
     expect(existsSync(join(t.repo.path, ".patchbook/changes/keep-the-skill"))).toBe(false);
-    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout).toContain("unrecorded skills/hello/SKILL.md");
   });
 
   const holderAndTwin = (t: VendorCase, copy: string): string => {

@@ -470,6 +470,7 @@ export async function cmdBuild(args: { force: boolean; commit: boolean; quiet?: 
   return 0;
 }
 
+/** The outputs a build would change, split into the hand-edited ones and the ones no hand edit explains, which is what a commit, merge or sync that skipped the build leaves. */
 function outputDrift(book: Book, a: Assembly): { edited: string[]; behind: string[] } {
   if (a.problems.length) return { edited: [], behind: [] };
   try {
