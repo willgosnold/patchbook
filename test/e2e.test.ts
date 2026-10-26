@@ -16802,6 +16802,37 @@ describe("PostHookTest", () => {
     expect(t.fork.read("vendor/extra/extra.txt")).toBe("changed\n");
   });
 
+  for (const dir of [".husky", ".vite-hooks"]) for (const [ending, newline] of [["LF", "\n"], ["CRLF", "\r\n"]] as const) {
+    test(`hook install upgrades a ${ending} checkout snippet in ${dir} without changing surrounding bytes`, () => {
+      const t = new Case();
+      try {
+        const up = new Repo(join(t.tmp, "up"));
+        up.write("app.txt", "upstream\n");
+        up.commit("start");
+        const repo = new Repo(join(t.tmp, "repo"));
+        repo.write("README.md", "project\n");
+        repo.commit("start");
+        t.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: repo.path });
+        t.pb(["build"], { cwd: repo.path });
+        installManager(repo, dir);
+        t.pb(["hook", "install"], { cwd: repo.path });
+        const path = join(repo.path, dir, "post-checkout");
+        const current = read(path).replaceAll("\n", newline);
+        const previous = current.replace(CHECKOUT_CONTEXT, "");
+        const prefix = Buffer.from([35, 33, 47, 98, 105, 110, 47, 115, 104, 13, 10, 35, 255, 10]);
+        const suffix = Buffer.concat([Buffer.from('\necho manager-ran\r\n'), Buffer.from([35, 255, 10])]);
+        writeFileSync(path, Buffer.concat([prefix, Buffer.from(previous), suffix]));
+        t.pb(["hook", "install"], { cwd: repo.path });
+        const expected = Buffer.concat([prefix, Buffer.from(current), suffix]);
+        expect(readFileSync(path)).toEqual(expected);
+        t.pb(["hook", "install"], { cwd: repo.path });
+        expect(readFileSync(path)).toEqual(expected);
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+  }
+
   test("hook install upgrades a managed checkout hook and keeps its following commands", () => {
     const t = new Case();
     try {
