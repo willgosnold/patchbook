@@ -6723,6 +6723,26 @@ describe("ForkTest", () => {
     expect(tree(fork.path)).toEqual(before);
   });
 
+  caseTest("status lists a synced conflict when HEAD's upstream.lock is not valid UTF-8", (t) => {
+    const fork = forkWith(t, { "doc.md": `intro\n${BLOCK}middle\nend\n` });
+    fork.write("doc.md", "Intro\nmiddle\nEND-ours\n");
+    sh(["git", "commit", "-qam", "drop the example"], { cwd: fork.path, env: { ...withHook(t), PATCHBOOK_INTENT: "Drop the example." } });
+    const lock = join(fork.path, ".patchbook/upstream.lock");
+    const valid = readFileSync(lock);
+    writeFileSync(lock, Buffer.from([0xff, 0xfe, 0x20, 0x6a, 0x75, 0x6e, 0x6b, 0x0a]));
+    sh(["git", "add", "-A"], { cwd: fork.path });
+    sh(["git", "commit", "-qm", "corrupt the lock"], { cwd: fork.path, env: t.env });
+    writeFileSync(lock, valid);
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("doc.md", `intro\n${BLOCK}middle\nEND-theirs\n`);
+    up.commit("reword the end");
+    t.pb(["sync"], { cwd: fork.path });
+    const status = t.pb(["status"], { cwd: fork.path, code: 1 });
+    expect(status.stderr + status.stdout).toContain("conflict");
+    expect(status.stderr + status.stdout).not.toContain("TypeError");
+    expect(status.stderr + status.stdout).not.toMatch(/\n\s+at /);
+  });
+
   caseTest("the hook records an edit inside upstream's marker block in a copy whose sync conflict was committed", (t) => {
     const fork = forkWith(t, { "doc.md": `intro\n${BLOCK}middle\nend\n` });
     fork.write("doc.md", `Intro\n${BLOCK}middle\nEND-ours\n`);

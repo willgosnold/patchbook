@@ -174,7 +174,7 @@ function headPins(book: Book): Map<string, string> {
   const blob = spawn(["git", "cat-file", "blob", sha], { cwd: book.root });
   if (blob.code !== 0) return new Map();
   try {
-    return new Map(parseLock(decode(blob.stdout)).map((p) => [p.name, p.commit]));
+    return new Map(parseLock(decodeReplace(blob.stdout)).map((p) => [p.name, p.commit]));
   } catch (e) {
     if (e instanceof Fail) return new Map();
     throw e;
