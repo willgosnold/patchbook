@@ -192,11 +192,13 @@ function pinnedFiles(book: Book, u: Upstream): Map<string, File> {
   return pin.tree ? book.buildable(u, u.mounted(u.files(u.heal(pinned(u, pin)))), false) : new Map();
 }
 
-function destinationSources(book: Book, changes: readonly Change[], atPin: (u: Upstream) => ReadonlyMap<string, File>): Map<string, string> {
+function destinationSources(
+  book: Book, changes: readonly Change[], atPin: (u: Upstream) => ReadonlyMap<string, File>,
+): { upstreamOf: ReadonlyMap<string, string>; unread: ReadonlySet<string> } {
   const ends = changes.flatMap((c) => c.edits.flatMap((e) => (e.kind === "copy" || e.kind === "move" ? [e.dest] : [])));
-  if (!changes.some((c) => c.edits.some((e) => e.kind === "file" && ends.some((d) => under(e.path, d))))) return new Map();
+  if (!changes.some((c) => c.edits.some((e) => e.kind === "file" && ends.some((d) => under(e.path, d))))) return { upstreamOf: new Map(), unread: new Set() };
   const upstream = new Map(book.upstreams.flatMap((u) => [...atPin(u)]));
-  return applyStructure(changes, upstream, [], (p) => book.reservedHolding(p)).upstreamOf;
+  return applyStructure(changes, upstream, [], (p) => book.reservedHolding(p));
 }
 
 /** Move one upstream's pin and carry every change on its files forward. Returns the report, or null. */
@@ -229,14 +231,14 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   const missing: string[] = [];
   let copies = 0;
   const added = Array.from(fresh.keys()).filter((p) => !old.has(p));
-  const sources = destinationSources(book, changes, (x) => (x === u ? old : pinnedFiles(book, x)));
+  const { upstreamOf, unread } = destinationSources(book, changes, (x) => (x === u ? old : pinnedFiles(book, x)));
   for (const c of changes) {
     for (const e of c.edits) {
       if (e.kind === "replace" && book.upstreamFor(e.path) === u && old.has(e.path) && !sameFile(old.get(e.path), fresh.get(e.path))) {
         report.replacedUpstreamChanged.push(`${c.name}: ${e.path}`);
       }
-      if (e.kind !== "file") continue;
-      const from = sources.get(e.path) ?? e.path;
+      if (e.kind !== "file" || unread.has(`${c.name}\0${e.path}`)) continue;
+      const from = upstreamOf.get(e.path) ?? e.path;
       if (book.upstreamFor(from) !== u) continue;
       const base = c.read("base", e.path);
       const ours = c.read("ours", e.path);

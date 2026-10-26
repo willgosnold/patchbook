@@ -10715,6 +10715,42 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     t.pb(["build"], { cwd: t.fork.path });
     expect(t.fork.read("app3.txt")).toBe(t.up.read("app.txt").replace("six", "SIX"));
     expect(existsSync(join(t.fork.path, "app2.txt"))).toBe(false);
+    t.fork.commit("dropcopy");
+    upstreamApp(t, "one", "ONE");
+    expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("1 of ours merged cleanly, 0 conflicts, 0 gone.");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app3.txt")).toBe(t.up.read("app.txt").replace("six", "SIX"));
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  for (const kind of ["replace", "delete"] as const) {
+    forkTest(`a hand-written ${kind} of an edited copy builds after upstream changes the line the copy's edit changed`, (t) => {
+      editedCopy(t);
+      handChange(t, "over", "Write the copy by hand.", [`${kind} app2.txt`], kind === "replace" ? { "app2.txt": "by hand\n" } : {});
+      t.pb(["build"], { cwd: t.fork.path });
+      t.fork.commit(kind);
+      const copy = (side: string) => read(join(t.fork.path, `.patchbook/changes/copyedit/${side}/app2.txt.pb`));
+      const copies = [copy("base"), copy("ours")];
+      upstreamApp(t, "six", "6");
+      expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("0 of ours merged cleanly, 0 conflicts, 0 gone.");
+      expect([copy("base"), copy("ours")]).toEqual(copies);
+      t.pb(["build"], { cwd: t.fork.path });
+      expect(t.fork.read("app.txt")).toBe(t.up.read("app.txt"));
+      if (kind === "replace") expect(t.fork.read("app2.txt")).toBe("by hand\n");
+      else expect(existsSync(join(t.fork.path, "app2.txt"))).toBe(false);
+      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    });
+  }
+
+  forkTest("the hook commits a hand-written replace of an edited copy whose edit holds sync's conflict", (t) => {
+    editedCopy(t);
+    upstreamApp(t, "six", "6");
+    expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("0 of ours merged cleanly, 1 conflicts, 0 gone.");
+    handChange(t, "over", "Write the copy by hand.", ["replace app2.txt"], { "app2.txt": "by hand\n" });
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    sh(["git", "commit", "-qm", "by hand"], { cwd: t.fork.path, env: withHook(t) });
+    expect(t.fork.read("app2.txt")).toBe("by hand\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
 
   forkTest("an edited copy whose source upstream deletes is gone, since no copy reaches it", (t) => {

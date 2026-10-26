@@ -120,9 +120,10 @@ export function applyStructure(
   problems: Problem[],
   reservedHolding: (staged: string) => Reserved | null,
   dropped = new Set<string>(),
-): { tree: Map<string, Source>; applied: number; upstreamOf: Map<string, string> } {
+): { tree: Map<string, Source>; applied: number; upstreamOf: Map<string, string>; unread: Set<string> } {
   const tree = new Map<string, Source>(Array.from(upstream.keys(), (p) => [p, { kind: "up", path: p }]));
   const upstreamOf = new Map<string, string>();
+  const placed: string[] = [];
   let applied = 0;
   for (const c of changes) {
     for (const e of c.edits) {
@@ -130,7 +131,9 @@ export function applyStructure(
         const src = upstream.has(e.path) ? undefined : tree.get(e.path);
         if (src?.kind !== "up") continue;
         upstreamOf.set(e.path, src.path);
-        if (c.read("ours", e.path) !== null) tree.set(e.path, { kind: "ours", change: c.name, path: e.path });
+        if (c.read("ours", e.path) === null) continue;
+        tree.set(e.path, { kind: "ours", change: c.name, path: e.path });
+        placed.push(`${c.name}\0${e.path}`);
         continue;
       }
       const where: InEdit = { file: `changes/${c.name}`, edit: editText(e) };
@@ -178,7 +181,8 @@ export function applyStructure(
       }
     }
   }
-  return { tree, applied, upstreamOf };
+  const read = new Set(Array.from(tree.values()).flatMap((s) => (s.kind === "ours" ? [`${s.change}\0${s.path}`] : [])));
+  return { tree, applied, upstreamOf, unread: new Set(placed.filter((k) => !read.has(k))) };
 }
 
 export function blockFiles(book: Book): string[] {
@@ -191,12 +195,16 @@ export function assemble(book: Book): Assembly {
   let applied = 0;
   const changes = readChanges(book, problems);
   const byName = new Map(changes.map((c) => [c.name, c]));
+  const structure: Problem[] = [];
+  const lost = new Set<string>();
+  const { tree: staged, applied: structural, upstreamOf, unread } = applyStructure(changes, upstream, structure, (p) => book.reservedHolding(p), lost);
 
   const conflicted = syncConflicts(book);
   for (const name of foldersWith(book.data("changes"), "CHANGE.md").filter((name) => CHANGE_NAME.test(name))) {
     const c = byName.get(name) ?? new Change(name, book.data("changes", name));
     for (const copy of nonFolders(join(c.dir, "ours")).filter((p) => p.endsWith(".pb"))) {
       const path = copy.slice(0, -".pb".length);
+      if (unread.has(`${c.name}\0${path}`)) continue;
       const adds = conflicted.has(`${c.name}\0${path}`) ? addsConflictBlock : addsConflictMarker;
       if (adds(textOf(c.file("ours", path)), textOf(c.file("base", path)))) {
         problems.push({ problem: "conflict", file: path, change: c.name, detail: "ours has conflict markers", refuse: true });
@@ -255,12 +263,12 @@ export function assemble(book: Book): Assembly {
     blocks.set(rel, entries);
   }
 
-  const lost = new Set<string>();
-  const { tree: staged, applied: structural, upstreamOf } = applyStructure(changes, upstream, problems, (p) => book.reservedHolding(p), lost);
+  problems.push(...structure);
   applied += structural;
   for (const { c, path } of destinations) {
     const from = upstreamOf.get(path);
     if (from === undefined) problems.push({ problem: "gone", file: path, change: c.name, detail: "no earlier copy or move of an upstream file reaches it" });
+    else if (unread.has(`${c.name}\0${path}`)) applied++;
     else copiesOver(c, path, upstream.get(from)!);
   }
   const prefix = book.layout.kind === "folder" ? book.layout.from : "";
