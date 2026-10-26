@@ -6510,6 +6510,33 @@ describe("ForkTest", () => {
     t.pb(["build"], { cwd: t.fork.path, code: 1 });
   });
 
+  forkTest("the hook refuses a synced conflict in an older change until it is resolved", (t) => {
+    t.recordFeature();
+    t.fork.write("later.txt", "a later change\n");
+    t.pb(["record", "later", "--intent", "Add a later file."], { cwd: t.fork.path });
+    t.fork.commit("later");
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("two", "deux"));
+    t.up.commit("conflicting edit");
+    t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+    const index = sh(["git", "write-tree"], { cwd: t.fork.path }).stdout;
+    const before = tree(t.fork.path);
+    const commit = sh(["git", "commit", "-qam", "Sync upstream"], { cwd: t.fork.path, env: withHook(t), check: false });
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("refusing this commit");
+    expect(commit.stderr).toContain(".patchbook/changes/feature/ours/app.txt.pb");
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
+    expect(sh(["git", "write-tree"], { cwd: t.fork.path }).stdout).toBe(index);
+    expect(tree(t.fork.path)).toEqual(before);
+    const resolved = t.up.read("app.txt").replaceAll("deux", "DEUX");
+    t.fork.write(".patchbook/changes/feature/ours/app.txt.pb", resolved);
+    sh(["git", "commit", "-qam", "Resolve upstream conflict"], { cwd: t.fork.path, env: withHook(t) });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app.txt")).toBe(resolved);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
   forkTest("sync reports an edited file upstream deleted as gone, with the file it moved to", (t) => {
     t.recordFeature();
     t.up.rm("app.txt");
