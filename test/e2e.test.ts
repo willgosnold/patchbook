@@ -6699,6 +6699,30 @@ describe("ForkTest", () => {
     expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
   });
 
+  caseTest("the hook refuses a synced conflict when HEAD's upstream.lock is a link", (t) => {
+    const fork = forkWith(t, { "doc.md": `intro\n${BLOCK}middle\nend\n` });
+    fork.write("doc.md", "Intro\nmiddle\nEND-ours\n");
+    sh(["git", "commit", "-qam", "drop the example"], { cwd: fork.path, env: { ...withHook(t), PATCHBOOK_INTENT: "Drop the example." } });
+    const lock = join(fork.path, ".patchbook/upstream.lock");
+    renameSync(lock, join(fork.path, ".patchbook/pin.lock"));
+    symlinkSync("pin.lock", lock);
+    sh(["git", "add", "-A"], { cwd: fork.path });
+    sh(["git", "commit", "-qm", "link the lock"], { cwd: fork.path, env: t.env });
+    expect(sh(["git", "ls-tree", "HEAD", "--", ".patchbook/upstream.lock"], { cwd: fork.path }).stdout).toMatch(/^120000 /);
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("doc.md", `intro\n${BLOCK}middle\nEND-theirs\n`);
+    up.commit("reword the end");
+    rmSync(lock);
+    copyFileSync(join(fork.path, ".patchbook/pin.lock"), lock);
+    t.pb(["sync"], { cwd: fork.path });
+    sh(["git", "add", "-u"], { cwd: fork.path });
+    const before = tree(fork.path);
+    const commit = sh(["git", "commit", "-qm", "Sync upstream"], { cwd: fork.path, env: withHook(t), check: false });
+    expect(commit.code).toBe(1);
+    expect(commit.stderr).toContain("  .patchbook/changes/drop-the-example/ours/doc.md.pb\n");
+    expect(tree(fork.path)).toEqual(before);
+  });
+
   caseTest("the hook records an edit inside upstream's marker block in a copy whose sync conflict was committed", (t) => {
     const fork = forkWith(t, { "doc.md": `intro\n${BLOCK}middle\nend\n` });
     fork.write("doc.md", `Intro\n${BLOCK}middle\nEND-ours\n`);
