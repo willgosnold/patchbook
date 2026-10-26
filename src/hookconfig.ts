@@ -30,11 +30,28 @@ function spot(doc: unknown, event: string): Spot | undefined {
   return commands === undefined ? "hook" : commands === null || isRecord(commands) ? "commands" : undefined;
 }
 
-function hasPatchbook(doc: unknown, event: string): boolean {
+type Item = { kind: "command" | "job"; name: unknown; run: unknown };
+
+function items(doc: unknown, event: string): Item[] {
   const hook = isRecord(doc) ? doc[event] : undefined;
-  if (!isRecord(hook)) return false;
-  const jobs = Array.isArray(hook["jobs"]) ? hook["jobs"] : [];
-  return (isRecord(hook["commands"]) && COMMAND in hook["commands"]) || jobs.some((j) => isRecord(j) && j["name"] === COMMAND);
+  if (!isRecord(hook)) return [];
+  const commands = isRecord(hook["commands"]) ? Object.entries(hook["commands"]).map(([name, c]): Item => ({ kind: "command", name, run: isRecord(c) ? c["run"] : undefined })) : [];
+  const jobs = Array.isArray(hook["jobs"]) ? hook["jobs"].filter(isRecord).map((j): Item => ({ kind: "job", name: j["name"], run: j["run"] })) : [];
+  return [...commands, ...jobs];
+}
+
+/** The call the entry for each event makes. An entry that makes it counts as patchbook's, whatever its name, and one named patchbook that doesn't is someone else's. */
+const callOf = (event: string) => `${COMMAND} hook ${event === "pre-commit" ? "run" : "build"}`;
+const callsIn = (event: string) => new RegExp(`^[^#\\n]*\\b${escaped(callOf(event))}\\b`, "m");
+const makesCall = (run: unknown, event: string) => typeof run === "string" && callsIn(event).test(run);
+const clashWith = (what: string, entry: Entry): Unplaced => ({ why: `its ${what} that doesn't call \`${callOf(entry.event)}\`` });
+
+/** PRESENT when the config already makes the event's call, or why a different entry named patchbook is in the way. */
+function existing(doc: unknown, entry: Entry): Placement | undefined {
+  const all = items(doc, entry.event);
+  if (all.some((i) => makesCall(i.run, entry.event))) return PRESENT;
+  const taken = all.find((i) => i.name === COMMAND);
+  return taken && clashWith(`${entry.event} already has a ${taken.kind} named ${COMMAND}`, entry);
 }
 
 /** lefthook runs the commands that have a priority from the lowest up, then the rest, and equal priorities in no set order. A priority below every other, and not 0, runs first. */
@@ -57,7 +74,7 @@ function checked(merged: string, parse: (text: string) => unknown, first: (doc: 
 
 const lefthookFirst = (event: string, at: Spot) => (doc: unknown): boolean => {
   const hook = isRecord(doc) ? doc[event] : undefined;
-  if (!hasPatchbook(doc, event)) return false;
+  if (!items(doc, event).some((i) => i.name === COMMAND && makesCall(i.run, event))) return false;
   return at !== "jobs" || (isRecord(hook) && Array.isArray(hook["jobs"]) && isRecord(hook["jobs"][0]) && hook["jobs"][0]["name"] === COMMAND);
 };
 
@@ -107,19 +124,18 @@ function lefthookYaml(config: string, entry: Entry, where: string): Placement {
   }
   const at = spot(doc, entry.event);
   if (at === undefined) return { why: shape(entry.event) };
-  if (hasPatchbook(doc, entry.event)) return PRESENT;
+  const found = existing(doc, entry);
+  if (found) return found;
   const ls = lines(config);
   const u = yamlUnit(ls);
   const p = priority(doc, entry.event);
   const command = (n: number) => indent(`${COMMAND}:\n${indent(`priority: ${p}\nrun: |\n${indent(entry.run, u)}`, u)}`, n);
-  const place = (line: number, location: string, text: string): Placement => {
-    const merged = after(ls, line, text);
-    return checked(merged, Bun.YAML.parse, lefthookFirst(entry.event, at)) ? { location, text, merged } : { why: `its ${entry.event} is laid out in a way patchbook can't add to` };
-  };
+  const usable = (merged: string, location: string, text: string): Placement =>
+    checked(merged, Bun.YAML.parse, lefthookFirst(entry.event, at)) ? { location, text, merged } : { why: `its ${entry.event} is laid out in a way patchbook can't add to` };
+  const place = (line: number, location: string, text: string) => usable(after(ls, line, text), location, text);
   if (at === "file") {
     const text = `${entry.event}:\n${indent(`commands:\n${command(u)}`, u)}`;
-    const merged = endsLine(config) + text;
-    return { location: `at the end of ${where}`, text, merged };
+    return usable(endsLine(config) + text, `at the end of ${where}`, text);
   }
   const hookAt = keyAt(ls, 0, ls.length, entry.event, 0);
   if (hookAt < 0 || !bare(ls[hookAt]!, entry.event)) return { why: `its ${entry.event} key is written inline` };
@@ -137,31 +153,38 @@ function lefthookYaml(config: string, entry: Entry, where: string): Placement {
   return place(keyLine, location, indent(`- name: ${COMMAND}\n  run: |\n${indent(entry.run, 4)}`, indentOf(firstJob)));
 }
 
+/** Where the value at `path` opens, reading only double-quoted keys and strings. Every step moves forward and stops at the end of the text, and anything else it can't read throws, since bun parses more JSONC than this walk understands, such as single quotes. */
 function openingAt(text: string, path: readonly string[]): number {
   let i = 0;
+  const unreadable = () => new SyntaxError("unreadable JSONC");
   const skip = () => {
     for (;;) {
       while (/\s/.test(text[i] ?? "")) i++;
       if (text.startsWith("//", i)) i = text.indexOf("\n", i) < 0 ? text.length : text.indexOf("\n", i);
-      else if (text.startsWith("/*", i)) i = text.indexOf("*/", i) + 2;
+      else if (text.startsWith("/*", i)) i = text.indexOf("*/", i) < 0 ? text.length : text.indexOf("*/", i) + 2;
       else return;
     }
   };
   const string = () => {
+    if (text[i] !== '"') throw unreadable();
     const start = i++;
-    while (text[i] !== '"') i += text[i] === "\\" ? 2 : 1;
+    while (i < text.length && text[i] !== '"') i += text[i] === "\\" ? 2 : 1;
+    if (i >= text.length) throw unreadable();
     return text.slice(start, ++i);
   };
   const skipValue = () => {
     skip();
     if (text[i] === '"') return void string();
     if (text[i] !== "{" && text[i] !== "[") {
-      while (i < text.length && !/[,}\]\s]/.test(text[i]!)) i++;
+      const start = i;
+      while (i < text.length && !/[,}\]\s/']/.test(text[i]!)) i++;
+      if (i === start) throw unreadable();
       return;
     }
     let depth = 0;
     do {
       skip();
+      if (i >= text.length || text[i] === "'") throw unreadable();
       const c = text[i]!;
       if (c === '"') string();
       else {
@@ -172,11 +195,13 @@ function openingAt(text: string, path: readonly string[]): number {
   };
   skip();
   for (const key of path) {
+    if (text[i] !== "{") throw unreadable();
     i++;
     for (;;) {
       skip();
       const name = readJson(string(), stringShape, "a key in the config");
       skip();
+      if (text[i] !== ":") throw unreadable();
       i++;
       skip();
       if (name === key) break;
@@ -185,6 +210,7 @@ function openingAt(text: string, path: readonly string[]): number {
       if (text[i] === ",") i++;
     }
   }
+  if (text[i] !== "{" && text[i] !== "[") throw unreadable();
   return i + 1;
 }
 
@@ -208,7 +234,8 @@ function lefthookJson(config: string, entry: Entry, where: string): Placement {
   if (!isRecord(doc)) return { why: "it isn't a JSON object" };
   const at = spot(doc, entry.event);
   if (at === undefined) return { why: shape(entry.event) };
-  if (hasPatchbook(doc, entry.event)) return PRESENT;
+  const found = existing(doc, entry);
+  if (found) return found;
   const path = at === "file" ? [] : at === "hook" ? [entry.event] : [entry.event, at];
   const target = path.reduce<unknown>((v, k) => (isRecord(v) ? v[k] : undefined), doc);
   if (at === "jobs" ? !Array.isArray(target) : !isRecord(target)) return { why: `its ${path.join(" > ")} isn't ${at === "jobs" ? "an array" : "an object"}` };
@@ -216,7 +243,12 @@ function lefthookJson(config: string, entry: Entry, where: string): Placement {
   const u = /^([ \t]+)\S/m.exec(config)?.[1] ?? "  ";
   const depth = at === "file" ? 1 : at === "hook" ? 2 : 3;
   const text = indent(member(u, priority(doc, entry.event), at), u.repeat(depth)) + (members ? "," : "") + "\n";
-  const open = openingAt(config, path);
+  let open: number;
+  try {
+    open = openingAt(config, path);
+  } catch {
+    return { why: `its ${entry.event} is laid out in a way patchbook can't add to` };
+  }
   const merged = config.slice(0, open) + "\n" + text.replace(/\n$/, "") + config.slice(open);
   if (!checked(merged, Bun.JSONC.parse, lefthookFirst(entry.event, at))) return { why: `its ${entry.event} is laid out in a way patchbook can't add to` };
   const named = at === "file" ? "the top-level object" : at === "hook" ? `"${entry.event}"` : `"${at}" in "${entry.event}"`;
@@ -234,7 +266,8 @@ function lefthookToml(config: string, entry: Entry, where: string): Placement {
   const at = spot(doc, entry.event);
   if (at === undefined) return { why: shape(entry.event) };
   if (at === "jobs") return { why: `its ${entry.event} uses jobs, which a TOML file can't add to from the end` };
-  if (hasPatchbook(doc, entry.event)) return PRESENT;
+  const found = existing(doc, entry);
+  if (found) return found;
   const text = `[${entry.event}.commands.${COMMAND}]\npriority = ${priority(doc, entry.event)}\nrun = '''\n${entry.run}'''\n`;
   const merged = endsLine(config) + text;
   if (!checked(merged, Bun.TOML.parse, lefthookFirst(entry.event, at))) return { why: `its ${entry.event} is laid out in a way patchbook can't add to` };
@@ -246,7 +279,8 @@ export const LEFTHOOK: Readonly<Record<string, Format>> = { yml: lefthookYaml, y
 
 const hookId = (entry: Entry) => (entry.event === "pre-commit" ? COMMAND : `${COMMAND}-${entry.event}`);
 
-/** pre-commit splits `entry` like a shell does and runs the words without one, so the script goes through `sh -c`. */
+/** The commit stage is spelled `commit`, which every pre-commit accepts, because 3.1 rejects `pre-commit` and 4 only warns about `commit`.
+ * pre-commit splits `entry` like a shell does and runs the words without one, so the script goes through `sh -c`. */
 function preCommitRepo(entry: Entry): string {
   const pre = entry.event === "pre-commit";
   return `- repo: local
@@ -258,7 +292,7 @@ ${indent(`sh -c '${entry.run.trimEnd().replaceAll("'", "'\\''")}'`, 8)}
       language: system
       pass_filenames: false
       always_run: true
-      stages: [${entry.event}]
+      stages: [${pre ? "commit" : entry.event}]
 ${pre ? "" : "      verbose: true\n"}`;
 }
 
@@ -272,8 +306,11 @@ function preCommit(config: string, entry: Entry, where: string): Placement {
   if (doc !== null && doc !== undefined && !isRecord(doc)) return { why: "it isn't a YAML map" };
   const repos = isRecord(doc) ? doc["repos"] : undefined;
   const id = hookId(entry);
+  const pre = entry.event === "pre-commit";
   const hooks = Array.isArray(repos) ? repos.flatMap((r) => (isRecord(r) && Array.isArray(r["hooks"]) ? r["hooks"] : [])) : [];
-  if (hooks.some((h) => isRecord(h) && h["id"] === id)) return PRESENT;
+  const atStage = (h: Record<string, unknown>) => !Array.isArray(h["stages"]) || h["stages"].some((st) => st === entry.event || (pre && st === "commit"));
+  if (hooks.some((h) => isRecord(h) && makesCall(h["entry"], entry.event) && atStage(h))) return PRESENT;
+  if (hooks.some((h) => isRecord(h) && h["id"] === id)) return clashWith(`config already has a hook with the id ${id}`, entry);
   const item = preCommitRepo(entry);
   const firstIs = (d: unknown) => isRecord(d) && Array.isArray(d["repos"]) && isRecord(d["repos"][0]) && Array.isArray(d["repos"][0]["hooks"]) && isRecord(d["repos"][0]["hooks"][0]) && d["repos"][0]["hooks"][0]["id"] === id;
   const ls = lines(config);

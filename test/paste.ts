@@ -46,7 +46,7 @@ function locate(src: string, path: string[]): number {
       return;
     }
   };
-  const str = () => { const s = i; i++; while (src[i] !== '"') i += src[i] === "\\" ? 2 : 1; i++; return src.slice(s, i); };
+  const str = () => { const s = i; i++; while (i < src.length && src[i] !== '"') i += src[i] === "\\" ? 2 : 1; i++; return src.slice(s, i); };
   let found = -1;
   const value = (at: string[]): void => {
     skip();
@@ -68,7 +68,7 @@ function locate(src: string, path: string[]): number {
       return;
     }
     if (src[i] === '"') { str(); return; }
-    while (i < src.length && !/[,}\]\s]/.test(src[i]!)) i++;
+    while (i < src.length && !/[,}\]\s/]/.test(src[i]!)) i++;
   };
   value([]);
   if (found < 0) throw new Error(`the file has no value at ${path.join(" > ")}`);

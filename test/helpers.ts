@@ -83,8 +83,8 @@ export interface Run {
   stderr: string;
 }
 
-function run(args: string[], cwd: string, env: Env): Run {
-  const r = Bun.spawnSync(args, { cwd, env, stdin: "inherit", stdout: "pipe", stderr: "pipe" });
+function run(args: string[], cwd: string, env: Env, timeout?: number): Run {
+  const r = Bun.spawnSync(args, { cwd, env, stdin: "inherit", stdout: "pipe", stderr: "pipe", ...(timeout === undefined ? {} : { timeout }) });
   return { code: r.exitCode ?? -1, stdout: r.stdout.toString(), stderr: r.stderr.toString() };
 }
 
@@ -180,9 +180,10 @@ export class Case {
     rmSync(this.tmp, { recursive: true, force: true });
   }
 
-  pb(args: string[], opts: { cwd: string; code?: number | null }): Run {
+  /** `timeout` kills a run that hangs, which shows as exit -1. */
+  pb(args: string[], opts: { cwd: string; code?: number | null; timeout?: number }): Run {
     const env = this.env["PATCHBOOK_HOOK"] === "0" ? { ...this.env, PATCHBOOK_HOOK: "" } : this.env;
-    const r = run([...CMD, ...args], opts.cwd, env);
+    const r = run([...CMD, ...args], opts.cwd, env, opts.timeout);
     const code = opts.code === undefined ? 0 : opts.code;
     if (code !== null && r.code !== code) {
       throw new Error(`expected exit ${code}, got ${r.code}: patchbook ${args.join(" ")}\n${r.stdout}\n${r.stderr}`);
