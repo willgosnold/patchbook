@@ -64,7 +64,7 @@ export class Upstream {
     if (!this.remote) throw new Fail("an [[upstream]] needs a remote");
     this.path = field(spec, "path", "").replace(/^\/+|\/+$/g, "");
     this.branch = field(spec, "branch", "main");
-    this.name = field(spec, "name", "") || defaultName(this.remote, this.path);
+    this.name = field(spec, "name", "") || defaultName(redact(this.remote), this.path);
     if (this.remote.startsWith("-")) {
       throw new Fail(`upstream ${this.name}'s remote ${quote(redact(this.remote))} starts with "-", so git would read it as an option.`);
     }
