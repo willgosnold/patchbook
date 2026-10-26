@@ -152,16 +152,31 @@ export function readLastSync(book: Book): LastSync | null {
   return exists(path) ? parseLastSync(readTextReplace(path)) : null;
 }
 
-/** The report only records past syncs, so a report or a HEAD lock that can't be read names no conflicts. */
+/** The report only records past syncs, so one that can't be read names no conflicts. A HEAD lock that is missing, a link or unparseable pins nothing. */
 export function syncConflicts(book: Book): Set<string> {
+  let listed: SyncReport[];
   try {
-    const listed = readLastSync(book)?.upstreams.filter((r) => r.conflicts.length) ?? [];
-    if (!listed.length) return new Set();
-    const found = spawn(["git", "cat-file", "blob", `HEAD:${relative(book.root, join(book.dir, "upstream.lock"))}`], { cwd: book.root });
-    const committed = new Map(found.code === 0 ? parseLock(decode(found.stdout)).map((p) => [p.name, p.commit]) : []);
-    return new Set(listed.filter((r) => committed.get(r.name) !== r.to).flatMap((r) => r.conflicts.map((c) => `${c.change}\0${c.path}`)));
+    listed = readLastSync(book)?.upstreams.filter((r) => r.conflicts.length) ?? [];
   } catch (e) {
     if (e instanceof Fail || (e instanceof Error && "errno" in e)) return new Set();
+    throw e;
+  }
+  if (!listed.length) return new Set();
+  const committed = headPins(book);
+  return new Set(listed.filter((r) => committed.get(r.name) !== r.to).flatMap((r) => r.conflicts.map((c) => `${c.change}\0${c.path}`)));
+}
+
+function headPins(book: Book): Map<string, string> {
+  const lock = relative(book.root, join(book.dir, "upstream.lock"));
+  const entry = spawn(["git", "ls-tree", "HEAD", "--", lock], { cwd: book.root });
+  const [, sha] = /^100(?:644|755) blob (\w+)\t/.exec(decode(entry.stdout)) ?? [];
+  if (entry.code !== 0 || !sha) return new Map();
+  const blob = spawn(["git", "cat-file", "blob", sha], { cwd: book.root });
+  if (blob.code !== 0) return new Map();
+  try {
+    return new Map(parseLock(decode(blob.stdout)).map((p) => [p.name, p.commit]));
+  } catch (e) {
+    if (e instanceof Fail) return new Map();
     throw e;
   }
 }
