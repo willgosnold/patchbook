@@ -19,7 +19,7 @@ note      dup.md [230d8358dc8e]: patchbook wrote its intent from the paragraph e
 4 edits apply at up 123ec94; no problems
 ```
 
-The intent names the start of upstream's paragraph and says whether the edit rewrote or deleted it, as in `Rewrites the paragraph that starts "body" in dup.md.`, so two paragraphs of one file get different intents unless they start with the same line, and then the hash in each entry's label tells them apart. `patchbook intent` replaces it through the model, or you can rewrite the line as `intent: ...`. A later record that edits the same paragraph with no model writes it again, unless you give an intent with `--intent` or `PATCHBOOK_INTENT`, which replaces it as it fills an empty one. An entry whose intent someone wrote keeps its intent. An entry that already has an empty intent still keeps it empty after a failed model call (#349) (#331).
+The intent names the start of upstream's paragraph and says whether the edit rewrote or deleted it, as in `Rewrites the paragraph that starts "body" in dup.md.`, so descriptions can coincide, as when paragraphs of one file start alike, and the hash in each entry's label tells the paragraphs apart. `patchbook intent` replaces it through the model, or you can rewrite the line as `intent: ...`. A later record that edits the same paragraph with no model writes it again, unless you give an intent with `--intent` or `PATCHBOOK_INTENT`, which replaces it as it fills an empty one. An entry whose intent someone wrote keeps its intent. An entry that already has an empty intent still keeps it empty after a failed model call (#349) (#331).
 
 ### Skip checkout builds when the inputs stay the same
 
