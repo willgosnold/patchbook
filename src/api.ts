@@ -24,7 +24,8 @@ export type Problem =
     problem: "orphan"; file: string; hash: string; occurrence?: Occurrence; kind: string; rules: string; intent: string; upstream: string;
     patched: string; nearest: Nearest[];
   }
-  | ({ problem: "check" } & InFile & Detail);
+  | ({ problem: "check" } & InFile & Detail)
+  | ({ problem: "unrecorded" } & InFile & Detail);
 
 /** Which of a file's identical paragraphs an entry patches: the nth from the top, of `of` in all, with `between` the hash of the
  * paragraphs from the identical one before it, or the file's start, to the identical one after it, or the file's end. */

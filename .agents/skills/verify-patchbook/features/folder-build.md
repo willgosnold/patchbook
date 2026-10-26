@@ -38,6 +38,6 @@ Preconditions:
 ## Gotchas
 
 - `init` pins but doesn't build. The output folder appears only after `build`.
-- `status` reports `no problems` while there are unrecorded hand edits. Only `build` refuses, so `status` alone doesn't prove the output is clean.
+- `status` reports unrecorded hand edits and deletions as problems and exits 1. After `record` captures them, status exits 0 unless another problem remains.
 - The hook and `record` print output paths relative to the output folder (`a/SKILL.md`), while `CHANGE.md` and `upstream <name> <path>` use staged paths (`skills/a/SKILL.md`).
 - `[output] to` isn't validated. Setting it to `.` and running `build --force` deletes `.patchbook/` (#11). Never do that outside a sandbox.

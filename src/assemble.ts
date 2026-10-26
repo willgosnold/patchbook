@@ -39,6 +39,7 @@ export function describe(p: Problem): string {
     case "stale":
     case "conflict":
     case "placeholder":
+    case "unrecorded":
     case "check": {
       const extra = "edit" in p && p.edit ? ` ${p.edit}` : "";
       return `${p.problem.padEnd(9)} ${at}${extra}: ${p.detail}`;
@@ -469,16 +470,16 @@ export async function cmdBuild(args: { force: boolean; commit: boolean; quiet?: 
   return 0;
 }
 
-/** The outputs a build would change that no hand edit explains, which is what a commit, merge or sync that skipped the build leaves. */
-function behindThePatchbook(book: Book, a: Assembly): string[] {
-  if (a.problems.length) return [];
+function outputDrift(book: Book, a: Assembly): { edited: string[]; behind: string[] } {
+  if (a.problems.length) return { edited: [], behind: [] };
   try {
     const current = book.seen("disk");
     const { stale, changed } = changesOf(current, a.out, book.tracksExecBit());
-    const edited = new Set(handEdits(book, a.out, current));
-    return [...stale, ...changed].filter((p) => !edited.has(p)).sort(byCodePoint);
+    const edited = handEdits(book, a.out, current);
+    const hand = new Set(edited);
+    return { edited, behind: [...stale, ...changed].filter((p) => !hand.has(p)).sort(byCodePoint) };
   } catch (e) {
-    if (e instanceof Fail) return [];
+    if (e instanceof Fail) return { edited: [], behind: [] };
     throw e;
   }
 }
@@ -538,14 +539,17 @@ export async function cmdStatus(args: { json: boolean }) {
   const book = await Book.find();
   warnUnhooked(book);
   const a = assemble(book);
-  const problems = [...a.problems, ...conflictedLock(book)];
+  const drift = outputDrift(book, a);
+  const problems: Problem[] = [...a.problems, ...conflictedLock(book), ...drift.edited.map((p): Problem => ({
+    problem: "unrecorded", file: inRepo(book, p),
+    detail: "changed since the last build; move the edits into the patchbook with `patchbook record`, or edit its block entries directly if record skips it",
+  }))];
   if (args.json) {
     const status: StatusJson = { version: 2, upstreams: book.lock(), applied: a.applied, problems, lastSync: readLastSync(book) };
     verbatim(jsonText(status));
   } else {
     for (const p of problems) say(describe(p) + "\n");
-    const behind = behindThePatchbook(book, a);
-    if (behind.length) say(behindNote(behind));
+    if (drift.behind.length) say(behindNote(drift.behind));
     for (const c of readChanges(book, [])) {
       if (c.intent?.by === "patchbook") say(`note      changes/${c.name}: patchbook wrote its intent from the edits. ${replaceIntent(c.name)}\n`);
     }

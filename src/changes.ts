@@ -1,13 +1,13 @@
 // Changes: a CHANGE.md with an intent and a list of edits, and the files those edits carry.
-import { appendFileSync, chmodSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Problem } from "./api.ts";
-import { Book } from "./book.ts";
+import { Book, PB } from "./book.ts";
 import { unifiedDiff } from "./lib/diff.ts";
 import { Fail } from "./lib/fail.ts";
-import { exists, type File, foldersWith, isDir, isSymlink, LINK, lexists, mkdirs, type Mode, readDisk, readText, relative, writeDisk, writeText } from "./lib/fs.ts";
+import { exists, type File, isDir, isSymlink, LINK, lexists, mkdirs, type Mode, readDisk, readText, relative, writeDisk, writeText } from "./lib/fs.ts";
 import { escaped, say, verbatim } from "./lib/term.ts";
-import { decode, encode, quote } from "./lib/text.ts";
+import { byCodePoint, decode, encode, quote } from "./lib/text.ts";
 
 export const EDIT_KINDS = ["file", "add", "replace", "delete", "move", "copy"] as const;
 type EditKind = (typeof EDIT_KINDS)[number];
@@ -251,19 +251,28 @@ export function readChanges(book: Book, problems: Problem[], names: readonly str
     }
     changes.push(parseChange(path, (edit, detail) => problems.push({ problem: "invalid", file: `changes/${name}`, edit, detail, refuse: true })));
   }
-  const listed = new Set(changes.map((c) => c.name));
-  for (const name of foldersWith(book.data("changes"), "CHANGE.md")) {
-    if (listed.has(name) || names.includes(name)) continue;
-    problems.push(
-      CHANGE_NAME.test(name)
-        ? { problem: "invalid", file: "series", detail: `change ${name} is not in the series` }
-        : { problem: "invalid", file: "series", detail: notAChangeName(name), refuse: true },
-    );
+  const dir = book.data("changes");
+  for (const name of isDir(dir) ? readdirSync(dir).sort(byCodePoint) : []) {
+    const stray = strayChange(dir, name, names);
+    if (stray === null) continue;
+    if (!CHANGE_NAME.test(name)) {
+      problems.push({ problem: "invalid", file: "series", detail: notAChangeName(name), refuse: true });
+      continue;
+    }
+    problems.push(stray === "folder"
+      ? { problem: "invalid", file: "series", detail: `change ${name} is not in the series` }
+      : { problem: "invalid", file: `changes/${name}`, detail: `not a change folder; move it out of ${PB}/changes` });
   }
   for (const c of changes) {
     if (c.intent === null) problems.push({ problem: "invalid", file: `changes/${c.name}`, detail: `it has no intent; fill it with \`patchbook intent ${c.name}\`` });
   }
   return changes;
+}
+
+function strayChange(dir: string, name: string, series: readonly string[]): "folder" | "other" | null {
+  const path = join(dir, name);
+  if (series.includes(name) || !lexists(path)) return null;
+  return isDir(path) ? "folder" : "other";
 }
 
 export class Roster {
@@ -289,9 +298,7 @@ export class Roster {
   }
 
   stray(name: string): "folder" | "other" | null {
-    const path = join(this.dir, name);
-    if (this.known(name) || !lexists(path)) return null;
-    return isDir(path) ? "folder" : "other";
+    return strayChange(this.dir, name, this.series);
   }
 
   free(base: string): string {

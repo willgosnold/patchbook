@@ -3719,7 +3719,7 @@ test("status warns when Vite+ runs a hook without patchbook", () => {
     installManager(fork, ".vite-hooks");
     fork.write(".vite-hooks/pre-commit", NOTE_STAGED);
     Object.assign(t.env, { PATCHBOOK_HOOK: "1" });
-    expect(t.pb(["status"], { cwd: fork.path }).stderr).toContain(".vite-hooks/pre-commit");
+    expect(t.pb(["status"], { cwd: fork.path, code: 1 }).stderr).toContain(".vite-hooks/pre-commit");
     t.pb(["hook", "install"], { cwd: fork.path });
     expect(t.pb(["status"], { cwd: fork.path }).stderr).not.toContain(".vite-hooks/pre-commit");
     expect(fork.read(".vite-hooks/pre-commit")).toEndWith(NOTE_STAGED);
@@ -4935,7 +4935,7 @@ test("status is quiet once a linked husky folder runs patchbook", () => {
     installManager(fork, ".husky");
     fork.write("tools/husky/pre-commit", clone.stderr.match(/^# patchbook:[\s\S]*?^fi$/m)![0] + "\necho lint\n");
     Object.assign(t.env, { PATCHBOOK_HOOK: "1" });
-    expect(t.pb(["status"], { cwd: fork.path }).stderr).not.toContain("doesn't run");
+    expect(t.pb(["status"], { cwd: fork.path, code: 1 }).stderr).not.toContain("doesn't run");
     expect(t.pb(["hook", "install"], { cwd: fork.path }).stderr).not.toContain("_/pre-commit");
   } finally {
     t.cleanup();
@@ -6951,13 +6951,16 @@ describe("ForkTest", () => {
     expect(problems).toHaveLength(4);
     expect(tree(t.fork.path)).toEqual(before);
     expect(readdirSync(join(dir, "empty-only"))).toEqual([]);
+    rmSync(join(dir, "bad name"), { recursive: true });
     t.fork.write("app.txt", "changed\n");
+    const recording = tree(t.fork.path);
     for (const name of folders) {
       expect(t.pb(["record", name], { cwd: t.fork.path, code: 1 }).stderr).toContain(`change ${name} is not in the series`);
     }
     for (const name of others) {
       expect(t.pb(["record", name], { cwd: t.fork.path, code: 1 }).stderr).toContain(`changes/${name} is not a change folder`);
     }
+    expect(tree(t.fork.path)).toEqual(recording);
   });
 
   forkTest("status and record refuse linked change entries without writing", (t) => {
@@ -18007,7 +18010,7 @@ describe("PostHookTest", () => {
 
   forkTest("status does not call a hand edit behind the patchbook", (t) => {
     t.fork.write("app.txt", t.fork.read("app.txt").replaceAll("two", "TWO"));
-    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).not.toContain("behind");
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).not.toContain("behind");
   });
 
   test("hook install puts the post hooks first in the scripts a hook manager runs", () => {
