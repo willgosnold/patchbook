@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import type { CheckJson, LastSync, Nearest, SyncReport, UpstreamCheck, UpstreamLock, UpstreamPin } from "../src/api.ts";
 import { carriesCrashInjection } from "./crash-build.ts";
+import { paste } from "./paste.ts";
 import { CMD, Case, Repo, TIMEOUT, type Run, crashCmd, dedent, fakeClaude, isRoot, permissionTest, sh, splitWords, words } from "./helpers";
 
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -3938,98 +3939,259 @@ type Paste = {
   name: string;
   config: string;
   existing: string;
-  says: string;
-  merge: (existing: string, printed: string) => string;
   parse: (text: string) => any;
   check: (merged: any) => void;
-  omits?: RegExp[];
 };
 
 const hasPatchbook = (hook: any): void => expect(hook.run).toContain("patchbook hook run");
 
+/** lefthook runs the commands that have a priority from the lowest up, then the rest, and equal priorities in no set order, so patchbook is first only when its priority is below every other. */
+function runsFirst(hook: any): void {
+  if (hook.jobs) {
+    expect(hook.jobs[0].name).toBe("patchbook");
+    hasPatchbook(hook.jobs[0]);
+    return;
+  }
+  const mine = hook.commands.patchbook.priority;
+  hasPatchbook(hook.commands.patchbook);
+  expect(mine).not.toBe(0);
+  for (const [name, command] of Object.entries<any>(hook.commands)) {
+    if (name !== "patchbook" && (command.priority ?? 0) !== 0) expect(command.priority).toBeGreaterThan(mine);
+  }
+}
+
+const PRE_COMMIT_LOCAL = (id: string, indentFirst = ""): string =>
+  `${indentFirst}- repo: local\n${indentFirst}  hooks:\n${indentFirst}    - id: ${id}\n${indentFirst}      name: ${id}\n${indentFirst}      entry: echo ${id}\n${indentFirst}      language: system\n${indentFirst}      always_run: true\n`;
+
+const patchbookFirst = (m: any, others: string[]): void => {
+  const ids = m.repos.flatMap((r: any) => r.hooks.map((h: any) => h.id));
+  expect(ids[0]).toBe("patchbook");
+  expect(ids.slice(1)).toEqual(others);
+};
+
 const PASTES: Paste[] = [
-  ...["lefthook.yml"].flatMap((config): Paste[] => [
-    {
-      name: "no pre-commit key", config, existing: "skip_output:\n  - meta\n", says: `Add this to ${config},`,
-      merge: (existing, printed) => existing + printed, parse: parsed.yaml,
-      check: (m) => { expect(m.skip_output).toEqual(["meta"]); hasPatchbook(m["pre-commit"].commands.patchbook); },
-    },
-    {
-      name: "a pre-commit key without commands", config, existing: "pre-commit:\n  parallel: true\n", says: `Add this under the pre-commit key in ${config},`,
-      merge: (existing, printed) => existing + printed, parse: parsed.yaml, omits: [/^pre-commit:/m],
-      check: (m) => { expect(m["pre-commit"].parallel).toBe(true); hasPatchbook(m["pre-commit"].commands.patchbook); },
-    },
-    {
-      name: "a pre-commit key with commands", config, existing: "pre-commit:\n  commands:\n    lint:\n      run: echo lint\n", says: `Add this under commands, in the pre-commit key of ${config},`,
-      merge: (existing, printed) => existing + printed, parse: parsed.yaml, omits: [/^pre-commit:/m, /^\s*commands:/m],
-      check: (m) => { expect(m["pre-commit"].commands.lint.run).toBe("echo lint"); hasPatchbook(m["pre-commit"].commands.patchbook); },
-    },
-  ]),
-  ...["lefthook.toml"].flatMap((config): Paste[] => [
-    {
-      name: "a pre-commit table", config, existing: "[pre-commit]\nparallel = true\n", says: `Add this to ${config},`,
-      merge: (existing, printed) => existing + printed, parse: parsed.toml,
-      check: (m) => { expect(m["pre-commit"].parallel).toBe(true); hasPatchbook(m["pre-commit"].commands.patchbook); },
-    },
-  ]),
-  ...["lefthook.json"].flatMap((config): Paste[] => [
-    {
-      name: "an empty file", config, existing: "", says: `Add this to ${config},`,
-      merge: (_, printed) => printed, parse: parsed.json,
-      check: (m) => hasPatchbook(m["pre-commit"].commands.patchbook),
-    },
-    {
-      name: "no pre-commit key", config, existing: '{ "skip_output": ["meta"] }', says: `Add this inside the top-level braces of ${config}, with a comma after the member before it if there is one,`,
-      merge: (existing, printed) => existing.replace(/ \}$/, `, ${printed.trim()} }`), parse: parsed.json, omits: [/^\{/m],
-      check: (m) => { expect(m.skip_output).toEqual(["meta"]); hasPatchbook(m["pre-commit"].commands.patchbook); },
-    },
-    {
-      name: "a pre-commit key without commands", config, existing: '{ "pre-commit": { "parallel": true } }', says: `Add this inside "pre-commit" in ${config}, with a comma after the member before it if there is one,`,
-      merge: (existing, printed) => existing.replace(/ \} \}$/, `, ${printed.trim()} } }`), parse: parsed.json, omits: [/"pre-commit"/],
-      check: (m) => { expect(m["pre-commit"].parallel).toBe(true); hasPatchbook(m["pre-commit"].commands.patchbook); },
-    },
-    {
-      name: "a pre-commit key with commands", config, existing: '{ "pre-commit": { "commands": { "lint": { "run": "echo lint" } } } }',
-      says: `Add this inside "commands" in "pre-commit" in ${config}, with a comma after the member before it if there is one,`,
-      merge: (existing, printed) => existing.replace(/ \} \} \}$/, `, ${printed.trim()} } } }`), parse: parsed.json, omits: [/"pre-commit"/, /"commands"/],
-      check: (m) => { expect(m["pre-commit"].commands.lint.run).toBe("echo lint"); hasPatchbook(m["pre-commit"].commands.patchbook); },
-    },
-  ]),
   {
-    name: "no repos key", config: ".pre-commit-config.yaml", existing: "exclude: ^vendor/\n", says: "Add this to .pre-commit-config.yaml,",
-    merge: (existing, printed) => existing + printed, parse: parsed.yaml,
-    check: (m) => { expect(m.exclude).toBe("^vendor/"); expect(m.repos[0].hooks[0].id).toBe("patchbook"); },
+    name: "no pre-commit key", config: "lefthook.yml", existing: "colors: false\n", parse: parsed.yaml,
+    check: (m) => { expect(m.colors).toBe(false); runsFirst(m["pre-commit"]); },
   },
   {
-    name: "repos with entries", config: ".pre-commit-config.yaml",
-    existing: "repos:\n  - repo: https://example.com/linters\n    rev: v1\n    hooks:\n      - id: lint\n",
-    says: "Add this as the first item under repos in .pre-commit-config.yaml,",
-    merge: (existing, printed) => existing.replace("repos:\n", "repos:\n" + printed), parse: parsed.yaml, omits: [/^repos:/m],
-    check: (m) => { expect(m.repos[0].hooks[0].id).toBe("patchbook"); expect(m.repos[1].hooks[0].id).toBe("lint"); expect(m.repos).toHaveLength(2); },
+    name: "a pre-commit key without commands", config: "lefthook.yml", existing: "pre-commit:\n  parallel: true\n", parse: parsed.yaml,
+    check: (m) => { expect(m["pre-commit"].parallel).toBe(true); runsFirst(m["pre-commit"]); },
   },
   {
-    name: "an empty repos list", config: ".pre-commit-config.yaml", existing: "repos: []\n", says: "Add this to .pre-commit-config.yaml in place of repos: [],",
-    merge: (_, printed) => printed, parse: parsed.yaml,
-    check: (m) => expect(m.repos[0].hooks[0].id).toBe("patchbook"),
+    name: "a pre-commit key with commands", config: "lefthook.yml", existing: "pre-commit:\n  commands:\n    lint:\n      run: echo lint\n", parse: parsed.yaml,
+    check: (m) => { expect(m["pre-commit"].commands.lint.run).toBe("echo lint"); runsFirst(m["pre-commit"]); },
+  },
+  {
+    name: "four-space indentation", config: "lefthook.yml", existing: "pre-commit:\n    commands:\n        lint:\n            run: echo lint\n", parse: parsed.yaml,
+    check: (m) => { expect(m["pre-commit"].commands.lint.run).toBe("echo lint"); runsFirst(m["pre-commit"]); },
+  },
+  {
+    name: "four-space indentation and a pre-commit key without commands", config: "lefthook.yml", parse: parsed.yaml,
+    existing: "pre-commit:\n    parallel: false\npre-push:\n    commands:\n        test:\n            run: echo test\n",
+    check: (m) => { expect(m["pre-push"].commands.test.run).toBe("echo test"); expect(m["pre-commit"].parallel).toBe(false); runsFirst(m["pre-commit"]); },
+  },
+  {
+    name: "commands that already have priorities", config: "lefthook.yml", parse: parsed.yaml,
+    existing: "pre-commit:\n  commands:\n    aaa:\n      priority: 1\n      run: echo a\n    zzz:\n      priority: -3\n      run: echo z\n    plain:\n      run: echo p\n",
+    check: (m) => { expect(Object.keys(m["pre-commit"].commands).sort()).toEqual(["aaa", "patchbook", "plain", "zzz"]); runsFirst(m["pre-commit"]); },
+  },
+  {
+    name: "jobs", config: "lefthook.yml", parse: parsed.yaml,
+    existing: "pre-commit:\n  jobs:\n    - name: lint\n      run: echo lint\n    - name: check\n      run: echo check\n",
+    check: (m) => { expect(m["pre-commit"].jobs.map((j: any) => j.name)).toEqual(["patchbook", "lint", "check"]); runsFirst(m["pre-commit"]); },
+  },
+  {
+    name: "a comment above the commands", config: "lefthook.yml", parse: parsed.yaml,
+    existing: "# hooks\npre-commit:\n  # what runs\n  commands:\n    # the linter\n    lint:\n      run: echo lint\n",
+    check: (m) => { expect(m["pre-commit"].commands.lint.run).toBe("echo lint"); runsFirst(m["pre-commit"]); },
+  },
+  {
+    name: "a pre-commit table", config: "lefthook.toml", existing: "[pre-commit]\nparallel = true\n", parse: parsed.toml,
+    check: (m) => { expect(m["pre-commit"].parallel).toBe(true); runsFirst(m["pre-commit"]); },
+  },
+  {
+    name: "a command with a priority", config: "lefthook.toml", existing: "[pre-commit.commands.lint]\npriority = 1\nrun = \"echo lint\"\n", parse: parsed.toml,
+    check: (m) => { expect(m["pre-commit"].commands.lint.run).toBe("echo lint"); runsFirst(m["pre-commit"]); },
+  },
+  {
+    name: "an empty file", config: "lefthook.json", existing: "", parse: parsed.json,
+    check: (m) => runsFirst(m["pre-commit"]),
+  },
+  {
+    name: "no pre-commit key", config: "lefthook.json", existing: '{ "colors": false }', parse: parsed.json,
+    check: (m) => { expect(m.colors).toBe(false); runsFirst(m["pre-commit"]); },
+  },
+  {
+    name: "a pre-commit key without commands", config: "lefthook.json", existing: '{ "pre-commit": { "parallel": true } }', parse: parsed.json,
+    check: (m) => { expect(m["pre-commit"].parallel).toBe(true); runsFirst(m["pre-commit"]); },
+  },
+  {
+    name: "a pre-commit key with commands", config: "lefthook.json", existing: '{ "pre-commit": { "commands": { "lint": { "run": "echo lint" } } } }', parse: parsed.json,
+    check: (m) => { expect(m["pre-commit"].commands.lint.run).toBe("echo lint"); runsFirst(m["pre-commit"]); },
+  },
+  {
+    name: "commands only in another hook", config: "lefthook.json", parse: parsed.json,
+    existing: '{\n  "pre-commit": {\n    "parallel": false\n  },\n  "pre-push": {\n    "commands": {\n      "test": { "run": "echo test" }\n    }\n  }\n}\n',
+    check: (m) => { expect(m["pre-push"].commands.test.run).toBe("echo test"); expect(m["pre-push"].commands.patchbook).toBeUndefined(); expect(m["pre-commit"].parallel).toBe(false); runsFirst(m["pre-commit"]); },
+  },
+  {
+    name: "commands only in another hook, before pre-commit", config: "lefthook.json", parse: parsed.json,
+    existing: '{\n  "pre-push": {\n    "commands": {\n      "test": { "run": "echo test" }\n    }\n  },\n  "pre-commit": {}\n}\n',
+    check: (m) => { expect(m["pre-push"].commands.patchbook).toBeUndefined(); runsFirst(m["pre-commit"]); },
+  },
+  {
+    name: "jobs", config: "lefthook.json", parse: parsed.json,
+    existing: '{ "pre-commit": { "jobs": [ { "name": "lint", "run": "echo lint" } ] } }',
+    check: (m) => { expect(m["pre-commit"].jobs.map((j: any) => j.name)).toEqual(["patchbook", "lint"]); runsFirst(m["pre-commit"]); },
+  },
+  {
+    name: "comments and tabs", config: "lefthook.jsonc", parse: (text) => Bun.JSONC.parse(text),
+    existing: '// hooks\n{\n\t/* what runs */\n\t"pre-commit": {\n\t\t"commands": {\n\t\t\t"lint": { "run": "echo lint" } // the linter\n\t\t}\n\t}\n}\n',
+    check: (m) => { expect(m["pre-commit"].commands.lint.run).toBe("echo lint"); runsFirst(m["pre-commit"]); },
+  },
+  {
+    name: "no repos key", config: ".pre-commit-config.yaml", existing: "exclude: ^vendor/\n", parse: parsed.yaml,
+    check: (m) => { expect(m.exclude).toBe("^vendor/"); patchbookFirst(m, []); },
+  },
+  {
+    name: "repos with entries", config: ".pre-commit-config.yaml", existing: `repos:\n${PRE_COMMIT_LOCAL("lint", "  ")}`, parse: parsed.yaml,
+    check: (m) => patchbookFirst(m, ["lint"]),
+  },
+  {
+    name: "the layout of pre-commit sample-config", config: ".pre-commit-config.yaml", parse: parsed.yaml,
+    existing: "repos:\n-   repo: local\n    hooks:\n    -   id: lint\n        name: lint\n        entry: echo lint\n        language: system\n        always_run: true\n",
+    check: (m) => patchbookFirst(m, ["lint"]),
+  },
+  {
+    name: "entries four spaces in, with a comment first", config: ".pre-commit-config.yaml", parse: parsed.yaml,
+    existing: `# hooks\nrepos:\n    # lint\n${PRE_COMMIT_LOCAL("lint", "    ")}${PRE_COMMIT_LOCAL("check", "    ")}`,
+    check: (m) => patchbookFirst(m, ["lint", "check"]),
+  },
+  {
+    name: "an empty repos list", config: ".pre-commit-config.yaml", existing: "repos: []\n", parse: parsed.yaml,
+    check: (m) => patchbookFirst(m, []),
   },
 ];
 
-for (const { name, config, existing, says, merge, parse, check, omits = [] } of PASTES) {
+for (const { name, config, existing, parse, check } of PASTES) {
   test(`hook install prints what goes into ${config} with ${name}`, () => {
     const t = new Case();
     try {
       const fork = forkWith(t, { [config]: existing });
       const install = t.pb(["hook", "install"], { cwd: fork.path }).stderr;
-      expect(install).toContain(says);
-      const printed = printedSnippet(install);
-      for (const absent of omits) expect(printed).not.toMatch(absent);
       expect(fork.read(config)).toBe(existing);
-      check(parse(merge(existing, printed)));
+      check(parse(paste(existing, install)));
     } finally {
       t.cleanup();
     }
   }, TIMEOUT);
 }
+
+const POST_EVENTS = ["post-merge", "post-checkout", "post-rewrite"];
+const PRE_COMMIT_DISPATCHER = `#!/usr/bin/env bash\n# File generated by pre-commit: https://pre-commit.com\nexec pre-commit hook-impl --hook-type=pre-commit -- "$@"\n`;
+
+function installDispatchers(fork: Repo, events: string[], dispatcher: string): void {
+  for (const event of events) writeFileSync(join(fork.path, ".git/hooks", event), dispatcher, { mode: 0o755 });
+}
+
+/** Runs the script a manager would run for a post hook, with a `patchbook` that only writes down how it was called. */
+function postCalls(t: Case, fork: Repo, script: string, env: Record<string, string>, rebasing = false): string[] {
+  const bin = join(t.tmp, "calls-bin");
+  const log = join(t.tmp, "calls.log");
+  mkdirSync(bin, { recursive: true });
+  rmSync(log, { force: true });
+  writeFileSync(join(bin, "patchbook"), `#!/bin/sh\necho "$* [$PATCHBOOK_CHECKOUT_BEFORE>$PATCHBOOK_CHECKOUT_AFTER]" >> "${log}"\n`, { mode: 0o755 });
+  const rebase = join(fork.path, ".git/rebase-merge");
+  if (rebasing) mkdirSync(rebase, { recursive: true });
+  try {
+    sh(["sh", "-c", script], { cwd: fork.path, env: { ...t.env, PATH: `${bin}:${t.env["PATH"]}`, PATCHBOOK_HOOK: "1", ...env }, check: false });
+  } finally {
+    rmSync(rebase, { recursive: true, force: true });
+  }
+  return existsSync(log) ? read(log).trim().split("\n") : [];
+}
+
+type PostScripts = { merge: string; checkout: (before: string, after: string, branch: string) => { script: string; env: Record<string, string> }; rewrite: (command: string) => { script: string; env: Record<string, string> } };
+
+function behavesLikeThePostHooks(t: Case, fork: Repo, scripts: PostScripts): void {
+  expect(postCalls(t, fork, scripts.merge, {})).toEqual(["hook build []"]);
+  const branch = scripts.checkout("aaa", "bbb", "1");
+  expect(postCalls(t, fork, branch.script, branch.env)).toEqual(["hook build [aaa>bbb]"]);
+  const file = scripts.checkout("aaa", "bbb", "0");
+  expect(postCalls(t, fork, file.script, file.env)).toEqual([]);
+  expect(postCalls(t, fork, branch.script, branch.env, true)).toEqual([]);
+  const rebase = scripts.rewrite("rebase");
+  expect(postCalls(t, fork, rebase.script, rebase.env)).toEqual(["hook build []"]);
+  const amend = scripts.rewrite("amend");
+  expect(postCalls(t, fork, amend.script, amend.env)).toEqual([]);
+}
+
+test("hook install prints the post hooks as lefthook commands when lefthook runs them", () => {
+  const t = new Case();
+  try {
+    const existing = "pre-commit:\n  commands:\n    lint:\n      run: echo lint\npost-merge:\n  commands:\n    hello:\n      run: echo hello\n";
+    const fork = forkWith(t, { "lefthook.yml": existing });
+    installDispatchers(fork, ["pre-commit", ...POST_EVENTS], LEFTHOOK_DISPATCHER);
+    const merged = parsed.yaml(paste(existing, t.pb(["hook", "install"], { cwd: fork.path }).stderr));
+    expect(merged["pre-commit"].commands.lint.run).toBe("echo lint");
+    expect(merged["post-merge"].commands.hello.run).toBe("echo hello");
+    for (const event of ["pre-commit", ...POST_EVENTS]) runsFirst(merged[event]);
+    const run = (event: string) => merged[event].commands.patchbook.run as string;
+    const fill = (script: string, args: string[]) => script.replace(/\{([123])\}/g, (_, n) => args[Number(n) - 1] ?? "");
+    behavesLikeThePostHooks(t, fork, {
+      merge: run("post-merge"),
+      checkout: (before, after, branch) => ({ script: fill(run("post-checkout"), [before, after, branch]), env: {} }),
+      rewrite: (command) => ({ script: fill(run("post-rewrite"), [command]), env: {} }),
+    });
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("hook install prints the post hooks as pre-commit hooks when pre-commit runs them", () => {
+  const t = new Case();
+  try {
+    const existing = `repos:\n${PRE_COMMIT_LOCAL("lint", "  ")}`;
+    const fork = forkWith(t, { ".pre-commit-config.yaml": existing });
+    installDispatchers(fork, ["pre-commit", ...POST_EVENTS], PRE_COMMIT_DISPATCHER);
+    const merged = parsed.yaml(paste(existing, t.pb(["hook", "install"], { cwd: fork.path }).stderr));
+    const hooks = merged.repos.flatMap((r: any) => r.hooks);
+    expect(hooks.map((h: any) => h.id).sort()).toEqual(["lint", "patchbook", "patchbook-post-checkout", "patchbook-post-merge", "patchbook-post-rewrite"]);
+    const script = (event: string) => {
+      const hook = hooks.find((h: any) => h.id === `patchbook-${event}`);
+      expect(hook.stages).toEqual([event]);
+      expect(hook.always_run).toBe(true);
+      expect(hook.pass_filenames).toBe(false);
+      const [shell, flag, body] = splitWords(hook.entry);
+      expect([shell, flag]).toEqual(["sh", "-c"]);
+      return body!;
+    };
+    behavesLikeThePostHooks(t, fork, {
+      merge: script("post-merge"),
+      checkout: (before, after, branch) => ({ script: script("post-checkout"), env: { PRE_COMMIT_FROM_REF: before, PRE_COMMIT_TO_REF: after, PRE_COMMIT_CHECKOUT_TYPE: branch } }),
+      rewrite: (command) => ({ script: script("post-rewrite"), env: { PRE_COMMIT_REWRITE_COMMAND: command } }),
+    });
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("hook install names the file each post hook goes into when a hooks folder holds them", () => {
+  const t = new Case();
+  try {
+    const fork = forkWith(t, {});
+    sh(["git", "config", "core.hooksPath", ".githooks"], { cwd: fork.path });
+    mkdirSync(join(fork.path, ".githooks"));
+    writeFileSync(join(fork.path, ".githooks/pre-commit"), "#!/bin/sh\necho theirs\n", { mode: 0o755 });
+    writeFileSync(join(fork.path, ".githooks/post-merge"), "#!/bin/sh\necho theirs\n", { mode: 0o755 });
+    const install = t.pb(["hook", "install"], { cwd: fork.path }).stderr;
+    for (const event of POST_EVENTS) expect(install).toContain(`.githooks/${event}`);
+    expect(install).toContain("#!/bin/sh");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
 
 test("hook install in a repo nested in a fork fails instead of installing nothing", () => {
   const t = new Case();
