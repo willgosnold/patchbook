@@ -6865,6 +6865,25 @@ describe("ForkTest", () => {
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
 
+  forkTest("sync names both copies of a file edit when its base and ours copies are missing", (t) => {
+    t.recordFeature();
+    const book = join(t.fork.path, ".patchbook");
+    const [base, ours] = ["base", "ours"].map((side) => join(book, `changes/feature/${side}/app.txt.pb`));
+    const saved = [read(base!), read(ours!)];
+    rmSync(base!);
+    rmSync(ours!);
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
+    t.up.commit("upstream edit");
+    const before = snapshot(book);
+    const failed = t.pb(["sync"], { cwd: t.fork.path, code: 1 });
+    expect(failed.stderr).toContain("change feature has no base copy of app.txt (.patchbook/changes/feature/base/app.txt.pb) and no ours copy of app.txt (.patchbook/changes/feature/ours/app.txt.pb). ");
+    expect(snapshot(book)).toEqual(before);
+    writeFileSync(base!, saved[0]!);
+    writeFileSync(ours!, saved[1]!);
+    t.pb(["sync"], { cwd: t.fork.path });
+    expect(reportOf(t.fork.path).merged.map((m) => m.path)).toEqual(["app.txt"]);
+  });
+
   forkTest("sync reports an edited file upstream deleted as gone, with the file it moved to", (t) => {
     t.recordFeature();
     t.up.rm("app.txt");
@@ -14963,7 +14982,7 @@ exec '${Bun.which("git")}' "$@"
     expect(out.stderr).toContain("its old ");
   });
 
-  vendorTest("track refuses a vendor folder that holds a git repo before it drops a pin left without its config", (t) => {
+  vendorTest("track refuses a vendor folder that holds a git repo and leaves the pin it found as it was", (t) => {
     const extra = new Repo(join(t.tmp, "extra"));
     extra.write("a.md", "a\n");
     extra.commit("a");

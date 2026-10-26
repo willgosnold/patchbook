@@ -17,7 +17,7 @@ import { cmdIntent, cmdRecord } from "./record.ts";
 import { checkUpstreamRemote, notThisRepo } from "./remote.ts";
 import { cmdConfig } from "./settings.ts";
 import { cmdSkill, folderFail, installSkill, recordSkill, SCHEDULE, leftBehindSkill } from "./skill.ts";
-import { absoluteRemote, defaultName, cmdUpstream, upstreamFolder } from "./store.ts";
+import { absoluteRemote, defaultName, cmdUpstream, type Upstream, upstreamFolder } from "./store.ts";
 import { cmdCheck, cmdSync, syncUpstream } from "./sync.ts";
 import { Undo } from "./undo.ts";
 
@@ -98,10 +98,10 @@ function refuseDanglingLinks(root: string): void {
   }
 }
 
-async function allOrNothing<T>(book: Book, command: string, write: (undo: Undo) => Promise<T>): Promise<T> {
+async function allOrNothing<T>(book: Book, command: string, vendored: readonly Upstream[], write: (undo: Undo) => Promise<T>): Promise<T> {
   const undo = new Undo();
   const gitFiles = git(["rev-parse", "--path-format=absolute", "--git-path", "config", "--git-path", "index"], { cwd: book.root }).split("\n");
-  for (const p of [resolve(book.dir), ...gitFiles, ...book.upstreams.flatMap((u) => (u.vendor ? [u.vendor] : []))]) undo.hold(p);
+  for (const p of [resolve(book.dir), ...gitFiles, ...vendored.flatMap((u) => (u.vendor ? [u.vendor] : []))]) undo.hold(p);
   try {
     return await write(undo);
   } catch (e) {
@@ -133,7 +133,7 @@ async function cmdInit(args: {
     book.refuseLinks();
     book.refuseLinkedTop();
     notThisRepo(root, args.upstream);
-    const skill = await allOrNothing(book, "init", async (undo) => {
+    const skill = await allOrNothing(book, "init", book.upstreams, async (undo) => {
       book.dropPin(name);
       syncUpstream(book, book.upstreams[0]!, args.branch, []);
       const skill = installSkill(book, undo);
@@ -160,7 +160,7 @@ async function cmdInit(args: {
   const base = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: root });
   const first = book.upstreams[0]!;
   refuseFoldedUpstream(first.mounted(first.files(base)).keys());
-  const installed = await allOrNothing(book, "init", async (undo) => {
+  const installed = await allOrNothing(book, "init", book.upstreams, async (undo) => {
     book.writeLock(name, base, first.treeOf(base));
     if (!hasRemote) git(["remote", "add", "--end-of-options", "upstream", args.upstream], { cwd: root });
     const installed = installSkill(book, undo);
@@ -189,7 +189,7 @@ async function cmdTrack(args: { name: string; url: string; branch: string; path:
   const text = readText(config).replace(/\n+$/, "") + "\n\n" + upstreamToml(args.name, args.url, args.path, args.branch, mount, args.vendor);
   const candidate = await Book.fromText(book.root, text);
   for (const u of candidate.upstreams) if (u.vendor) refuseNestedGit(book.root, u.name, u.vendor);
-  await allOrNothing(candidate, "track", async () => {
+  await allOrNothing(candidate, "track", [candidate.upstream(args.name)], async () => {
     candidate.dropPin(args.name);
     syncUpstream(candidate, candidate.upstream(args.name), args.branch, []);
     writeText(config, text);

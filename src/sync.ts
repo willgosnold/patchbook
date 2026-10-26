@@ -214,6 +214,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   const writes: Write[] = [];
   const unsure: { c: Change; path: string; lost: Lost }[] = [];
   const missing: string[] = [];
+  let copies = 0;
   const added = Array.from(fresh.keys()).filter((p) => !old.has(p));
   for (const c of changes) {
     for (const e of c.edits) {
@@ -233,7 +234,9 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
       if (base !== null && ours !== null) writes.push(...carryMode(c, e.path, fresh.get(e.path)!.mode));
       if (base !== null && bytesEqual(theirs, base)) continue;
       if (base === null || ours === null) {
-        missing.push(`change ${c.name} has no ${base === null ? "base" : "ours"} copy of ${e.path} (${relative(book.root, c.content(base === null ? "base" : "ours", e.path))})`);
+        const sides = (["base", "ours"] as const).filter((side) => (side === "base" ? base : ours) === null);
+        missing.push(`change ${c.name} has no ${sides.map((side) => `${side} copy of ${e.path} (${relative(book.root, c.content(side, e.path))})`).join(" and no ")}`);
+        copies += sides.length;
         continue;
       }
       if (!(isText(base) && isText(ours) && isText(theirs))) {
@@ -252,7 +255,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   }
 
   if (missing.length) {
-    throw new Fail(`can't sync ${u.name}: ${missing.join("; ")}. Restore ${missing.length === 1 ? "it" : "them"} (git restore, if committed), `
+    throw new Fail(`can't sync ${u.name}: ${missing.join("; ")}. Restore ${copies === 1 ? "it" : "them"} (git restore, if committed), `
       + "or remove the edit from the change, then sync again. Nothing was changed.");
   }
   journaled(book, u, pin, { commit, tree }, (j) => {
