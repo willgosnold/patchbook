@@ -18,7 +18,7 @@ import { type Env, git, run, shellQuote, spawn } from "./lib/proc.ts";
 import { say, warn } from "./lib/term.ts";
 import { byCodePoint, bytesEqual, concat, decode, decodeReplace, encode } from "./lib/text.ts";
 import { type Source, setting } from "./settings.ts";
-import { readBlobsOf, refuseMergedUpstream, stagedTree } from "./store.ts";
+import { readBlobsOf, refuseMergedUpstream, stagedTree, type Upstream } from "./store.ts";
 import { Undo } from "./undo.ts";
 import { type Entry, type Format, LEFTHOOK, PRE_COMMIT, PRESENT } from "./hookconfig.ts";
 
@@ -566,12 +566,13 @@ function unstaged(root: string, paths: string[]): string[] {
   return [...new Set([...listed(["diff-files", "--name-only", "-z"]), ...listed(["ls-files", "-z", "-o", "--exclude-standard"])].filter(Boolean))].sort(byCodePoint);
 }
 
+const inRepoTarget = (p: string): boolean => p !== "." && p !== ".." && !p.startsWith("../") && p !== ".git" && !p.startsWith(".git/");
+
 /** Git sees a staged link as unchanged when only its target changed, so the in-repo file each build input links to is checked too.
  * A target outside the repo has no index entry and is read from disk. */
 function linkTargets(book: Book, inputs: string[]): string[] {
   const root = resolve(book.root);
-  return inputs.filter((p) => isSymlink(join(book.root, p))).map((p) => relative(root, resolve(join(book.root, p))))
-    .filter((p) => p !== "." && p !== ".." && !p.startsWith("../") && p !== ".git" && !p.startsWith(".git/"));
+  return inputs.filter((p) => isSymlink(join(book.root, p))).map((p) => relative(root, resolve(join(book.root, p)))).filter(inRepoTarget);
 }
 
 function ignoredInPatchbook(root: string): Map<string, string> {
@@ -667,10 +668,12 @@ function refuseOtherRepo(book: Book): void {
     + `Run \`patchbook hook install\` in ${book.root}, or start a patchbook here with \`patchbook init\`.`);
 }
 
+const lockPath = (book: Book): string => relative(book.root, join(book.dir, "upstream.lock"));
+
 /** The tree each upstream is pinned to by the upstream.lock in the index, or null when the index holds no lock.
  * The index holds only the path of a staged link, so the lock it points to is read, as the build reads it. */
 function stagedPins(book: Book): Map<string, string> | null {
-  const rel = relative(book.root, join(book.dir, "upstream.lock"));
+  const rel = lockPath(book);
   const staged = spawn(["git", "cat-file", "blob", `:${rel}`], { cwd: book.root });
   if (staged.code !== 0) return null;
   const linked = git(["ls-files", "-s", "--", rel], { cwd: book.root }).startsWith("120000 ");
@@ -695,6 +698,79 @@ function headTree(root: string): string {
   const head = spawn(["git", "rev-parse", "--verify", "--quiet", "HEAD^{tree}"], { cwd: root });
   if (head.code === 0) return decode(head.stdout).trim();
   return decode(run(["git", "hash-object", "-t", "tree", "--stdin"], { cwd: root, input: new Uint8Array() })).trim();
+}
+
+function committedBlob(book: Book, path: string): { mode: string; data: Uint8Array } | null | undefined {
+  const entry = spawn(["git", "ls-tree", "HEAD", "--", path], { cwd: book.root });
+  if (entry.code !== 0 || !decode(entry.stdout).trim()) return undefined;
+  const [, mode, sha] = /^(\d+) blob (\w+)\t/.exec(decode(entry.stdout)) ?? [];
+  if (!mode || !sha) return null;
+  const blob = spawn(["git", "cat-file", "blob", sha], { cwd: book.root });
+  return blob.code === 0 ? { mode, data: blob.stdout } : null;
+}
+
+function committedPins(book: Book): Map<string, string> | null {
+  const path = lockPath(book);
+  let lock = committedBlob(book, path);
+  if (lock === undefined) return new Map();
+  if (lock?.mode === "120000") {
+    const text = decodeReplace(lock.data);
+    const target = join(dirname(path), text);
+    lock = isAbsolute(text) || !inRepoTarget(target) ? null : committedBlob(book, target);
+  }
+  if (!lock || lock.mode === "120000") return null;
+  try {
+    return new Map(parseLock(decodeReplace(lock.data)).map((p) => [p.name, p.tree]));
+  } catch (e) {
+    if (e instanceof Fail) return null;
+    throw e;
+  }
+}
+
+function copyIsPinned(u: Upstream, vendor: string, tree: string): boolean {
+  try {
+    u.vendoredCopy(vendor, tree);
+    return true;
+  } catch (e) {
+    if (e instanceof Fail) return false;
+    throw e;
+  }
+}
+
+const inHead = (book: Book, path: string): boolean => decode(spawn(["git", "ls-tree", "HEAD", "--", path], { cwd: book.root }).stdout).trim() !== "";
+
+function pinAdvice(book: Book, named: string[], copies: string[]) {
+  const lock = lockPath(book);
+  const locks = [lock, ...linkTargets(book, [lock])];
+  const paths = [...new Set([...named, ...locks, ...copies])];
+  const fresh = paths.filter((p) => !inHead(book, p));
+  return {
+    paths: paths.map(shellQuote).join(" "),
+    first: fresh.length ? `run \`git add ${fresh.map(shellQuote).join(" ")}\` first, then ` : "",
+    stage: locks.map(shellQuote).join(" "),
+  };
+}
+
+/**
+ * Git builds a partial commit's index from HEAD and the paths named, and the hook can't add the pinned copy to it without committing a
+ * path the user left out. So a commit that moves a pin must also hold the matching copy, and one that doesn't is refused.
+ */
+function refuseSplitPin(book: Book): void {
+  if (partialCommit(book.root) === null) return;
+  const pins = stagedPins(book);
+  const was = pins && committedPins(book);
+  if (!pins || !was) return;
+  const split = book.upstreams.flatMap((u) => {
+    const tree = pins.get(u.name);
+    const rel = u.vendor ? relative(book.root, u.vendor) : null;
+    return u.vendor && rel && tree && was.get(u.name) !== tree && stagedTree(book.root, rel) !== tree && copyIsPinned(u, u.vendor, tree) ? [{ name: u.name, rel }] : [];
+  });
+  if (!split.length) return;
+  const lock = lockPath(book);
+  const { paths, first, stage } = pinAdvice(book, [], split.map((s) => s.rel));
+  throw new Fail(`refusing this commit: ${split.map((s) => `it moves the pin of ${s.name} in ${lock} but not its vendored copy, ${s.rel}`).join(", and ")}. `
+    + "A clone of it would fail `patchbook status`.\n"
+    + `Commit both: ${first}add these to the paths you named: ${paths}, or make a full commit with \`git commit\` and no paths (run \`git add ${stage}\` first), or skip the hook once with PATCHBOOK_HOOK=0.`);
 }
 
 /**
@@ -838,7 +914,16 @@ async function runHook(undo: Undo) {
   const readEdits = placeholderOutputs(book).filter((p) => !leftByLastBuild(book, lock, p)).map((p) => inRepo(book, p));
   const inputs = buildInputs(book);
   const loose = unstaged(book.root, [...inputs, ...linkTargets(book, inputs), ...readEdits]);
-  if (loose.length) throw new Fail("the patchbook has changes that aren't in this commit:\n  " + loose.join("\n  ") + "\nThe build reads them, so stage them (or name them in `git commit <path>`) or stash them, or skip the hook once with PATCHBOOK_HOOK=0.");
+  if (loose.length) {
+    const lock = lockPath(book);
+    const copies = loose.includes(lock) || linkTargets(book, [lock]).some((p) => loose.includes(p)) ? book.upstreams.flatMap((u) => u.vendor ? [relative(book.root, u.vendor)] : []) : [];
+    const advice = pinAdvice(book, loose, copies);
+    const stage = copies.length
+      ? `stage them, or ${advice.first}name ${advice.paths} in \`git commit <path>\`, which records the pin with its vendored ${copies.length > 1 ? "copies" : "copy"},`
+      : "stage them (or name them in `git commit <path>`)";
+    throw new Fail("the patchbook has changes that aren't in this commit:\n  " + loose.join("\n  ") + `\nThe build reads them, so ${stage} or stash them, or skip the hook once with PATCHBOOK_HOOK=0.`);
+  }
+  refuseSplitPin(book);
   const ignored = ignoredInPatchbook(book.root);
   const staged = book.seen("index");
   const committed = committedBuildLock(book);
