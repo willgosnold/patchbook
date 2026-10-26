@@ -909,7 +909,7 @@ function mapLine(changed: readonly Changed[], i: number): number {
   return i + shift;
 }
 
-/** Each entry with its intent: new ones take `intent`, and an updated one takes its rewrite or keeps the one it had, unless it had none. */
+/** Each entry with its intent: new ones take `intent`, and an updated one takes its rewrite or keeps the one it had. */
 function withIntent(plan: Plan, intent: string | null, rewrite: (key: string) => string | null): Map<string, Entry> {
   return new Map(Array.from(plan.entries, ([h, { was, ...d }]) => {
     const own = d.intent ?? (was === undefined ? intent : rewrite(h) ?? (was || (intent ?? was)));
