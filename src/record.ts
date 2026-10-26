@@ -57,8 +57,9 @@ type Need = { named: boolean; drafts: readonly Draft[]; updates?: readonly [stri
 const NOTHING: Need = { named: false, drafts: [] };
 const NAMED: Need = { named: true, drafts: [] };
 
-/** `intent` is for new entries, null when patchbook writes theirs from the paragraph edit; `rewritten` gives an updated entry's new intent by its label, or null to keep it. */
-type Recording = { target: Change | null; intent: string | null; rewritten(key: string): string | null };
+/** `intent` is for new entries, null when patchbook writes theirs from the paragraph edit; `rewritten` gives an updated entry's new intent by its label, or null to keep it.
+ * `given` is the intent the user gave, apart from a model's `intent`, and also replaces one patchbook wrote for an updated entry. */
+type Recording = { target: Change | null; intent: string | null; given: string | null; rewritten(key: string): string | null };
 /** `copies` are the copies whose mode the row picked, absolute, for the commit hook to stage. `drafted` are the entries, by label, whose
  * intent patchbook wrote. */
 type Done = { touched: readonly Change[]; notes: readonly string[]; copies?: readonly [string, Mode][]; drafted?: readonly string[]; afterSave?: () => void };
@@ -154,7 +155,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
       };
     },
     apply: (e, r) => {
-      const { entries, drafted } = withIntent(e.plan, e.path, r.intent, (h) => r.rewritten(entryLabel(e.path, h)));
+      const { entries, drafted } = withIntent(e.plan, e.path, r.intent, r.given, (h) => r.rewritten(entryLabel(e.path, h)));
       saveParagraphs(e.plan.path, entries);
       const notes = e.plan.notes.map(([h, what]) => `entry    ${entryLabel(e.path, h)} ${what}`);
       if (e.modeNotRecorded !== null) notes.push(`skipped  ${e.path}: ${e.modeNotRecorded}`);
@@ -492,8 +493,9 @@ function pendingEdits(a: Assembly, current: ReadonlyMap<string, Seen>, edits: re
   return edits.filter((e) => needOf(e).named).flatMap((e): Part[] => (e.kind === "follow" ? [{ line: editText(e.edit), diff: "" }] : pendingParts(built, current, [e.path])));
 }
 
-/** An existing change or block entry this record adds to, by its key in the model's reply, with the intent it has. */
-type Joined = { key: string; was: string; parts(): Part[] };
+/** An existing change or block entry this record adds to, by its key in the model's reply, with the intent it has. A given intent
+ * replaces the one of a block entry that `generated` says patchbook wrote. */
+type Joined = { key: string; was: string; generated: boolean; parts(): Part[] };
 
 /** Every change an edit joins, the named change too when it exists and takes named edits, and every updated entry. Removals don't join,
  * but a change that is rewritten is shown without the edits this record takes out of it. */
@@ -503,9 +505,9 @@ function joined(ask: Asked, known: Change | null, newParts: () => Part[]): Joine
   if (known && ask.named.length && !changes.has(known)) changes.set(known, new Map());
   return [
     ...Array.from(changes, ([c, overlay]): Joined => ({
-      key: c.name, was: c.intent?.text ?? "", parts: () => [...changeParts(c, overlay, ask.dropped.filter((d) => d.change === c)), ...(c === known && ask.named.length ? newParts() : [])],
+      key: c.name, was: c.intent?.text ?? "", generated: false, parts: () => [...changeParts(c, overlay, ask.dropped.filter((d) => d.change === c)), ...(c === known && ask.named.length ? newParts() : [])],
     })),
-    ...ask.updates.map(([label, d]): Joined => ({ key: label, was: d.was!.text, parts: () => [entryPart(label, d.upstream, d.patched)] })),
+    ...ask.updates.map(([label, d]): Joined => ({ key: label, was: d.was!.text, generated: d.was!.by === "patchbook", parts: () => [entryPart(label, d.upstream, d.patched)] })),
   ];
 }
 
@@ -579,7 +581,7 @@ function nameAndIntent(
   const known = name !== null && changes.has(name);
   if (given) {
     const authored: Authored = { by: "given", intent: given };
-    const unused = !named && !ask.drafts.length && !known && !ask.updates.some(([, d]) => !d.was!.text);
+    const unused = !named && !ask.drafts.length && !known && !ask.updates.some(([, d]) => !d.was!.text || d.was!.by === "patchbook");
     if (name) return { name, authored, said: null, unused };
     if (!named) return { name: null, authored, said: null, unused };
     const derived = nameFromIntent(given, roster);
@@ -711,7 +713,7 @@ export function record(
   let after: Assembly | null = null;
   try {
     for (const e of edits) {
-      const done = row(e).apply(e, { target, intent: newIntent(naming), rewritten: (key) => rewritten(naming, key) });
+      const done = row(e).apply(e, { target, intent: newIntent(naming), given, rewritten: (key) => rewritten(naming, key) });
       for (const c of done.touched) touched.set(c.name, c);
       notes.push(...done.notes);
       for (const [p, mode] of done.copies ?? []) copies.set(relative(book.root, p), mode);
@@ -761,7 +763,7 @@ export function record(
   const keys = new Set([...(target && changes.has(target.name) ? [target.name] : []), ...joins.map((j) => j.key)]);
   const intents = naming.authored.by === "model" ? naming.authored.intents : new Map<string, string>();
   const rewrites = Array.from(keys).flatMap((k) => (intents.has(k) ? [`intent   ${k}: ${intents.get(k)}\n`] : []));
-  const kept = joins.filter((j) => j.was && rewritten(naming, j.key) === null && !drafted.includes(j.key)).map((j) => j.key);
+  const kept = joins.filter((j) => j.was && rewritten(naming, j.key) === null && !drafted.includes(j.key) && !(j.generated && given !== null)).map((j) => j.key);
   const failed = naming.authored.by === "failed" ? naming.authored.why : null;
   const why = failed ?? "the given intent is for the change being recorded";
   const opened = target && !changes.has(target.name) && drafted.includes(target.name) ? `${target.name}: ${target.intent!.text}\n` : "";
@@ -913,12 +915,14 @@ function mapLine(changed: readonly Changed[], i: number): number {
 }
 
 /** Each entry with its intent. A new one takes `intent`, or else what patchbook writes from its paragraph edit. An updated one takes its
- * rewrite, else keeps an intent someone wrote, else has one patchbook wrote written again, else takes `intent`, if there is one, in place
- * of its blank. Returns the keys of the entries whose intent patchbook wrote. */
-function withIntent(plan: Plan, path: string, intent: string | null, rewrite: (key: string) => string | null): { entries: Map<string, Entry>; drafted: string[] } {
+ * rewrite, else keeps an intent someone wrote, else has one patchbook wrote replaced by the `given` intent or written again, else takes
+ * `intent`, if there is one, in place of its blank. Returns the keys of the entries whose intent patchbook wrote. */
+function withIntent(
+  plan: Plan, path: string, intent: string | null, given: string | null, rewrite: (key: string) => string | null,
+): { entries: Map<string, Entry>; drafted: string[] } {
   const drafted: string[] = [];
   const entries = new Map(Array.from(plan.entries, ([h, { was, ...d }]): [string, Entry] => {
-    const said = was === undefined ? intent : rewrite(h);
+    const said = was === undefined ? intent : rewrite(h) ?? (was.by === "patchbook" ? given : null);
     let own: Intent;
     if (d.intent !== null) own = d.intent;
     else if (said !== null) own = byAuthor(said);
