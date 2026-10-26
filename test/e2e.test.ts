@@ -12107,8 +12107,96 @@ describe("VendorTest", () => {
     gitIn(t, ["add", "note.txt"]);
     const stderr = refusedLeavingWork(t, ["-qm", "note", "--", "note.txt"]);
     expect(stderr).toContain("aren't in this commit:\n  .patchbook/upstream.lock");
-    expect(stderr).toContain("name the vendored copy vendor/extra with it, or make a full commit");
+    expect(adviced(stderr, /name (.+?) in `git commit <path>`/)).toEqual([".patchbook/upstream.lock", "vendor/extra"]);
     expect(stderr).not.toContain("(or name them in `git commit <path>`)");
+  });
+
+  const adviced = (stderr: string, pattern: RegExp): string[] => (pattern.exec(stderr)?.[1] ?? "").split(" ").filter(Boolean);
+
+  folderTest("a partial commit leaves the pin alone when HEAD's lock is a link out of the repo", (t) => {
+    trackExtra(t, "vendor/extra");
+    const [link, outside] = [join(t.repo.path, ".patchbook/upstream.lock"), join(t.tmp, "outside/upstream.lock")];
+    mkdirSync(dirname(outside));
+    renameSync(link, outside);
+    symlinkSync("../../outside/upstream.lock", link);
+    gitIn(t, ["add", "-A"]);
+    gitIn(t, ["commit", "-qm", "setup"]);
+    rmSync(link);
+    copyFileSync(outside, link);
+    bumpUpstream(t, "extra");
+    renameSync(link, outside);
+    symlinkSync("../../outside/upstream.lock", link);
+    t.repo.write("note.txt", "a note\n");
+    gitIn(t, ["add", "note.txt"]);
+    const commit = hookedCommit(t, ["-qm", "note", "--", "note.txt"]);
+    expect(commit.stderr).not.toContain("refusing");
+    expect(commit.code).toBe(0);
+    expect(gitIn(t, ["show", "--name-only", "--format=", "HEAD"]).split("\n")).toContain("note.txt");
+  });
+
+  folderTest("the refusal of an unstaged linked lock names the link, its target and the copy, and they commit", (t) => {
+    linkedLock(t);
+    const stderr = refusedLeavingWork(t, ["-qm", "note", "--", "note.txt", ".patchbook/upstream.lock"]);
+    const named = adviced(stderr, /name (.+?) in `git commit <path>`/);
+    expect(named.sort()).toEqual([".patchbook/upstream.lock", "pins/upstream.lock", "vendor/extra"]);
+    const commit = hookedCommit(t, ["-qm", "note", "--", "note.txt", ...named]);
+    expect(commit.stderr).not.toContain("refusing");
+    expect(commit.code).toBe(0);
+    expect(cloneStatus(t)).toContain("no problems");
+  });
+
+  const trackedFiles = [".patchbook/config.toml", ".patchbook/build.lock", ".patchbook/series"];
+  const firstVendoring = (t: FolderCase, staged: string[]): void => {
+    trackExtra(t, "vendor/extra");
+    t.repo.write("note.txt", "a note\n");
+    gitIn(t, ["add", "note.txt", ...staged]);
+  };
+
+  folderTest("a partial commit that first vendors an upstream says to add the copy before naming it", (t) => {
+    firstVendoring(t, [...trackedFiles, ".patchbook/upstream.lock"]);
+    const stderr = refusedLeavingWork(t, ["-qm", "track", "--", "note.txt", ...trackedFiles, ".patchbook/upstream.lock"]);
+    expect(stderr).toContain("it moves the pin of extra in .patchbook/upstream.lock but not its vendored copy, vendor/extra");
+    gitIn(t, ["add", ...adviced(stderr, /run `git add (.+?)` first, then add these/)]);
+    const named = adviced(stderr, /add these to the paths you named: (.+?), or make a full commit/);
+    expect(named).toEqual([".patchbook/upstream.lock", "vendor/extra"]);
+    const commit = hookedCommit(t, ["-qm", "track", "--", "note.txt", ...trackedFiles, ...named]);
+    expect(commit.stderr).not.toContain("refusing");
+    expect(commit.code).toBe(0);
+    expect(gitIn(t, ["show", "HEAD:vendor/extra/a.md"])).toBe("one\n");
+    expect(cloneStatus(t)).toContain("no problems");
+  });
+
+  folderTest("the refusal of an unstaged lock that first vendors an upstream says to add the lock and the copy first", (t) => {
+    firstVendoring(t, trackedFiles);
+    const stderr = refusedLeavingWork(t, ["-qm", "track", "--", "note.txt", ...trackedFiles]);
+    expect(stderr).toContain("aren't in this commit:\n  .patchbook/upstream.lock");
+    gitIn(t, ["add", ...adviced(stderr, /run `git add (.+?)` first, then name/)]);
+    const named = adviced(stderr, /name (.+?) in `git commit <path>`/);
+    expect(named.sort()).toEqual([".patchbook/upstream.lock", "vendor/extra"]);
+    const commit = hookedCommit(t, ["-qm", "track", "--", "note.txt", ...trackedFiles, ...named]);
+    expect(commit.stderr).not.toContain("refusing");
+    expect(commit.code).toBe(0);
+    expect(cloneStatus(t)).toContain("no problems");
+  });
+
+  folderTest("a partial commit naming a copy that differs from the pin is refused for the edit", (t) => {
+    uncommittedSyncOfExtra(t);
+    t.repo.write("vendor/extra/a.md", "hand edit\n");
+    const stderr = refusedLeavingWork(t, ["-qm", "edited copy", "--", "note.txt", ".patchbook/upstream.lock", "vendor/extra"]);
+    expect(stderr).toContain("differs from the pin");
+    expect(stderr).toContain("Never edit the vendored copy");
+    expect(stderr).not.toContain("it moves the pin of extra");
+  });
+
+  folderTest("the full commit the refusal advises commits the lock and the copy", (t) => {
+    uncommittedSyncOfExtra(t);
+    const stderr = refusedLeavingWork(t, ["-qm", "lock only", "--", "note.txt", ".patchbook/upstream.lock"]);
+    gitIn(t, ["add", ...adviced(stderr, /\(run `git add (.+?)` first\)/)]);
+    const commit = hookedCommit(t, ["-qm", "full"]);
+    expect(commit.stderr).not.toContain("refusing");
+    expect(commit.code).toBe(0);
+    expect(gitIn(t, ["show", "HEAD:vendor/extra/a.md"])).toBe("two\n");
+    expect(cloneStatus(t)).toContain("no problems");
   });
 
   folderTest("a commit that changes nothing in the copy says nothing about it", (t) => {
