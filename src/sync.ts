@@ -152,6 +152,16 @@ export function readLastSync(book: Book): LastSync | null {
   return exists(path) ? parseLastSync(readTextReplace(path)) : null;
 }
 
+/** The report only records past syncs, so one that can't be read names no conflicts. */
+export function syncConflicts(book: Book): Set<string> {
+  try {
+    return new Set(readLastSync(book)?.upstreams.flatMap((r) => r.conflicts.map((c) => `${c.change}\0${c.path}`)));
+  } catch (e) {
+    if (e instanceof Fail || (e instanceof Error && "errno" in e)) return new Set();
+    throw e;
+  }
+}
+
 function writeLastSync(book: Book, reports: ReadonlyMap<string, SyncReport>): void {
   const upstreams = book.upstreams.flatMap(({ name }) => reports.get(name) ?? []);
   writeText(join(book.dir, REPORT), lastSyncText({ version: 2, upstreams }));

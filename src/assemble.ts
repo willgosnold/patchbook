@@ -22,7 +22,7 @@ import { type Env, git, run, spawn } from "./lib/proc.ts";
 import { say, verbatim, warn } from "./lib/term.ts";
 import { byCodePoint, bytesEqual, decode, encode, isText } from "./lib/text.ts";
 import { pinned, refuseMergedUpstream } from "./store.ts";
-import { readLastSync } from "./sync.ts";
+import { readLastSync, syncConflicts } from "./sync.ts";
 
 export function describe(p: Problem): string {
   let at = p.file + ("line" in p && p.line ? `:${p.line}` : "") + ("hash" in p && p.hash ? ` [${p.hash}]` : "");
@@ -78,12 +78,30 @@ const CONFLICT = /^(?:<{7}|>{7})(?: |$)/;
 /** A line that starts with a conflict marker. Only `\n` ends a line. */
 export const hasConflictMarker = (text: string) => text.split("\n").some((line) => CONFLICT.test(line));
 const markerLines = (text: string) => text.split("\n").filter((line) => CONFLICT.test(line)).length;
-export const addsConflictMarker = (text: string, reference = "") => markerLines(text) > markerLines(reference);
-export const fileAddsConflictMarker = (file: File | null | undefined, reference?: File | null) => {
-  const textOf = (f: File | null | undefined) => (f && f.mode !== LINK && isText(f.data) ? decode(f.data) : null);
-  const text = textOf(file);
-  return text !== null && addsConflictMarker(text, textOf(reference) ?? "");
+const addsConflictMarker = (text: string, reference: string) => markerLines(text) > markerLines(reference);
+const conflictBlocks = (text: string) => {
+  const blocks: string[] = [];
+  let open: string[] | null = null;
+  for (const line of text.split("\n")) {
+    if (!CONFLICT.test(line)) open?.push(line);
+    else if (line.startsWith("<")) (open ??= []).push(line);
+    else {
+      blocks.push([...(open ?? []), line].join("\n"));
+      open = null;
+    }
+  }
+  return open ? [...blocks, open.join("\n")] : blocks;
 };
+const addsConflictBlock = (text: string, reference: string) => {
+  const held = new Map<string, number>();
+  for (const block of conflictBlocks(reference)) held.set(block, (held.get(block) ?? 0) + 1);
+  return conflictBlocks(text).some((block) => {
+    const n = held.get(block) ?? 0;
+    held.set(block, n - 1);
+    return n <= 0;
+  });
+};
+const textOf = (f: File | null) => (f && f.mode !== LINK && isText(f.data) ? decode(f.data) : "");
 const mayHoldMarker = (data: Uint8Array) => {
   const bytes = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
   return bytes.includes("<<<<<<<") || bytes.includes(">>>>>>>");
@@ -166,11 +184,13 @@ export function assemble(book: Book): Assembly {
   const changes = readChanges(book, problems);
   const byName = new Map(changes.map((c) => [c.name, c]));
 
+  const conflicted = syncConflicts(book);
   for (const name of foldersWith(book.data("changes"), "CHANGE.md").filter((name) => CHANGE_NAME.test(name))) {
     const c = byName.get(name) ?? new Change(name, book.data("changes", name));
     for (const copy of nonFolders(join(c.dir, "ours")).filter((p) => p.endsWith(".pb"))) {
       const path = copy.slice(0, -".pb".length);
-      if (fileAddsConflictMarker(c.file("ours", path), c.file("base", path))) {
+      const adds = conflicted.has(`${c.name}\0${path}`) ? addsConflictBlock : addsConflictMarker;
+      if (adds(textOf(c.file("ours", path)), textOf(c.file("base", path)))) {
         problems.push({ problem: "conflict", file: path, change: c.name, detail: "ours has conflict markers", refuse: true });
       }
     }
