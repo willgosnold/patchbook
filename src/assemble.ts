@@ -77,6 +77,13 @@ type Sink = { problems: Problem[]; used: Map<string, Set<string>>; unmatched: Ma
 const CONFLICT = /^(?:<{7}|>{7})(?: |$)/;
 /** A line that starts with a conflict marker. Only `\n` ends a line. */
 export const hasConflictMarker = (text: string) => text.split("\n").some((line) => CONFLICT.test(line));
+const markerLines = (text: string) => text.split("\n").filter((line) => CONFLICT.test(line)).length;
+export const addsConflictMarker = (text: string, reference = "") => markerLines(text) > markerLines(reference);
+export const fileAddsConflictMarker = (file: File | null | undefined, reference?: File | null) => {
+  const textOf = (f: File | null | undefined) => (f && f.mode !== LINK && isText(f.data) ? decode(f.data) : null);
+  const text = textOf(file);
+  return text !== null && addsConflictMarker(text, textOf(reference) ?? "");
+};
 const mayHoldMarker = (data: Uint8Array) => {
   const bytes = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
   return bytes.includes("<<<<<<<") || bytes.includes(">>>>>>>");
@@ -163,8 +170,7 @@ export function assemble(book: Book): Assembly {
     const c = byName.get(name) ?? new Change(name, book.data("changes", name));
     for (const copy of nonFolders(join(c.dir, "ours")).filter((p) => p.endsWith(".pb"))) {
       const path = copy.slice(0, -".pb".length);
-      const ours = c.file("ours", path);
-      if (ours && ours.mode !== LINK && isText(ours.data) && hasConflictMarker(decode(ours.data))) {
+      if (fileAddsConflictMarker(c.file("ours", path), c.file("base", path))) {
         problems.push({ problem: "conflict", file: path, change: c.name, detail: "ours has conflict markers", refuse: true });
       }
     }
@@ -204,7 +210,7 @@ export function assemble(book: Book): Assembly {
   const blocks = new Map<string, Map<string, Entry>>();
   for (const rel of blockFiles(book)) {
     const entries = readEntries(entriesPath(book, rel));
-    if (Array.from(entries.values()).some((e) => hasConflictMarker(e.patched))) {
+    if (Array.from(entries.values()).some((e) => addsConflictMarker(e.patched, e.upstream))) {
       problems.push({ problem: "conflict", file: `blocks/${rel}.entries`, detail: "patched paragraph has conflict markers", refuse: true });
     }
     const owned = owner.get(rel);

@@ -3,7 +3,7 @@ import { chmodSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join } from "node:path";
 import type { Problem } from "./api.ts";
 import {
-  assemble, type Assembly, buildLockPath, type BuildLock, builtAs, type Changes, changesOf, cmdBuild, describe, handEdits, inRepo, parseBuildLock, readBuildLock, refuseFolderToFile, writeOutput,
+  assemble, type Assembly, buildLockPath, type BuildLock, builtAs, type Changes, changesOf, cmdBuild, describe, fileAddsConflictMarker, handEdits, inRepo, parseBuildLock, readBuildLock, refuseFolderToFile, writeOutput,
 } from "./assemble.ts";
 import { ATTRIBUTES_FILE, Book, buildInputs, keepAttributes, NoBook, PB, parseLock, placeholderOutputs, under } from "./book.ts";
 import { type Change, readChanges, SERIES_CONFLICT } from "./changes.ts";
@@ -806,7 +806,7 @@ export async function cmdHook(args: { action: "install" | "run" | "status" | "bu
   }
 }
 
-function refuseProblems(book: Book, problems: readonly Problem[]): void {
+function refuseProblems(book: Book, problems: readonly Problem[], recorded: readonly string[] = []): void {
   const refused = problems.filter((p) => "refuse" in p);
   const merging = refused.filter((p) => p.problem === "conflict" && p.file === "series" && !("change" in p));
   const conflicts = refused.filter((p) => p.problem === "conflict" && (p.file !== "series" || "change" in p));
@@ -818,7 +818,7 @@ function refuseProblems(book: Book, problems: readonly Problem[]): void {
     throw new Fail([
       ...(merging.length ? [`refusing this commit: series ${SERIES_CONFLICT}, ${skip}`] : []),
       ...(conflicts.length ? ["refusing this commit: unresolved conflict markers in the patchbook.\n"
-        + conflicts.map((p) => `  ${relative(book.root, "change" in p ? book.data("changes", p.change, "ours", `${p.file}.pb`) : book.data(p.file))}\n`).join("")
+        + (recorded.length ? recorded.map((p) => `  ${inRepo(book, p)}\n`) : conflicts.map((p) => `  ${relative(book.root, "change" in p ? book.data("changes", p.change, "ours", `${p.file}.pb`) : book.data(p.file))}\n`)).join("")
         + `Resolve the markers in these files, stage them, and commit again, ${skip}`] : []),
       ...(named.length ? [`refusing this commit: a change name isn't valid.\n${lines(named)}Rename it to lowercase letters, digits and dashes in series and changes/, ${skip}`] : []),
       ...(edits.length ? [`refusing this commit: a change writes where a build must not.\n${lines(edits)}Edit or remove that line in the change's CHANGE.md, ${skip}`] : []),
@@ -897,7 +897,7 @@ async function runHook(undo: Undo) {
     const recorded = record(book, null, process.env["PATCHBOOK_INTENT"] ?? null, { seen: staged, edits: edited, undo, assembly: a });
     copies = recorded.copies;
     a = recorded.after ?? assemble(book);
-    refuseProblems(book, a.problems);
+    refuseProblems(book, a.problems, edited.filter((p) => fileAddsConflictMarker(staged.get(p), a.upstream.get(p))));
     say(recorded.text);
   }
   let built: string[] = [];
