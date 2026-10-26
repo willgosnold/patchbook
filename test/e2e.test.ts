@@ -4217,7 +4217,7 @@ test("hook install prints the whole block to merge by hand when the config can't
 for (const [config, existing] of [
   ["lefthook.yml", "pre-commit:\n  commands:\n    patchbook:\n      run: patchbook hook run || exit 1\n"],
   ["lefthook.json", '{ "pre-commit": { "commands": { "patchbook": { "run": "patchbook hook run || exit 1" } } } }'],
-  [".pre-commit-config.yaml", "repos:\n  - repo: local\n    hooks:\n      - id: patchbook\n        name: patchbook\n        entry: patchbook hook run\n        language: system\n"],
+  [".pre-commit-config.yaml", "repos:\n  - repo: local\n    hooks:\n      - id: patchbook\n        name: patchbook\n        entry: patchbook hook run\n        language: system\n        pass_filenames: false\n        always_run: true\n"],
 ] as const) {
   test(`hook install adds nothing to ${config} once it holds patchbook's hook`, () => {
     const t = new Case();
@@ -4260,7 +4260,8 @@ const lefthookCommand = (event: string, name: string, run: string) => `${event}:
 const lefthookJob = (event: string, name: string, run: string) => `${event}:\n  jobs:\n    - name: ${name}\n      run: ${run}\n`;
 const lefthookJsonCommand = (event: string, name: string, run: string) => `{ "${event}": { "commands": { "${name}": { "run": "${run}" } } } }\n`;
 const lefthookTomlCommand = (event: string, name: string, run: string) => `[${event}.commands.${name}]\nrun = "${run}"\n`;
-const preCommitHook = (id: string, entry: string, repo = "local") => `repos:\n  - repo: ${repo}\n    hooks:\n      - id: ${id}\n        name: ${id}\n        entry: ${entry}\n        language: system\n`;
+const PRE_COMMIT_RUNS_ALWAYS = "        pass_filenames: false\n        always_run: true\n";
+const preCommitHook = (id: string, entry: string, extra = PRE_COMMIT_RUNS_ALWAYS, repo = "local") => `repos:\n  - repo: ${repo}\n    hooks:\n      - id: ${id}\n        name: ${id}\n        entry: ${entry}\n        language: system\n${extra}`;
 
 const COLLISIONS: [string, string, string, string][] = [
   ["a lefthook YAML command", "lefthook.yml", lefthookCommand("pre-commit", "patchbook", SOMEONE_ELSES), "command"],
@@ -4279,7 +4280,7 @@ for (const [name, config, existing, kind] of COLLISIONS) {
       const install = t.pb(["hook", "install"], { cwd: fork.path, timeout: 30_000 }).stderr;
       expect(install).toContain(`can't tell where in ${config} to add its lines, because its`);
       expect(install).toContain(`already has a ${kind}`);
-      expect(install).toContain("that doesn't call `patchbook hook run`");
+      expect(install).toContain("that doesn't always call `patchbook hook run`");
       expect(install).toContain("Merge this into");
       expect(fork.read(config)).toBe(existing);
     } finally {
@@ -4295,7 +4296,7 @@ test("hook install checks a post hook for its own call, not for the pre-commit o
     const fork = forkWith(t, { "lefthook.yml": existing });
     installDispatchers(fork, ["pre-commit", "post-merge"], LEFTHOOK_DISPATCHER);
     const install = t.pb(["hook", "install"], { cwd: fork.path, timeout: 30_000 }).stderr;
-    expect(install).toContain("already has a command named patchbook that doesn't call `patchbook hook build`");
+    expect(install).toContain("already has a command named patchbook that doesn't always call `patchbook hook build`");
     expect(install).not.toContain("pre-commit already has");
   } finally {
     t.cleanup();
@@ -4307,7 +4308,7 @@ const OTHER_NAMES: [string, string, string][] = [
   ["a lefthook YAML job", "lefthook.yml", lefthookJob("pre-commit", "record", CALLS["pre-commit"])],
   ["a lefthook JSON command", "lefthook.json", lefthookJsonCommand("pre-commit", "record", CALLS["pre-commit"])],
   ["a lefthook TOML command", "lefthook.toml", lefthookTomlCommand("pre-commit", "record", CALLS["pre-commit"])],
-  ["a local pre-commit hook", ".pre-commit-config.yaml", preCommitHook("record", CALLS["pre-commit"])],
+  ["a local pre-commit hook", ".pre-commit-config.yaml", preCommitHook("record", "patchbook hook run")],
 ];
 
 for (const [name, config, existing] of OTHER_NAMES) {
@@ -4318,6 +4319,157 @@ for (const [name, config, existing] of OTHER_NAMES) {
       const install = t.pb(["hook", "install"], { cwd: fork.path, timeout: 30_000 }).stderr;
       expect(install).not.toContain("Add this");
       expect(install).not.toContain("can't tell where");
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
+/** Text that names the call without running it, or might not run it. */
+const MENTIONS = [
+  `echo "patchbook hook run"`,
+  `printf '%s\\n' 'patchbook hook run'`,
+  `echo mine # patchbook hook run`,
+  `echo mine\\n# patchbook hook run`,
+  `my-patchbook hook run`,
+  `patchbook hook run-all`,
+  `if false; then patchbook hook run; fi`,
+  `./node_modules/.bin/patchbook hook run`,
+];
+const quoted = (run: string) => JSON.stringify(run);
+const unquoted = (run: string) => JSON.stringify(run).slice(1, -1);
+const lefthookJsonJob = (event: string, name: string, run: string) => `{ "${event}": { "jobs": [{ "name": "${name}", "run": "${run}" }] } }\n`;
+
+const NOT_RUNNING: [string, string, (run: string) => string][] = [
+  ["a lefthook YAML command", "lefthook.yml", (run) => lefthookCommand("pre-commit", "diagnostic", quoted(run))],
+  ["a lefthook YAML job", "lefthook.yml", (run) => lefthookJob("pre-commit", "diagnostic", quoted(run))],
+  ["a lefthook JSON command", "lefthook.json", (run) => lefthookJsonCommand("pre-commit", "diagnostic", unquoted(run))],
+  ["a lefthook JSON job", "lefthook.json", (run) => lefthookJsonJob("pre-commit", "diagnostic", unquoted(run))],
+  ["a lefthook TOML command", "lefthook.toml", (run) => lefthookTomlCommand("pre-commit", "diagnostic", unquoted(run))],
+  ["a local pre-commit hook", ".pre-commit-config.yaml", (run) => preCommitHook("diagnostic", quoted(run))],
+];
+
+for (const [name, config, build] of NOT_RUNNING) {
+  for (const run of MENTIONS) {
+    test(`hook install still adds patchbook's hook when ${name} only mentions the call in ${JSON.stringify(run)}`, () => {
+      const t = new Case();
+      try {
+        const existing = build(run);
+        const fork = forkWith(t, { [config]: existing });
+        const install = t.pb(["hook", "install"], { cwd: fork.path, timeout: 30_000 }).stderr;
+        expect(install).toContain("Add this");
+        expect(fork.read(config)).toBe(existing);
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+  }
+}
+
+test("hook install names the clash when a command called patchbook only echoes the call", () => {
+  const t = new Case();
+  try {
+    const existing = lefthookCommand("pre-commit", "patchbook", quoted(MENTIONS[0]!));
+    const fork = forkWith(t, { "lefthook.yml": existing });
+    const install = t.pb(["hook", "install"], { cwd: fork.path, timeout: 30_000 }).stderr;
+    expect(install).toContain("already has a command named patchbook that doesn't always call `patchbook hook run`");
+    expect(fork.read("lefthook.yml")).toBe(existing);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+const GENERATED = lefthookCommand("pre-commit", "patchbook", CALLS["pre-commit"]);
+const NOT_ALWAYS: [string, string, string][] = [
+  ["a skipped lefthook command", "lefthook.yml", GENERATED.replace("      run:", "      skip: true\n      run:")],
+  ["a lefthook command limited with only", "lefthook.yml", GENERATED.replace("      run:", "      only: [merge]\n      run:")],
+  ["a lefthook command limited with glob", "lefthook.yml", GENERATED.replace("      run:", "      glob: '*.md'\n      run:")],
+  ["a lefthook command run from a subfolder", "lefthook.yml", GENERATED.replace("      run:", "      root: sub/\n      run:")],
+  ["a skipped lefthook job", "lefthook.yml", lefthookJob("pre-commit", "patchbook", CALLS["pre-commit"]).replace("      run:", "      skip: true\n      run:")],
+  ["a skipped lefthook JSON command", "lefthook.json", '{ "pre-commit": { "commands": { "patchbook": { "skip": true, "run": "patchbook hook run || exit 1" } } } }\n'],
+  ["a lefthook TOML command limited with glob", "lefthook.toml", `[pre-commit.commands.patchbook]\nglob = "*.md"\nrun = "patchbook hook run"\n`],
+];
+
+for (const [name, config, existing] of NOT_ALWAYS) {
+  test(`hook install doesn't take ${name} for patchbook's hook`, () => {
+    const t = new Case();
+    try {
+      const fork = forkWith(t, { [config]: existing });
+      const install = t.pb(["hook", "install"], { cwd: fork.path, timeout: 30_000 }).stderr;
+      expect(install).toContain("that doesn't always call `patchbook hook run`");
+      expect(fork.read(config)).toBe(existing);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
+/** pre-commit splits `entry` into words and runs them without a shell, and appends the file names unless pass_filenames is false. patchbook rejects extra arguments, so these fail every commit or skip it. */
+const PRE_COMMIT_NOT_ALWAYS: [string, string][] = [
+  ["an entry with a shell operator", preCommitHook("record", "patchbook hook run || exit 1")],
+  ["a hook that is given the file names", preCommitHook("record", "patchbook hook run", "        always_run: true\n")],
+  ["a hook that skips commits without matching files", preCommitHook("record", "patchbook hook run", "        pass_filenames: false\n")],
+  ["a hook limited to some files", preCommitHook("record", "patchbook hook run", PRE_COMMIT_RUNS_ALWAYS + "        files: ^src/\n")],
+  ["a hook limited to some types", preCommitHook("record", "patchbook hook run", PRE_COMMIT_RUNS_ALWAYS + "        types: [python]\n")],
+  ["a hook at the manual stage", preCommitHook("record", "patchbook hook run", PRE_COMMIT_RUNS_ALWAYS + "        stages: [manual]\n")],
+  ["a hook in another language", preCommitHook("record", "patchbook hook run").replace("language: system", "language: script")],
+];
+
+for (const [name, existing] of PRE_COMMIT_NOT_ALWAYS) {
+  test(`hook install doesn't take ${name} for patchbook's hook`, () => {
+    const t = new Case();
+    try {
+      const fork = forkWith(t, { ".pre-commit-config.yaml": existing });
+      const install = t.pb(["hook", "install"], { cwd: fork.path, timeout: 30_000 }).stderr;
+      expect(install).toContain("Add this");
+      expect(fork.read(".pre-commit-config.yaml")).toBe(existing);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
+test("hook install checks a post hook's own call, not an echo of it", () => {
+  const t = new Case();
+  try {
+    const existing = GENERATED + lefthookCommand("post-merge", "diagnostic", quoted(`echo "patchbook hook build"`));
+    const fork = forkWith(t, { "lefthook.yml": existing });
+    installDispatchers(fork, ["pre-commit", "post-merge"], LEFTHOOK_DISPATCHER);
+    const install = t.pb(["hook", "install"], { cwd: fork.path, timeout: 30_000 }).stderr;
+    expect(install).toContain("runs this repo's post-merge hook. Add this");
+    expect(install).not.toContain("pre-commit hooks. Add this");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+test("hook install checks a pre-commit framework post hook's own call, not an echo of it", () => {
+  const t = new Case();
+  try {
+    const existing = preCommitHook("record", "patchbook hook run").replace("hooks:\n", "hooks:\n      - id: diagnostic\n        name: diagnostic\n        entry: echo patchbook hook build\n        language: system\n        stages: [post-merge]\n        pass_filenames: false\n        always_run: true\n");
+    const fork = forkWith(t, { ".pre-commit-config.yaml": existing });
+    installDispatchers(fork, ["pre-commit", "post-merge"], PRE_COMMIT_DISPATCHER);
+    const install = t.pb(["hook", "install"], { cwd: fork.path, timeout: 30_000 }).stderr;
+    expect(install).toContain("runs this repo's post-merge hook. Add this");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+for (const [config, existing, rename, dispatcher] of [
+  ["lefthook.yml", "pre-commit:\n  commands:\n    lint:\n      run: echo lint\n", (m: string) => m.replace(/^(\s+)patchbook:$/gm, "$1record:"), LEFTHOOK_DISPATCHER],
+  ["lefthook.json", '{ "pre-commit": { "commands": { "lint": { "run": "echo lint" } } } }\n', (m: string) => m.replaceAll('"patchbook": {', '"record": {'), LEFTHOOK_DISPATCHER],
+  [".pre-commit-config.yaml", "repos: []\n", (m: string) => m.replace(/^(\s+(?:id|name): )patchbook/gm, "$1record"), PRE_COMMIT_DISPATCHER],
+] as const) {
+  test(`hook install adds nothing to ${config} once the lines it printed are there under another name`, () => {
+    const t = new Case();
+    try {
+      const fork = forkWith(t, { [config]: existing });
+      installDispatchers(fork, ["pre-commit", ...POST_EVENTS], dispatcher);
+      const merged = rename(paste(existing, t.pb(["hook", "install"], { cwd: fork.path }).stderr));
+      writeFileSync(join(fork.path, config), merged);
+      const again = t.pb(["hook", "install"], { cwd: fork.path, timeout: 30_000 }).stderr;
+      expect(again).not.toContain("Add this");
     } finally {
       t.cleanup();
     }

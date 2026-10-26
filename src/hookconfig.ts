@@ -30,26 +30,33 @@ function spot(doc: unknown, event: string): Spot | undefined {
   return commands === undefined ? "hook" : commands === null || isRecord(commands) ? "commands" : undefined;
 }
 
-type Item = { kind: "command" | "job"; name: unknown; run: unknown };
+/** What stops a lefthook command or job from running on every commit, or runs it somewhere else. */
+const LEFTHOOK_LIMITS = ["skip", "only", "glob", "files", "file_types", "exclude", "root"];
+
+type Item = { kind: "command" | "job"; name: unknown; run: unknown; always: boolean };
 
 function items(doc: unknown, event: string): Item[] {
   const hook = isRecord(doc) ? doc[event] : undefined;
   if (!isRecord(hook)) return [];
-  const commands = isRecord(hook["commands"]) ? Object.entries(hook["commands"]).map(([name, c]): Item => ({ kind: "command", name, run: isRecord(c) ? c["run"] : undefined })) : [];
-  const jobs = Array.isArray(hook["jobs"]) ? hook["jobs"].filter(isRecord).map((j): Item => ({ kind: "job", name: j["name"], run: j["run"] })) : [];
+  const item = (kind: Item["kind"], name: unknown, c: unknown): Item => ({ kind, name, run: isRecord(c) ? c["run"] : undefined, always: isRecord(c) && LEFTHOOK_LIMITS.every((k) => !c[k]) });
+  const commands = isRecord(hook["commands"]) ? Object.entries(hook["commands"]).map(([name, c]) => item("command", name, c)) : [];
+  const jobs = Array.isArray(hook["jobs"]) ? hook["jobs"].filter(isRecord).map((j) => item("job", j["name"], j)) : [];
   return [...commands, ...jobs];
 }
 
-/** The call the entry for each event makes. An entry that makes it counts as patchbook's, whatever its name, and one named patchbook that doesn't is someone else's. */
+/** The call the entry for each event makes. Text that mentions it proves nothing, since `echo "patchbook hook run"`, a longer script or a call under `if` may not run it, so only the lines patchbook prints and the bare call count. Anything else gets patchbook's own lines, which at worst run it twice. */
 const callOf = (event: string) => `${COMMAND} hook ${event === "pre-commit" ? "run" : "build"}`;
-const callsIn = (event: string) => new RegExp(`^[^#\\n]*\\b${escaped(callOf(event))}\\b`, "m");
-const makesCall = (run: unknown, event: string) => typeof run === "string" && callsIn(event).test(run);
-const clashWith = (what: string, entry: Entry): Unplaced => ({ why: `its ${what} that doesn't call \`${callOf(entry.event)}\`` });
+const sameText = (text: unknown, wanted: string) => typeof text === "string" && text.replace(/\r\n/g, "\n").trim() === wanted.trim();
+/** `shell` is whether the text runs through one, which lets the call end in `|| exit 1`. */
+const runsCall = (run: unknown, printed: string, entry: Entry, shell: boolean) =>
+  sameText(run, printed) || (typeof run === "string" && new RegExp(`^${escaped(callOf(entry.event))}${shell ? "(?: \\|\\| (?:exit 1|true))?" : ""}$`).test(run.trim()));
+const callsIn = (i: Item, entry: Entry) => i.always && runsCall(i.run, entry.run, entry, true);
+const clashWith = (what: string, entry: Entry): Unplaced => ({ why: `its ${what} that doesn't always call \`${callOf(entry.event)}\`` });
 
 /** PRESENT when the config already makes the event's call, or why a different entry named patchbook is in the way. */
 function existing(doc: unknown, entry: Entry): Placement | undefined {
   const all = items(doc, entry.event);
-  if (all.some((i) => makesCall(i.run, entry.event))) return PRESENT;
+  if (all.some((i) => callsIn(i, entry))) return PRESENT;
   const taken = all.find((i) => i.name === COMMAND);
   return taken && clashWith(`${entry.event} already has a ${taken.kind} named ${COMMAND}`, entry);
 }
@@ -72,9 +79,9 @@ function checked(merged: string, parse: (text: string) => unknown, first: (doc: 
   }
 }
 
-const lefthookFirst = (event: string, at: Spot) => (doc: unknown): boolean => {
-  const hook = isRecord(doc) ? doc[event] : undefined;
-  if (!items(doc, event).some((i) => i.name === COMMAND && makesCall(i.run, event))) return false;
+const lefthookFirst = (entry: Entry, at: Spot) => (doc: unknown): boolean => {
+  const hook = isRecord(doc) ? doc[entry.event] : undefined;
+  if (!items(doc, entry.event).some((i) => i.name === COMMAND && callsIn(i, entry))) return false;
   return at !== "jobs" || (isRecord(hook) && Array.isArray(hook["jobs"]) && isRecord(hook["jobs"][0]) && hook["jobs"][0]["name"] === COMMAND);
 };
 
@@ -131,7 +138,7 @@ function lefthookYaml(config: string, entry: Entry, where: string): Placement {
   const p = priority(doc, entry.event);
   const command = (n: number) => indent(`${COMMAND}:\n${indent(`priority: ${p}\nrun: |\n${indent(entry.run, u)}`, u)}`, n);
   const usable = (merged: string, location: string, text: string): Placement =>
-    checked(merged, Bun.YAML.parse, lefthookFirst(entry.event, at)) ? { location, text, merged } : { why: `its ${entry.event} is laid out in a way patchbook can't add to` };
+    checked(merged, Bun.YAML.parse, lefthookFirst(entry, at)) ? { location, text, merged } : { why: `its ${entry.event} is laid out in a way patchbook can't add to` };
   const place = (line: number, location: string, text: string) => usable(after(ls, line, text), location, text);
   if (at === "file") {
     const text = `${entry.event}:\n${indent(`commands:\n${command(u)}`, u)}`;
@@ -250,7 +257,7 @@ function lefthookJson(config: string, entry: Entry, where: string): Placement {
     return { why: `its ${entry.event} is laid out in a way patchbook can't add to` };
   }
   const merged = config.slice(0, open) + "\n" + text.replace(/\n$/, "") + config.slice(open);
-  if (!checked(merged, Bun.JSONC.parse, lefthookFirst(entry.event, at))) return { why: `its ${entry.event} is laid out in a way patchbook can't add to` };
+  if (!checked(merged, Bun.JSONC.parse, lefthookFirst(entry, at))) return { why: `its ${entry.event} is laid out in a way patchbook can't add to` };
   const named = at === "file" ? "the top-level object" : at === "hook" ? `"${entry.event}"` : `"${at}" in "${entry.event}"`;
   const first = at === "jobs" ? "item" : "member";
   return { location: `as the first ${first} of ${named} in ${where}, right after its opening ${at === "jobs" ? "bracket" : "brace"}`, text, merged };
@@ -270,7 +277,7 @@ function lefthookToml(config: string, entry: Entry, where: string): Placement {
   if (found) return found;
   const text = `[${entry.event}.commands.${COMMAND}]\npriority = ${priority(doc, entry.event)}\nrun = '''\n${entry.run}'''\n`;
   const merged = endsLine(config) + text;
-  if (!checked(merged, Bun.TOML.parse, lefthookFirst(entry.event, at))) return { why: `its ${entry.event} is laid out in a way patchbook can't add to` };
+  if (!checked(merged, Bun.TOML.parse, lefthookFirst(entry, at))) return { why: `its ${entry.event} is laid out in a way patchbook can't add to` };
   return { location: `at the end of ${where}`, text, merged };
 }
 
@@ -279,8 +286,13 @@ export const LEFTHOOK: Readonly<Record<string, Format>> = { yml: lefthookYaml, y
 
 const hookId = (entry: Entry) => (entry.event === "pre-commit" ? COMMAND : `${COMMAND}-${entry.event}`);
 
-/** The commit stage is spelled `commit`, which every pre-commit accepts, because 3.1 rejects `pre-commit` and 4 only warns about `commit`.
- * pre-commit splits `entry` like a shell does and runs the words without one, so the script goes through `sh -c`. */
+/** What stops pre-commit from running a hook on every commit. It also appends the staged file names to `entry` unless pass_filenames is false, and patchbook rejects arguments. */
+const PRE_COMMIT_LIMITS = ["files", "exclude", "types", "types_or", "exclude_types"];
+
+/** pre-commit splits `entry` like a shell does and runs the words without one, so the script goes through `sh -c`. */
+const preCommitEntry = (entry: Entry) => `sh -c '${entry.run.trimEnd().replaceAll("'", "'\\''")}'`;
+
+/** The commit stage is spelled `commit`, which every pre-commit accepts, because 3.1 rejects `pre-commit` and 4 only warns about `commit`. */
 function preCommitRepo(entry: Entry): string {
   const pre = entry.event === "pre-commit";
   return `- repo: local
@@ -288,7 +300,7 @@ function preCommitRepo(entry: Entry): string {
     - id: ${hookId(entry)}
       name: ${pre ? COMMAND : `${COMMAND} ${entry.event}`}
       entry: |
-${indent(`sh -c '${entry.run.trimEnd().replaceAll("'", "'\\''")}'`, 8)}
+${indent(preCommitEntry(entry), 8)}
       language: system
       pass_filenames: false
       always_run: true
@@ -309,7 +321,8 @@ function preCommit(config: string, entry: Entry, where: string): Placement {
   const pre = entry.event === "pre-commit";
   const hooks = Array.isArray(repos) ? repos.flatMap((r) => (isRecord(r) && Array.isArray(r["hooks"]) ? r["hooks"] : [])) : [];
   const atStage = (h: Record<string, unknown>) => !Array.isArray(h["stages"]) || h["stages"].some((st) => st === entry.event || (pre && st === "commit"));
-  if (hooks.some((h) => isRecord(h) && makesCall(h["entry"], entry.event) && atStage(h))) return PRESENT;
+  const always = (h: Record<string, unknown>) => atStage(h) && h["language"] === "system" && h["always_run"] === true && h["pass_filenames"] === false && PRE_COMMIT_LIMITS.every((k) => !h[k]);
+  if (hooks.some((h) => isRecord(h) && always(h) && runsCall(h["entry"], preCommitEntry(entry), entry, false))) return PRESENT;
   if (hooks.some((h) => isRecord(h) && h["id"] === id)) return clashWith(`config already has a hook with the id ${id}`, entry);
   const item = preCommitRepo(entry);
   const firstIs = (d: unknown) => isRecord(d) && Array.isArray(d["repos"]) && isRecord(d["repos"][0]) && Array.isArray(d["repos"][0]["hooks"]) && isRecord(d["repos"][0]["hooks"][0]) && d["repos"][0]["hooks"][0]["id"] === id;
