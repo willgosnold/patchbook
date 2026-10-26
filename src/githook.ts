@@ -806,6 +806,29 @@ export async function cmdHook(args: { action: "install" | "run" | "status" | "bu
   }
 }
 
+function refuseProblems(book: Book, a: Assembly, recorded?: readonly string[]): void {
+  const refused = a.problems.filter((p) => "refuse" in p);
+  const merging = refused.filter((p) => p.problem === "conflict" && p.file === "series" && !("change" in p));
+  const conflicts = refused.filter((p) => p.problem === "conflict" && (p.file !== "series" || "change" in p));
+  const named = refused.filter((p) => p.file === "series" && p.problem !== "conflict");
+  const edits = refused.filter((p) => p.file !== "series" && p.problem !== "conflict");
+  if (refused.length) {
+    const lines = (ps: Problem[]) => ps.map((p) => `  ${describe(p)}\n`).join("");
+    const skip = "or skip the hook once with PATCHBOOK_HOOK=0.";
+    const sourcePaths = new Set(conflicts.map((p) => ("change" in p ? p.file : p.file.slice("blocks/".length, -".entries".length))));
+    const files = recorded
+      ? recorded.filter((p) => a.sources.has(p) && sourcePaths.has(a.sources.get(p)!.path)).map((p) => inRepo(book, p))
+      : conflicts.map((p) => relative(book.root, "change" in p ? book.data("changes", p.change, "ours", `${p.file}.pb`) : book.data(p.file)));
+    throw new Fail([
+      ...(merging.length ? [`refusing this commit: series ${SERIES_CONFLICT}, ${skip}`] : []),
+      ...(conflicts.length ? [`refusing this commit: unresolved conflict markers in the patchbook.\n${files.map((f) => `  ${f}\n`).join("")}`
+        + `Resolve the markers in these files, stage them, and commit again, ${skip}`] : []),
+      ...(named.length ? [`refusing this commit: a change name isn't valid.\n${lines(named)}Rename it to lowercase letters, digits and dashes in series and changes/, ${skip}`] : []),
+      ...(edits.length ? [`refusing this commit: a change writes where a build must not.\n${lines(edits)}Edit or remove that line in the change's CHANGE.md, ${skip}`] : []),
+    ].join("\n"));
+  }
+}
+
 async function runHook(undo: Undo) {
   const book = await Book.find();
   if (!setting("hook.enabled", book)[0]) return 0;
@@ -862,19 +885,7 @@ async function runHook(undo: Undo) {
       + `To commit the last build, run \`git --literal-pathspecs add -- ${paths}\`. `
       + `To record what is staged, run \`git --literal-pathspecs checkout -- ${paths}\`, which puts it in the working copy. Then commit again.`);
   }
-  const refused = a.problems.filter((p) => "refuse" in p);
-  const merging = refused.filter((p) => p.problem === "conflict");
-  const named = refused.filter((p) => p.file === "series" && p.problem !== "conflict");
-  const edits = refused.filter((p) => p.file !== "series");
-  if (refused.length) {
-    const lines = (ps: Problem[]) => ps.map((p) => `  ${describe(p)}\n`).join("");
-    const skip = "or skip the hook once with PATCHBOOK_HOOK=0.";
-    throw new Fail([
-      ...(merging.length ? [`refusing this commit: series ${SERIES_CONFLICT}, ${skip}`] : []),
-      ...(named.length ? [`refusing this commit: a change name isn't valid.\n${lines(named)}Rename it to lowercase letters, digits and dashes in series and changes/, ${skip}`] : []),
-      ...(edits.length ? [`refusing this commit: a change writes where a build must not.\n${lines(edits)}Edit or remove that line in the change's CHANGE.md, ${skip}`] : []),
-    ].join("\n"));
-  }
+  refuseProblems(book, a);
   for (const p of edited.filter((p) => !a.out.has(p))) {
     const reserved = book.reservedOutput(p);
     if (reserved?.refuse) {
@@ -887,9 +898,10 @@ async function runHook(undo: Undo) {
     if (!a.problems.length) plan(asRecorded(a.out, edited));
     for (const p of buildInputs(book)) undo.hold(join(book.root, p));
     const recorded = record(book, null, process.env["PATCHBOOK_INTENT"] ?? null, { seen: staged, edits: edited, undo, assembly: a });
-    say(recorded.text);
     copies = recorded.copies;
     a = recorded.after ?? assemble(book);
+    refuseProblems(book, a, edited);
+    say(recorded.text);
   }
   let built: string[] = [];
   const lostDeletes = Array.from(sinceHead).filter(([p, c]) => c.staged === null && a.dropped.has(p)).map(([p]) => p);

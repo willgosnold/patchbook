@@ -239,6 +239,17 @@ function vendorTest(name: string, body: (t: VendorCase) => void): void {
   }, TIMEOUT);
 }
 
+function caseTest(name: string, body: (t: Case) => void): void {
+  test(name, () => {
+    const t = new Case();
+    try {
+      body(t);
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
 /** What Vite+'s `vp config` and husky's `husky` leave in a repo: core.hooksPath at `<dir>/_`, whose pre-commit runs `<dir>/pre-commit`. */
 function installManager(repo: Repo, dir: string): void {
   repo.write(`${dir}/_/.gitignore`, "*\n");
@@ -6509,6 +6520,305 @@ describe("ForkTest", () => {
     expect(status).toContain("conflict");
     t.pb(["build"], { cwd: t.fork.path, code: 1 });
   });
+
+  forkTest("the hook refuses a synced conflict in an older change until it is resolved", (t) => {
+    t.recordFeature();
+    t.fork.write("later.txt", "a later change\n");
+    t.pb(["record", "later", "--intent", "Add a later file."], { cwd: t.fork.path });
+    t.fork.commit("later");
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("two", "deux"));
+    t.up.commit("conflicting edit");
+    t.pb(["sync"], { cwd: t.fork.path });
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+    const index = sh(["git", "write-tree"], { cwd: t.fork.path }).stdout;
+    const before = tree(t.fork.path);
+    const commit = sh(["git", "commit", "-qam", "Sync upstream"], { cwd: t.fork.path, env: withHook(t), check: false });
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("refusing this commit");
+    expect(commit.stderr).toContain(".patchbook/changes/feature/ours/app.txt.pb");
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
+    expect(sh(["git", "write-tree"], { cwd: t.fork.path }).stdout).toBe(index);
+    expect(tree(t.fork.path)).toEqual(before);
+    const resolved = t.up.read("app.txt").replaceAll("deux", "DEUX");
+    t.fork.write(".patchbook/changes/feature/ours/app.txt.pb", resolved);
+    sh(["git", "commit", "-qam", "Resolve upstream conflict"], { cwd: t.fork.path, env: withHook(t) });
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app.txt")).toBe(resolved);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  for (const kind of ["file", "add", "replace"] as const) {
+    forkTest(`the hook refuses markers in a ${kind} copy hidden by a later delete`, (t) => {
+      t.recordFeature();
+      const path = kind === "add" ? "extra.txt" : "app.txt";
+      if (kind === "replace") {
+        t.fork.write(".patchbook/changes/feature/CHANGE.md", t.fork.read(".patchbook/changes/feature/CHANGE.md").replace("- file app.txt", "- replace app.txt"));
+        t.pb(["build"], { cwd: t.fork.path });
+        t.fork.commit("replace app.txt");
+      }
+      t.fork.write(".patchbook/changes/later/CHANGE.md", `# later\n\nintent: Remove the output file.\n\nedits:\n- delete ${path}\n`);
+      appendFileSync(join(t.fork.path, ".patchbook/series"), "later\n");
+      t.pb(["build"], { cwd: t.fork.path });
+      t.fork.commit("later");
+      const copy = `.patchbook/changes/feature/ours/${path}.pb`;
+      t.fork.write(copy, "<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> upstream\n");
+      t.fork.write("unrecorded.txt", "do not record this\n");
+      sh(["git", "add", "-A"], { cwd: t.fork.path });
+      const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+      const index = sh(["git", "write-tree"], { cwd: t.fork.path }).stdout;
+      const before = tree(t.fork.path);
+      const commit = sh(["git", "commit", "-qm", "conflicted"], { cwd: t.fork.path, env: withHook(t), check: false });
+      expect(commit.code).not.toBe(0);
+      expect(commit.stderr).toContain(copy);
+      expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
+      expect(sh(["git", "write-tree"], { cwd: t.fork.path }).stdout).toBe(index);
+      expect(tree(t.fork.path)).toEqual(before);
+    });
+  }
+
+  for (const orphan of [false, true]) {
+    forkTest(`the hook refuses markers in ${orphan ? "an orphaned" : "an applied"} paragraph entry`, (t) => {
+      const hash = orphan ? "000000000000" : createHash("sha256").update("a guide").digest("hex").slice(0, 12);
+      const path = ".patchbook/blocks/docs/guide.md.entries";
+      t.fork.write(path, `=== entry ${hash}\nkind: policy\nrules: \nintent: Adapt the guide.\n--- upstream\na guide\n--- patched\n<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> upstream\n`);
+      sh(["git", "add", "-A"], { cwd: t.fork.path });
+      const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+      const before = tree(t.fork.path);
+      const commit = sh(["git", "commit", "-qm", "conflicted entry"], { cwd: t.fork.path, env: withHook(t), check: false });
+      expect(commit.code).not.toBe(0);
+      expect(commit.stderr).toContain(path);
+      expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
+      expect(tree(t.fork.path)).toEqual(before);
+    });
+  }
+
+  forkTest("the hook restores a new recording that introduces conflict markers", (t) => {
+    t.fork.write("app.txt", "<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> upstream\n");
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+    const index = sh(["git", "write-tree"], { cwd: t.fork.path }).stdout;
+    const before = tree(t.fork.path);
+    const commit = sh(["git", "commit", "-qm", "conflicted output"], { cwd: t.fork.path, env: { ...withHook(t), PATCHBOOK_INTENT: "Adapt app.txt." }, check: false });
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("refusing this commit");
+    expect(commit.stderr).toContain("  app.txt\n");
+    expect(commit.stderr).not.toContain("adapt-app-txt");
+    expect(commit.stdout).toBe("");
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
+    expect(sh(["git", "write-tree"], { cwd: t.fork.path }).stdout).toBe(index);
+    expect(tree(t.fork.path)).toEqual(before);
+  });
+
+  forkTest("the hook names the staged file when markers typed into an owned file are recorded", (t) => {
+    t.recordFeature();
+    t.fork.write("app.txt", "<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> upstream\n");
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    const before = tree(t.fork.path);
+    const commit = sh(["git", "commit", "-qm", "conflicted output"], { cwd: t.fork.path, env: withHook(t), check: false });
+    expect(commit.code).toBe(1);
+    expect(commit.stderr).toContain("  app.txt\n");
+    expect(commit.stderr).not.toContain("ours/app.txt.pb");
+    expect(tree(t.fork.path)).toEqual(before);
+  });
+
+  const BLOCK = "<<<<<<< ours\nx\n=======\ny\n>>>>>>> upstream\n";
+
+  caseTest("the hook records an edit to a file whose markers upstream already holds", (t) => {
+    const fork = forkWith(t, { "doc.md": `intro\n${BLOCK}end\n` });
+    fork.write("doc.md", `Intro\n${BLOCK}end\n`);
+    sh(["git", "commit", "-qam", "capitalize"], { cwd: fork.path, env: { ...withHook(t), PATCHBOOK_INTENT: "Capitalize the intro." } });
+    expect(committedFiles(fork)).toContain(".patchbook/changes/capitalize-the-intro/ours/doc.md.pb");
+  });
+
+  caseTest("the hook refuses an edit to a file with markers upstream holds when the edit adds a block", (t) => {
+    const fork = forkWith(t, { "doc.md": `intro\n${BLOCK}end\n` });
+    fork.write("doc.md", `intro\n${BLOCK}end\n${BLOCK}`);
+    const commit = sh(["git", "commit", "-qam", "quote"], { cwd: fork.path, env: { ...withHook(t), PATCHBOOK_INTENT: "Quote a block." }, check: false });
+    expect(commit.code).toBe(1);
+    expect(commit.stderr).toContain("  doc.md\n");
+  });
+
+  const entry = (patched: string) => {
+    const upstream = `Use:\n${BLOCK.trimEnd()}`;
+    const hash = createHash("sha256").update(upstream).digest("hex").slice(0, 12);
+    return `=== entry ${hash}\nkind: policy\nrules: \nintent: Adapt the guide.\n--- upstream\n${upstream}\n--- patched\n${patched}\n`;
+  };
+
+  caseTest("the hook commits a paragraph entry whose text holds the markers upstream holds", (t) => {
+    const fork = forkWith(t, { "guide.md": `Use:\n${BLOCK}` });
+    fork.write(".patchbook/blocks/guide.md.entries", entry(`Use this:\n${BLOCK.trimEnd()}`));
+    sh(["git", "add", "-A"], { cwd: fork.path });
+    sh(["git", "commit", "-qm", "scaffold"], { cwd: fork.path, env: withHook(t) });
+    fork.write("app.txt", "one\nTWO\n");
+    sh(["git", "commit", "-qam", "unrelated"], { cwd: fork.path, env: { ...withHook(t), PATCHBOOK_INTENT: "Shout two." } });
+  });
+
+  caseTest("the hook refuses a paragraph entry that adds a marker block to the paragraph", (t) => {
+    const fork = forkWith(t, { "guide.md": `Use:\n${BLOCK}` });
+    fork.write(".patchbook/blocks/guide.md.entries", entry(`Use:\n${BLOCK}${BLOCK.trimEnd()}`));
+    sh(["git", "add", "-A"], { cwd: fork.path });
+    const commit = sh(["git", "commit", "-qm", "quote"], { cwd: fork.path, env: withHook(t), check: false });
+    expect(commit.code).toBe(1);
+    expect(commit.stderr).toContain(".patchbook/blocks/guide.md.entries");
+  });
+
+  caseTest("the hook records an edit inside the marker block upstream holds", (t) => {
+    const fork = forkWith(t, { "doc.md": `intro\n${BLOCK}end\n` });
+    fork.write("doc.md", `intro\n${BLOCK.replace("x", "X")}end\n`);
+    sh(["git", "commit", "-qam", "edit inside"], { cwd: fork.path, env: { ...withHook(t), PATCHBOOK_INTENT: "Capitalize the example." } });
+    expect(committedFiles(fork)).toContain(".patchbook/changes/capitalize-the-example/ours/doc.md.pb");
+  });
+
+  const syncedConflict = (t: Case) => {
+    const fork = forkWith(t, { "doc.md": `intro\n${BLOCK}middle\nend\n` });
+    fork.write("doc.md", "Intro\nmiddle\nEND-ours\n");
+    sh(["git", "commit", "-qam", "drop the example"], { cwd: fork.path, env: { ...withHook(t), PATCHBOOK_INTENT: "Drop the example." } });
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("doc.md", `intro\n${BLOCK}middle\nEND-theirs\n`);
+    up.commit("reword the end");
+    t.pb(["sync"], { cwd: fork.path });
+    sh(["git", "add", "-A"], { cwd: fork.path });
+    return fork;
+  };
+
+  caseTest("the hook refuses a synced conflict in a copy whose base holds upstream's marker block", (t) => {
+    const fork = syncedConflict(t);
+    const copy = ".patchbook/changes/drop-the-example/ours/doc.md.pb";
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: fork.path }).stdout;
+    const before = tree(fork.path);
+    const commit = sh(["git", "commit", "-qm", "Sync upstream"], { cwd: fork.path, env: withHook(t), check: false });
+    expect(commit.code).toBe(1);
+    expect(commit.stderr).toContain(`  ${copy}\n`);
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: fork.path }).stdout).toBe(head);
+    expect(tree(fork.path)).toEqual(before);
+    fork.write(copy, "Intro\nmiddle\nEND-both\n");
+    sh(["git", "commit", "-qam", "Resolve upstream conflict"], { cwd: fork.path, env: withHook(t) });
+    expect(committedFiles(fork)).toContain(copy);
+    expect(fork.read("doc.md")).toBe("Intro\nmiddle\nEND-both\n");
+    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+  });
+
+  caseTest("the hook refuses a synced conflict when HEAD's upstream.lock is a link", (t) => {
+    const fork = forkWith(t, { "doc.md": `intro\n${BLOCK}middle\nend\n` });
+    fork.write("doc.md", "Intro\nmiddle\nEND-ours\n");
+    sh(["git", "commit", "-qam", "drop the example"], { cwd: fork.path, env: { ...withHook(t), PATCHBOOK_INTENT: "Drop the example." } });
+    const lock = join(fork.path, ".patchbook/upstream.lock");
+    renameSync(lock, join(fork.path, ".patchbook/pin.lock"));
+    symlinkSync("pin.lock", lock);
+    sh(["git", "add", "-A"], { cwd: fork.path });
+    sh(["git", "commit", "-qm", "link the lock"], { cwd: fork.path, env: t.env });
+    expect(sh(["git", "ls-tree", "HEAD", "--", ".patchbook/upstream.lock"], { cwd: fork.path }).stdout).toMatch(/^120000 /);
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("doc.md", `intro\n${BLOCK}middle\nEND-theirs\n`);
+    up.commit("reword the end");
+    rmSync(lock);
+    copyFileSync(join(fork.path, ".patchbook/pin.lock"), lock);
+    t.pb(["sync"], { cwd: fork.path });
+    sh(["git", "add", "-u"], { cwd: fork.path });
+    const before = tree(fork.path);
+    const commit = sh(["git", "commit", "-qm", "Sync upstream"], { cwd: fork.path, env: withHook(t), check: false });
+    expect(commit.code).toBe(1);
+    expect(commit.stderr).toContain("  .patchbook/changes/drop-the-example/ours/doc.md.pb\n");
+    expect(tree(fork.path)).toEqual(before);
+  });
+
+  caseTest("status lists a synced conflict when HEAD's upstream.lock is not valid UTF-8", (t) => {
+    const fork = forkWith(t, { "doc.md": `intro\n${BLOCK}middle\nend\n` });
+    fork.write("doc.md", "Intro\nmiddle\nEND-ours\n");
+    sh(["git", "commit", "-qam", "drop the example"], { cwd: fork.path, env: { ...withHook(t), PATCHBOOK_INTENT: "Drop the example." } });
+    const lock = join(fork.path, ".patchbook/upstream.lock");
+    const valid = readFileSync(lock);
+    writeFileSync(lock, Buffer.from([0xff, 0xfe, 0x20, 0x6a, 0x75, 0x6e, 0x6b, 0x0a]));
+    sh(["git", "add", "-A"], { cwd: fork.path });
+    sh(["git", "commit", "-qm", "corrupt the lock"], { cwd: fork.path, env: t.env });
+    writeFileSync(lock, valid);
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("doc.md", `intro\n${BLOCK}middle\nEND-theirs\n`);
+    up.commit("reword the end");
+    t.pb(["sync"], { cwd: fork.path });
+    const status = t.pb(["status"], { cwd: fork.path, code: 1 });
+    expect(status.stderr + status.stdout).toContain("conflict");
+    expect(status.stderr + status.stdout).not.toContain("TypeError");
+    expect(status.stderr + status.stdout).not.toMatch(/\n\s+at /);
+  });
+
+  caseTest("the hook records an edit inside upstream's marker block in a copy whose sync conflict was committed", (t) => {
+    const fork = forkWith(t, { "doc.md": `intro\n${BLOCK}middle\nend\n` });
+    fork.write("doc.md", `Intro\n${BLOCK}middle\nEND-ours\n`);
+    sh(["git", "commit", "-qam", "reword the end"], { cwd: fork.path, env: { ...withHook(t), PATCHBOOK_INTENT: "Reword the end." } });
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("doc.md", `intro\n${BLOCK}middle\nEND-theirs\n`);
+    up.commit("reword the end");
+    t.pb(["sync"], { cwd: fork.path });
+    sh(["git", "add", "-A"], { cwd: fork.path });
+    const sync = sh(["git", "commit", "-qm", "Sync upstream"], { cwd: fork.path, env: withHook(t), check: false });
+    expect(sync.code).toBe(1);
+    expect(sync.stderr).toContain("  .patchbook/changes/reword-the-end/ours/doc.md.pb\n");
+    fork.write(".patchbook/changes/reword-the-end/ours/doc.md.pb", `Intro\n${BLOCK}middle\nEND-both\n`);
+    sh(["git", "commit", "-qam", "Resolve upstream conflict"], { cwd: fork.path, env: withHook(t) });
+    fork.write("doc.md", `Intro\n${BLOCK.replace("x", "X")}middle\nEND-both\n`);
+    sh(["git", "commit", "-qam", "edit inside"], { cwd: fork.path, env: withHook(t) });
+    expect(committedFiles(fork)).toContain(".patchbook/changes/reword-the-end/ours/doc.md.pb");
+    expect(fork.read(".patchbook/changes/reword-the-end/ours/doc.md.pb")).toBe(`Intro\n${BLOCK.replace("x", "X")}middle\nEND-both\n`);
+  });
+
+  for (const report of ["deleted", "unreadable"] as const) {
+    caseTest(`the hook counts marker lines in a synced copy when last-sync.json is ${report}`, (t) => {
+      const fork = syncedConflict(t);
+      if (report === "deleted") rmSync(join(fork.path, ".patchbook/last-sync.json"));
+      else fork.write(".patchbook/last-sync.json", "not json\n");
+      sh(["git", "commit", "-qm", "Sync upstream"], { cwd: fork.path, env: withHook(t) });
+      expect(committedFiles(fork)).toContain(".patchbook/changes/drop-the-example/ours/doc.md.pb");
+    });
+  }
+
+  caseTest("the hook names the staged file when a recorded paragraph gains the markers another paragraph lost", (t) => {
+    const fork = forkWith(t, { "guide.md": `Alpha.\n${BLOCK}\nMiddle.\n\nBeta.\n` });
+    fork.write(".patchbook/blocks/guide.md.entries", "");
+    sh(["git", "add", "-A"], { cwd: fork.path });
+    sh(["git", "commit", "-qm", "start block entries"], { cwd: fork.path, env: t.env });
+    fork.write("guide.md", "Alpha.\n\nMiddle.\n\nBeta.\n<<<<<<< mine\nq\n=======\nr\n>>>>>>> theirs\n");
+    const before = tree(fork.path);
+    const commit = sh(["git", "commit", "-qam", "move the example"], { cwd: fork.path, env: { ...withHook(t), PATCHBOOK_INTENT: "Move the example." }, check: false });
+    expect(commit.code).toBe(1);
+    expect(commit.stderr).toContain("  guide.md\n");
+    expect(commit.stderr).not.toContain("guide.md.entries");
+    expect(tree(fork.path)).toEqual(before);
+  });
+
+  forkTest("a conflicted change copy named series is not the series list", (t) => {
+    t.fork.write("series", "ours\n");
+    t.pb(["record", "feature", "--intent", "Add a series file."], { cwd: t.fork.path });
+    t.fork.commit("record");
+    const path = ".patchbook/changes/feature/ours/series.pb";
+    t.fork.write(path, "<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> upstream\n");
+    sh(["git", "add", path], { cwd: t.fork.path });
+    const commit = sh(["git", "commit", "-qm", "conflicted series file"], { cwd: t.fork.path, env: withHook(t), check: false });
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain(path);
+    expect(commit.stderr).not.toContain("keep both sides' change names");
+  });
+
+  for (const conflict of [false, true]) {
+    forkTest(`the hook ${conflict ? "refuses" : "allows"} an off-series change ${conflict ? "with" : "without"} markers`, (t) => {
+      t.recordFeature();
+      t.fork.write(".patchbook/series", "");
+      if (conflict) t.fork.write(".patchbook/changes/feature/ours/app.txt.pb", "<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> upstream\n");
+      sh(["git", "add", "-A"], { cwd: t.fork.path });
+      const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+      const index = sh(["git", "write-tree"], { cwd: t.fork.path }).stdout;
+      const before = tree(t.fork.path);
+      const commit = sh(["git", "commit", "-qm", "off-series change"], { cwd: t.fork.path, env: withHook(t), check: false });
+      expect(commit.code).toBe(conflict ? 1 : 0);
+      if (conflict) {
+        expect(commit.stderr).toContain(".patchbook/changes/feature/ours/app.txt.pb");
+        expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
+        expect(sh(["git", "write-tree"], { cwd: t.fork.path }).stdout).toBe(index);
+        expect(tree(t.fork.path)).toEqual(before);
+      }
+    });
+  }
 
   forkTest("sync reports an edited file upstream deleted as gone, with the file it moved to", (t) => {
     t.recordFeature();

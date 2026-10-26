@@ -4,6 +4,12 @@ The hand-written part of each release's notes. GitHub's generated notes list the
 
 ## Unreleased
 
+### Resolve change conflicts before committing
+
+After a conflicted `patchbook sync`, the commit hook now refuses the commit and names the change's `ours/<file>.pb` to resolve. Previously it warned and committed the conflict markers. The check covers every change, including a copy hidden by a later edit, and patched paragraph entries. Resolve the markers in the named file, stage it, and commit again. A refused commit leaves HEAD, the index and the working files unchanged. If recording staged output would introduce markers, the hook restores that recording, refuses the commit and names the staged file to fix (#276).
+
+Markers that upstream itself holds don't stop a commit. For a copy that the last sync reported as conflicted in `.patchbook/last-sync.json`, the hook refuses while the copy holds a conflict block, from a `<<<<<<<` line through the next `>>>>>>>` line, that its base copy holds fewer times. So it catches the conflict even when upstream's file holds marker text of its own. That holds only until the sync is committed, meaning HEAD's `upstream.lock` pins the report's `to` commit for that upstream. Once you have resolved the copy and committed, a later edit inside upstream's literal block commits as before. For any other copy, or for every copy when `last-sync.json` is missing or can't be read, it refuses only when the copy holds more marker lines than its base copy. A HEAD with no commit, no `upstream.lock`, an `upstream.lock` that is a link or doesn't parse, or no entry for that upstream pins nothing, so a listed copy gets the block rule. It refuses a paragraph entry whose patched text holds more marker lines than its upstream text.
+
 ### A failed model call no longer leaves new paragraph entries without an intent
 
 When the model failed, `record` and the commit hook wrote a new paragraph entry with an empty intent. `status` reported the entry as a problem, and `build` refused until you ran `patchbook intent`. Now patchbook writes the entry's intent from the paragraph edit and labels it `intent (by patchbook):` in the entries file, as it does for a change, so the build goes ahead:

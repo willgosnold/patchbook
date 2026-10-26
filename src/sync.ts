@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
 import { type Lost, lostEdit } from "./blocks.ts";
-import { Book, GIT, PB, refuseNestedGit, refuseUpstreamGit, segmentNamesGit, under, unsafeVendor } from "./book.ts";
+import { Book, GIT, parseLock, PB, refuseNestedGit, refuseUpstreamGit, segmentNamesGit, under, unsafeVendor } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
 import { installHookOrWarn } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
@@ -150,6 +150,35 @@ export function lastSyncText(doc: LastSync): string {
 export function readLastSync(book: Book): LastSync | null {
   const path = join(book.dir, REPORT);
   return exists(path) ? parseLastSync(readTextReplace(path)) : null;
+}
+
+/** The report only records past syncs, so one that can't be read names no conflicts. A HEAD lock that is missing, a link or unparseable pins nothing. */
+export function syncConflicts(book: Book): Set<string> {
+  let listed: SyncReport[];
+  try {
+    listed = readLastSync(book)?.upstreams.filter((r) => r.conflicts.length) ?? [];
+  } catch (e) {
+    if (e instanceof Fail || (e instanceof Error && "errno" in e)) return new Set();
+    throw e;
+  }
+  if (!listed.length) return new Set();
+  const committed = headPins(book);
+  return new Set(listed.filter((r) => committed.get(r.name) !== r.to).flatMap((r) => r.conflicts.map((c) => `${c.change}\0${c.path}`)));
+}
+
+function headPins(book: Book): Map<string, string> {
+  const lock = relative(book.root, join(book.dir, "upstream.lock"));
+  const entry = spawn(["git", "ls-tree", "HEAD", "--", lock], { cwd: book.root });
+  const [, sha] = /^100(?:644|755) blob (\w+)\t/.exec(decode(entry.stdout)) ?? [];
+  if (entry.code !== 0 || !sha) return new Map();
+  const blob = spawn(["git", "cat-file", "blob", sha], { cwd: book.root });
+  if (blob.code !== 0) return new Map();
+  try {
+    return new Map(parseLock(decodeReplace(blob.stdout)).map((p) => [p.name, p.commit]));
+  } catch (e) {
+    if (e instanceof Fail) return new Map();
+    throw e;
+  }
 }
 
 function writeLastSync(book: Book, reports: ReadonlyMap<string, SyncReport>): void {

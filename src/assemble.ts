@@ -7,11 +7,13 @@ import {
   entriesPath, type Entry, entryKey, formatEntry, leakScan, orphan, patchBlocks, readEntries, Rules, type Unmatched,
 } from "./blocks.ts";
 import { ATTRIBUTES_FILE, Book, buildInputs, GIT, PB, type Reserved, under } from "./book.ts";
-import { type Change, editText, isMergeMarker, readChanges, replaceIntent, strayProblems } from "./changes.ts";
+import {
+  Change, CHANGE_NAME, editText, isMergeMarker, readChanges, replaceIntent, strayProblems,
+} from "./changes.ts";
 import { installHookOrWarn, stageModes, upstreamModes, warnUnhooked } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import {
-  exists, type File, fileOid, gitMode, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, type Mode, nonFolders, outputMode, parseGitMode, readText, relative, resolve, rglob,
+  exists, type File, fileOid, foldersWith, gitMode, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, type Mode, nonFolders, outputMode, parseGitMode, readText, relative, resolve, rglob,
   rmFolders, sameFile, sameMode, type Seen, writeDisk, writeText,
 } from "./lib/fs.ts";
 import { forgetBlobOids } from "./lib/hash.ts";
@@ -20,7 +22,7 @@ import { type Env, git, run, spawn } from "./lib/proc.ts";
 import { say, verbatim, warn } from "./lib/term.ts";
 import { byCodePoint, bytesEqual, decode, encode, isText } from "./lib/text.ts";
 import { pinned, refuseMergedUpstream } from "./store.ts";
-import { readLastSync } from "./sync.ts";
+import { readLastSync, syncConflicts } from "./sync.ts";
 
 export function describe(p: Problem): string {
   let at = p.file + ("line" in p && p.line ? `:${p.line}` : "") + ("hash" in p && p.hash ? ` [${p.hash}]` : "");
@@ -75,6 +77,31 @@ type Sink = { problems: Problem[]; used: Map<string, Set<string>>; unmatched: Ma
 const CONFLICT = /^(?:<{7}|>{7})(?: |$)/;
 /** A line that starts with a conflict marker. Only `\n` ends a line. */
 export const hasConflictMarker = (text: string) => text.split("\n").some((line) => CONFLICT.test(line));
+const markerLines = (text: string) => text.split("\n").filter((line) => CONFLICT.test(line)).length;
+const addsConflictMarker = (text: string, reference: string) => markerLines(text) > markerLines(reference);
+const conflictBlocks = (text: string) => {
+  const blocks: string[] = [];
+  let open: string[] | null = null;
+  for (const line of text.split("\n")) {
+    if (!CONFLICT.test(line)) open?.push(line);
+    else if (line.startsWith("<")) (open ??= []).push(line);
+    else {
+      blocks.push([...(open ?? []), line].join("\n"));
+      open = null;
+    }
+  }
+  return open ? [...blocks, open.join("\n")] : blocks;
+};
+const addsConflictBlock = (text: string, reference: string) => {
+  const held = new Map<string, number>();
+  for (const block of conflictBlocks(reference)) held.set(block, (held.get(block) ?? 0) + 1);
+  return conflictBlocks(text).some((block) => {
+    const n = held.get(block) ?? 0;
+    held.set(block, n - 1);
+    return n <= 0;
+  });
+};
+const textOf = (f: File | null) => (f && f.mode !== LINK && isText(f.data) ? decode(f.data) : "");
 const mayHoldMarker = (data: Uint8Array) => {
   const bytes = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
   return bytes.includes("<<<<<<<") || bytes.includes(">>>>>>>");
@@ -157,6 +184,18 @@ export function assemble(book: Book): Assembly {
   const changes = readChanges(book, problems);
   const byName = new Map(changes.map((c) => [c.name, c]));
 
+  const conflicted = syncConflicts(book);
+  for (const name of foldersWith(book.data("changes"), "CHANGE.md").filter((name) => CHANGE_NAME.test(name))) {
+    const c = byName.get(name) ?? new Change(name, book.data("changes", name));
+    for (const copy of nonFolders(join(c.dir, "ours")).filter((p) => p.endsWith(".pb"))) {
+      const path = copy.slice(0, -".pb".length);
+      const adds = conflicted.has(`${c.name}\0${path}`) ? addsConflictBlock : addsConflictMarker;
+      if (adds(textOf(c.file("ours", path)), textOf(c.file("base", path)))) {
+        problems.push({ problem: "conflict", file: path, change: c.name, detail: "ours has conflict markers", refuse: true });
+      }
+    }
+  }
+
   // Content edits, keyed by upstream path. One owner per path.
   const content = new Map(upstream);
   const owner = new Map<string, string>();
@@ -184,19 +223,22 @@ export function assemble(book: Book): Assembly {
       if (!bytesEqual(base.data, up.data)) {
         problems.push({ problem: "stale", ...where, detail: "its base differs from upstream at the pin; run sync" });
       }
-      if (isText(ours.data) && hasConflictMarker(decode(ours.data))) problems.push({ problem: "conflict", ...where, detail: "ours has conflict markers" });
       content.set(e.path, { data: ours.data, mode: outputMode(ours, base, up) });
       applied++;
     }
   }
   const blocks = new Map<string, Map<string, Entry>>();
   for (const rel of blockFiles(book)) {
+    const entries = readEntries(entriesPath(book, rel));
+    if (Array.from(entries.values()).some((e) => addsConflictMarker(e.patched, e.upstream))) {
+      problems.push({ problem: "conflict", file: `blocks/${rel}.entries`, detail: "patched paragraph has conflict markers", refuse: true });
+    }
     const owned = owner.get(rel);
     if (owned !== undefined) {
       problems.push({ problem: "invalid", file: rel, detail: `${owned} owns it, so it can't have block entries` });
       continue;
     }
-    blocks.set(rel, readEntries(entriesPath(book, rel)));
+    blocks.set(rel, entries);
   }
 
   const lost = new Set<string>();
