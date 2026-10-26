@@ -4,6 +4,10 @@ The hand-written part of each release's notes. GitHub's generated notes list the
 
 ## Unreleased
 
+### Skip checkout builds when the inputs stay the same
+
+The post-checkout hook now compares the old and new commits before it rebuilds. It skips the build when `.patchbook` and configured placeholder files are unchanged, including placeholder files inside the output. Missing revisions, custom build hooks, vendored upstreams and linked inputs still trigger a build. Existing patchbook-owned checkout hooks and hook-manager snippets are upgraded when hooks are installed (#338).
+
 ### Branches that each record a change merge without a conflict
 
 Two branches that each recorded a change conflicted in `.patchbook/series` and `.patchbook/build.lock`, even when the changes touched unrelated files, because every record and build writes both files. `init` and `clone` now write `.patchbook/.gitattributes`, which tells git to merge `series` and `build.lock` with its built-in `union` driver, so a merge keeps both sides' lines and needs no git config. `build` adds the file to a fork that lacks it, and the next commit stages it. After the merge, run `patchbook build`: the unioned `build.lock` can list a path twice until it rewrites the lock (#334).

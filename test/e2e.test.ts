@@ -16593,6 +16593,7 @@ describe("MergeTest", () => {
 
 describe("PostHookTest", () => {
   const POST = ["post-merge", "post-checkout", "post-rewrite"];
+  const CHECKOUT_CONTEXT = 'PATCHBOOK_CHECKOUT_BEFORE="$1" PATCHBOOK_CHECKOUT_AFTER="$2" ';
   const OURS = ".patchbook/changes/feature/ours/extra.txt.pb";
   const hooked = (t: Case, env: Record<string, string> = {}): Record<string, string> => ({ ...t.env, PATCHBOOK_HOOK: "1", ...env });
   const git = (t: ForkCase, args: string[], env?: Record<string, string>, check = true) => sh(["git", ...args], { cwd: t.fork.path, check, env: env ?? t.env });
@@ -16646,6 +16647,280 @@ describe("PostHookTest", () => {
     git(t, ["switch", "-q", "main"], hooked(t));
     expect(t.fork.read("extra.txt")).toBe("ours\n");
   });
+
+  forkTest("a branch checkout with unchanged build inputs does not run a build", (t) => {
+    t.fork.write(".patchbook/series", "bogus\n");
+    t.fork.commit("invalid data on both branches");
+    git(t, ["switch", "-qc", "same-inputs"]);
+    t.fork.write("app.txt", "only the output changed\n");
+    t.fork.commit("output only");
+    const switched = git(t, ["checkout", "-q", "main"], hooked(t));
+    expect(switched.stderr).toBe("");
+    expect(t.fork.read("app.txt")).toContain("two");
+    expect(git(t, ["status", "--porcelain"]).stdout).toBe("");
+  });
+
+  forkTest("build upgrades the previous standalone checkout hook", (t) => {
+    const path = join(t.fork.path, ".git/hooks/post-checkout");
+    writeFileSync(path, read(path).replace(CHECKOUT_CONTEXT, ""));
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.write(".patchbook/series", "bogus\n");
+    t.fork.commit("invalid unchanged inputs");
+    const switched = git(t, ["checkout", "-qb", "same-inputs"], hooked(t));
+    expect(switched.stderr).toBe("");
+    expect(t.pb(["build"], { cwd: t.fork.path, code: 1 }).stderr).toContain("no change called bogus");
+  });
+
+  forkTest("an unrelated submodule does not prevent an unchanged-input checkout from skipping the build", (t) => {
+    const dep = new Repo(join(t.tmp, "dep"));
+    dep.write("README.md", "unrelated\n");
+    dep.commit("start");
+    git(t, ["-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.path, "deps"]);
+    t.fork.write(".patchbook/series", "bogus\n");
+    t.fork.commit("unchanged invalid data and unrelated submodule");
+    const switched = git(t, ["checkout", "-qb", "same-inputs"], hooked(t));
+    expect(switched.stderr).toBe("");
+    expect(git(t, ["status", "--porcelain"]).stdout).toBe("");
+  });
+
+  for (const submodule of ["deps", "sources/deps[1]"]) forkTest(`checkout skips an unchanged placeholder under gitlink ${submodule}`, (t) => {
+    const dep = new Repo(join(t.tmp, "dep"));
+    dep.write("strings.json", '{"greet":"same"}\n');
+    dep.commit("start");
+    git(t, ["-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.path, submodule]);
+    appendFileSync(join(t.fork.path, ".patchbook/config.toml"), `\n[placeholders.str]\nfile = "${submodule}/strings.json"\nformat = "json"\n`);
+    t.fork.write(".patchbook/series", "bogus\n");
+    t.fork.commit("unchanged inputs including gitlink");
+    git(t, ["switch", "-qc", "readme"]);
+    t.fork.write("README.md", "unrelated\n");
+    t.fork.commit("readme only");
+    const switched = git(t, ["checkout", "-q", "--recurse-submodules", "main"], hooked(t));
+    expect(switched.stderr).toBe("");
+    expect(t.fork.read(`${submodule}/strings.json`)).toContain("same");
+    expect(git(t, ["status", "--porcelain"]).stdout).toBe("");
+  });
+
+  forkTest("checkout rebuilds when the placeholder's gitlink is removed", (t) => {
+    const dep = new Repo(join(t.tmp, "dep"));
+    dep.write("strings.json", '{"greet":"before"}\n');
+    dep.commit("start");
+    git(t, ["-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.path, "deps"]);
+    appendFileSync(join(t.fork.path, ".patchbook/config.toml"), '\n[placeholders.str]\nfile = "deps/strings.json"\nformat = "json"\n');
+    t.fork.write(".patchbook/series", "bogus\n");
+    t.fork.commit("gitlink input and invalid series");
+    git(t, ["switch", "-qc", "removed"]);
+    git(t, ["rm", "-qf", "deps"]);
+    t.fork.write("deps/notes.txt", "ordinary replacement without placeholder\n");
+    t.fork.commit("removed gitlink");
+    git(t, ["checkout", "-q", "--recurse-submodules", "main"]);
+    const switched = git(t, ["checkout", "-q", "--recurse-submodules", "removed"], hooked(t));
+    expect(switched.stderr).toContain("couldn't rebuild the output after this git command");
+    expect(switched.stderr).toContain("no change called bogus");
+    expect(t.fork.read("deps/notes.txt")).toContain("ordinary replacement");
+  });
+
+  forkTest("checkout skips an ordinary sibling edit beside a placeholder input", (t) => {
+    t.fork.write("sources/strings.json", '{"greet":"same"}\n');
+    t.fork.write("sources/notes.txt", "before\n");
+    appendFileSync(join(t.fork.path, ".patchbook/config.toml"), '\n[placeholders.str]\nfile = "sources/strings.json"\nformat = "json"\n');
+    t.fork.write(".patchbook/series", "bogus\n");
+    t.fork.commit("unchanged placeholder input");
+    git(t, ["switch", "-qc", "sibling"]);
+    t.fork.write("sources/notes.txt", "after\n");
+    t.fork.commit("sibling only");
+    const switched = git(t, ["checkout", "-q", "main"], hooked(t));
+    expect(switched.stderr).toBe("");
+    expect(t.fork.read("sources/strings.json")).toContain("same");
+    expect(git(t, ["status", "--porcelain"]).stdout).toBe("");
+  });
+
+  for (const [name, old, next] of [
+    ["zero old revision", "0".repeat(40), "HEAD"],
+    ["missing old revision", "missing", "HEAD"],
+    ["missing new revision", "HEAD", "missing"],
+    ["empty old revision", "", "HEAD"],
+  ] as const) {
+    forkTest(`post-checkout rebuilds when it cannot compare a ${name}`, (t) => {
+      staleBranch(t);
+      git(t, ["switch", "-q", "data"]);
+      const head = git(t, ["rev-parse", "HEAD"]).stdout.trim();
+      const built = sh(["sh", join(t.fork.path, ".git/hooks/post-checkout"), old === "HEAD" ? head : old, next === "HEAD" ? head : next, "1"], { cwd: t.fork.path, env: hooked(t) });
+      expect(built.stderr).toContain("patchbook: rebuilt 1 file from");
+      expect(built.stderr).not.toContain("fatal:");
+      expect(t.fork.read("extra.txt")).toBe("changed\n");
+    });
+  }
+
+  test("checkout rebuilds when custom hooks read a changed file outside .patchbook", () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "up"));
+      up.write("app.txt", "upstream\n");
+      up.commit("start");
+      const repo = new Repo(join(t.tmp, "repo"));
+      repo.write("input.txt", "before\n");
+      repo.commit("start");
+      t.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: repo.path });
+      repo.write(".patchbook/hooks.ts", `
+        import { readFileSync } from "node:fs";
+        export const finish = (out) => {
+          out.set("generated.txt", { data: readFileSync("input.txt"), mode: 0o644 });
+        };
+      `);
+      t.pb(["build"], { cwd: repo.path });
+      repo.commit("build before");
+      sh(["git", "switch", "-qc", "data"], { cwd: repo.path, env: t.env });
+      repo.write("input.txt", "after\n");
+      repo.commit("input only");
+      sh(["git", "switch", "-q", "main"], { cwd: repo.path, env: t.env });
+      const switched = sh(["git", "checkout", "-q", "data"], { cwd: repo.path, env: hooked(t) });
+      expect(switched.stderr).toContain("patchbook: rebuilt 1 file from");
+      expect(repo.read("out/generated.txt")).toBe("after\n");
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+
+  for (const linked of [false, true]) vendorTest(`checkout rebuilds when a ${linked ? "linked " : ""}placeholder source outside .patchbook changes`, (t) => {
+    t.repo.write("sources/snippets[1].md", t.repo.read(".patchbook/snippets.md"));
+    if (linked) symlinkSync("sources", join(t.repo.path, "linked"), "dir");
+    const source = `${linked ? "linked" : "sources"}/snippets[1].md`;
+    const config = join(t.repo.path, ".patchbook/config.toml");
+    writeFileSync(config, read(config).replace('file = ".patchbook/snippets.md"', `file = "${source}"`));
+    t.missingScaffoldPatchBuild();
+    t.repo.commit("build before");
+    sh(["git", "switch", "-qc", "data"], { cwd: t.repo.path, env: t.env });
+    t.repo.write("sources/snippets[1].md", "## greet\n\nSay goodbye in T3.\n");
+    t.repo.commit("placeholder only");
+    sh(["git", "switch", "-q", "main"], { cwd: t.repo.path, env: t.env });
+    const switched = sh(["git", "checkout", "-q", "data"], { cwd: t.repo.path, env: hooked(t) });
+    expect(switched.stderr).toContain("patchbook: rebuilt 1 file from");
+    expect(t.repo.read("skills/hello/SKILL.md")).toContain("Say goodbye in T3.");
+  });
+
+  for (const submodule of ["deps", "sources/deps[1]"]) vendorTest(`recursive checkout rebuilds a placeholder inside submodule ${submodule}`, (t) => {
+    const strings = new Repo(join(t.tmp, "strings"));
+    strings.write("strings.json", '{"greet":"Say hello in T3."}\n');
+    strings.commit("before");
+    sh(["git", "-c", "protocol.file.allow=always", "submodule", "add", "-q", strings.path, submodule], { cwd: t.repo.path, env: t.env });
+    const config = join(t.repo.path, ".patchbook/config.toml");
+    writeFileSync(config, read(config).replace('file = ".patchbook/snippets.md"', `file = "${submodule}/strings.json"`).replace('format = "sections"', 'format = "json"'));
+    t.missingScaffoldPatchBuild();
+    t.repo.commit("build before");
+    sh(["git", "switch", "-qc", "data"], { cwd: t.repo.path, env: t.env });
+    const dep = new Repo(join(t.repo.path, submodule));
+    dep.write("strings.json", '{"greet":"Say goodbye in T3."}\n');
+    dep.commit("after");
+    t.repo.commit("gitlink only");
+    sh(["git", "checkout", "-q", "--recurse-submodules", "main"], { cwd: t.repo.path, env: t.env });
+    expect(t.repo.read("skills/hello/SKILL.md")).toContain("Say hello in T3.");
+    const switched = sh(["git", "checkout", "-q", "--recurse-submodules", "data"], { cwd: t.repo.path, env: hooked(t) });
+    expect(dep.read("strings.json")).toContain("Say goodbye in T3.");
+    expect(t.repo.read("skills/hello/SKILL.md")).toContain("Say goodbye in T3.");
+    expect(switched.stderr).toContain("patchbook: rebuilt 1 file from");
+  });
+
+  forkTest("checkout treats a placeholder file inside the output as a build input", (t) => {
+    t.up.write("strings.json", '{"greet":"before"}\n');
+    t.up.commit("placeholder source");
+    t.pb(["sync"], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    appendFileSync(join(t.fork.path, ".patchbook/config.toml"), '\n[placeholders.str]\nfile = "strings.json"\nformat = "json"\n');
+    t.fork.write(".patchbook/series", "bogus\n");
+    t.fork.commit("invalid data on both branches");
+    git(t, ["switch", "-qc", "data"]);
+    t.fork.write("strings.json", '{"greet":"after"}\n');
+    t.fork.commit("placeholder only");
+    git(t, ["switch", "-q", "main"]);
+    const switched = git(t, ["checkout", "-q", "data"], hooked(t));
+    expect(switched.stderr).toContain("no change called bogus");
+    expect(t.fork.read("strings.json")).toBe('{"greet":"after"}\n');
+  });
+
+  forkTest("checkout retains the build validation for changed vendored inputs", (t) => {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("extra.txt", "pinned\n");
+    extra.commit("start");
+    t.pb(["track", "extra", extra.path, "--vendor", "vendor/extra"], { cwd: t.fork.path });
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("vendor");
+    git(t, ["switch", "-qc", "data"]);
+    t.fork.write("vendor/extra/extra.txt", "changed\n");
+    t.fork.commit("vendor only");
+    git(t, ["switch", "-q", "main"]);
+    const switched = git(t, ["checkout", "-q", "data"], hooked(t));
+    expect(switched.stderr).toContain("differs from the pin");
+    expect(t.fork.read("vendor/extra/extra.txt")).toBe("changed\n");
+  });
+
+  for (const dir of [".husky", ".vite-hooks"]) for (const [ending, newline] of [["LF", "\n"], ["CRLF", "\r\n"]] as const) {
+    test(`hook install upgrades a ${ending} checkout snippet in ${dir} without changing surrounding bytes`, () => {
+      const t = new Case();
+      try {
+        const up = new Repo(join(t.tmp, "up"));
+        up.write("app.txt", "upstream\n");
+        up.commit("start");
+        const repo = new Repo(join(t.tmp, "repo"));
+        repo.write("README.md", "project\n");
+        repo.commit("start");
+        t.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: repo.path });
+        t.pb(["build"], { cwd: repo.path });
+        installManager(repo, dir);
+        t.pb(["hook", "install"], { cwd: repo.path });
+        const path = join(repo.path, dir, "post-checkout");
+        const current = read(path).replaceAll("\n", newline);
+        const previous = current.replace(CHECKOUT_CONTEXT, "");
+        const prefix = Buffer.from([35, 33, 47, 98, 105, 110, 47, 115, 104, 13, 10, 35, 255, 10]);
+        const suffix = Buffer.concat([Buffer.from('\necho manager-ran\r\n'), Buffer.from([35, 255, 10])]);
+        writeFileSync(path, Buffer.concat([prefix, Buffer.from(previous), suffix]));
+        t.pb(["hook", "install"], { cwd: repo.path });
+        const expected = Buffer.concat([prefix, Buffer.from(current), suffix]);
+        expect(readFileSync(path)).toEqual(expected);
+        t.pb(["hook", "install"], { cwd: repo.path });
+        expect(readFileSync(path)).toEqual(expected);
+      } finally {
+        t.cleanup();
+      }
+    }, TIMEOUT);
+  }
+
+  test("hook install upgrades a managed checkout hook and keeps its following commands", () => {
+    const t = new Case();
+    try {
+      const up = new Repo(join(t.tmp, "up"));
+      up.write("app.txt", "upstream\n");
+      up.commit("start");
+      const repo = new Repo(join(t.tmp, "repo"));
+      repo.write("README.md", "project\n");
+      repo.commit("start");
+      t.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: repo.path });
+      t.pb(["build"], { cwd: repo.path });
+      installManager(repo, ".husky");
+      repo.write(".husky/_/post-checkout", '#!/bin/sh\nsh -e "$(dirname "$(dirname "$0")")/post-checkout" "$@"\n', 0o755);
+      repo.write(".husky/post-checkout", 'echo manager-ran >> "$(git rev-parse --git-path manager-checkouts)"\n');
+      t.pb(["hook", "install"], { cwd: repo.path });
+      const path = join(repo.path, ".husky/post-checkout");
+      writeFileSync(path, read(path).replace(CHECKOUT_CONTEXT, ""));
+      appendFileSync(path, new Uint8Array([35, 255, 10]));
+      t.pb(["hook", "install"], { cwd: repo.path });
+      const upgraded = readFileSync(path);
+      expect([...upgraded.subarray(-3)]).toEqual([35, 255, 10]);
+      t.pb(["hook", "install"], { cwd: repo.path });
+      expect(readFileSync(path)).toEqual(upgraded);
+      repo.write(".patchbook/series", "bogus\n");
+      repo.commit("invalid unchanged inputs");
+      const switched = sh(["git", "checkout", "-qb", "same-inputs"], { cwd: repo.path, env: hooked(t) });
+      expect(switched.stderr).toBe("");
+      expect(repo.read(".git/manager-checkouts")).toBe("manager-ran\n");
+      repo.write(".patchbook/series", "other\n");
+      repo.commit("changed inputs");
+      const built = sh(["git", "checkout", "-q", "main"], { cwd: repo.path, env: hooked(t) });
+      expect(built.stderr).toContain("no change called bogus");
+      expect(repo.read(".git/manager-checkouts")).toBe("manager-ran\nmanager-ran\n");
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
 
   forkTest("the post-rewrite hook rebuilds after a rebase, not after an amend", (t) => {
     staleBranch(t);
