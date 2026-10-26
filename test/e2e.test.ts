@@ -16683,6 +16683,57 @@ describe("PostHookTest", () => {
     expect(git(t, ["status", "--porcelain"]).stdout).toBe("");
   });
 
+  for (const submodule of ["deps", "sources/deps[1]"]) forkTest(`checkout skips an unchanged placeholder under gitlink ${submodule}`, (t) => {
+    const dep = new Repo(join(t.tmp, "dep"));
+    dep.write("strings.json", '{"greet":"same"}\n');
+    dep.commit("start");
+    git(t, ["-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.path, submodule]);
+    appendFileSync(join(t.fork.path, ".patchbook/config.toml"), `\n[placeholders.str]\nfile = "${submodule}/strings.json"\nformat = "json"\n`);
+    t.fork.write(".patchbook/series", "bogus\n");
+    t.fork.commit("unchanged inputs including gitlink");
+    git(t, ["switch", "-qc", "readme"]);
+    t.fork.write("README.md", "unrelated\n");
+    t.fork.commit("readme only");
+    const switched = git(t, ["checkout", "-q", "--recurse-submodules", "main"], hooked(t));
+    expect(switched.stderr).toBe("");
+    expect(t.fork.read(`${submodule}/strings.json`)).toContain("same");
+    expect(git(t, ["status", "--porcelain"]).stdout).toBe("");
+  });
+
+  forkTest("checkout rebuilds when the placeholder's gitlink is removed", (t) => {
+    const dep = new Repo(join(t.tmp, "dep"));
+    dep.write("strings.json", '{"greet":"before"}\n');
+    dep.commit("start");
+    git(t, ["-c", "protocol.file.allow=always", "submodule", "add", "-q", dep.path, "deps"]);
+    appendFileSync(join(t.fork.path, ".patchbook/config.toml"), '\n[placeholders.str]\nfile = "deps/strings.json"\nformat = "json"\n');
+    t.fork.write(".patchbook/series", "bogus\n");
+    t.fork.commit("gitlink input and invalid series");
+    git(t, ["switch", "-qc", "removed"]);
+    git(t, ["rm", "-qf", "deps"]);
+    t.fork.write("deps/notes.txt", "ordinary replacement without placeholder\n");
+    t.fork.commit("removed gitlink");
+    git(t, ["checkout", "-q", "--recurse-submodules", "main"]);
+    const switched = git(t, ["checkout", "-q", "--recurse-submodules", "removed"], hooked(t));
+    expect(switched.stderr).toContain("couldn't rebuild the output after this git command");
+    expect(switched.stderr).toContain("no change called bogus");
+    expect(t.fork.read("deps/notes.txt")).toContain("ordinary replacement");
+  });
+
+  forkTest("checkout skips an ordinary sibling edit beside a placeholder input", (t) => {
+    t.fork.write("sources/strings.json", '{"greet":"same"}\n');
+    t.fork.write("sources/notes.txt", "before\n");
+    appendFileSync(join(t.fork.path, ".patchbook/config.toml"), '\n[placeholders.str]\nfile = "sources/strings.json"\nformat = "json"\n');
+    t.fork.write(".patchbook/series", "bogus\n");
+    t.fork.commit("unchanged placeholder input");
+    git(t, ["switch", "-qc", "sibling"]);
+    t.fork.write("sources/notes.txt", "after\n");
+    t.fork.commit("sibling only");
+    const switched = git(t, ["checkout", "-q", "main"], hooked(t));
+    expect(switched.stderr).toBe("");
+    expect(t.fork.read("sources/strings.json")).toContain("same");
+    expect(git(t, ["status", "--porcelain"]).stdout).toBe("");
+  });
+
   for (const [name, old, next] of [
     ["zero old revision", "0".repeat(40), "HEAD"],
     ["missing old revision", "missing", "HEAD"],
