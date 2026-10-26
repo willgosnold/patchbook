@@ -6699,6 +6699,26 @@ describe("ForkTest", () => {
     expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
   });
 
+  caseTest("the hook records an edit inside upstream's marker block in a copy whose sync conflict was committed", (t) => {
+    const fork = forkWith(t, { "doc.md": `intro\n${BLOCK}middle\nend\n` });
+    fork.write("doc.md", `Intro\n${BLOCK}middle\nEND-ours\n`);
+    sh(["git", "commit", "-qam", "reword the end"], { cwd: fork.path, env: { ...withHook(t), PATCHBOOK_INTENT: "Reword the end." } });
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("doc.md", `intro\n${BLOCK}middle\nEND-theirs\n`);
+    up.commit("reword the end");
+    t.pb(["sync"], { cwd: fork.path });
+    sh(["git", "add", "-A"], { cwd: fork.path });
+    const sync = sh(["git", "commit", "-qm", "Sync upstream"], { cwd: fork.path, env: withHook(t), check: false });
+    expect(sync.code).toBe(1);
+    expect(sync.stderr).toContain("  .patchbook/changes/reword-the-end/ours/doc.md.pb\n");
+    fork.write(".patchbook/changes/reword-the-end/ours/doc.md.pb", `Intro\n${BLOCK}middle\nEND-both\n`);
+    sh(["git", "commit", "-qam", "Resolve upstream conflict"], { cwd: fork.path, env: withHook(t) });
+    fork.write("doc.md", `Intro\n${BLOCK.replace("x", "X")}middle\nEND-both\n`);
+    sh(["git", "commit", "-qam", "edit inside"], { cwd: fork.path, env: withHook(t) });
+    expect(committedFiles(fork)).toContain(".patchbook/changes/reword-the-end/ours/doc.md.pb");
+    expect(fork.read(".patchbook/changes/reword-the-end/ours/doc.md.pb")).toBe(`Intro\n${BLOCK.replace("x", "X")}middle\nEND-both\n`);
+  });
+
   for (const report of ["deleted", "unreadable"] as const) {
     caseTest(`the hook counts marker lines in a synced copy when last-sync.json is ${report}`, (t) => {
       const fork = syncedConflict(t);
