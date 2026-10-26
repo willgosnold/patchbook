@@ -4,6 +4,12 @@ The hand-written part of each release's notes. GitHub's generated notes list the
 
 ## Unreleased
 
+### A failed track can be retried, and a missing change copy gets a message
+
+When `patchbook track` failed after its sync, such as when `.patchbook/config.toml` couldn't be written, it left the new upstream's pin in `upstream.lock` and its vendored copy behind. Running it again with another URL was then refused, because the vendored copy it left behind was in the way. Now a failed track puts the lock, the vendored copy and the config back as they were, and the same name can be tracked again.
+
+`patchbook sync` used to stop with a stack trace when a change's `base/<file>.pb` or `ours/<file>.pb` was missing. Now it fails with a `patchbook:` message that names each change, file and missing copy, both copies when both are gone, and changes nothing. Restore the copies, or remove the edit from the change, and sync again (#10).
+
 ### A partial commit can't move the upstream pin without its vendored copy
 
 `git commit -- note.txt .patchbook/upstream.lock` after a `patchbook sync` used to commit the new pin and leave the vendored copy at the old one, and a clone's `status` then failed with `vendor/extra (tree ...) differs from the pin`. The hook now refuses that commit before it records or builds anything, and names the upstream, the lock and the vendor folder. Add the lock and the folder to the paths you name, or run `git add` on the lock, and on the file it points to when it is a link, and make a full commit, where the hook stages the pinned copy. When the lock is a link to a file in the repo, name that file too. When git doesn't know a path yet, such as the folder of a first vendoring, the message says to `git add` it first, since `git commit -- <path>` fails on a path git doesn't know. A refused commit leaves HEAD, your index and your working files as they were. A partial commit that doesn't move the pin, such as one that only names `note.txt`, is not refused by this check, including when HEAD's lock is a link that leads out of the repo. A copy that differs from the pin still gets the message that it differs from the pin. The message for an unstaged `upstream.lock` gives the same advice. It names the lock, the file a linked lock points to, the copies, and any other unstaged build input, where it said that naming the lock alone was enough (#227).
