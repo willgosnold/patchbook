@@ -17177,3 +17177,43 @@ describe("CrashInjection", () => {
     }
   }, TIMEOUT);
 });
+
+const unreachable = [
+  ["a password", "https://user:s3cretpw@127.0.0.1:1/x.git"],
+  ["a password with an encoded at sign", "https://user:p%40s3cretpw@127.0.0.1:1/x.git"],
+  ["an ssh password with an encoded colon", "ssh://u%3As3cretpw@127.0.0.1:1/x.git"],
+] as const;
+
+for (const command of ["check", "status", "sync"]) {
+  for (const [what, remote] of unreachable) {
+    forkTest(`${command} does not print ${what} of an upstream remote it cannot reach`, (t) => {
+      setRemote(join(t.fork.path, ".patchbook/config.toml"), remote);
+      const out = t.pb([command], { cwd: t.fork.path, code: null });
+      if (command !== "status") expect(out.stderr).toContain("127.0.0.1:1/x.git");
+      expect(out.stderr + out.stdout).not.toContain("s3cretpw");
+    });
+  }
+}
+
+for (const command of ["check", "sync"]) {
+  forkTest(`${command} does not print the password of a tracked upstream's remote it cannot reach`, (t) => {
+    const extra = new Repo(join(t.tmp, "extra"));
+    extra.write("lib.txt", "lib\n");
+    extra.commit("start");
+    t.pb(["track", "extra", extra.path], { cwd: t.fork.path });
+    t.fork.commit("track");
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    writeFileSync(config, read(config).replace(`remote = "${extra.path}"`, 'remote = "https://user:s3cretpw@127.0.0.1:1/x.git"'));
+    const out = t.pb([command], { cwd: t.fork.path, code: null });
+    expect(out.stderr).toContain("127.0.0.1:1/x.git");
+    expect(out.stderr + out.stdout).not.toContain("s3cretpw");
+  });
+}
+
+forkTest("status names an upstream with no name by its host, not the password in its remote", (t) => {
+  const config = join(t.fork.path, ".patchbook/config.toml");
+  writeFileSync(config, read(config).replace(/^name = .*\n/m, "").replace(/^remote = .*$/m, 'remote = "https://user:s3cretpw@127.0.0.1:1"'));
+  const out = t.pb(["status"], { cwd: t.fork.path, code: 1 });
+  expect(out.stderr).toContain("upstream 127.0.0.1:1 has no pin yet");
+  expect(out.stderr + out.stdout).not.toContain("s3cretpw");
+});
