@@ -16193,6 +16193,64 @@ describe("IntentWithoutAModelTest", () => {
       expect(status(t)).not.toContain("note");
     });
 
+    const SKILL = "skills/hello/SKILL.md";
+    const editAgain = (t: VendorCase): void => t.repo.write(SKILL, t.repo.read(SKILL).replace("Then wave twice.", "Then wave thrice."));
+    const expectGiven = (t: VendorCase, entries: string, what: string): void => {
+      expect(read(entries)).toContain(`intent: ${what}\n`);
+      expect(read(entries)).not.toContain("(by patchbook)");
+      expect(status(t)).not.toContain("note");
+      t.pb(["build"], { cwd: t.repo.path });
+      expect(t.repo.read(SKILL)).toContain("Then wave thrice.");
+    };
+
+    vendorTest("record --intent replaces an intent patchbook wrote for an entry when the model failed", (t) => {
+      const entries = edit(t);
+      breakModel(t, "exit");
+      t.pb(["record"], { cwd: t.repo.path });
+      editAgain(t);
+      const run = t.pb(["record", "--intent", "Mine after."], { cwd: t.repo.path });
+      expect(run.stdout).toMatch(new RegExp(`^entry    ${LABEL} updated\\n$`));
+      expectGiven(t, entries, "Mine after.");
+    });
+
+    vendorTest("the hook with PATCHBOOK_INTENT replaces an intent patchbook wrote for an entry", (t) => {
+      const entries = edit(t);
+      breakModel(t, "exit");
+      t.pb(["record"], { cwd: t.repo.path });
+      editAgain(t);
+      sh(["git", "add", "-A"], { cwd: t.repo.path });
+      const run = sh(["git", "commit", "-qm", "wave"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Mine after." }, check: false });
+      expect(run.code).toBe(0);
+      expect(run.stderr).not.toContain("not used");
+      expect(run.stderr).not.toContain("by patchbook");
+      expectGiven(t, entries, "Mine after.");
+    });
+
+    vendorTest("record --intent gives a new entry and an updated one patchbook wrote the same intent", (t) => {
+      const entries = edit(t);
+      breakModel(t, "exit");
+      t.pb(["record"], { cwd: t.repo.path });
+      editAgain(t);
+      t.repo.write(SKILL, t.repo.read(SKILL).replace("# Hello\n", "# Hello there\n"));
+      const run = t.pb(["record", "--intent", "Mine after."], { cwd: t.repo.path });
+      expect(run.stdout).not.toContain("not used");
+      expect(run.stdout).not.toContain("by patchbook");
+      expect(read(entries).match(/intent: Mine after\.\n/g)).toHaveLength(2);
+      expectGiven(t, entries, "Mine after.");
+    });
+
+    vendorTest("record --intent keeps an intent someone wrote for an entry and says it was not used", (t) => {
+      const entries = edit(t);
+      breakModel(t, "exit");
+      t.pb(["record"], { cwd: t.repo.path });
+      writeFileSync(entries, read(entries).replace(/intent \(by patchbook\): [^\n]*/, "intent: Mine by hand."));
+      editAgain(t);
+      const run = t.pb(["record", "--intent", "Other."], { cwd: t.repo.path });
+      expect(run.stdout).toContain("intent   not used");
+      expect(read(entries)).toContain("intent: Mine by hand.\n");
+      expect(read(entries)).not.toContain("Other.");
+    });
+
     vendorTest("a later record with no model writes patchbook's intent for an entry again", (t) => {
       const entries = edit(t);
       breakModel(t, "exit");
