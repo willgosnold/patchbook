@@ -286,7 +286,7 @@ export const LEFTHOOK: Readonly<Record<string, Format>> = { yml: lefthookYaml, y
 
 const hookId = (entry: Entry) => (entry.event === "pre-commit" ? COMMAND : `${COMMAND}-${entry.event}`);
 
-/** What stops pre-commit from running a hook on every commit. It also appends the staged file names to `entry` unless pass_filenames is false, and patchbook rejects arguments. */
+/** What limits a pre-commit hook to some files. A hook that runs on every commit also needs pass_filenames false, since pre-commit appends the staged file names to `entry` and patchbook rejects arguments. */
 const PRE_COMMIT_LIMITS = ["files", "exclude", "types", "types_or", "exclude_types"];
 
 /** pre-commit splits `entry` like a shell does and runs the words without one, so the script goes through `sh -c`. */
