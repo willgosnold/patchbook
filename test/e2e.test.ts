@@ -6663,6 +6663,66 @@ describe("ForkTest", () => {
     expect(commit.stderr).toContain(".patchbook/blocks/guide.md.entries");
   });
 
+  caseTest("the hook records an edit inside the marker block upstream holds", (t) => {
+    const fork = forkWith(t, { "doc.md": `intro\n${BLOCK}end\n` });
+    fork.write("doc.md", `intro\n${BLOCK.replace("x", "X")}end\n`);
+    sh(["git", "commit", "-qam", "edit inside"], { cwd: fork.path, env: { ...withHook(t), PATCHBOOK_INTENT: "Capitalize the example." } });
+    expect(committedFiles(fork)).toContain(".patchbook/changes/capitalize-the-example/ours/doc.md.pb");
+  });
+
+  const syncedConflict = (t: Case) => {
+    const fork = forkWith(t, { "doc.md": `intro\n${BLOCK}middle\nend\n` });
+    fork.write("doc.md", "Intro\nmiddle\nEND-ours\n");
+    sh(["git", "commit", "-qam", "drop the example"], { cwd: fork.path, env: { ...withHook(t), PATCHBOOK_INTENT: "Drop the example." } });
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("doc.md", `intro\n${BLOCK}middle\nEND-theirs\n`);
+    up.commit("reword the end");
+    t.pb(["sync"], { cwd: fork.path });
+    sh(["git", "add", "-A"], { cwd: fork.path });
+    return fork;
+  };
+
+  caseTest("the hook refuses a synced conflict in a copy whose base holds upstream's marker block", (t) => {
+    const fork = syncedConflict(t);
+    const copy = ".patchbook/changes/drop-the-example/ours/doc.md.pb";
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: fork.path }).stdout;
+    const before = tree(fork.path);
+    const commit = sh(["git", "commit", "-qm", "Sync upstream"], { cwd: fork.path, env: withHook(t), check: false });
+    expect(commit.code).toBe(1);
+    expect(commit.stderr).toContain(`  ${copy}\n`);
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: fork.path }).stdout).toBe(head);
+    expect(tree(fork.path)).toEqual(before);
+    fork.write(copy, "Intro\nmiddle\nEND-both\n");
+    sh(["git", "commit", "-qam", "Resolve upstream conflict"], { cwd: fork.path, env: withHook(t) });
+    expect(committedFiles(fork)).toContain(copy);
+    expect(fork.read("doc.md")).toBe("Intro\nmiddle\nEND-both\n");
+    expect(t.pb(["status"], { cwd: fork.path }).stdout).toContain("no problems");
+  });
+
+  for (const report of ["deleted", "unreadable"] as const) {
+    caseTest(`the hook counts marker lines in a synced copy when last-sync.json is ${report}`, (t) => {
+      const fork = syncedConflict(t);
+      if (report === "deleted") rmSync(join(fork.path, ".patchbook/last-sync.json"));
+      else fork.write(".patchbook/last-sync.json", "not json\n");
+      sh(["git", "commit", "-qm", "Sync upstream"], { cwd: fork.path, env: withHook(t) });
+      expect(committedFiles(fork)).toContain(".patchbook/changes/drop-the-example/ours/doc.md.pb");
+    });
+  }
+
+  caseTest("the hook names the staged file when a recorded paragraph gains the markers another paragraph lost", (t) => {
+    const fork = forkWith(t, { "guide.md": `Alpha.\n${BLOCK}\nMiddle.\n\nBeta.\n` });
+    fork.write(".patchbook/blocks/guide.md.entries", "");
+    sh(["git", "add", "-A"], { cwd: fork.path });
+    sh(["git", "commit", "-qm", "start block entries"], { cwd: fork.path, env: t.env });
+    fork.write("guide.md", "Alpha.\n\nMiddle.\n\nBeta.\n<<<<<<< mine\nq\n=======\nr\n>>>>>>> theirs\n");
+    const before = tree(fork.path);
+    const commit = sh(["git", "commit", "-qam", "move the example"], { cwd: fork.path, env: { ...withHook(t), PATCHBOOK_INTENT: "Move the example." }, check: false });
+    expect(commit.code).toBe(1);
+    expect(commit.stderr).toContain("  guide.md\n");
+    expect(commit.stderr).not.toContain("guide.md.entries");
+    expect(tree(fork.path)).toEqual(before);
+  });
+
   forkTest("a conflicted change copy named series is not the series list", (t) => {
     t.fork.write("series", "ours\n");
     t.pb(["record", "feature", "--intent", "Add a series file."], { cwd: t.fork.path });
