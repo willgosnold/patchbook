@@ -265,10 +265,10 @@ function classifyOne(s: Snapshot, path: string): Edited {
     const copy = { path, change, staged: src.path };
     const onDestination = change.edits.some((e) => e.kind === "file" && e.path === src.path);
     if (now === undefined) {
-      if (onDestination) return { kind: "unreplace", ...copy, drops: "file" };
       const staged = s.prefix + path;
       // A moved or copied output, or a copy another output still needs, is deleted. Dropping its add or replace would break the move or copy.
       if (src.path !== staged || readByMoveOrCopy(s, src.path)) return { kind: "delete-upstream", path, staged, entries: null };
+      if (onDestination) return { kind: "unreplace", ...copy, drops: "file" };
       return change.edits.some((e) => e.kind === "add" && e.path === src.path) ? { kind: "unadd", ...copy } : { kind: "unreplace", ...copy, drops: "replace" };
     }
     if (s.uses(change.read("ours", src.path))) return skipPlaceholders(path, change);
@@ -522,13 +522,15 @@ function joined(ask: Asked, known: Change | null, newParts: () => Part[]): Joine
 type Misfit = { edit: Edit; in: string } | "own";
 
 /** Why the change `name` can't take `w`: an edit on its path, a folder above it or a path under it, in a change later in the series,
- * which has to apply first; or, for an add or a replace, a copy of that path the change already keeps. Any change takes a file edit. */
-function misfit(roster: Roster, name: string, w: Written): Misfit | null {
-  if (w.kind === "file") return null;
+ * which has to apply first; or, for an add or a replace, a copy of that path the change already keeps. Any change takes a file edit on
+ * an upstream path. */
+function misfit(roster: Roster, upstream: ReadonlyMap<string, File>, name: string, w: Written): Misfit | null {
+  const inSeries = (e: Edit) => e.kind !== "file" || !upstream.has(e.path);
+  if (!inSeries(w)) return null;
   const ends = "dest" in w ? [w.path, w.dest] : [w.path];
   const overlaps = (p: string) => ends.some((q) => under(p, q) || under(q, p));
   for (const later of roster.after(name).toReversed()) {
-    const edit = later.edits.findLast((e) => e.kind !== "file" && !(later === w.drops && e.kind === "replace" && e.path === w.path)
+    const edit = later.edits.findLast((e) => inSeries(e) && !(later === w.drops && (e.kind === "replace" || e.kind === "file") && e.path === w.path)
       && (overlaps(e.path) || ("dest" in e && overlaps(e.dest))));
     if (edit) return { edit, in: later.name };
   }
@@ -567,12 +569,12 @@ function newIntent(n: Naming): string | null {
 }
 
 function nameAndIntent(
-  ask: Asked, name: string | null, given: string | null, roster: Roster, joins: readonly Joined[],
+  ask: Asked, name: string | null, given: string | null, roster: Roster, upstream: ReadonlyMap<string, File>, joins: readonly Joined[],
   model: (fresh: Omit<Fresh, "parts"> | null, offered: ReadonlyMap<string, Change>) => Reply,
 ): Naming {
   const changes = roster.parsed;
   const misfits = (c: string) => ask.writes.flatMap((w): [Written, Misfit][] => {
-    const why = misfit(roster, c, w);
+    const why = misfit(roster, upstream, c, w);
     return why ? [[w, why]] : [];
   });
 
@@ -701,7 +703,7 @@ export function record(
   const ask = asked(edits);
   const newParts = () => [...pendingEdits(a, current, edits), ...ask.drafts.map(([p, d]) => entryPart(p, d.upstream, d.patched))];
   const joins = joined(ask, change === null ? null : changes.get(change) ?? null, newParts);
-  const naming = nameAndIntent(ask, change, given, roster, joins, (fresh, offered) =>
+  const naming = nameAndIntent(ask, change, given, roster, a.upstream, joins, (fresh, offered) =>
     writeIntents(book, offered, fresh && { ...fresh, parts: newParts() }, joins.map((j) => ({ key: j.key, was: j.was, parts: j.parts() }))));
   const fresh = newIntent(naming);
   const target = naming.name ? changes.get(naming.name) ?? new Change(naming.name, join(book.dir, "changes", naming.name), fresh ? byAuthor(fresh) : null) : null;

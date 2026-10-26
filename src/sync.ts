@@ -3,7 +3,7 @@ import { appendFileSync, chmodSync, lstatSync, mkdtempSync, readdirSync, readFil
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
-import { applyStructure, editedUpstream } from "./assemble.ts";
+import { applyStructure } from "./assemble.ts";
 import { type Lost, lostEdit } from "./blocks.ts";
 import { Book, GIT, parseLock, PB, refuseNestedGit, refuseUpstreamGit, segmentNamesGit, under, unsafeVendor } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
@@ -194,14 +194,9 @@ function pinnedFiles(book: Book, u: Upstream): Map<string, File> {
 
 function destinationSources(book: Book, changes: readonly Change[], atPin: (u: Upstream) => ReadonlyMap<string, File>): Map<string, string> {
   const ends = changes.flatMap((c) => c.edits.flatMap((e) => (e.kind === "copy" || e.kind === "move" ? [e.dest] : [])));
-  const paths = changes.flatMap((c) => c.edits.flatMap((e) => (e.kind === "file" && ends.some((d) => under(e.path, d)) ? [e.path] : [])));
-  if (!paths.length) return new Map();
+  if (!changes.some((c) => c.edits.some((e) => e.kind === "file" && ends.some((d) => under(e.path, d))))) return new Map();
   const upstream = new Map(book.upstreams.flatMap((u) => [...atPin(u)]));
-  const { tree } = applyStructure(changes, upstream, [], (p) => book.reservedHolding(p));
-  return new Map(paths.flatMap((p) => {
-    const from = editedUpstream(p, upstream, tree);
-    return from === undefined ? [] : [[p, from] as const];
-  }));
+  return applyStructure(changes, upstream, [], (p) => book.reservedHolding(p)).upstreamOf;
 }
 
 /** Move one upstream's pin and carry every change on its files forward. Returns the report, or null. */

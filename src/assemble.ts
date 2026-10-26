@@ -112,19 +112,27 @@ function intoReserved(where: InEdit, path: string, { place, refuse }: Reserved):
   return refuse ? { problem: "invalid", ...where, detail, refuse: true } : { problem: "invalid", ...where, detail };
 }
 
-/** Apply add, replace, delete, move and copy to a map of staged path to source, and count the edits that applied. */
+/** Apply add, replace, delete, move and copy, and each `file` edit on a path upstream doesn't have, to a map of staged path to source,
+ * and count the structural edits that applied. */
 export function applyStructure(
   changes: readonly Change[],
   upstream: ReadonlyMap<string, File>,
   problems: Problem[],
   reservedHolding: (staged: string) => Reserved | null,
   dropped = new Set<string>(),
-): { tree: Map<string, Source>; applied: number } {
+): { tree: Map<string, Source>; applied: number; upstreamOf: Map<string, string> } {
   const tree = new Map<string, Source>(Array.from(upstream.keys(), (p) => [p, { kind: "up", path: p }]));
+  const upstreamOf = new Map<string, string>();
   let applied = 0;
   for (const c of changes) {
     for (const e of c.edits) {
-      if (e.kind === "file") continue;
+      if (e.kind === "file") {
+        const src = upstream.has(e.path) ? undefined : tree.get(e.path);
+        if (src?.kind !== "up") continue;
+        upstreamOf.set(e.path, src.path);
+        if (c.read("ours", e.path) !== null) tree.set(e.path, { kind: "ours", change: c.name, path: e.path });
+        continue;
+      }
       const where: InEdit = { file: `changes/${c.name}`, edit: editText(e) };
       const matched = Array.from(tree.keys()).filter((p) => under(p, e.path));
       if (e.kind === "add") {
@@ -170,13 +178,7 @@ export function applyStructure(
       }
     }
   }
-  return { tree, applied };
-}
-
-export function editedUpstream(path: string, upstream: ReadonlyMap<string, File>, staged: ReadonlyMap<string, Source>): string | undefined {
-  if (upstream.has(path)) return path;
-  const src = staged.get(path);
-  return src?.kind === "up" ? src.path : undefined;
+  return { tree, applied, upstreamOf };
 }
 
 export function blockFiles(book: Book): string[] {
@@ -254,12 +256,12 @@ export function assemble(book: Book): Assembly {
   }
 
   const lost = new Set<string>();
-  const { tree: staged, applied: structural } = applyStructure(changes, upstream, problems, (p) => book.reservedHolding(p), lost);
+  const { tree: staged, applied: structural, upstreamOf } = applyStructure(changes, upstream, problems, (p) => book.reservedHolding(p), lost);
   applied += structural;
   for (const { c, path } of destinations) {
-    const from = editedUpstream(path, upstream, staged);
-    if (from === undefined) problems.push({ problem: "gone", file: path, change: c.name, detail: "upstream no longer has it" });
-    else if (copiesOver(c, path, upstream.get(from)!)) staged.set(path, { kind: "ours", change: c.name, path });
+    const from = upstreamOf.get(path);
+    if (from === undefined) problems.push({ problem: "gone", file: path, change: c.name, detail: "no earlier copy or move of an upstream file reaches it" });
+    else copiesOver(c, path, upstream.get(from)!);
   }
   const prefix = book.layout.kind === "folder" ? book.layout.from : "";
   const atOutput = (p: string) => (!prefix ? [p] : p.startsWith(prefix + "/") ? [p.slice(prefix.length + 1)] : []);
