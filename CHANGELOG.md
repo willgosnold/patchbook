@@ -10,14 +10,16 @@ When the model failed, `record` and the commit hook wrote a new paragraph entry 
 
 ```
 $ PATCHBOOK_PROVIDER=none patchbook record
-entry    hello/SKILL.md [58aa0fcd3b7e] added
-intent   by patchbook for hello/SKILL.md [58aa0fcd3b7e] (intent.provider is none). To replace it, run `patchbook intent` or edit its line to `intent: <yours>`
+entry    dup.md [79aeaf7ba450] added
+entry    dup.md [230d8358dc8e] added
+intent   by patchbook for dup.md [79aeaf7ba450], dup.md [230d8358dc8e] (intent.provider is none). To replace them, run `patchbook intent` or edit their lines to `intent: <yours>`
 $ patchbook status
-note      skills/hello/SKILL.md [58aa0fcd3b7e]: patchbook wrote its intent from the paragraph edit. To replace it, run `patchbook intent` or edit its line to `intent: <yours>`
-1 edits apply at 2c5f1e8; no problems
+note      dup.md [79aeaf7ba450]: patchbook wrote its intent from the paragraph edit. To replace it, run `patchbook intent` or edit its line to `intent: <yours>`
+note      dup.md [230d8358dc8e]: patchbook wrote its intent from the paragraph edit. To replace it, run `patchbook intent` or edit its line to `intent: <yours>`
+4 edits apply at up 123ec94; no problems
 ```
 
-The intent names the start of upstream's paragraph and says whether the edit rewrote or deleted it, as in `Rewrites the paragraph that starts "Then wave." in hello/SKILL.md.`, so two paragraphs of one file get two intents. `patchbook intent` replaces it through the model, or you can rewrite the line as `intent: ...`. A later record that edits the same paragraph with no model writes it again, and an entry whose intent someone wrote keeps its intent. An entry that already has an empty intent still keeps it empty after a failed model call (#349) (#331).
+The intent names the start of upstream's paragraph and says whether the edit rewrote or deleted it, as in `Rewrites the paragraph that starts "body" in dup.md.`, so two paragraphs of one file get two intents. `patchbook intent` replaces it through the model, or you can rewrite the line as `intent: ...`. A later record that edits the same paragraph with no model writes it again, and an entry whose intent someone wrote keeps its intent. An entry that already has an empty intent still keeps it empty after a failed model call (#349) (#331).
 
 ### Skip checkout builds when the inputs stay the same
 

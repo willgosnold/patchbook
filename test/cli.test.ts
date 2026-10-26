@@ -181,7 +181,7 @@ usage: patchbook intent [<change>] [options]
 
 fill empty intents and replace the ones patchbook wrote
 With no <change>, it fills every change and block entry with an empty intent,
-and every change whose intent patchbook wrote.
+and every change or block entry whose intent patchbook wrote.
 
 arguments:
   <change>         only this change

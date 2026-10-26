@@ -552,7 +552,7 @@ describe("planning paragraph edits", () => {
     expect(t.changes()).toEqual([]);
   });
 
-  docTest("with no model, an edit recorded into a change with no intent writes an empty intent, never None, and status reports it missing", (t) => {
+  docTest("with no model, an edit recorded into a change with no intent writes the entry's intent itself, never None, and status still reports the change's missing", (t) => {
     t.env["PATCHBOOK_PROVIDER"] = "none";
     mkdirSync(join(t.repo.path, ".patchbook/changes/mine"), { recursive: true });
     writeFileSync(join(t.repo.path, ".patchbook/changes/mine/CHANGE.md"), "# mine\n\nintent:\n\nedits:\n");
@@ -560,9 +560,12 @@ describe("planning paragraph edits", () => {
     t.edit("Then wave.", "Then wave twice.");
     t.record(["mine"]);
     const entries = read(t.entries);
-    expect(entries).toContain("kind: policy\nrules: \nintent: \n--- upstream\nThen wave.\n--- patched\nThen wave twice.\n");
+    expect(entries).toContain('kind: policy\nrules: \nintent (by patchbook): Rewrites the paragraph that starts "Then wave." in guide.md.\n--- upstream\nThen wave.\n--- patched\nThen wave twice.\n');
     expect(entries).not.toContain("None");
-    expect(t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout).toContain("it has no intent");
+    const status = t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout;
+    expect(status).toContain("invalid   changes/mine: it has no intent; fill it with `patchbook intent mine`");
+    expect(status).toMatch(/note {6}guide\.md \[[0-9a-f]{12}\]: patchbook wrote its intent from the paragraph edit\. /);
+    expect(status).not.toContain("invalid   guide.md");
   });
 
   docTest("a paragraph put back as upstream wrote it loses its entry", (t) => {
