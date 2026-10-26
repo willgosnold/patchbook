@@ -568,10 +568,11 @@ function unstaged(root: string, paths: string[]): string[] {
 
 /** Git sees a staged link as unchanged when only its target changed, so the in-repo file each build input links to is checked too.
  * A target outside the repo has no index entry and is read from disk. */
+const inRepoTarget = (p: string): boolean => p !== "." && p !== ".." && !p.startsWith("../") && p !== ".git" && !p.startsWith(".git/");
+
 function linkTargets(book: Book, inputs: string[]): string[] {
   const root = resolve(book.root);
-  return inputs.filter((p) => isSymlink(join(book.root, p))).map((p) => relative(root, resolve(join(book.root, p))))
-    .filter((p) => p !== "." && p !== ".." && !p.startsWith("../") && p !== ".git" && !p.startsWith(".git/"));
+  return inputs.filter((p) => isSymlink(join(book.root, p))).map((p) => relative(root, resolve(join(book.root, p)))).filter(inRepoTarget);
 }
 
 function ignoredInPatchbook(root: string): Map<string, string> {
@@ -715,7 +716,7 @@ function committedPins(book: Book): Map<string, string> | null {
   if (lock?.mode === "120000") {
     const text = decodeReplace(lock.data);
     const target = join(dirname(path), text);
-    lock = isAbsolute(text) || target.startsWith("..") ? null : committedBlob(book, target);
+    lock = isAbsolute(text) || !inRepoTarget(target) ? null : committedBlob(book, target);
   }
   if (!lock || lock.mode === "120000") return null;
   try {

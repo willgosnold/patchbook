@@ -12062,19 +12062,19 @@ describe("VendorTest", () => {
     expect(cloneStatus(t)).toContain("no problems");
   });
 
-  const linkedLock = (t: FolderCase): void => {
+  const linkedLock = (t: FolderCase, dir = "pins"): void => {
     trackExtra(t, "vendor/extra");
-    const [link, target] = [join(t.repo.path, ".patchbook/upstream.lock"), join(t.repo.path, "pins/upstream.lock")];
+    const [link, target] = [join(t.repo.path, ".patchbook/upstream.lock"), join(t.repo.path, dir, "upstream.lock")];
     mkdirSync(dirname(target));
     renameSync(link, target);
-    symlinkSync("../pins/upstream.lock", link);
+    symlinkSync(`../${dir}/upstream.lock`, link);
     gitIn(t, ["add", "-A"]);
     gitIn(t, ["commit", "-qm", "setup"]);
     rmSync(link);
     copyFileSync(target, link);
     bumpUpstream(t, "extra");
     renameSync(link, target);
-    symlinkSync("../pins/upstream.lock", link);
+    symlinkSync(`../${dir}/upstream.lock`, link);
     t.repo.write("note.txt", "a note\n");
     gitIn(t, ["add", "note.txt"]);
   };
@@ -12087,6 +12087,12 @@ describe("VendorTest", () => {
       expect(stderr).toContain("add these to the paths you named: .patchbook/upstream.lock pins/upstream.lock vendor/extra");
     });
   }
+
+  folderTest("a partial commit naming a linked lock's target in a folder whose name starts with two dots but not the copy is refused", (t) => {
+    linkedLock(t, "..pins");
+    const stderr = refusedLeavingWork(t, ["-qm", "lock only", "--", "note.txt", "..pins/upstream.lock"]);
+    expect(stderr).toContain("it moves the pin of extra in .patchbook/upstream.lock but not its vendored copy, vendor/extra");
+  });
 
   folderTest("a partial commit naming the linked lock, its target and the copy commits all three", (t) => {
     linkedLock(t);
