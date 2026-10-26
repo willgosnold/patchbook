@@ -17,7 +17,7 @@ import { cmdIntent, cmdRecord } from "./record.ts";
 import { checkUpstreamRemote, notThisRepo } from "./remote.ts";
 import { cmdConfig } from "./settings.ts";
 import { cmdSkill, folderFail, installSkill, recordSkill, SCHEDULE, leftBehindSkill } from "./skill.ts";
-import { absoluteRemote, defaultName, cmdUpstream } from "./store.ts";
+import { absoluteRemote, defaultName, cmdUpstream, upstreamFolder } from "./store.ts";
 import { cmdCheck, cmdSync, syncUpstream } from "./sync.ts";
 import { Undo } from "./undo.ts";
 
@@ -118,6 +118,7 @@ async function cmdInit(args: {
   upstream: string; name: string | null; branch: string; path: string; outputTo: string | null; outputFrom: string; vendor: string | null;
 }) {
   refuseCredentials(args.upstream);
+  args.path = upstreamFolder(args.path);
   const root = git(["rev-parse", "--show-toplevel"], { cwd: process.cwd() });
   refuseDanglingLinks(root);
   if (lexists(join(root, PB, "config.toml"))) throw new Fail(`${root} already has a patchbook. To follow another upstream: patchbook track`);
@@ -178,6 +179,7 @@ async function cmdInit(args: {
 /** Follow one more upstream, mounted at its own folder of the staged tree. */
 async function cmdTrack(args: { name: string; url: string; branch: string; path: string; mount: string | null; vendor: string | null }) {
   refuseCredentials(args.url);
+  args.path = upstreamFolder(args.path);
   const book = await Book.find();
   book.refuseLinkedTop();
   installHookOrWarn(book);

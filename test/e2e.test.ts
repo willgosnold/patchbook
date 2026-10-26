@@ -325,6 +325,34 @@ test("clone finishes when the skill cannot be installed", () => {
   }
 }, TIMEOUT);
 
+test("init --path . takes the whole upstream, and a path that climbs out is refused cleanly", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    up.write("sub/lib.txt", "two\n");
+    up.commit("start");
+    const empty = new Repo(join(t.tmp, "empty"));
+    t.pb(["init", "--upstream", up.path, "--path", ".", "--output-to", "out"], { cwd: empty.path });
+    const config = read(join(empty.path, ".patchbook/config.toml"));
+    expect(config).not.toContain("path =");
+    expect(config).toContain(`name = "upstream"`);
+    t.pb(["build"], { cwd: empty.path });
+    expect(read(join(empty.path, "out/app.txt"))).toBe("one\n");
+
+    const sub = new Repo(join(t.tmp, "sub"));
+    t.pb(["init", "--upstream", up.path, "--path", "./sub/", "--output-to", "out"], { cwd: sub.path });
+    expect(read(join(sub.path, ".patchbook/config.toml"))).toContain(`path = "sub"`);
+
+    const bad = new Repo(join(t.tmp, "bad"));
+    const out = t.pb(["init", "--upstream", up.path, "--path", "../x", "--output-to", "out"], { cwd: bad.path, code: 1 });
+    expect(out.stderr).toContain("must name a folder inside the upstream");
+    expect(existsSync(join(bad.path, ".patchbook"))).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("clone and init point to the scheduled updates section", () => {
   const t = new Case();
   try {

@@ -35,6 +35,15 @@ export function absoluteRemote(remote: string): string {
   return remote && !remote.startsWith("-") && isLocalPath(remote) ? posix.resolve(remote) : remote;
 }
 
+/** A folder of the upstream, normalised like a staged folder: `""` is the upstream's root, so `.` and `./` mean it too. */
+export function upstreamFolder(raw: string): string {
+  const folder = posix.normalize(raw);
+  if (folder === ".." || folder.startsWith("../")) {
+    throw new Fail(`--path ${quote(raw)} must name a folder inside the upstream, not one that climbs out with ..`);
+  }
+  return folder === "." ? "" : folder.replace(/^\/+|\/+$/g, "");
+}
+
 function field(spec: Table, key: string, fallback: string): string {
   const value = Object.hasOwn(spec, key) ? spec[key] : fallback;
   if (typeof value !== "string") throw new Fail(`an [[upstream]]'s ${key} is a string, not ${quote(value)}`);
@@ -62,7 +71,7 @@ export class Upstream {
   constructor(readonly book: Book, spec: Table) {
     this.remote = field(spec, "remote", "");
     if (!this.remote) throw new Fail("an [[upstream]] needs a remote");
-    this.path = field(spec, "path", "").replace(/^\/+|\/+$/g, "");
+    this.path = upstreamFolder(field(spec, "path", ""));
     this.branch = field(spec, "branch", "main");
     this.name = field(spec, "name", "") || defaultName(redact(this.remote), this.path);
     if (this.remote.startsWith("-")) {
