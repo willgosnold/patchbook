@@ -566,10 +566,10 @@ function unstaged(root: string, paths: string[]): string[] {
   return [...new Set([...listed(["diff-files", "--name-only", "-z"]), ...listed(["ls-files", "-z", "-o", "--exclude-standard"])].filter(Boolean))].sort(byCodePoint);
 }
 
-/** Git sees a staged link as unchanged when only its target changed, so the in-repo file each build input links to is checked too.
- * A target outside the repo has no index entry and is read from disk. */
 const inRepoTarget = (p: string): boolean => p !== "." && p !== ".." && !p.startsWith("../") && p !== ".git" && !p.startsWith(".git/");
 
+/** Git sees a staged link as unchanged when only its target changed, so the in-repo file each build input links to is checked too.
+ * A target outside the repo has no index entry and is read from disk. */
 function linkTargets(book: Book, inputs: string[]): string[] {
   const root = resolve(book.root);
   return inputs.filter((p) => isSymlink(join(book.root, p))).map((p) => relative(root, resolve(join(book.root, p)))).filter(inRepoTarget);
