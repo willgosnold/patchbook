@@ -353,6 +353,50 @@ test("init --path . takes the whole upstream, and a path that climbs out is refu
   }
 }, TIMEOUT);
 
+test("a trailing slash on --path or a config path names the same folder, so ./ is the upstream root", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("README.md", "top\n");
+    up.write("sub/a.txt", "two\n");
+    up.commit("start");
+    for (const spelling of ["./", ".//", "sub/..//"]) {
+      const repo = new Repo(join(t.tmp, `root${spelling.length}`));
+      t.pb(["init", "--upstream", up.path, "--path", spelling, "--output-to", "out"], { cwd: repo.path });
+      const config = read(join(repo.path, ".patchbook/config.toml"));
+      expect(config).toContain(`name = "upstream"`);
+      expect(config).not.toContain("path =");
+      t.pb(["build"], { cwd: repo.path });
+      expect(read(join(repo.path, "out/README.md"))).toBe("top\n");
+    }
+
+    const sub = new Repo(join(t.tmp, "sub"));
+    t.pb(["init", "--upstream", up.path, "--path", ".//sub//", "--output-to", "out"], { cwd: sub.path });
+    expect(read(join(sub.path, ".patchbook/config.toml"))).toContain(`path = "sub"`);
+    t.pb(["track", "again", up.path, "--path", "./"], { cwd: sub.path });
+    const tracked = read(join(sub.path, ".patchbook/config.toml"));
+    expect(tracked).toContain(`name = "again"`);
+    expect(tracked).not.toMatch(/path = "\.?"/);
+    t.pb(["build"], { cwd: sub.path });
+    expect(read(join(sub.path, "out/a.txt"))).toBe("two\n");
+    expect(read(join(sub.path, "out/again/README.md"))).toBe("top\n");
+
+    const edited = new Repo(join(t.tmp, "edited"));
+    t.pb(["init", "--upstream", up.path, "--path", "sub", "--output-to", "out"], { cwd: edited.path });
+    const configFile = join(edited.path, ".patchbook/config.toml");
+    writeFileSync(configFile, read(configFile).replace(`path = "sub"`, `path = "./"`));
+    t.pb(["build"], { cwd: edited.path });
+    expect(read(join(edited.path, "out/README.md"))).toBe("top\n");
+
+    const bad = new Repo(join(t.tmp, "bad"));
+    const out = t.pb(["init", "--upstream", up.path, "--path", "../", "--output-to", "out"], { cwd: bad.path, code: 1 });
+    expect(out.stderr).toContain("must name a folder inside the upstream");
+    expect(existsSync(join(bad.path, ".patchbook"))).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
 test("clone and init point to the scheduled updates section", () => {
   const t = new Case();
   try {

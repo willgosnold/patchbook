@@ -37,7 +37,7 @@ export function absoluteRemote(remote: string): string {
 
 /** A folder of the upstream, normalised like a staged folder: `""` is the upstream's root, so `.` and `./` mean it too. */
 export function upstreamFolder(raw: string): string {
-  const folder = posix.normalize(raw);
+  const folder = posix.normalize(raw.replace(/\/+$/, ""));
   if (folder === ".." || folder.startsWith("../")) {
     throw new Fail(`--path ${quote(raw)} must name a folder inside the upstream, not one that climbs out with ..`);
   }
