@@ -11928,8 +11928,7 @@ describe("VendorTest", () => {
     up.commit("bump");
     t.pb(["sync", name], { cwd: t.repo.path });
   };
-  /** A committed repo whose extra upstream moved and was synced, so the lock and the copy hold changes the user has not committed. */
-  const syncedExtra = (t: FolderCase): void => {
+  const uncommittedSyncOfExtra = (t: FolderCase): void => {
     trackExtra(t, "vendor/extra");
     gitIn(t, ["add", "-A"]);
     gitIn(t, ["commit", "-qm", "setup"]);
@@ -11955,7 +11954,7 @@ describe("VendorTest", () => {
   };
 
   folderTest("a partial commit that names the lock but not the vendored copy is refused", (t) => {
-    syncedExtra(t);
+    uncommittedSyncOfExtra(t);
     const stderr = refusedLeavingWork(t, ["-qm", "lock only", "--", "note.txt", ".patchbook/upstream.lock"]);
     expect(stderr).toContain("refusing this commit: it moves the pin of extra in .patchbook/upstream.lock but not its vendored copy, vendor/extra");
     expect(stderr).toContain("add these to the paths you named: .patchbook/upstream.lock vendor/extra");
@@ -11979,7 +11978,7 @@ describe("VendorTest", () => {
   });
 
   folderTest("a partial commit that names the lock and the vendored copy commits both", (t) => {
-    syncedExtra(t);
+    uncommittedSyncOfExtra(t);
     const commit = hookedCommit(t, ["-qm", "note and sync", "--", "note.txt", ".patchbook/upstream.lock", "vendor/extra"]);
     expect(commit.stderr).not.toContain("refusing");
     expect(commit.code).toBe(0);
@@ -11992,7 +11991,7 @@ describe("VendorTest", () => {
   });
 
   folderTest("a full commit after the refused partial commit records the lock and the copy together", (t) => {
-    syncedExtra(t);
+    uncommittedSyncOfExtra(t);
     refusedLeavingWork(t, ["-qm", "lock only", "--", "note.txt", ".patchbook/upstream.lock"]);
     gitIn(t, ["add", "-A"]);
     expect(hookedCommit(t, ["-qm", "full"]).code).toBe(0);
@@ -12001,7 +12000,7 @@ describe("VendorTest", () => {
   });
 
   folderTest("a partial commit that leaves the lock and the copy alone still commits", (t) => {
-    syncedExtra(t);
+    uncommittedSyncOfExtra(t);
     gitIn(t, ["add", "-A"]);
     expect(hookedCommit(t, ["-qm", "sync"]).code).toBe(0);
     t.repo.write("later.txt", "later\n");
@@ -12013,7 +12012,7 @@ describe("VendorTest", () => {
   });
 
   folderTest("a partial commit with a pin that already disagrees with the copy in HEAD but does not move it still commits", (t) => {
-    syncedExtra(t);
+    uncommittedSyncOfExtra(t);
     expect(hookedCommit(t, ["-qm", "lock only, unhooked", "--no-verify", "--", ".patchbook/upstream.lock"]).code).toBe(0);
     t.repo.write("later.txt", "later\n");
     gitIn(t, ["add", "later.txt"]);
@@ -12063,7 +12062,6 @@ describe("VendorTest", () => {
     expect(cloneStatus(t)).toContain("no problems");
   });
 
-  /** The lock is a link to a file in the repo, as the pins folder of a repo that shares one lock between layouts. */
   const linkedLock = (t: FolderCase): void => {
     trackExtra(t, "vendor/extra");
     const [link, target] = [join(t.repo.path, ".patchbook/upstream.lock"), join(t.repo.path, "pins/upstream.lock")];

@@ -699,22 +699,25 @@ function headTree(root: string): string {
   return decode(run(["git", "hash-object", "-t", "tree", "--stdin"], { cwd: root, input: new Uint8Array() })).trim();
 }
 
-/** The tree each upstream is pinned to by the upstream.lock in HEAD, read through a committed link to a file in the repo, or null when HEAD holds no lock it can read. */
+function committedBlob(book: Book, path: string): { mode: string; data: Uint8Array } | null {
+  const entry = spawn(["git", "ls-tree", "HEAD", "--", path], { cwd: book.root });
+  const [, mode, sha] = /^(\d+) blob (\w+)\t/.exec(decode(entry.stdout)) ?? [];
+  if (entry.code !== 0 || !mode || !sha) return null;
+  const blob = spawn(["git", "cat-file", "blob", sha], { cwd: book.root });
+  return blob.code === 0 ? { mode, data: blob.stdout } : null;
+}
+
 function committedPins(book: Book): Map<string, string> | null {
-  const blobAt = (path: string, followed: boolean): Uint8Array | null => {
-    const entry = spawn(["git", "ls-tree", "HEAD", "--", path], { cwd: book.root });
-    const [, mode, sha] = /^(\d+) blob (\w+)\t/.exec(decode(entry.stdout)) ?? [];
-    const blob = entry.code === 0 && sha ? spawn(["git", "cat-file", "blob", sha], { cwd: book.root }) : null;
-    if (!blob || blob.code !== 0) return null;
-    if (mode !== "120000") return blob.stdout;
-    const text = decodeReplace(blob.stdout);
+  const path = lockPath(book);
+  let lock = committedBlob(book, path);
+  if (lock?.mode === "120000") {
+    const text = decodeReplace(lock.data);
     const target = join(dirname(path), text);
-    return followed || isAbsolute(text) || target.startsWith("..") ? null : blobAt(target, true);
-  };
-  const lock = blobAt(lockPath(book), false);
-  if (!lock) return null;
+    lock = isAbsolute(text) || target.startsWith("..") ? null : committedBlob(book, target);
+  }
+  if (!lock || lock.mode === "120000") return null;
   try {
-    return new Map(parseLock(decodeReplace(lock)).map((p) => [p.name, p.tree]));
+    return new Map(parseLock(decodeReplace(lock.data)).map((p) => [p.name, p.tree]));
   } catch (e) {
     if (e instanceof Fail) return null;
     throw e;
