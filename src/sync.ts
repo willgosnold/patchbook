@@ -213,6 +213,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
 
   const writes: Write[] = [];
   const unsure: { c: Change; path: string; lost: Lost }[] = [];
+  const missing: string[] = [];
   const added = Array.from(fresh.keys()).filter((p) => !old.has(p));
   for (const c of changes) {
     for (const e of c.edits) {
@@ -231,7 +232,10 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
       }
       if (base !== null && ours !== null) writes.push(...carryMode(c, e.path, fresh.get(e.path)!.mode));
       if (base !== null && bytesEqual(theirs, base)) continue;
-      if (base === null || ours === null) throw new Error(`${c.name} has no ${base === null ? "base" : "ours"} copy of ${e.path}`);
+      if (base === null || ours === null) {
+        missing.push(`change ${c.name} has no ${base === null ? "base" : "ours"} copy of ${e.path} (${relative(book.root, c.content(base === null ? "base" : "ours", e.path))})`);
+        continue;
+      }
       if (!(isText(base) && isText(ours) && isText(theirs))) {
         report.conflicts.push({ change: c.name, path: e.path, detail: "binary file changed upstream" });
         continue;
@@ -247,6 +251,10 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     }
   }
 
+  if (missing.length) {
+    throw new Fail(`can't sync ${u.name}: ${missing.join("; ")}. Restore ${missing.length === 1 ? "it" : "them"} (git restore, if committed), `
+      + "or remove the edit from the change, then sync again. Nothing was changed.");
+  }
   journaled(book, u, pin, { commit, tree }, (j) => {
     u.keep(commit);
     takeVendor(u.vendor, join(j, "old"));

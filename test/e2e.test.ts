@@ -5441,6 +5441,31 @@ describe("ForkTest", () => {
     expect(lockPin(read(join(t.fork.path, ".patchbook/upstream.lock")), "lib").commit).toBe(commit);
   }, ForkCase);
 
+  permissionTest("a vendored track that fails writing config puts the pin and the copy back, so another URL can be tried", (t) => {
+    const lib = new Repo(join(t.tmp, "lib"));
+    lib.write("a.txt", "lib\n");
+    lib.commit("lib");
+    const other = new Repo(join(t.tmp, "other"));
+    other.write("b.txt", "other\n");
+    const commit = other.commit("other");
+    const book = join(t.fork.path, ".patchbook");
+    const config = join(book, "config.toml");
+    const before = snapshot(book);
+    sh(["chmod", "a-w", config], { cwd: t.fork.path });
+    try {
+      t.pb(["track", "lib", lib.path, "--vendor", "vendor/lib"], { cwd: t.fork.path, code: 1 });
+    } finally {
+      sh(["chmod", "u+w", config], { cwd: t.fork.path });
+    }
+    expect(snapshot(book)).toEqual(before);
+    expect(existsSync(join(t.fork.path, "vendor"))).toBe(false);
+    t.pb(["track", "lib", other.path, "--vendor", "vendor/lib"], { cwd: t.fork.path });
+    expect(lockPin(read(join(book, "upstream.lock")), "lib").commit).toBe(commit);
+    expect(read(join(t.fork.path, "vendor/lib/b.txt"))).toBe("other\n");
+    expect(existsSync(join(t.fork.path, "vendor/lib/a.txt"))).toBe(false);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  }, ForkCase);
+
   for (const [order, first, second] of [
     ["holding", "vendor/inner", "vendor"],
     ["inside", "vendor", "vendor/inner"],
@@ -6819,6 +6844,26 @@ describe("ForkTest", () => {
       }
     });
   }
+
+  forkTest("sync names a file edit whose base copy is missing, changes nothing, and works again once they are back", (t) => {
+    t.recordFeature();
+    const book = join(t.fork.path, ".patchbook");
+    const copy = join(book, "changes/feature/base/app.txt.pb");
+    const saved = read(copy);
+    rmSync(copy);
+    t.up.write("app.txt", t.up.read("app.txt").replaceAll("six", "SIX"));
+    t.up.commit("upstream edit");
+    const before = snapshot(book);
+    const failed = t.pb(["sync"], { cwd: t.fork.path, code: 1 });
+    expect(failed.stderr).toContain("patchbook: can't sync upstream: change feature has no base copy of app.txt (.patchbook/changes/feature/base/app.txt.pb). ");
+    expect(failed.stderr).toContain("Nothing was changed.");
+    expect(failed.stderr).not.toContain("    at ");
+    expect(snapshot(book)).toEqual(before);
+    writeFileSync(copy, saved);
+    t.pb(["sync"], { cwd: t.fork.path });
+    expect(reportOf(t.fork.path).merged.map((m) => m.path)).toEqual(["app.txt"]);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
 
   forkTest("sync reports an edited file upstream deleted as gone, with the file it moved to", (t) => {
     t.recordFeature();

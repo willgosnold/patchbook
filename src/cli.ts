@@ -98,7 +98,7 @@ function refuseDanglingLinks(root: string): void {
   }
 }
 
-async function allOrNothing<T>(book: Book, write: (undo: Undo) => Promise<T>): Promise<T> {
+async function allOrNothing<T>(book: Book, command: string, write: (undo: Undo) => Promise<T>): Promise<T> {
   const undo = new Undo();
   const gitFiles = git(["rev-parse", "--path-format=absolute", "--git-path", "config", "--git-path", "index"], { cwd: book.root }).split("\n");
   for (const p of [resolve(book.dir), ...gitFiles, ...book.upstreams.flatMap((u) => (u.vendor ? [u.vendor] : []))]) undo.hold(p);
@@ -107,8 +107,8 @@ async function allOrNothing<T>(book: Book, write: (undo: Undo) => Promise<T>): P
   } catch (e) {
     const stuck = undo.restore();
     if (stuck.length) {
-      warn("patchbook: init couldn't put these back as they were:\n  " + stuck.join("\n  ")
-        + "\nCheck that you can write to them, and put them back yourself before you run init again.\n");
+      warn(`patchbook: ${command} couldn't put these back as they were:\n  ` + stuck.join("\n  ")
+        + `\nCheck that you can write to them, and put them back yourself before you run ${command} again.\n`);
     }
     throw e;
   }
@@ -133,7 +133,7 @@ async function cmdInit(args: {
     book.refuseLinks();
     book.refuseLinkedTop();
     notThisRepo(root, args.upstream);
-    const skill = await allOrNothing(book, async (undo) => {
+    const skill = await allOrNothing(book, "init", async (undo) => {
       book.dropPin(name);
       syncUpstream(book, book.upstreams[0]!, args.branch, []);
       const skill = installSkill(book, undo);
@@ -160,7 +160,7 @@ async function cmdInit(args: {
   const base = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: root });
   const first = book.upstreams[0]!;
   refuseFoldedUpstream(first.mounted(first.files(base)).keys());
-  const installed = await allOrNothing(book, async (undo) => {
+  const installed = await allOrNothing(book, "init", async (undo) => {
     book.writeLock(name, base, first.treeOf(base));
     if (!hasRemote) git(["remote", "add", "--end-of-options", "upstream", args.upstream], { cwd: root });
     const installed = installSkill(book, undo);
@@ -189,9 +189,11 @@ async function cmdTrack(args: { name: string; url: string; branch: string; path:
   const text = readText(config).replace(/\n+$/, "") + "\n\n" + upstreamToml(args.name, args.url, args.path, args.branch, mount, args.vendor);
   const candidate = await Book.fromText(book.root, text);
   for (const u of candidate.upstreams) if (u.vendor) refuseNestedGit(book.root, u.name, u.vendor);
-  candidate.dropPin(args.name);
-  syncUpstream(candidate, candidate.upstream(args.name), args.branch, []);
-  writeText(config, text);
+  await allOrNothing(candidate, "track", async () => {
+    candidate.dropPin(args.name);
+    syncUpstream(candidate, candidate.upstream(args.name), args.branch, []);
+    writeText(config, text);
+  });
   const where = mount ? `${mount}/` : "the root";
   say(`Its files appear at ${where} of the staged tree. Ship what you need with edits (move, copy), then build.\n`);
   return 0;
