@@ -11461,14 +11461,14 @@ describe("VendorTest", () => {
     expect(existsSync(entries)).toBe(true);
   }, VendorCase);
 
-  vendorTest("record of a paragraph leaves the intent empty for a model reply whose intent is not a string", (t) => {
+  vendorTest("record of a paragraph writes the intent itself for a model reply whose intent is not a string", (t) => {
     const entries = t.missingScaffoldPatchBuild();
     t.repo.write("skills/hello/SKILL.md", t.repo.read("skills/hello/SKILL.md").replaceAll("Then wave.", "Then wave twice."));
     writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\necho '{"intent": null}'\n`);
     const run = t.pb(["record"], { cwd: t.repo.path });
-    expect(run.stdout).toContain("no intent yet for the new entries (claude didn't return a usable name and intent: claude's reply: intent is null)");
+    expect(run.stdout).toMatch(/intent {3}by patchbook for hello\/SKILL\.md \[[0-9a-f]{12}\] \(claude didn't return a usable name and intent: claude's reply: intent is null\)\. /);
     expect(read(entries)).toMatch(/--- patched\nThen wave twice\./);
-    expect(read(entries)).toMatch(/kind: policy\nrules: \nintent: \n/);
+    expect(read(entries)).toContain('kind: policy\nrules: \nintent (by patchbook): Rewrites the paragraph that starts "Then wave." in hello/SKILL.md.\n');
   });
 
   vendorTest("record notes come in path order", (t) => {
@@ -16116,53 +16116,227 @@ describe("IntentWithoutAModelTest", () => {
       t.repo.write("skills/hello/SKILL.md", t.repo.read("skills/hello/SKILL.md").replaceAll("Then wave.", "Then wave twice."));
       return entries;
     };
-    const expectEmptyEntry = (t: VendorCase, entries: string): void => {
-      expect(read(entries)).toMatch(/--- patched\nThen wave twice\./);
-      expect(read(entries)).toMatch(/kind: policy\nrules: \nintent: \n/);
-      const status = t.pb(["status"], { cwd: t.repo.path, code: 1 }).stdout;
-      expect(status).toMatch(/invalid {3}skills\/hello\/SKILL\.md:\d+ \[[0-9a-f]+\] \(output hello\/SKILL\.md\): it has no intent; fill it with `patchbook intent`/);
-      expect(t.pb(["build"], { cwd: t.repo.path, code: 1 }).stderr).toContain("nothing built");
+    const LABEL = "hello\\/SKILL\\.md \\[[0-9a-f]{12}\\]";
+    const wrote = (what: string): string => `intent \\(by patchbook\\): ${what}`;
+    const REWRITES_WAVE = 'Rewrites the paragraph that starts "Then wave\\." in hello\\/SKILL\\.md\\.';
+    const status = (t: VendorCase) => t.pb(["status"], { cwd: t.repo.path }).stdout;
+    const NOTE = /note {6}skills\/hello\/SKILL\.md \[[0-9a-f]{12}\]: patchbook wrote its intent from the paragraph edit\. To replace it, run `patchbook intent` or edit its line to `intent: <yours>`\n/;
+    const expectBuilds = (t: VendorCase): void => {
+      expect(t.pb(["status", "--json"], { cwd: t.repo.path }).stdout).toContain('"problems": []');
+      t.pb(["build"], { cwd: t.repo.path });
+      expect(t.repo.read("skills/hello/SKILL.md")).toContain("Then wave twice.");
     };
 
     for (const [kind, why] of FAILURES) {
-      vendorTest(`record leaves a paragraph entry with an empty intent when the model is ${kind}`, (t) => {
+      vendorTest(`record gives a new paragraph entry an intent patchbook wrote when the model is ${kind}`, (t) => {
         const entries = edit(t);
         breakModel(t, kind);
         const run = t.pb(["record"], { cwd: t.repo.path });
-        expect(run.stdout).toMatch(new RegExp(`^pending  no intent yet for the new entries \\(${why}[^\\n]*\\). To fill it: patchbook intent\\nentry    hello/SKILL\\.md \\[[0-9a-f]+\\] added\\n$`));
+        expect(run.stdout).toMatch(new RegExp(`^entry    ${LABEL} added\\nintent   by patchbook for ${LABEL} \\(${why}[^\\n]*\\)\\. To replace it, run \`patchbook intent\` or edit its line to \`intent: <yours>\`\\n$`));
         expect(existsSync(join(t.repo.path, ".patchbook/changes"))).toBe(false);
-        expectEmptyEntry(t, entries);
+        expect(read(entries)).toMatch(new RegExp(`kind: policy\\nrules: \\n${wrote(REWRITES_WAVE)}\\n--- upstream\\nThen wave\\.\\n--- patched\\nThen wave twice\\.\\n`));
+        expect(read(entries)).toContain("intent: Speak T3.\n");
+        expect(status(t)).toMatch(NOTE);
+        expect(status(t)).toEndWith("no problems\n");
+        expectBuilds(t);
       });
     }
 
-    vendorTest("hook commits a paragraph entry with an empty intent when the model fails", (t) => {
+    vendorTest("hook commits a paragraph entry with an intent patchbook wrote when the model fails", (t) => {
       const entries = edit(t);
       breakModel(t, "exit");
       sh(["git", "add", "-A"], { cwd: t.repo.path });
       const run = sh(["git", "commit", "-qm", "wave"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "" }, check: false });
       expect(run.code).toBe(0);
-      expect(run.stderr).toContain("no intent yet for the new entries (claude failed: fake claude: offline). To fill it: patchbook intent");
+      expect(run.stderr).toMatch(new RegExp(`intent   by patchbook for ${LABEL} \\(claude failed: fake claude: offline\\)\\. To replace it, run`));
       expect(sh(["git", "show", "--name-only", "--format=", "HEAD"], { cwd: t.repo.path }).stdout).toContain(".patchbook/blocks/skills/hello/SKILL.md.entries");
-      expectEmptyEntry(t, entries);
+      expect(read(entries)).toMatch(new RegExp(wrote(REWRITES_WAVE)));
+      expectBuilds(t);
     });
 
-    vendorTest("intent fills an empty entry and replaces patchbook's intent of a change together", (t) => {
+    vendorTest("record writes a different intent for each new paragraph entry when the model fails", (t) => {
+      const entries = t.missingScaffoldPatchBuild();
+      const skill = "skills/hello/SKILL.md";
+      t.repo.write(skill, t.repo.read(skill).replace("# Hello\n", "# Hello there\n").replace("Then wave.", "Then wave twice."));
+      breakModel(t, "exit");
+      const run = t.pb(["record"], { cwd: t.repo.path });
+      const text = read(entries);
+      expect(text).toContain('intent (by patchbook): Rewrites the paragraph that starts "# Hello" in hello/SKILL.md.\n');
+      expect(text).toContain('intent (by patchbook): Rewrites the paragraph that starts "Then wave." in hello/SKILL.md.\n');
+      expect(text).toContain("intent: Speak T3.\n");
+      expect(run.stdout).toMatch(new RegExp(`intent   by patchbook for ${LABEL}, ${LABEL} \\(claude failed: fake claude: offline\\)\\. To replace them, run \`patchbook intent\` or edit their lines to \`intent: <yours>\`\\n$`));
+      expect(status(t).match(/^note {6}/gm)).toHaveLength(2);
+      t.pb(["build"], { cwd: t.repo.path });
+      expect(t.repo.read(skill)).toContain("# Hello there");
+    });
+
+    vendorTest("record keeps the intent of an entry someone wrote when the model fails, and says it may be stale", (t) => {
+      const entries = t.missingScaffoldPatchBuild();
+      const skill = "skills/hello/SKILL.md";
+      t.repo.write(skill, t.repo.read(skill).replace("Say hello in T3.", "Say hi in T3."));
+      breakModel(t, "exit");
+      const run = t.pb(["record"], { cwd: t.repo.path });
+      expect(read(entries)).toContain("rules: t3\nintent: Speak T3.\n");
+      expect(read(entries)).not.toContain("(by patchbook)");
+      expect(run.stdout).toMatch(new RegExp(`^entry    ${LABEL} updated\\nintent   may be stale: ${LABEL} \\(claude failed: fake claude: offline\\)\\. Edit them by hand to cover these edits\\n$`));
+      expect(status(t)).not.toContain("note");
+      t.pb(["build"], { cwd: t.repo.path });
+    });
+
+    vendorTest("record with an intent and a failing model writes the intent it was given, not patchbook's", (t) => {
+      const entries = edit(t);
+      breakModel(t, "exit");
+      const run = t.pb(["record", "--intent", "Wave twice."], { cwd: t.repo.path });
+      expect(run.stdout).not.toContain("by patchbook");
+      expect(read(entries)).toContain("intent: Wave twice.\n");
+      expect(read(entries)).not.toContain("(by patchbook)");
+      expect(status(t)).not.toContain("note");
+    });
+
+    const SKILL = "skills/hello/SKILL.md";
+    const editAgain = (t: VendorCase): void => t.repo.write(SKILL, t.repo.read(SKILL).replace("Then wave twice.", "Then wave thrice."));
+    const expectGiven = (t: VendorCase, entries: string, what: string): void => {
+      expect(read(entries)).toContain(`intent: ${what}\n`);
+      expect(read(entries)).not.toContain("(by patchbook)");
+      expect(status(t)).not.toContain("note");
+      t.pb(["build"], { cwd: t.repo.path });
+      expect(t.repo.read(SKILL)).toContain("Then wave thrice.");
+    };
+
+    vendorTest("record --intent replaces an intent patchbook wrote for an entry when the model failed", (t) => {
+      const entries = edit(t);
+      breakModel(t, "exit");
+      t.pb(["record"], { cwd: t.repo.path });
+      editAgain(t);
+      const run = t.pb(["record", "--intent", "Mine after."], { cwd: t.repo.path });
+      expect(run.stdout).toMatch(new RegExp(`^entry    ${LABEL} updated\\n$`));
+      expectGiven(t, entries, "Mine after.");
+    });
+
+    vendorTest("the hook with PATCHBOOK_INTENT replaces an intent patchbook wrote for an entry", (t) => {
+      const entries = edit(t);
+      breakModel(t, "exit");
+      t.pb(["record"], { cwd: t.repo.path });
+      editAgain(t);
+      sh(["git", "add", "-A"], { cwd: t.repo.path });
+      const run = sh(["git", "commit", "-qm", "wave"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Mine after." }, check: false });
+      expect(run.code).toBe(0);
+      expect(run.stderr).not.toContain("not used");
+      expect(run.stderr).not.toContain("by patchbook");
+      expectGiven(t, entries, "Mine after.");
+    });
+
+    vendorTest("record --intent gives a new entry and an updated one patchbook wrote the same intent", (t) => {
+      const entries = edit(t);
+      breakModel(t, "exit");
+      t.pb(["record"], { cwd: t.repo.path });
+      editAgain(t);
+      t.repo.write(SKILL, t.repo.read(SKILL).replace("# Hello\n", "# Hello there\n"));
+      const run = t.pb(["record", "--intent", "Mine after."], { cwd: t.repo.path });
+      expect(run.stdout).not.toContain("not used");
+      expect(run.stdout).not.toContain("by patchbook");
+      expect(read(entries).match(/intent: Mine after\.\n/g)).toHaveLength(2);
+      expectGiven(t, entries, "Mine after.");
+    });
+
+    vendorTest("record --intent keeps an intent someone wrote for an entry and says it was not used", (t) => {
+      const entries = edit(t);
+      breakModel(t, "exit");
+      t.pb(["record"], { cwd: t.repo.path });
+      writeFileSync(entries, read(entries).replace(/intent \(by patchbook\): [^\n]*/, "intent: Mine by hand."));
+      editAgain(t);
+      const run = t.pb(["record", "--intent", "Other."], { cwd: t.repo.path });
+      expect(run.stdout).toContain("intent   not used");
+      expect(read(entries)).toContain("intent: Mine by hand.\n");
+      expect(read(entries)).not.toContain("Other.");
+    });
+
+    vendorTest("a later record with no model writes patchbook's intent for an entry again", (t) => {
+      const entries = edit(t);
+      breakModel(t, "exit");
+      t.pb(["record"], { cwd: t.repo.path });
+      t.repo.write("skills/hello/SKILL.md", t.repo.read("skills/hello/SKILL.md").replace("Then wave twice.\n", ""));
+      const again = t.pb(["record"], { cwd: t.repo.path });
+      expect(again.stdout).toMatch(new RegExp(`^entry    ${LABEL} updated\\nintent   by patchbook for ${LABEL} \\(claude failed: fake claude: offline\\)\\. `));
+      expect(read(entries)).toContain('intent (by patchbook): Deletes the paragraph that starts "Then wave." in hello/SKILL.md.\n');
+      expect(read(entries)).not.toContain("Rewrites");
+      expect(status(t)).toMatch(NOTE);
+    });
+
+    vendorTest("a later record with the model replaces the intent patchbook wrote for an entry", (t) => {
+      const entries = edit(t);
+      const restore = breakModel(t, "exit");
+      t.pb(["record"], { cwd: t.repo.path });
+      restore();
+      t.repo.write("skills/hello/SKILL.md", t.repo.read("skills/hello/SKILL.md").replace("Then wave twice.", "Then wave thrice."));
+      const again = t.pb(["record"], { cwd: t.repo.path });
+      expect(again.stdout).toMatch(new RegExp(`^entry    ${LABEL} updated\\nintent   ${LABEL}: Shout the second line\\.\\n$`));
+      expect(read(entries)).toContain("--- patched\nThen wave thrice.");
+      expect(read(entries)).not.toContain("(by patchbook)");
+      expect(status(t)).not.toContain("note");
+    });
+
+    vendorTest("patchbook intent replaces an intent patchbook wrote for an entry", (t) => {
+      const entries = edit(t);
+      const restore = breakModel(t, "exit");
+      t.pb(["record"], { cwd: t.repo.path });
+      restore();
+      const fill = t.pb(["intent"], { cwd: t.repo.path });
+      expect(fill.stdout).toBe("entries  skills/hello/SKILL.md: Shout the second line.\n");
+      expect(read(entries)).toMatch(/kind: policy\nrules: \nintent: Shout the second line\.\n/);
+      expect(read(entries)).toContain("intent: Speak T3.");
+      expect(read(entries)).not.toContain("(by patchbook)");
+      expect(status(t)).not.toContain("note");
+      expect(t.pb(["intent"], { cwd: t.repo.path }).stdout).toBe("no intent is empty or by patchbook; nothing to fill\n");
+      expectBuilds(t);
+    });
+
+    vendorTest("an edit of the label to intent: makes an entry's intent someone's", (t) => {
+      const entries = edit(t);
+      breakModel(t, "exit");
+      t.pb(["record"], { cwd: t.repo.path });
+      expect(status(t)).toMatch(NOTE);
+      writeFileSync(entries, read(entries).replace(/intent \(by patchbook\): [^\n]*/, "intent: Mine."));
+      expect(status(t)).not.toContain("note");
+      expect(t.pb(["intent"], { cwd: t.repo.path }).stdout).toBe("no intent is empty or by patchbook; nothing to fill\n");
+      expect(read(entries)).toContain("intent: Mine.\n");
+      expectBuilds(t);
+    });
+
+    vendorTest("intent writes nothing when the model fails, and leaves an entry patchbook wrote as it was", (t) => {
+      const entries = edit(t);
+      breakModel(t, "exit");
+      t.pb(["record"], { cwd: t.repo.path });
+      const before = tree(t.repo.path);
+      const run = t.pb(["intent"], { cwd: t.repo.path, code: 1 });
+      expect(run.stdout).toBe("");
+      expect(run.stderr).toContain("patchbook: claude failed");
+      expect(tree(t.repo.path)).toEqual(before);
+      expect(read(entries)).toMatch(new RegExp(wrote(REWRITES_WAVE)));
+    });
+
+    vendorTest("intent fills an empty entry and replaces patchbook's intent of a change and an entry together", (t) => {
       const entries = edit(t);
       t.repo.write("skills/hello/notes.txt", "added by hand\n");
       const restore = breakModel(t, "exit");
       const run = t.pb(["record"], { cwd: t.repo.path });
-      expect(run.stdout).toStartWith("pending  no intent yet for the new entries (claude failed: fake claude: offline). To fill it: patchbook intent\n"
-        + "add-skills-hello-notes-txt: Adds skills/hello/notes.txt.\n");
-      expect(run.stdout).toContain(note("add-skills-hello-notes-txt", "claude failed: fake claude: offline"));
+      expect(run.stdout).toStartWith("add-skills-hello-notes-txt: Adds skills/hello/notes.txt.\n");
+      expect(run.stdout).toMatch(new RegExp(`entry    ${LABEL} added\\n`));
+      expect(run.stdout).toMatch(new RegExp(`intent   by patchbook for ${LABEL}, add-skills-hello-notes-txt \\(claude failed: fake claude: offline\\)\\. To replace them, run `));
       const change = join(t.repo.path, ".patchbook/changes/add-skills-hello-notes-txt/CHANGE.md");
       expect(read(change)).toContain("\nintent (by patchbook): Adds skills/hello/notes.txt.\n");
+      expect(read(entries)).toMatch(new RegExp(wrote(REWRITES_WAVE)));
+      const notes = status(t);
+      expect(notes).toMatch(NOTE);
+      expect(notes).toContain("note      changes/add-skills-hello-notes-txt: patchbook wrote its intent from the edits.");
+      t.pb(["build"], { cwd: t.repo.path });
       restore();
       const fill = t.pb(["intent"], { cwd: t.repo.path });
       expect(fill.stdout).toBe("intent   add-skills-hello-notes-txt: Shout the second line.\nentries  skills/hello/SKILL.md: Shout the second line.\n");
       expect(read(change)).toContain("\nintent: Shout the second line.\n");
       expect(read(entries)).toMatch(/kind: policy\nrules: \nintent: Shout the second line\.\n/);
       expect(read(entries)).toContain("intent: Speak T3.");
-      expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+      expect(status(t)).not.toContain("note");
       t.pb(["build"], { cwd: t.repo.path });
     });
 
