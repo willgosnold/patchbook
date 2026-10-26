@@ -10622,6 +10622,23 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
 
+  forkTest("sync names an edited copy's file edit whose base copy is missing, changes nothing, and works again once it is back", (t) => {
+    editedCopy(t);
+    const book = join(t.fork.path, ".patchbook");
+    const copy = join(book, "changes/copyedit/base/app2.txt.pb");
+    const saved = read(copy);
+    rmSync(copy);
+    upstreamApp(t, "one", "ONE");
+    const before = snapshot(book);
+    const failed = t.pb(["sync"], { cwd: t.fork.path, code: 1 });
+    expect(failed.stderr).toContain("patchbook: can't sync upstream: change copyedit has no base copy of app2.txt (.patchbook/changes/copyedit/base/app2.txt.pb). ");
+    expect(failed.stderr).toContain("Nothing was changed.");
+    expect(failed.stderr).not.toContain("    at ");
+    expect(snapshot(book)).toEqual(before);
+    writeFileSync(copy, saved);
+    expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("1 of ours merged cleanly, 0 conflicts, 0 gone.");
+  });
+
   forkTest("sync reports a conflict in an edited copy when upstream edits the same line, and the build refuses until it is resolved", (t) => {
     editedCopy(t);
     upstreamApp(t, "six", "6");
