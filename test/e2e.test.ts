@@ -10764,6 +10764,73 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(status).toContain("gone      app2.txt: no earlier copy or move of an upstream file reaches it\n");
   });
 
+  const LOGO = Buffer.from([0, 1, 2, 0xff]);
+  const keptOurs = (path: string, from: string) => `patchbook: ${path} (change copyedit): upstream changed ${from}, and sync merges only text, `
+    + "so it kept ours. To take upstream's file instead, write it over the output and run patchbook record.\n";
+
+  for (const edit of ["bytes", "mode"] as const) {
+    forkTest(`an edited binary copy keeps our ${edit} and builds after upstream changes its source`, (t) => {
+      writeFileSync(join(t.up.path, "logo.bin"), LOGO);
+      t.up.commit("logo");
+      t.pb(["sync"], { cwd: t.fork.path });
+      handChange(t, "second", "Copy the logo.", ["copy logo.bin -> logo2.bin"]);
+      t.pb(["build"], { cwd: t.fork.path });
+      t.fork.commit("copy");
+      const logo2 = join(t.fork.path, "logo2.bin");
+      if (edit === "bytes") writeFileSync(logo2, Buffer.from([0, 9, 2, 0xfe]));
+      else chmodSync(logo2, 0o755);
+      const ours = readFileSync(logo2);
+      expect(t.pb(["record", "copyedit", "--intent", "Change the copy's logo."], { cwd: t.fork.path }).stdout).toBe("file     logo2.bin\n");
+      expect(changeText(t, "copyedit")).toBe("# copyedit\n\nintent: Change the copy's logo.\n\nedits:\n- file logo2.bin\n");
+      t.pb(["build"], { cwd: t.fork.path });
+      t.fork.commit("copyedit");
+      writeFileSync(join(t.up.path, "logo.bin"), Buffer.from([0, 5, 2, 0xfd]));
+      t.up.commit("new logo");
+      const sync = t.pb(["sync"], { cwd: t.fork.path });
+      expect(sync.stdout).toContain("0 of ours merged cleanly, 0 conflicts, 0 gone.");
+      expect(sync.stderr).toContain(keptOurs("logo2.bin", "logo.bin"));
+      expect(reportOf(t.fork.path).replacedUpstreamChanged).toEqual(["copyedit: logo2.bin"]);
+      t.pb(["build"], { cwd: t.fork.path });
+      expect(readFileSync(logo2)).toEqual(ours);
+      expect(statSync(logo2).mode & 0o111).toBe(edit === "mode" ? 0o111 : 0);
+      expect(readFileSync(join(t.fork.path, "logo.bin"))).toEqual(Buffer.from([0, 5, 2, 0xfd]));
+      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    });
+  }
+
+  forkTest("an edited copy keeps its text when upstream makes its source binary, and takes upstream's file once it is recorded", (t) => {
+    editedCopy(t);
+    const ours = t.fork.read("app2.txt");
+    writeFileSync(join(t.up.path, "app.txt"), LOGO);
+    t.up.commit("binary app");
+    const sync = t.pb(["sync"], { cwd: t.fork.path });
+    expect(sync.stdout).toContain("0 of ours merged cleanly, 0 conflicts, 0 gone.");
+    expect(sync.stderr).toContain(keptOurs("app2.txt", "app.txt"));
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app2.txt")).toBe(ours);
+    expect(readFileSync(join(t.fork.path, "app.txt"))).toEqual(LOGO);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    writeFileSync(join(t.fork.path, "app2.txt"), LOGO);
+    expect(t.pb(["record", "copyedit", "--intent", "Take upstream's app."], { cwd: t.fork.path }).stdout).toBe("file     app2.txt\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(readFileSync(join(t.fork.path, "app2.txt"))).toEqual(LOGO);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("a mode-only edit to a copy keeps its mode and follows upstream", (t) => {
+    copiedApp(t);
+    chmodSync(join(t.fork.path, "app2.txt"), 0o755);
+    expect(t.pb(["record", "copyedit", "--intent", "Make the copy executable."], { cwd: t.fork.path }).stdout).toBe("file     app2.txt\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("copyedit");
+    upstreamApp(t, "one", "ONE");
+    expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("1 of ours merged cleanly, 0 conflicts, 0 gone.");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app2.txt")).toBe(t.up.read("app.txt"));
+    expect(statSync(join(t.fork.path, "app2.txt")).mode & 0o111).toBe(0o111);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
   forkTest("record refuses an edit to a copy's destination into a change before the copy", (t) => {
     handChange(t, "early", "Add an early file.", ["add early.txt"], { "early.txt": "early\n" });
     copiedApp(t);

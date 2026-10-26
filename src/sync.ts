@@ -228,6 +228,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
 
   const writes: Write[] = [];
   const unsure: { c: Change; path: string; lost: Lost }[] = [];
+  const kept: { c: Change; path: string; from: string }[] = [];
   const missing: string[] = [];
   let copies = 0;
   const added = Array.from(fresh.keys()).filter((p) => !old.has(p));
@@ -257,7 +258,13 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
         continue;
       }
       if (!(isText(base) && isText(ours) && isText(theirs))) {
-        report.conflicts.push({ change: c.name, path: e.path, detail: "binary file changed upstream" });
+        if (!upstreamOf.has(e.path)) {
+          report.conflicts.push({ change: c.name, path: e.path, detail: "binary file changed upstream" });
+          continue;
+        }
+        writes.push({ c, side: "base", path: e.path, data: theirs });
+        report.replacedUpstreamChanged.push(`${c.name}: ${e.path}`);
+        kept.push({ c, path: e.path, from });
         continue;
       }
       const merge = mergeFile(ours, base, theirs);
@@ -298,6 +305,10 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     const fix = lost === "count" ? "the paragraphs as you mean them" : "the edit on the copy you mean";
     warn(`patchbook: ${path} (change ${c.name}): ${why}. ${relative(book.root, c.content("ours", path))} holds our text `
       + `and upstream's between conflict markers. Resolve them with ${fix}, then run patchbook build.\n`);
+  }
+  for (const { c, path, from } of kept) {
+    warn(`patchbook: ${path} (change ${c.name}): upstream changed ${from}, and sync merges only text, so it kept ours. `
+      + "To take upstream's file instead, write it over the output and run patchbook record.\n");
   }
   warnLeft(book, u);
   return report;
