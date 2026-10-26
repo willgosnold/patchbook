@@ -873,7 +873,7 @@ function planParagraphs(
         continue;
       }
       if (entry && entry.kind !== "keep") {
-        result.set(key, entry.intent === null ? { ...entry, ...at, patched: piece } : { ...entry, ...at, patched: piece, intent: null, was: entry.intent });
+        result.set(key, { ...entry, ...at, patched: piece, intent: null, ...(entry.intent && { was: entry.intent }) });
         notes.push([key, "updated"]);
       } else {
         result.set(key, { hash: b.hash, ...at, kind: "policy", rules: "", intent: null, upstream, patched: piece });

@@ -9171,6 +9171,20 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(status).toContain("invalid   dup.md:7 [872887e563e7]: it has no intent; fill it with `patchbook intent`\n");
   });
 
+  forkTest("record --intent fills a scaffolded block entry with an empty intent", (t) => {
+    upstreamFile(t, "dup.md", DUP);
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    writeFileSync(config, read(config) + "\n[[check]]\nname = \"example\"\nfiles = [\"dup.md\"]\npattern = 'Example'\n");
+    t.pb(["scaffold"], { cwd: t.fork.path });
+    const file = join(t.fork.path, ".patchbook/blocks/dup.md.entries");
+    writeFileSync(file, read(file).replace("kind: translation", "kind: policy"));
+    t.fork.write("dup.md", t.fork.read("dup.md").replaceAll("Example:", "Sample:"));
+    t.pb(["record", "--intent", "Rename the flagged step."], { cwd: t.fork.path });
+    expect(read(file)).toContain("intent: Rename the flagged step.\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).not.toContain("no intent");
+    t.pb(["build"], { cwd: t.fork.path });
+  });
+
   forkTest("status does not count a block entry that is invalid", (t) => {
     upstreamFile(t, "dup.md", DUP);
     const config = join(t.fork.path, ".patchbook/config.toml");
