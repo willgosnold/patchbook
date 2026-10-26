@@ -10669,6 +10669,64 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
 
+  for (const kind of ["copy", "move"] as const) {
+    forkTest(`a later ${kind} of an edited copy builds the copy's edit, which keeps following upstream`, (t) => {
+      editedCopy(t);
+      handChange(t, "again", "Ship the copy as app3.", [`${kind} app2.txt -> app3.txt`]);
+      t.pb(["build"], { cwd: t.fork.path });
+      expect(t.fork.read("app3.txt")).toBe(t.up.read("app.txt").replace("six", "SIX"));
+      expect(existsSync(join(t.fork.path, "app2.txt"))).toBe(kind === "copy");
+      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+      t.fork.commit(kind);
+      upstreamApp(t, "one", "ONE");
+      expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("1 of ours merged cleanly, 0 conflicts, 0 gone.");
+      t.pb(["build"], { cwd: t.fork.path });
+      expect(t.fork.read("app3.txt")).toBe(t.up.read("app.txt").replace("six", "SIX"));
+      expect(t.fork.read("app.txt")).toBe(t.up.read("app.txt"));
+      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    });
+  }
+
+  forkTest("deleting an edited copy that a later copy reads keeps the edit in that copy", (t) => {
+    editedCopy(t);
+    handChange(t, "again", "Ship the copy as app3.", ["copy app2.txt -> app3.txt"]);
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.rm("app2.txt");
+    expect(t.pb(["record", "dropcopy", "--intent", "Drop the copy."], { cwd: t.fork.path }).stdout).toBe("delete   app2.txt\n");
+    expect(changeText(t, "copyedit")).toContain("- file app2.txt\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app3.txt")).toBe(t.up.read("app.txt").replace("six", "SIX"));
+    expect(existsSync(join(t.fork.path, "app2.txt"))).toBe(false);
+  });
+
+  forkTest("an edited copy whose source upstream deletes is gone, since no copy reaches it", (t) => {
+    editedCopy(t);
+    t.up.rm("app.txt");
+    t.up.commit("drop app");
+    t.pb(["sync"], { cwd: t.fork.path });
+    expect(reportOf(t.fork.path).gone).toEqual([{ change: "copyedit", path: "app2.txt", maybe: [] }]);
+    const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
+    expect(status).toContain("gone      changes/second copy app.txt -> app2.txt: app.txt no longer exists\n");
+    expect(status).toContain("gone      app2.txt: no earlier copy or move of an upstream file reaches it\n");
+  });
+
+  forkTest("record refuses an edit to a copy's destination into a change before the copy", (t) => {
+    handChange(t, "early", "Add an early file.", ["add early.txt"], { "early.txt": "early\n" });
+    copiedApp(t);
+    const early = changeText(t, "early");
+    t.fork.write("app2.txt", t.fork.read("app2.txt").replace("six", "SIX"));
+    expect(t.pb(["record", "early"], { cwd: t.fork.path, code: 1 }).stderr).toContain("patchbook: can't record into early:\n"
+      + "  file app2.txt: copy app.txt -> app2.txt in second, later in the series, has to come before it\n"
+      + "Record into second or a change after it, or into a new change.\n");
+    expect(changeText(t, "early")).toBe(early);
+    t.pb(["record", "second"], { cwd: t.fork.path });
+    expect(changeText(t, "second")).toContain("edits:\n- copy app.txt -> app2.txt\n- file app2.txt\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app2.txt")).toBe(t.up.read("app.txt").replace("six", "SIX"));
+  });
+
   forkTest("record keeps an edited rename of a file that a copy still builds from following upstream", (t) => {
     copiedApp(t);
     sh(["git", "mv", "app.txt", "app3.txt"], { cwd: t.fork.path });
