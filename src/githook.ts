@@ -895,10 +895,10 @@ async function runHook(undo: Undo) {
     if (!a.problems.length) plan(asRecorded(a.out, edited));
     for (const p of buildInputs(book)) undo.hold(join(book.root, p));
     const recorded = record(book, null, process.env["PATCHBOOK_INTENT"] ?? null, { seen: staged, edits: edited, undo, assembly: a });
-    say(recorded.text);
     copies = recorded.copies;
     a = recorded.after ?? assemble(book);
     refuseProblems(book, a.problems);
+    say(recorded.text);
   }
   let built: string[] = [];
   const lostDeletes = Array.from(sinceHead).filter(([p, c]) => c.staged === null && a.dropped.has(p)).map(([p]) => p);

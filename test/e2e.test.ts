@@ -6592,6 +6592,7 @@ describe("ForkTest", () => {
     expect(commit.code).not.toBe(0);
     expect(commit.stderr).toContain("refusing this commit");
     expect(commit.stderr).toContain(".patchbook/changes/adapt-app-txt/ours/app.txt.pb");
+    expect(commit.stdout).toBe("");
     expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
     expect(sh(["git", "write-tree"], { cwd: t.fork.path }).stdout).toBe(index);
     expect(tree(t.fork.path)).toEqual(before);
@@ -6609,6 +6610,26 @@ describe("ForkTest", () => {
     expect(commit.stderr).toContain(path);
     expect(commit.stderr).not.toContain("keep both sides' change names");
   });
+
+  for (const conflict of [false, true]) {
+    forkTest(`the hook ${conflict ? "refuses" : "allows"} an off-series change ${conflict ? "with" : "without"} markers`, (t) => {
+      t.recordFeature();
+      t.fork.write(".patchbook/series", "");
+      if (conflict) t.fork.write(".patchbook/changes/feature/ours/app.txt.pb", "<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> upstream\n");
+      sh(["git", "add", "-A"], { cwd: t.fork.path });
+      const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+      const index = sh(["git", "write-tree"], { cwd: t.fork.path }).stdout;
+      const before = tree(t.fork.path);
+      const commit = sh(["git", "commit", "-qm", "off-series change"], { cwd: t.fork.path, env: withHook(t), check: false });
+      expect(commit.code).toBe(conflict ? 1 : 0);
+      if (conflict) {
+        expect(commit.stderr).toContain(".patchbook/changes/feature/ours/app.txt.pb");
+        expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
+        expect(sh(["git", "write-tree"], { cwd: t.fork.path }).stdout).toBe(index);
+        expect(tree(t.fork.path)).toEqual(before);
+      }
+    });
+  }
 
   forkTest("sync reports an edited file upstream deleted as gone, with the file it moved to", (t) => {
     t.recordFeature();

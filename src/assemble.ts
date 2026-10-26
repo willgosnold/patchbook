@@ -7,11 +7,13 @@ import {
   entriesPath, type Entry, entryKey, formatEntry, leakScan, orphan, patchBlocks, readEntries, Rules, type Unmatched,
 } from "./blocks.ts";
 import { ATTRIBUTES_FILE, Book, buildInputs, GIT, PB, type Reserved, under } from "./book.ts";
-import { type Change, editText, isMergeMarker, readChanges, replaceIntent, strayProblems } from "./changes.ts";
+import {
+  Change, CHANGE_NAME, editText, isMergeMarker, readChanges, replaceIntent, strayProblems,
+} from "./changes.ts";
 import { installHookOrWarn, stageModes, upstreamModes, warnUnhooked } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
 import {
-  exists, type File, fileOid, gitMode, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, type Mode, nonFolders, outputMode, parseGitMode, readText, relative, resolve, rglob,
+  exists, type File, fileOid, foldersWith, gitMode, isDir, isEmptyDir, isRealDir, LINK, lexists, mkdirs, type Mode, nonFolders, outputMode, parseGitMode, readText, relative, resolve, rglob,
   rmFolders, sameFile, sameMode, type Seen, writeDisk, writeText,
 } from "./lib/fs.ts";
 import { forgetBlobOids } from "./lib/hash.ts";
@@ -157,12 +159,13 @@ export function assemble(book: Book): Assembly {
   const changes = readChanges(book, problems);
   const byName = new Map(changes.map((c) => [c.name, c]));
 
-  for (const c of changes) {
-    for (const e of c.edits) {
-      if (e.kind !== "file" && e.kind !== "add" && e.kind !== "replace") continue;
-      const ours = c.file("ours", e.path);
+  for (const name of foldersWith(book.data("changes"), "CHANGE.md").filter((name) => CHANGE_NAME.test(name))) {
+    const c = byName.get(name) ?? new Change(name, book.data("changes", name));
+    for (const copy of nonFolders(join(c.dir, "ours")).filter((p) => p.endsWith(".pb"))) {
+      const path = copy.slice(0, -".pb".length);
+      const ours = c.file("ours", path);
       if (ours && ours.mode !== LINK && isText(ours.data) && hasConflictMarker(decode(ours.data))) {
-        problems.push({ problem: "conflict", file: e.path, change: c.name, detail: "ours has conflict markers", refuse: true });
+        problems.push({ problem: "conflict", file: path, change: c.name, detail: "ours has conflict markers", refuse: true });
       }
     }
   }
