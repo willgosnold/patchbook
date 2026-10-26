@@ -10639,6 +10639,28 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("1 of ours merged cleanly, 0 conflicts, 0 gone.");
   });
 
+  for (const [lost, sides] of [["base", ["base"]], ["ours", ["ours"]], ["both", ["base", "ours"]]] as const) {
+    forkTest(`status and build name the change and the ${lost} copy of an edited copy that is missing`, (t) => {
+      editedCopy(t);
+      for (const side of sides) rmSync(join(t.fork.path, `.patchbook/changes/copyedit/${side}/app2.txt.pb`));
+      const detail = `its ${sides.join(" and ")} ${sides.length > 1 ? "copies are" : "copy is"} missing`;
+      const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
+      expect(status).toContain(`invalid   changes/copyedit file app2.txt: ${detail}\n`);
+      expect(t.pb(["build"], { cwd: t.fork.path, code: 1 }).stderr).toContain(`invalid   changes/copyedit file app2.txt: ${detail}\n`);
+      const problems = JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path, code: 1 }).stdout).problems;
+      expect(problems).toContainEqual({ problem: "invalid", file: "changes/copyedit", edit: "file app2.txt", detail });
+    });
+  }
+
+  forkTest("status names the change and the edit of an edited copy whose base differs from its source", (t) => {
+    editedCopy(t);
+    writeFileSync(join(t.fork.path, ".patchbook/changes/copyedit/base/app2.txt.pb"), "not the source\n");
+    const detail = "its base differs from upstream at the pin; run sync";
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain(`stale     changes/copyedit file app2.txt: ${detail}\n`);
+    const problems = JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path, code: 1 }).stdout).problems;
+    expect(problems).toContainEqual({ problem: "stale", file: "changes/copyedit", edit: "file app2.txt", detail });
+  });
+
   forkTest("sync reports a conflict in an edited copy when upstream edits the same line, and the build refuses until it is resolved", (t) => {
     editedCopy(t);
     upstreamApp(t, "six", "6");
@@ -10761,7 +10783,11 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(reportOf(t.fork.path).gone).toEqual([{ change: "copyedit", path: "app2.txt", maybe: [] }]);
     const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
     expect(status).toContain("gone      changes/second copy app.txt -> app2.txt: app.txt no longer exists\n");
-    expect(status).toContain("gone      app2.txt: no earlier copy or move of an upstream file reaches it\n");
+    expect(status).toContain("gone      changes/copyedit file app2.txt: no earlier copy or move of an upstream file reaches it\n");
+    const problems = JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path, code: 1 }).stdout).problems;
+    expect(problems).toContainEqual({
+      problem: "gone", file: "changes/copyedit", edit: "file app2.txt", detail: "no earlier copy or move of an upstream file reaches it",
+    });
   });
 
   const LOGO = Buffer.from([0, 1, 2, 0xff]);

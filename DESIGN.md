@@ -333,7 +333,7 @@ A problem always has `problem`, its kind, first. The other fields depend on the 
 | --- | --- | --- |
 | `invalid` | any location, `detail` | Something in the patchbook is malformed, or an edit can't apply. |
 | `gone` | edit or change, `detail` | The file an edit names isn't in upstream. |
-| `stale` | change, `detail` | The change's base differs from upstream at the pin. Run `sync`. |
+| `stale` | edit or change, `detail` | The change's base differs from upstream at the pin. Run `sync`. |
 | `conflict` | file or change, `detail` | Conflict markers in our copy, or in the output. |
 | `placeholder` | output or block, `detail` | A `{{kind:name}}` that neither the `placeholder` hook nor the placeholder source gives a value. |
 | `leak` | output with `line`, or block, then `terms` | Text that a `[[check]]` pattern or `blockTerms` flags is still in the output. Without `hash`, `line` is the 1-based line in the output where the paragraph starts. `terms` is a string list. |

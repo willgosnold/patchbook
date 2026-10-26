@@ -8,7 +8,7 @@ import {
 } from "./blocks.ts";
 import { ATTRIBUTES_FILE, Book, buildInputs, GIT, PB, type Reserved, under } from "./book.ts";
 import {
-  Change, CHANGE_NAME, editText, isMergeMarker, readChanges, replaceIntent, strayProblems,
+  Change, CHANGE_NAME, type Edit, editText, isMergeMarker, readChanges, replaceIntent, strayProblems,
 } from "./changes.ts";
 import { installHookOrWarn, stageModes, upstreamModes, warnUnhooked } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
@@ -215,12 +215,14 @@ export function assemble(book: Book): Assembly {
   // Content edits, keyed by upstream path. One owner per path.
   const content = new Map(upstream);
   const owner = new Map<string, string>();
-  const copiesOver = (c: Change, path: string, up: File): { base: File; ours: File } | null => {
-    const where: InChange = { file: path, change: c.name };
+  const copiesOver = (c: Change, path: string, up: File, at?: InEdit): { base: File; ours: File } | null => {
+    const where: InChange | InEdit = at ?? { file: path, change: c.name };
     const base = c.file("base", path);
     const ours = c.file("ours", path);
     if (base === null || ours === null) {
-      problems.push({ problem: "invalid", ...where, detail: "its base or ours copy is missing" });
+      const lost = [base === null ? "base" : "", ours === null ? "ours" : ""].filter(Boolean);
+      const detail = !at ? "its base or ours copy is missing" : `its ${lost.join(" and ")} ${lost.length > 1 ? "copies are" : "copy is"} missing`;
+      problems.push({ problem: "invalid", ...where, detail });
       return null;
     }
     if (!bytesEqual(base.data, up.data)) {
@@ -229,7 +231,7 @@ export function assemble(book: Book): Assembly {
     applied++;
     return { base, ours };
   };
-  const destinations: { c: Change; path: string }[] = [];
+  const destinations: { c: Change; e: Edit }[] = [];
   for (const c of changes) {
     for (const e of c.edits) {
       if (e.kind !== "file") continue;
@@ -242,7 +244,7 @@ export function assemble(book: Book): Assembly {
       owner.set(e.path, `change ${c.name}`);
       const up = upstream.get(e.path);
       if (!up) {
-        destinations.push({ c, path: e.path });
+        destinations.push({ c, e });
         continue;
       }
       const copies = copiesOver(c, e.path, up);
@@ -265,11 +267,12 @@ export function assemble(book: Book): Assembly {
 
   problems.push(...structure);
   applied += structural;
-  for (const { c, path } of destinations) {
-    const from = upstreamOf.get(path);
-    if (from === undefined) problems.push({ problem: "gone", file: path, change: c.name, detail: "no earlier copy or move of an upstream file reaches it" });
-    else if (unread.has(`${c.name}\0${path}`)) applied++;
-    else copiesOver(c, path, upstream.get(from)!);
+  for (const { c, e } of destinations) {
+    const at: InEdit = { file: `changes/${c.name}`, edit: editText(e) };
+    const from = upstreamOf.get(e.path);
+    if (from === undefined) problems.push({ problem: "gone", ...at, detail: "no earlier copy or move of an upstream file reaches it" });
+    else if (unread.has(`${c.name}\0${e.path}`)) applied++;
+    else copiesOver(c, e.path, upstream.get(from)!, at);
   }
   const prefix = book.layout.kind === "folder" ? book.layout.from : "";
   const atOutput = (p: string) => (!prefix ? [p] : p.startsWith(prefix + "/") ? [p.slice(prefix.length + 1)] : []);

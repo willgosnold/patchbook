@@ -14,7 +14,7 @@ export type Problem =
   | ({ problem: "invalid" } & (InFile | InEdit | InChange | InOutput | InBlock) & Detail)
   | ({ problem: "invalid" } & (InFile | InEdit | InChange) & Detail & Refuse)
   | ({ problem: "gone" } & (InEdit | InChange) & Detail)
-  | ({ problem: "stale" } & InChange & Detail)
+  | ({ problem: "stale" } & (InEdit | InChange) & Detail)
   | ({ problem: "conflict" } & (InFile | InChange) & Detail)
   | ({ problem: "conflict" } & (InFile | InChange) & Detail & Refuse)
   | ({ problem: "placeholder" } & (InOutput | InBlock) & Detail)
