@@ -3,6 +3,7 @@ import { appendFileSync, chmodSync, lstatSync, mkdtempSync, readdirSync, readFil
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
+import { applyStructure, editedUpstream } from "./assemble.ts";
 import { type Lost, lostEdit } from "./blocks.ts";
 import { Book, GIT, parseLock, PB, refuseNestedGit, refuseUpstreamGit, segmentNamesGit, under, unsafeVendor } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
@@ -186,6 +187,26 @@ function writeLastSync(book: Book, reports: ReadonlyMap<string, SyncReport>): vo
   writeText(join(book.dir, REPORT), lastSyncText({ version: 2, upstreams }));
 }
 
+/** An upstream's files at its pin, as the build stages them. None before its first sync. */
+function pinnedFiles(book: Book, u: Upstream): Map<string, File> {
+  const pin = u.pin();
+  return pin.tree ? book.buildable(u, u.mounted(u.files(u.heal(pinned(u, pin)))), false) : new Map();
+}
+
+/** The upstream file each file edit on a copy's or move's destination merges with, by the path it edits, as the build stages them at
+ * the pins. `old` is `u`'s files at its pin. */
+function destinationSources(book: Book, u: Upstream, old: ReadonlyMap<string, File>, changes: readonly Change[]): Map<string, string> {
+  const ends = changes.flatMap((c) => c.edits.flatMap((e) => (e.kind === "copy" || e.kind === "move" ? [e.dest] : [])));
+  const paths = changes.flatMap((c) => c.edits.flatMap((e) => (e.kind === "file" && ends.some((d) => under(e.path, d)) ? [e.path] : [])));
+  if (!paths.length) return new Map();
+  const upstream = new Map(book.upstreams.flatMap((x) => [...(x === u ? old : pinnedFiles(book, x))]));
+  const { tree } = applyStructure(changes, upstream, [], (p) => book.reservedHolding(p));
+  return new Map(paths.flatMap((p) => {
+    const from = editedUpstream(p, upstream, tree);
+    return from === undefined ? [] : [[p, from] as const];
+  }));
+}
+
 /** Move one upstream's pin and carry every change on its files forward. Returns the report, or null. */
 export function syncUpstream(book: Book, u: Upstream, ref: string | null, changes: readonly Change[], beforePin?: (report: SyncReport) => void): SyncReport | null {
   recoverAll(book);
@@ -204,7 +225,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   const raw = u.files(commit);
   if (u.vendor) refuseUpstreamGit(u.name, relative(book.root, u.vendor), raw.keys());
   if (u.vendor) refuseUserFiles(book, u, u.vendor, pin.tree ? u.files(u.heal(pinned(u, pin))) : raw, !pin.tree);
-  const old = pin.tree ? book.buildable(u, u.mounted(u.files(u.heal(pinned(u, pin)))), false) : new Map<string, File>();
+  const old = pinnedFiles(book, u);
   const fresh = book.buildable(u, u.mounted(raw));
   const report: SyncReport = {
     name: u.name, from: pin.commit ?? null, to: commit, upstream: upstreamDelta(old, fresh), merged: [], conflicts: [], gone: [],
@@ -216,22 +237,24 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   const missing: string[] = [];
   let copies = 0;
   const added = Array.from(fresh.keys()).filter((p) => !old.has(p));
+  const sources = destinationSources(book, u, old, changes);
   for (const c of changes) {
     for (const e of c.edits) {
-      if (book.upstreamFor(e.path) !== u) continue;
-      if (e.kind === "replace" && old.has(e.path) && !sameFile(old.get(e.path), fresh.get(e.path))) {
+      if (e.kind === "replace" && book.upstreamFor(e.path) === u && old.has(e.path) && !sameFile(old.get(e.path), fresh.get(e.path))) {
         report.replacedUpstreamChanged.push(`${c.name}: ${e.path}`);
       }
       if (e.kind !== "file") continue;
+      const from = sources.get(e.path) ?? e.path;
+      if (book.upstreamFor(from) !== u) continue;
       const base = c.read("base", e.path);
       const ours = c.read("ours", e.path);
-      const theirs = fresh.get(e.path)?.data;
+      const theirs = fresh.get(from)?.data;
       if (theirs === undefined) {
-        const maybe = added.map((p) => [similarity(p, e.path), p] as const).sort((x, y) => y[0] - x[0]).slice(0, 3).map(([, p]) => p);
+        const maybe = added.map((p) => [similarity(p, from), p] as const).sort((x, y) => y[0] - x[0]).slice(0, 3).map(([, p]) => p);
         report.gone.push({ change: c.name, path: e.path, maybe });
         continue;
       }
-      if (base !== null && ours !== null) writes.push(...carryMode(c, e.path, fresh.get(e.path)!.mode));
+      if (base !== null && ours !== null) writes.push(...carryMode(c, e.path, fresh.get(from)!.mode));
       if (base !== null && bytesEqual(theirs, base)) continue;
       if (base === null || ours === null) {
         const sides = (["base", "ours"] as const).filter((side) => (side === "base" ? base : ours) === null);

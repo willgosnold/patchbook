@@ -1857,7 +1857,7 @@ describe("classify", () => {
     const w = twins([["new.md", ours(added, "skills/new.md")], ["new2.md", ours(added, "skills/new.md")], ["new3.md", ours(added, "skills/new.md")]],
       { "new.md": "a", "new2.md": null, "new3.md": "built" });
     expect(classify(w, ["new.md", "new2.md"])).toMatchObject([
-      { kind: "replace", path: "new.md", staged: "skills/new.md", entries: null },
+      { kind: "replace", path: "new.md", staged: "skills/new.md" },
       { kind: "delete-upstream", path: "new2.md", staged: "skills/new2.md" },
     ]);
     expect(needOf(classify(w, ["new.md"])[0]!)).toEqual({ named: true, drafts: [], writes: { kind: "replace", path: "skills/new.md" } });
@@ -1873,26 +1873,49 @@ describe("classify", () => {
     expect(classify(alone, ["new.md"])).toMatchObject([{ kind: "unadd", path: "new.md" }]);
   });
 
-  test("edits to outputs built from one upstream file are replaces while another output is on disk, and a delete stands alone", () => {
+  test("an edit to a copy's destination is a file edit there while another output of its upstream file is on disk, and a delete stands alone", () => {
     const w = twins([["plain.md", up("skills/plain.md")], ["plain2.md", up("skills/plain.md")], ["plain3.md", up("skills/plain.md")]],
-      { "plain.md": "a", "plain2.md": "b", "plain3.md": null });
-    expect(classify(w, ["plain.md", "plain2.md", "plain3.md"])).toMatchObject([
-      { kind: "replace", path: "plain.md", staged: "skills/plain.md" },
-      { kind: "replace", path: "plain2.md", staged: "skills/plain2.md" },
+      { "plain.md": "built", "plain2.md": "b", "plain3.md": null });
+    expect(classify(w, ["plain2.md", "plain3.md"])).toMatchObject([
+      { kind: "file-edit", path: "plain2.md", rel: "skills/plain2.md", to: { kind: "recorded", base: f("upstream") }, entries: null },
       { kind: "delete-upstream", path: "plain3.md", staged: "skills/plain3.md" },
     ]);
-    const one = twins([["plain.md", up("skills/plain.md")], ["plain3.md", up("skills/plain.md")]], { "plain.md": "a", "plain3.md": null });
-    expect(classify(one, ["plain.md", "plain3.md"])).toMatchObject([{ kind: "file-edit", path: "plain.md" }, { kind: "delete-upstream", path: "plain3.md" }]);
+    expect(needOf(classify(w, ["plain2.md"])[0]!)).toMatchObject({ named: true, writes: { kind: "file", path: "skills/plain2.md" } });
+    const one = twins([["plain.md", up("skills/plain.md")], ["plain3.md", up("skills/plain.md")]], { "plain3.md": "a", "plain.md": null });
+    expect(classify(one, ["plain3.md", "plain.md"])).toMatchObject([{ kind: "file-edit", path: "plain3.md", rel: "skills/plain.md" }, { kind: "delete-upstream", path: "plain.md" }]);
   });
 
-  test("a replace takes the block entries of its upstream file with it only when it replaces every output of that file", () => {
-    const w = { ...twins([["plain.md", up("skills/plain.md")], ["plain2.md", up("skills/plain.md")]], { "plain.md": "a", "plain2.md": "b" }),
-      blocks: new Set(["skills/plain.md"]) };
+  test("an edit to the source of a copy is a replace while a destination on disk still builds from it, and a file edit once each one is edited too", () => {
+    const w = twins([["plain.md", up("skills/plain.md")], ["plain2.md", up("skills/plain.md")], ["plain3.md", up("skills/plain.md")]],
+      { "plain.md": "a", "plain2.md": "b", "plain3.md": "built" });
     expect(classify(w, ["plain.md", "plain2.md"])).toMatchObject([
-      { kind: "replace", path: "plain.md", entries: "blocks/skills/plain.md.entries" },
-      { kind: "replace", path: "plain2.md", entries: "blocks/skills/plain.md.entries" },
+      { kind: "replace", path: "plain.md", staged: "skills/plain.md" },
+      { kind: "file-edit", path: "plain2.md", rel: "skills/plain2.md" },
     ]);
-    expect(classify(w, ["plain2.md"])).toMatchObject([{ kind: "replace", path: "plain2.md", entries: null }]);
+    expect(classify(w, ["plain.md", "plain2.md", "plain3.md"])).toMatchObject([
+      { kind: "file-edit", path: "plain.md", rel: "skills/plain.md" },
+      { kind: "file-edit", path: "plain2.md", rel: "skills/plain2.md" },
+      { kind: "file-edit", path: "plain3.md", rel: "skills/plain3.md" },
+    ]);
+  });
+
+  test("a file edit on a copy's destination takes the block entries of its upstream file with it only when no output reads them after the record", () => {
+    const sources: [string, Source][] = [["plain.md", up("skills/plain.md")], ["plain2.md", up("skills/plain.md")], ["plain3.md", up("skills/plain.md")]];
+    const w = (edits: Record<string, string | null>) => ({ ...twins(sources, edits), blocks: new Set(["skills/plain.md"]) });
+    const entries = "blocks/skills/plain.md.entries";
+    expect(classify(w({ "plain.md": null, "plain2.md": "b", "plain3.md": "c" }), ["plain.md", "plain2.md", "plain3.md"])).toMatchObject([
+      { kind: "delete-upstream", path: "plain.md", entries: null },
+      { kind: "file-edit", path: "plain2.md", entries },
+      { kind: "file-edit", path: "plain3.md", entries },
+    ]);
+    expect(classify(w({ "plain.md": null, "plain2.md": "b", "plain3.md": "built" }), ["plain.md", "plain2.md"])).toMatchObject([
+      { kind: "delete-upstream", path: "plain.md" },
+      { kind: "file-edit", path: "plain2.md", entries: null },
+    ]);
+    expect(classify(w({ "plain.md": "built", "plain2.md": "b", "plain3.md": "c" }), ["plain2.md", "plain3.md"])).toMatchObject([
+      { kind: "file-edit", path: "plain2.md", entries: null },
+      { kind: "file-edit", path: "plain3.md", entries: null },
+    ]);
   });
 
   test("a mode change to a file with block entries names the file as a string literal", () => {

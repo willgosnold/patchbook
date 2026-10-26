@@ -173,6 +173,14 @@ export function applyStructure(
   return { tree, applied };
 }
 
+/** The upstream file a file edit on `path` merges with: the one at `path`, or, on a path upstream doesn't have, the one the copies and
+ * moves in `staged` build there. */
+export function editedUpstream(path: string, upstream: ReadonlyMap<string, File>, staged: ReadonlyMap<string, Source>): string | undefined {
+  if (upstream.has(path)) return path;
+  const src = staged.get(path);
+  return src?.kind === "up" ? src.path : undefined;
+}
+
 export function blockFiles(book: Book): string[] {
   return rglob(book.data("blocks"), ".entries").map((p) => p.slice(0, -".entries".length));
 }
@@ -199,6 +207,22 @@ export function assemble(book: Book): Assembly {
   // Content edits, keyed by upstream path. One owner per path.
   const content = new Map(upstream);
   const owner = new Map<string, string>();
+  /** A file edit's copies, once the upstream file it edits is known. */
+  const copiesOver = (c: Change, path: string, up: File): { base: File; ours: File } | null => {
+    const where: InChange = { file: path, change: c.name };
+    const base = c.file("base", path);
+    const ours = c.file("ours", path);
+    if (base === null || ours === null) {
+      problems.push({ problem: "invalid", ...where, detail: "its base or ours copy is missing" });
+      return null;
+    }
+    if (!bytesEqual(base.data, up.data)) {
+      problems.push({ problem: "stale", ...where, detail: "its base differs from upstream at the pin; run sync" });
+    }
+    applied++;
+    return { base, ours };
+  };
+  const destinations: { c: Change; path: string }[] = [];
   for (const c of changes) {
     for (const e of c.edits) {
       if (e.kind !== "file") continue;
@@ -211,20 +235,11 @@ export function assemble(book: Book): Assembly {
       owner.set(e.path, `change ${c.name}`);
       const up = upstream.get(e.path);
       if (!up) {
-        problems.push({ problem: "gone", ...where, detail: "upstream no longer has it" });
+        destinations.push({ c, path: e.path });
         continue;
       }
-      const base = c.file("base", e.path);
-      const ours = c.file("ours", e.path);
-      if (base === null || ours === null) {
-        problems.push({ problem: "invalid", ...where, detail: "its base or ours copy is missing" });
-        continue;
-      }
-      if (!bytesEqual(base.data, up.data)) {
-        problems.push({ problem: "stale", ...where, detail: "its base differs from upstream at the pin; run sync" });
-      }
-      content.set(e.path, { data: ours.data, mode: outputMode(ours, base, up) });
-      applied++;
+      const copies = copiesOver(c, e.path, up);
+      if (copies) content.set(e.path, { data: copies.ours.data, mode: outputMode(copies.ours, copies.base, up) });
     }
   }
   const blocks = new Map<string, Map<string, Entry>>();
@@ -244,6 +259,12 @@ export function assemble(book: Book): Assembly {
   const lost = new Set<string>();
   const { tree: staged, applied: structural } = applyStructure(changes, upstream, problems, (p) => book.reservedHolding(p), lost);
   applied += structural;
+  // A file edit on a copy's or move's destination applies after them and builds that output alone from its ours copy.
+  for (const { c, path } of destinations) {
+    const from = editedUpstream(path, upstream, staged);
+    if (from === undefined) problems.push({ problem: "gone", file: path, change: c.name, detail: "upstream no longer has it" });
+    else if (copiesOver(c, path, upstream.get(from)!)) staged.set(path, { kind: "ours", change: c.name, path });
+  }
   const prefix = book.layout.kind === "folder" ? book.layout.from : "";
   const atOutput = (p: string) => (!prefix ? [p] : p.startsWith(prefix + "/") ? [p.slice(prefix.length + 1)] : []);
   const selected = new Map(Array.from(staged).flatMap(([p, s]) => atOutput(p).map((at) => [at, s] as const)));

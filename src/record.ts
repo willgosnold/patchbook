@@ -31,11 +31,11 @@ type Data = {
   "add": { staged: string; now: Seen };
   "follow": { edit: Follow };
   "delete-upstream": { staged: string; entries: string | null };
-  "replace": { staged: string; now: Seen; built: Mode; up: File | undefined; entries: string | null };
+  "replace": { staged: string; now: Seen; built: Mode; up: File | undefined };
   "unadd": Copy;
-  "unreplace": Copy;
+  "unreplace": Copy & { drops: "replace" | "file" };
   "update-ours": Copy & { now: Seen; built: File; up: File | undefined };
-  "file-edit": { rel: string; now: Seen; built: Mode; to: Destination };
+  "file-edit": { rel: string; now: Seen; built: File; to: Destination; entries: string | null };
   "paragraph-edit": { plan: Plan; modeNotRecorded: string | null };
   "skip": { reason: string };
 };
@@ -43,14 +43,15 @@ type Data = {
 type Kind = keyof Data;
 export type Edited<K extends Kind = Kind> = { [P in K]: { kind: P; path: string } & Data[P] }[K];
 
-/** The edit a row adds to the change it records into. A delete that stands in for a replace names the change it drops the replace from. */
+/** The edit a row adds to the change it records into. A delete that stands in for a replace, or for a file edit on a copy's
+ * destination, names the change it drops that edit from. */
 type Written = Edit & { drops?: Change };
 
 /** A change a row writes a copy into without naming it, with the copy's new bytes. */
 type Join = { change: Change; path: string; data: Uint8Array };
 
-/** An add or replace a row takes out of the change that has it. */
-type Dropped = { change: Change; kind: "add" | "replace"; path: string };
+/** An edit a row takes out of the change that has it. */
+type Dropped = { change: Change; kind: "add" | "replace" | "file"; path: string };
 
 /** `updates` are the existing entries a row rewrites, by their label. */
 type Need = { named: boolean; drafts: readonly Draft[]; updates?: readonly [string, Draft][]; writes?: Written; joins?: Join; dropped?: Dropped };
@@ -100,9 +101,7 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
       const c = r.target!;
       c.edits.push({ kind: "replace", path: e.staged });
       const copies = writeCopy(c, e.staged, e.now, e.built, e.up);
-      const entries = e.entries;
-      const afterSave = () => { if (entries !== null && exists(entries)) unlinkSync(entries); };
-      return { touched: [c], notes: [`replace  ${e.path}`], copies, afterSave };
+      return { touched: [c], notes: [`replace  ${e.path}`], copies };
     },
   },
   "unadd": {
@@ -114,13 +113,13 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     },
   },
   "unreplace": {
-    needs: (e) => ({ ...NAMED, writes: { kind: "delete", path: e.staged, drops: e.change }, dropped: { change: e.change, kind: "replace", path: e.staged } }),
+    needs: (e) => ({ ...NAMED, writes: { kind: "delete", path: e.staged, drops: e.change }, dropped: { change: e.change, kind: e.drops, path: e.staged } }),
     apply: (e, r) => {
       const c = r.target!;
-      e.change.edits = e.change.edits.filter((x) => !(x.kind === "replace" && x.path === e.staged));
+      e.change.edits = e.change.edits.filter((x) => !(x.kind === e.drops && x.path === e.staged));
       c.edits.push({ kind: "delete", path: e.staged });
       const afterSave = () => dropCopies(e.change, e.staged);
-      return { touched: [e.change, c], notes: [`delete   ${e.path} (replace removed from ${e.change.name})`], afterSave };
+      return { touched: [e.change, c], notes: [`delete   ${e.path} (${e.drops === "file" ? "file edit" : "replace"} removed from ${e.change.name})`], afterSave };
     },
   },
   "update-ours": {
@@ -135,14 +134,16 @@ const KINDS: { readonly [K in Kind]: Row<K> } = {
     apply: (e, r) => {
       if (e.to.kind === "owned") {
         const c = e.to.change;
-        const copies = writeCopy(c, e.rel, e.now, e.built, e.to.up);
+        const copies = writeCopy(c, e.rel, e.now, e.built.mode, e.to.up);
         return { touched: [c], notes: [`file     ${e.path}` + (c !== r.target ? ` (in ${c.name})` : "")], copies };
       }
       const c = r.target!;
       c.edits.push({ kind: "file", path: e.rel });
       c.write("base", e.rel, e.to.base.data, e.to.base.mode);
-      const copies = writeCopy(c, e.rel, e.now, e.built, e.to.base);
-      return { touched: [c], notes: [`file     ${e.path}`], copies: [[c.content("base", e.rel), e.to.base.mode], ...copies] };
+      const copies = writeCopy(c, e.rel, e.now, e.built.mode, e.to.base);
+      const entries = e.entries;
+      const afterSave = () => { if (entries !== null && exists(entries)) unlinkSync(entries); };
+      return { touched: [c], notes: [`file     ${e.path}`], copies: [[c.content("base", e.rel), e.to.base.mode], ...copies], afterSave };
     },
   },
   "paragraph-edit": {
@@ -211,25 +212,32 @@ export type Snapshot = {
   build(src: Source, at: string): File;
 };
 
-/** An edit to an output whose source builds another output still on disk is a replace of that output alone: an edit to the source
- * would change the other output too. A new output that builds as a copy of a staged file is recorded as that copy. A new output that
- * a deleted output's upstream file builds, as is or with a content edit that keeps at least half its lines, is recorded as a move of
- * that file plus the edit. */
+/** An edit to an output whose source builds another output still on disk applies to that output alone, since an edit to the source
+ * would change the other output too: a file edit on its own path at the destination of a copy or move of an upstream file, which keeps
+ * it following that file, and a replace anywhere else. A destination edited this way no longer builds from the source. A new output
+ * that builds as a copy of a staged file is recorded as that copy. A new output that a deleted output's upstream file builds, as is or
+ * with a content edit that keeps at least half its lines, is recorded as a move of that file plus the edit. */
 export function classify(s: Snapshot, paths: readonly string[]): Edited[] {
   return follow(s, each(s, paths));
 }
 
 function each(s: Snapshot, paths: readonly string[]): Edited[] {
+  const edited = new Set(paths);
+  const destination = (p: string, src: Source) => src.kind === "up" && src.path !== s.prefix + p;
   return paths.map((path) => {
     const now = s.current.get(path);
     const built = s.out.get(path);
     const src = now && built ? s.sources.get(path) : undefined;
-    const outputs = src ? builtFrom(s, src) : [];
-    if (!now || !built || !src || !outputs.some((p) => p !== path && s.current.has(p))) return classifyOne(s, path);
-    // Once every output of a file with block entries is replaced, nothing reads its entries.
-    const entries = src.kind === "up" && s.blocks.has(src.path) && outputs.every((p) => paths.includes(p)) ? s.entriesAt(src.path) : null;
+    if (!now || !built || !src) return classifyOne(s, path);
+    const outputs = builtFrom(s, src);
     const staged = s.prefix + path;
-    return { kind: "replace", path, staged, now, built: built.mode, up: s.upstream.get(staged), entries };
+    if (destination(path, src)) {
+      if (!outputs.some((p) => p !== path && s.current.has(p))) return classifyOne(s, path);
+      const unread = s.blocks.has(src.path) && outputs.every((p) => edited.has(p) && (destination(p, src) || !s.current.has(p)));
+      return { kind: "file-edit", path, rel: staged, now, built, to: { kind: "recorded", base: s.upstream.get(src.path)! }, entries: unread ? s.entriesAt(src.path) : null };
+    }
+    if (!outputs.some((p) => p !== path && s.current.has(p) && !(edited.has(p) && destination(p, src)))) return classifyOne(s, path);
+    return { kind: "replace", path, staged, now, built: built.mode, up: s.upstream.get(staged) };
   });
 }
 
@@ -258,13 +266,16 @@ function classifyOne(s: Snapshot, path: string): Edited {
   if (src.kind === "ours") {
     const change = s.changes.get(src.change)!;
     const copy = { path, change, staged: src.path };
+    const onDestination = change.edits.some((e) => e.kind === "file" && e.path === src.path);
     if (now === undefined) {
+      if (onDestination) return { kind: "unreplace", ...copy, drops: "file" };
       const staged = s.prefix + path;
       // A moved or copied output, or a copy another output still needs, is deleted. Dropping its add or replace would break the move or copy.
       if (src.path !== staged || readByMoveOrCopy(s, src.path)) return { kind: "delete-upstream", path, staged, entries: null };
-      return { kind: change.edits.some((e) => e.kind === "add" && e.path === src.path) ? "unadd" : "unreplace", ...copy };
+      return change.edits.some((e) => e.kind === "add" && e.path === src.path) ? { kind: "unadd", ...copy } : { kind: "unreplace", ...copy, drops: "replace" };
     }
     if (s.uses(change.read("ours", src.path))) return skipPlaceholders(path, change);
+    if (onDestination) return { kind: "file-edit", path, rel: src.path, now, built, to: { kind: "owned", change }, entries: null };
     return { kind: "update-ours", ...copy, now, built, up: s.upstream.get(src.path) };
   }
   if (now === undefined) return { kind: "delete-upstream", path, staged: s.prefix + path, entries: s.blocks.has(src.path) && !stillBuilt(s, src.path) ? s.entriesAt(src.path) : null };
@@ -279,7 +290,7 @@ function classifyOne(s: Snapshot, path: string): Edited {
   const owner = s.owners.get(src.path);
   if (owner && s.uses(owner.read("ours", src.path))) return skipPlaceholders(path, owner);
   const to: Destination = owner ? { kind: "owned", change: owner, up: s.upstream.get(src.path) } : { kind: "recorded", base: s.upstream.get(src.path)! };
-  return { kind: "file-edit", path, rel: src.path, now, built: built.mode, to };
+  return { kind: "file-edit", path, rel: src.path, now, built, to, entries: null };
 }
 
 const skipPlaceholders = (path: string, change: Change): Edited =>
@@ -488,7 +499,7 @@ function asked(edits: readonly Edited[]): Asked {
 /** The edits that need a change name, as the model reads them: a move or copy as its line with no diff, and every other edit by its output
  * path. A file edited after a move is diffed against the moved file as the build writes it at its new path, so only the edit shows. */
 function pendingEdits(a: Assembly, current: ReadonlyMap<string, Seen>, edits: readonly Edited[]): Part[] {
-  const moved = new Map(edits.flatMap((e): [string, File][] => (e.kind === "file-edit" && !a.out.has(e.path) ? [[e.path, a.build({ kind: "up", path: e.rel }, e.path)]] : [])));
+  const moved = new Map(edits.flatMap((e): [string, File][] => (e.kind === "file-edit" && !a.out.has(e.path) ? [[e.path, e.built]] : [])));
   const built = { ...a, out: new Map([...a.out, ...moved]) };
   return edits.filter((e) => needOf(e).named).flatMap((e): Part[] => (e.kind === "follow" ? [{ line: editText(e.edit), diff: "" }] : pendingParts(built, current, [e.path])));
 }

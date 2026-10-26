@@ -10658,15 +10658,15 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
 
   forkTest("record edits the source of a copy that has its own file edit as a file edit, and both outputs follow upstream", (t) => {
     editedCopy(t);
-    t.fork.write("app.txt", t.fork.read("app.txt").replace("two", "TWO"));
-    expect(t.pb(["record", "srcedit", "--intent", "Shout two in the source."], { cwd: t.fork.path }).stdout).toBe("file     app.txt\n");
-    expect(changeText(t, "srcedit")).toBe("# srcedit\n\nintent: Shout two in the source.\n\nedits:\n- file app.txt\n");
+    t.fork.write("app.txt", t.fork.read("app.txt").replace("four", "FOUR"));
+    expect(t.pb(["record", "srcedit", "--intent", "Shout four in the source."], { cwd: t.fork.path }).stdout).toBe("file     app.txt\n");
+    expect(changeText(t, "srcedit")).toBe("# srcedit\n\nintent: Shout four in the source.\n\nedits:\n- file app.txt\n");
     t.pb(["build"], { cwd: t.fork.path });
     t.fork.commit("srcedit");
     upstreamApp(t, "one", "ONE");
     expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("2 of ours merged cleanly, 0 conflicts, 0 gone.");
     t.pb(["build"], { cwd: t.fork.path });
-    expect([t.fork.read("app.txt"), t.fork.read("app2.txt")]).toEqual([t.up.read("app.txt").replace("two", "TWO"), t.up.read("app.txt").replace("six", "SIX")]);
+    expect([t.fork.read("app.txt"), t.fork.read("app2.txt")]).toEqual([t.up.read("app.txt").replace("four", "FOUR"), t.up.read("app.txt").replace("six", "SIX")]);
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
 
@@ -12921,9 +12921,9 @@ describe("VendorTest", () => {
     sh(["git", "commit", "-qm", "twin"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "0" } });
     t.repo.write("skills/hello2/SKILL.md", skill.replace("Then wave.", "Then wave twice."));
     sh(["git", "add", "-A"], { cwd: t.repo.path });
-    const commit = sh(["git", "commit", "-qm", "wave"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Wave twice in the copy." } });
-    expect(commit.stderr).toContain("wave-twice-in-the-copy: Wave twice in the copy.\nfile     hello2/SKILL.md\n");
-    const change = join(t.repo.path, ".patchbook/changes/wave-twice-in-the-copy");
+    const commit = sh(["git", "commit", "-qm", "wave"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Wave twice." } });
+    expect(commit.stderr).toContain("wave-twice: Wave twice.\nfile     hello2/SKILL.md\n");
+    const change = join(t.repo.path, ".patchbook/changes/wave-twice");
     expect(read(join(change, "CHANGE.md"))).toContain("edits:\n- file skills/hello2/SKILL.md\n");
     expect(read(join(change, "base/skills/hello2/SKILL.md.pb"))).toBe(t.up.read("plugin/skills/hello/SKILL.md"));
     expect(existsSync(entries)).toBe(true);
