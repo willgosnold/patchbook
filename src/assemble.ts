@@ -8,7 +8,7 @@ import {
 } from "./blocks.ts";
 import { ATTRIBUTES_FILE, Book, buildInputs, GIT, PB, type Reserved, under } from "./book.ts";
 import {
-  Change, CHANGE_NAME, editText, isMergeMarker, readChanges, replaceIntent, strayProblems,
+  Change, CHANGE_NAME, type Edit, editText, isMergeMarker, readChanges, replaceIntent, strayProblems,
 } from "./changes.ts";
 import { installHookOrWarn, stageModes, upstreamModes, warnUnhooked } from "./githook.ts";
 import { Fail } from "./lib/fail.ts";
@@ -112,19 +112,30 @@ function intoReserved(where: InEdit, path: string, { place, refuse }: Reserved):
   return refuse ? { problem: "invalid", ...where, detail, refuse: true } : { problem: "invalid", ...where, detail };
 }
 
-/** Apply add, replace, delete, move and copy to a map of staged path to source, and count the edits that applied. */
+/** Apply add, replace, delete, move and copy, and each `file` edit on a path upstream doesn't have, to a map of staged path to source,
+ * and count the structural edits that applied. */
 export function applyStructure(
   changes: readonly Change[],
   upstream: ReadonlyMap<string, File>,
   problems: Problem[],
   reservedHolding: (staged: string) => Reserved | null,
   dropped = new Set<string>(),
-): { tree: Map<string, Source>; applied: number } {
+): { tree: Map<string, Source>; applied: number; upstreamOf: Map<string, string>; unread: Set<string> } {
   const tree = new Map<string, Source>(Array.from(upstream.keys(), (p) => [p, { kind: "up", path: p }]));
+  const upstreamOf = new Map<string, string>();
+  const placed: string[] = [];
   let applied = 0;
   for (const c of changes) {
     for (const e of c.edits) {
-      if (e.kind === "file") continue;
+      if (e.kind === "file") {
+        const src = upstream.has(e.path) ? undefined : tree.get(e.path);
+        if (src?.kind !== "up") continue;
+        upstreamOf.set(e.path, src.path);
+        if (c.read("ours", e.path) === null) continue;
+        tree.set(e.path, { kind: "ours", change: c.name, path: e.path });
+        placed.push(`${c.name}\0${e.path}`);
+        continue;
+      }
       const where: InEdit = { file: `changes/${c.name}`, edit: editText(e) };
       const matched = Array.from(tree.keys()).filter((p) => under(p, e.path));
       if (e.kind === "add") {
@@ -170,7 +181,8 @@ export function applyStructure(
       }
     }
   }
-  return { tree, applied };
+  const read = new Set(Array.from(tree.values()).flatMap((s) => (s.kind === "ours" ? [`${s.change}\0${s.path}`] : [])));
+  return { tree, applied, upstreamOf, unread: new Set(placed.filter((k) => !read.has(k))) };
 }
 
 export function blockFiles(book: Book): string[] {
@@ -183,12 +195,16 @@ export function assemble(book: Book): Assembly {
   let applied = 0;
   const changes = readChanges(book, problems);
   const byName = new Map(changes.map((c) => [c.name, c]));
+  const structure: Problem[] = [];
+  const lost = new Set<string>();
+  const { tree: staged, applied: structural, upstreamOf, unread } = applyStructure(changes, upstream, structure, (p) => book.reservedHolding(p), lost);
 
   const conflicted = syncConflicts(book);
   for (const name of foldersWith(book.data("changes"), "CHANGE.md").filter((name) => CHANGE_NAME.test(name))) {
     const c = byName.get(name) ?? new Change(name, book.data("changes", name));
     for (const copy of nonFolders(join(c.dir, "ours")).filter((p) => p.endsWith(".pb"))) {
       const path = copy.slice(0, -".pb".length);
+      if (unread.has(`${c.name}\0${path}`)) continue;
       const adds = conflicted.has(`${c.name}\0${path}`) ? addsConflictBlock : addsConflictMarker;
       if (adds(textOf(c.file("ours", path)), textOf(c.file("base", path)))) {
         problems.push({ problem: "conflict", file: path, change: c.name, detail: "ours has conflict markers", refuse: true });
@@ -199,6 +215,23 @@ export function assemble(book: Book): Assembly {
   // Content edits, keyed by upstream path. One owner per path.
   const content = new Map(upstream);
   const owner = new Map<string, string>();
+  const copiesOver = (c: Change, path: string, up: File, at?: InEdit): { base: File; ours: File } | null => {
+    const where: InChange | InEdit = at ?? { file: path, change: c.name };
+    const base = c.file("base", path);
+    const ours = c.file("ours", path);
+    if (base === null || ours === null) {
+      const lost = [base === null ? "base" : "", ours === null ? "ours" : ""].filter(Boolean);
+      const detail = !at ? "its base or ours copy is missing" : `its ${lost.join(" and ")} ${lost.length > 1 ? "copies are" : "copy is"} missing`;
+      problems.push({ problem: "invalid", ...where, detail });
+      return null;
+    }
+    if (!bytesEqual(base.data, up.data)) {
+      problems.push({ problem: "stale", ...where, detail: "its base differs from upstream at the pin; run sync" });
+    }
+    applied++;
+    return { base, ours };
+  };
+  const destinations: { c: Change; e: Edit }[] = [];
   for (const c of changes) {
     for (const e of c.edits) {
       if (e.kind !== "file") continue;
@@ -211,20 +244,11 @@ export function assemble(book: Book): Assembly {
       owner.set(e.path, `change ${c.name}`);
       const up = upstream.get(e.path);
       if (!up) {
-        problems.push({ problem: "gone", ...where, detail: "upstream no longer has it" });
+        destinations.push({ c, e });
         continue;
       }
-      const base = c.file("base", e.path);
-      const ours = c.file("ours", e.path);
-      if (base === null || ours === null) {
-        problems.push({ problem: "invalid", ...where, detail: "its base or ours copy is missing" });
-        continue;
-      }
-      if (!bytesEqual(base.data, up.data)) {
-        problems.push({ problem: "stale", ...where, detail: "its base differs from upstream at the pin; run sync" });
-      }
-      content.set(e.path, { data: ours.data, mode: outputMode(ours, base, up) });
-      applied++;
+      const copies = copiesOver(c, e.path, up);
+      if (copies) content.set(e.path, { data: copies.ours.data, mode: outputMode(copies.ours, copies.base, up) });
     }
   }
   const blocks = new Map<string, Map<string, Entry>>();
@@ -241,9 +265,15 @@ export function assemble(book: Book): Assembly {
     blocks.set(rel, entries);
   }
 
-  const lost = new Set<string>();
-  const { tree: staged, applied: structural } = applyStructure(changes, upstream, problems, (p) => book.reservedHolding(p), lost);
+  problems.push(...structure);
   applied += structural;
+  for (const { c, e } of destinations) {
+    const at: InEdit = { file: `changes/${c.name}`, edit: editText(e) };
+    const from = upstreamOf.get(e.path);
+    if (from === undefined) problems.push({ problem: "gone", ...at, detail: "no earlier copy or move of an upstream file reaches it" });
+    else if (unread.has(`${c.name}\0${e.path}`)) applied++;
+    else copiesOver(c, e.path, upstream.get(from)!, at);
+  }
   const prefix = book.layout.kind === "folder" ? book.layout.from : "";
   const atOutput = (p: string) => (!prefix ? [p] : p.startsWith(prefix + "/") ? [p.slice(prefix.length + 1)] : []);
   const selected = new Map(Array.from(staged).flatMap(([p, s]) => atOutput(p).map((at) => [at, s] as const)));

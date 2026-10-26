@@ -3,6 +3,7 @@ import { appendFileSync, chmodSync, lstatSync, mkdtempSync, readdirSync, readFil
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import type { CheckJson, LastSync, SyncReport, UpstreamCheck } from "./api.ts";
+import { applyStructure } from "./assemble.ts";
 import { type Lost, lostEdit } from "./blocks.ts";
 import { Book, GIT, parseLock, PB, refuseNestedGit, refuseUpstreamGit, segmentNamesGit, under, unsafeVendor } from "./book.ts";
 import { type Change, readChanges, type Side } from "./changes.ts";
@@ -186,6 +187,20 @@ function writeLastSync(book: Book, reports: ReadonlyMap<string, SyncReport>): vo
   writeText(join(book.dir, REPORT), lastSyncText({ version: 2, upstreams }));
 }
 
+function pinnedFiles(book: Book, u: Upstream): Map<string, File> {
+  const pin = u.pin();
+  return pin.tree ? book.buildable(u, u.mounted(u.files(u.heal(pinned(u, pin)))), false) : new Map();
+}
+
+function destinationSources(
+  book: Book, changes: readonly Change[], atPin: (u: Upstream) => ReadonlyMap<string, File>,
+): { upstreamOf: ReadonlyMap<string, string>; unread: ReadonlySet<string> } {
+  const ends = changes.flatMap((c) => c.edits.flatMap((e) => (e.kind === "copy" || e.kind === "move" ? [e.dest] : [])));
+  if (!changes.some((c) => c.edits.some((e) => e.kind === "file" && ends.some((d) => under(e.path, d))))) return { upstreamOf: new Map(), unread: new Set() };
+  const upstream = new Map(book.upstreams.flatMap((u) => [...atPin(u)]));
+  return applyStructure(changes, upstream, [], (p) => book.reservedHolding(p));
+}
+
 /** Move one upstream's pin and carry every change on its files forward. Returns the report, or null. */
 export function syncUpstream(book: Book, u: Upstream, ref: string | null, changes: readonly Change[], beforePin?: (report: SyncReport) => void): SyncReport | null {
   recoverAll(book);
@@ -204,7 +219,7 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
   const raw = u.files(commit);
   if (u.vendor) refuseUpstreamGit(u.name, relative(book.root, u.vendor), raw.keys());
   if (u.vendor) refuseUserFiles(book, u, u.vendor, pin.tree ? u.files(u.heal(pinned(u, pin))) : raw, !pin.tree);
-  const old = pin.tree ? book.buildable(u, u.mounted(u.files(u.heal(pinned(u, pin)))), false) : new Map<string, File>();
+  const old = pinnedFiles(book, u);
   const fresh = book.buildable(u, u.mounted(raw));
   const report: SyncReport = {
     name: u.name, from: pin.commit ?? null, to: commit, upstream: upstreamDelta(old, fresh), merged: [], conflicts: [], gone: [],
@@ -213,25 +228,28 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
 
   const writes: Write[] = [];
   const unsure: { c: Change; path: string; lost: Lost }[] = [];
+  const kept: { c: Change; path: string; from: string }[] = [];
   const missing: string[] = [];
   let copies = 0;
   const added = Array.from(fresh.keys()).filter((p) => !old.has(p));
+  const { upstreamOf, unread } = destinationSources(book, changes, (x) => (x === u ? old : pinnedFiles(book, x)));
   for (const c of changes) {
     for (const e of c.edits) {
-      if (book.upstreamFor(e.path) !== u) continue;
-      if (e.kind === "replace" && old.has(e.path) && !sameFile(old.get(e.path), fresh.get(e.path))) {
+      if (e.kind === "replace" && book.upstreamFor(e.path) === u && old.has(e.path) && !sameFile(old.get(e.path), fresh.get(e.path))) {
         report.replacedUpstreamChanged.push(`${c.name}: ${e.path}`);
       }
-      if (e.kind !== "file") continue;
+      if (e.kind !== "file" || unread.has(`${c.name}\0${e.path}`)) continue;
+      const from = upstreamOf.get(e.path) ?? e.path;
+      if (book.upstreamFor(from) !== u) continue;
       const base = c.read("base", e.path);
       const ours = c.read("ours", e.path);
-      const theirs = fresh.get(e.path)?.data;
+      const theirs = fresh.get(from)?.data;
       if (theirs === undefined) {
-        const maybe = added.map((p) => [similarity(p, e.path), p] as const).sort((x, y) => y[0] - x[0]).slice(0, 3).map(([, p]) => p);
+        const maybe = added.map((p) => [similarity(p, from), p] as const).sort((x, y) => y[0] - x[0]).slice(0, 3).map(([, p]) => p);
         report.gone.push({ change: c.name, path: e.path, maybe });
         continue;
       }
-      if (base !== null && ours !== null) writes.push(...carryMode(c, e.path, fresh.get(e.path)!.mode));
+      if (base !== null && ours !== null) writes.push(...carryMode(c, e.path, fresh.get(from)!.mode));
       if (base !== null && bytesEqual(theirs, base)) continue;
       if (base === null || ours === null) {
         const sides = (["base", "ours"] as const).filter((side) => (side === "base" ? base : ours) === null);
@@ -240,7 +258,13 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
         continue;
       }
       if (!(isText(base) && isText(ours) && isText(theirs))) {
-        report.conflicts.push({ change: c.name, path: e.path, detail: "binary file changed upstream" });
+        if (!upstreamOf.has(e.path)) {
+          report.conflicts.push({ change: c.name, path: e.path, detail: "binary file changed upstream" });
+          continue;
+        }
+        writes.push({ c, side: "base", path: e.path, data: theirs });
+        report.replacedUpstreamChanged.push(`${c.name}: ${e.path}`);
+        kept.push({ c, path: e.path, from });
         continue;
       }
       const merge = mergeFile(ours, base, theirs);
@@ -281,6 +305,10 @@ export function syncUpstream(book: Book, u: Upstream, ref: string | null, change
     const fix = lost === "count" ? "the paragraphs as you mean them" : "the edit on the copy you mean";
     warn(`patchbook: ${path} (change ${c.name}): ${why}. ${relative(book.root, c.content("ours", path))} holds our text `
       + `and upstream's between conflict markers. Resolve them with ${fix}, then run patchbook build.\n`);
+  }
+  for (const { c, path, from } of kept) {
+    warn(`patchbook: ${path} (change ${c.name}): upstream changed ${from}, and sync merges only text, so it kept ours. `
+      + "To take upstream's file instead, write it over the output and run patchbook record.\n");
   }
   warnLeft(book, u);
   return report;

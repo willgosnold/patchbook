@@ -7735,7 +7735,7 @@ describe("ForkTest", () => {
     expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("unrecorded docs/guide.md");
   });
 
-  forkTest("record replaces each of two outputs that share one upstream file when both are edited", (t) => {
+  forkTest("record edits each of two outputs of one upstream file at its own path when both are edited", (t) => {
     mkdirSync(join(t.fork.path, ".patchbook/changes/twin"), { recursive: true });
     writeFileSync(join(t.fork.path, ".patchbook/changes/twin/CHANGE.md"), "# twin\n\nintent: Two guides.\n\nedits:\n- copy docs/guide.md -> docs/guide2.md\n");
     const series = join(t.fork.path, ".patchbook/series");
@@ -7743,8 +7743,8 @@ describe("ForkTest", () => {
     t.pb(["build"], { cwd: t.fork.path });
     t.fork.write("docs/guide.md", "a guide!\n");
     t.fork.write("docs/guide2.md", "a second guide\n");
-    expect(t.pb(["record", "--intent", "Shout."], { cwd: t.fork.path }).stdout).toBe("shout: Shout.\nreplace  docs/guide.md\nreplace  docs/guide2.md\n");
-    expect(read(join(t.fork.path, ".patchbook/changes/shout/CHANGE.md"))).toContain("edits:\n- replace docs/guide.md\n- replace docs/guide2.md\n");
+    expect(t.pb(["record", "--intent", "Shout."], { cwd: t.fork.path }).stdout).toBe("shout: Shout.\nfile     docs/guide.md\nfile     docs/guide2.md\n");
+    expect(read(join(t.fork.path, ".patchbook/changes/shout/CHANGE.md"))).toContain("edits:\n- file docs/guide.md\n- file docs/guide2.md\n");
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
     t.pb(["build"], { cwd: t.fork.path });
     expect([t.fork.read("docs/guide.md"), t.fork.read("docs/guide2.md")]).toEqual(["a guide!\n", "a second guide\n"]);
@@ -10580,19 +10580,340 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(snapshot(join(t.fork.path, ".patchbook"))).toEqual(before);
   });
 
-  for (const [what, path] of [["destination", "docs/guide2.md"], ["source", "docs/guide.md"]] as const) {
-    forkTest(`recording an edit to the ${what} of an upstream copy replaces only that output`, (t) => {
-      handChange(t, "second", "Copy the guide.", ["copy docs/guide.md -> docs/guide2.md"]);
-      t.pb(["build"], { cwd: t.fork.path });
-      t.fork.write(path, "a copied guide\n");
-      const disk = outputs(t);
-      expect(t.pb(["record", "copyedit", "--intent", "Change one guide."], { cwd: t.fork.path }).stdout).toBe(`replace  ${path}\n`);
-      expect(changeText(t, "copyedit")).toBe(`# copyedit\n\nintent: Change one guide.\n\nedits:\n- replace ${path}\n`);
-      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
-      t.pb(["build"], { cwd: t.fork.path });
-      expect(outputs(t)).toEqual(disk);
+  forkTest("recording an edit to the source of an upstream copy replaces only that output", (t) => {
+    handChange(t, "second", "Copy the guide.", ["copy docs/guide.md -> docs/guide2.md"]);
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.write("docs/guide.md", "a copied guide\n");
+    const disk = outputs(t);
+    expect(t.pb(["record", "copyedit", "--intent", "Change one guide."], { cwd: t.fork.path }).stdout).toBe("replace  docs/guide.md\n");
+    expect(changeText(t, "copyedit")).toBe("# copyedit\n\nintent: Change one guide.\n\nedits:\n- replace docs/guide.md\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(outputs(t)).toEqual(disk);
+  });
+
+  const copiedApp = (t: ForkCase): void => {
+    handChange(t, "second", "Copy the app.", ["copy app.txt -> app2.txt"]);
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("copy");
+  };
+  const editedCopy = (t: ForkCase): void => {
+    copiedApp(t);
+    t.fork.write("app2.txt", t.fork.read("app2.txt").replace("six", "SIX"));
+    expect(t.pb(["record", "copyedit", "--intent", "Shout six in the copy."], { cwd: t.fork.path }).stdout).toBe("file     app2.txt\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("copyedit");
+  };
+  const upstreamApp = (t: ForkCase, from: string, to: string): void => {
+    t.up.write("app.txt", t.up.read("app.txt").replace(from, to));
+    t.up.commit(to);
+  };
+
+  forkTest("recording an edit to the destination of an upstream copy records a file edit there that follows upstream", (t) => {
+    editedCopy(t);
+    expect(changeText(t, "copyedit")).toBe("# copyedit\n\nintent: Shout six in the copy.\n\nedits:\n- file app2.txt\n");
+    expect(read(join(t.fork.path, ".patchbook/changes/copyedit/base/app2.txt.pb"))).toBe(t.up.read("app.txt"));
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    upstreamApp(t, "one", "ONE");
+    expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("1 of ours merged cleanly, 0 conflicts, 0 gone.");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app2.txt")).toBe(t.up.read("app.txt").replace("six", "SIX"));
+    expect(t.fork.read("app.txt")).toBe(t.up.read("app.txt"));
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("sync names an edited copy's file edit whose base copy is missing, changes nothing, and works again once it is back", (t) => {
+    editedCopy(t);
+    const book = join(t.fork.path, ".patchbook");
+    const copy = join(book, "changes/copyedit/base/app2.txt.pb");
+    const saved = read(copy);
+    rmSync(copy);
+    upstreamApp(t, "one", "ONE");
+    const before = snapshot(book);
+    const failed = t.pb(["sync"], { cwd: t.fork.path, code: 1 });
+    expect(failed.stderr).toContain("patchbook: can't sync upstream: change copyedit has no base copy of app2.txt (.patchbook/changes/copyedit/base/app2.txt.pb). ");
+    expect(failed.stderr).toContain("Nothing was changed.");
+    expect(failed.stderr).not.toContain("    at ");
+    expect(snapshot(book)).toEqual(before);
+    writeFileSync(copy, saved);
+    expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("1 of ours merged cleanly, 0 conflicts, 0 gone.");
+  });
+
+  for (const [lost, sides] of [["base", ["base"]], ["ours", ["ours"]], ["both", ["base", "ours"]]] as const) {
+    forkTest(`status and build name the change and the ${lost} copy of an edited copy that is missing`, (t) => {
+      editedCopy(t);
+      for (const side of sides) rmSync(join(t.fork.path, `.patchbook/changes/copyedit/${side}/app2.txt.pb`));
+      const detail = `its ${sides.join(" and ")} ${sides.length > 1 ? "copies are" : "copy is"} missing`;
+      const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
+      expect(status).toContain(`invalid   changes/copyedit file app2.txt: ${detail}\n`);
+      expect(t.pb(["build"], { cwd: t.fork.path, code: 1 }).stderr).toContain(`invalid   changes/copyedit file app2.txt: ${detail}\n`);
+      const problems = JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path, code: 1 }).stdout).problems;
+      expect(problems).toContainEqual({ problem: "invalid", file: "changes/copyedit", edit: "file app2.txt", detail });
     });
   }
+
+  forkTest("status names the change and the edit of an edited copy whose base differs from its source", (t) => {
+    editedCopy(t);
+    writeFileSync(join(t.fork.path, ".patchbook/changes/copyedit/base/app2.txt.pb"), "not the source\n");
+    const detail = "its base differs from upstream at the pin; run sync";
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain(`stale     changes/copyedit file app2.txt: ${detail}\n`);
+    const problems = JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path, code: 1 }).stdout).problems;
+    expect(problems).toContainEqual({ problem: "stale", file: "changes/copyedit", edit: "file app2.txt", detail });
+  });
+
+  forkTest("sync reports a conflict in an edited copy when upstream edits the same line, and the build refuses until it is resolved", (t) => {
+    editedCopy(t);
+    upstreamApp(t, "six", "6");
+    expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("0 of ours merged cleanly, 1 conflicts, 0 gone.");
+    const before = outputs(t);
+    expect(t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout).toContain("conflict  app2.txt: ours has conflict markers");
+    t.pb(["build"], { cwd: t.fork.path, code: 1 });
+    expect(outputs(t)).toEqual(before);
+    const ours = join(t.fork.path, ".patchbook/changes/copyedit/ours/app2.txt.pb");
+    expect(read(ours)).toContain("<<<<<<< ours\nSIX\n=======\n6\n>>>>>>> upstream\n");
+    writeFileSync(ours, t.up.read("app.txt").replace("6", "SIX"));
+    t.pb(["build"], { cwd: t.fork.path });
+    expect([t.fork.read("app.txt"), t.fork.read("app2.txt")]).toEqual([t.up.read("app.txt"), t.up.read("app.txt").replace("6", "SIX")]);
+  });
+
+  forkTest("record updates an edited copy in its change, and deleting the copy drops the file edit", (t) => {
+    editedCopy(t);
+    t.fork.write("app2.txt", t.fork.read("app2.txt").replace("two", "TWO"));
+    expect(t.pb(["record", "copyedit", "--intent", "Shout two and six in the copy."], { cwd: t.fork.path }).stdout).toBe("file     app2.txt\n");
+    expect(changeText(t, "copyedit")).toBe("# copyedit\n\nintent: Shout two and six in the copy.\n\nedits:\n- file app2.txt\n");
+    const copy = (side: string) => join(t.fork.path, `.patchbook/changes/copyedit/${side}/app2.txt.pb`);
+    expect([read(copy("base")), read(copy("ours"))]).toEqual([t.up.read("app.txt"), t.up.read("app.txt").replace("two", "TWO").replace("six", "SIX")]);
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.rm("app2.txt");
+    expect(t.pb(["record", "dropcopy", "--intent", "Drop the copy."], { cwd: t.fork.path }).stdout).toBe("delete   app2.txt (file edit removed from copyedit)\n");
+    expect(changeText(t, "copyedit")).toBe("# copyedit\n\nintent: Shout two and six in the copy.\n\nedits:\n");
+    expect([existsSync(copy("base")), existsSync(copy("ours"))]).toEqual([false, false]);
+    expect(changeText(t, "dropcopy")).toContain("- delete app2.txt");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(existsSync(join(t.fork.path, "app2.txt"))).toBe(false);
+  });
+
+  forkTest("record edits the source of a copy that has its own file edit as a file edit, and both outputs follow upstream", (t) => {
+    editedCopy(t);
+    t.fork.write("app.txt", t.fork.read("app.txt").replace("four", "FOUR"));
+    expect(t.pb(["record", "srcedit", "--intent", "Shout four in the source."], { cwd: t.fork.path }).stdout).toBe("file     app.txt\n");
+    expect(changeText(t, "srcedit")).toBe("# srcedit\n\nintent: Shout four in the source.\n\nedits:\n- file app.txt\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("srcedit");
+    upstreamApp(t, "one", "ONE");
+    expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("2 of ours merged cleanly, 0 conflicts, 0 gone.");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect([t.fork.read("app.txt"), t.fork.read("app2.txt")]).toEqual([t.up.read("app.txt").replace("four", "FOUR"), t.up.read("app.txt").replace("six", "SIX")]);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  for (const kind of ["copy", "move"] as const) {
+    forkTest(`a later ${kind} of an edited copy builds the copy's edit, which keeps following upstream`, (t) => {
+      editedCopy(t);
+      handChange(t, "again", "Ship the copy as app3.", [`${kind} app2.txt -> app3.txt`]);
+      t.pb(["build"], { cwd: t.fork.path });
+      expect(t.fork.read("app3.txt")).toBe(t.up.read("app.txt").replace("six", "SIX"));
+      expect(existsSync(join(t.fork.path, "app2.txt"))).toBe(kind === "copy");
+      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+      t.fork.commit(kind);
+      upstreamApp(t, "one", "ONE");
+      expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("1 of ours merged cleanly, 0 conflicts, 0 gone.");
+      t.pb(["build"], { cwd: t.fork.path });
+      expect(t.fork.read("app3.txt")).toBe(t.up.read("app.txt").replace("six", "SIX"));
+      expect(t.fork.read("app.txt")).toBe(t.up.read("app.txt"));
+      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    });
+  }
+
+  forkTest("deleting an edited copy that a later copy reads keeps the edit in that copy", (t) => {
+    editedCopy(t);
+    handChange(t, "again", "Ship the copy as app3.", ["copy app2.txt -> app3.txt"]);
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.rm("app2.txt");
+    expect(t.pb(["record", "dropcopy", "--intent", "Drop the copy."], { cwd: t.fork.path }).stdout).toBe("delete   app2.txt\n");
+    expect(changeText(t, "copyedit")).toContain("- file app2.txt\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app3.txt")).toBe(t.up.read("app.txt").replace("six", "SIX"));
+    expect(existsSync(join(t.fork.path, "app2.txt"))).toBe(false);
+    t.fork.commit("dropcopy");
+    upstreamApp(t, "one", "ONE");
+    expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("1 of ours merged cleanly, 0 conflicts, 0 gone.");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app3.txt")).toBe(t.up.read("app.txt").replace("six", "SIX"));
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  for (const kind of ["replace", "delete"] as const) {
+    forkTest(`a hand-written ${kind} of an edited copy builds after upstream changes the line the copy's edit changed`, (t) => {
+      editedCopy(t);
+      handChange(t, "over", "Write the copy by hand.", [`${kind} app2.txt`], kind === "replace" ? { "app2.txt": "by hand\n" } : {});
+      t.pb(["build"], { cwd: t.fork.path });
+      t.fork.commit(kind);
+      const copy = (side: string) => read(join(t.fork.path, `.patchbook/changes/copyedit/${side}/app2.txt.pb`));
+      const copies = [copy("base"), copy("ours")];
+      upstreamApp(t, "six", "6");
+      expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("0 of ours merged cleanly, 0 conflicts, 0 gone.");
+      expect([copy("base"), copy("ours")]).toEqual(copies);
+      t.pb(["build"], { cwd: t.fork.path });
+      expect(t.fork.read("app.txt")).toBe(t.up.read("app.txt"));
+      if (kind === "replace") expect(t.fork.read("app2.txt")).toBe("by hand\n");
+      else expect(existsSync(join(t.fork.path, "app2.txt"))).toBe(false);
+      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    });
+  }
+
+  forkTest("the hook commits a hand-written replace of an edited copy whose edit holds sync's conflict", (t) => {
+    editedCopy(t);
+    upstreamApp(t, "six", "6");
+    expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("0 of ours merged cleanly, 1 conflicts, 0 gone.");
+    handChange(t, "over", "Write the copy by hand.", ["replace app2.txt"], { "app2.txt": "by hand\n" });
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    sh(["git", "commit", "-qm", "by hand"], { cwd: t.fork.path, env: withHook(t) });
+    expect(t.fork.read("app2.txt")).toBe("by hand\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("an edited copy whose source upstream deletes is gone, since no copy reaches it", (t) => {
+    editedCopy(t);
+    t.up.rm("app.txt");
+    t.up.commit("drop app");
+    t.pb(["sync"], { cwd: t.fork.path });
+    expect(reportOf(t.fork.path).gone).toEqual([{ change: "copyedit", path: "app2.txt", maybe: [] }]);
+    const status = t.pb(["status"], { cwd: t.fork.path, code: 1 }).stdout;
+    expect(status).toContain("gone      changes/second copy app.txt -> app2.txt: app.txt no longer exists\n");
+    expect(status).toContain("gone      changes/copyedit file app2.txt: no earlier copy or move of an upstream file reaches it\n");
+    const problems = JSON.parse(t.pb(["status", "--json"], { cwd: t.fork.path, code: 1 }).stdout).problems;
+    expect(problems).toContainEqual({
+      problem: "gone", file: "changes/copyedit", edit: "file app2.txt", detail: "no earlier copy or move of an upstream file reaches it",
+    });
+  });
+
+  const LOGO = Buffer.from([0, 1, 2, 0xff]);
+  const keptOurs = (path: string, from: string) => `patchbook: ${path} (change copyedit): upstream changed ${from}, and sync merges only text, `
+    + "so it kept ours. To take upstream's file instead, write it over the output and run patchbook record.\n";
+
+  for (const edit of ["bytes", "mode"] as const) {
+    forkTest(`an edited binary copy keeps our ${edit} and builds after upstream changes its source`, (t) => {
+      writeFileSync(join(t.up.path, "logo.bin"), LOGO);
+      t.up.commit("logo");
+      t.pb(["sync"], { cwd: t.fork.path });
+      handChange(t, "second", "Copy the logo.", ["copy logo.bin -> logo2.bin"]);
+      t.pb(["build"], { cwd: t.fork.path });
+      t.fork.commit("copy");
+      const logo2 = join(t.fork.path, "logo2.bin");
+      if (edit === "bytes") writeFileSync(logo2, Buffer.from([0, 9, 2, 0xfe]));
+      else chmodSync(logo2, 0o755);
+      const ours = readFileSync(logo2);
+      expect(t.pb(["record", "copyedit", "--intent", "Change the copy's logo."], { cwd: t.fork.path }).stdout).toBe("file     logo2.bin\n");
+      expect(changeText(t, "copyedit")).toBe("# copyedit\n\nintent: Change the copy's logo.\n\nedits:\n- file logo2.bin\n");
+      t.pb(["build"], { cwd: t.fork.path });
+      t.fork.commit("copyedit");
+      writeFileSync(join(t.up.path, "logo.bin"), Buffer.from([0, 5, 2, 0xfd]));
+      t.up.commit("new logo");
+      const sync = t.pb(["sync"], { cwd: t.fork.path });
+      expect(sync.stdout).toContain("0 of ours merged cleanly, 0 conflicts, 0 gone.");
+      expect(sync.stderr).toContain(keptOurs("logo2.bin", "logo.bin"));
+      expect(reportOf(t.fork.path).replacedUpstreamChanged).toEqual(["copyedit: logo2.bin"]);
+      t.pb(["build"], { cwd: t.fork.path });
+      expect(readFileSync(logo2)).toEqual(ours);
+      expect(statSync(logo2).mode & 0o111).toBe(edit === "mode" ? 0o111 : 0);
+      expect(readFileSync(join(t.fork.path, "logo.bin"))).toEqual(Buffer.from([0, 5, 2, 0xfd]));
+      expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    });
+  }
+
+  forkTest("an edited copy keeps its text when upstream makes its source binary, and takes upstream's file once it is recorded", (t) => {
+    editedCopy(t);
+    const ours = t.fork.read("app2.txt");
+    writeFileSync(join(t.up.path, "app.txt"), LOGO);
+    t.up.commit("binary app");
+    const sync = t.pb(["sync"], { cwd: t.fork.path });
+    expect(sync.stdout).toContain("0 of ours merged cleanly, 0 conflicts, 0 gone.");
+    expect(sync.stderr).toContain(keptOurs("app2.txt", "app.txt"));
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app2.txt")).toBe(ours);
+    expect(readFileSync(join(t.fork.path, "app.txt"))).toEqual(LOGO);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    writeFileSync(join(t.fork.path, "app2.txt"), LOGO);
+    expect(t.pb(["record", "copyedit", "--intent", "Take upstream's app."], { cwd: t.fork.path }).stdout).toBe("file     app2.txt\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(readFileSync(join(t.fork.path, "app2.txt"))).toEqual(LOGO);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("a mode-only edit to a copy keeps its mode and follows upstream", (t) => {
+    copiedApp(t);
+    chmodSync(join(t.fork.path, "app2.txt"), 0o755);
+    expect(t.pb(["record", "copyedit", "--intent", "Make the copy executable."], { cwd: t.fork.path }).stdout).toBe("file     app2.txt\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("copyedit");
+    upstreamApp(t, "one", "ONE");
+    expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("1 of ours merged cleanly, 0 conflicts, 0 gone.");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app2.txt")).toBe(t.up.read("app.txt"));
+    expect(statSync(join(t.fork.path, "app2.txt")).mode & 0o111).toBe(0o111);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("record refuses an edit to a copy's destination into a change before the copy", (t) => {
+    handChange(t, "early", "Add an early file.", ["add early.txt"], { "early.txt": "early\n" });
+    copiedApp(t);
+    const early = changeText(t, "early");
+    t.fork.write("app2.txt", t.fork.read("app2.txt").replace("six", "SIX"));
+    expect(t.pb(["record", "early"], { cwd: t.fork.path, code: 1 }).stderr).toContain("patchbook: can't record into early:\n"
+      + "  file app2.txt: copy app.txt -> app2.txt in second, later in the series, has to come before it\n"
+      + "Record into second or a change after it, or into a new change.\n");
+    expect(changeText(t, "early")).toBe(early);
+    t.pb(["record", "second"], { cwd: t.fork.path });
+    expect(changeText(t, "second")).toContain("edits:\n- copy app.txt -> app2.txt\n- file app2.txt\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect(t.fork.read("app2.txt")).toBe(t.up.read("app.txt").replace("six", "SIX"));
+  });
+
+  forkTest("record keeps an edited rename of a file that a copy still builds from following upstream", (t) => {
+    copiedApp(t);
+    sh(["git", "mv", "app.txt", "app3.txt"], { cwd: t.fork.path });
+    t.fork.write("app3.txt", t.fork.read("app3.txt").replace("six", "SIX"));
+    expect(t.pb(["record", "rename", "--intent", "Rename the app."], { cwd: t.fork.path }).stdout).toBe("move     app.txt -> app3.txt\nfile     app3.txt\n");
+    expect(changeText(t, "rename")).toBe("# rename\n\nintent: Rename the app.\n\nedits:\n- move app.txt -> app3.txt\n- file app3.txt\n");
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("rename");
+    upstreamApp(t, "one", "ONE");
+    expect(t.pb(["sync"], { cwd: t.fork.path }).stdout).toContain("1 of ours merged cleanly, 0 conflicts, 0 gone.");
+    t.pb(["build"], { cwd: t.fork.path });
+    expect([t.fork.read("app2.txt"), t.fork.read("app3.txt")]).toEqual([t.up.read("app.txt"), t.up.read("app.txt").replace("six", "SIX")]);
+    expect(existsSync(join(t.fork.path, "app.txt"))).toBe(false);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
+
+  forkTest("an edited copy of another upstream's file follows that upstream through a hooked commit and a sync of both", (t) => {
+    const NOTES = "one\ntwo\nthree\nfour\nfive\n";
+    const lib = new Repo(join(t.tmp, "lib"));
+    lib.write("notes.txt", NOTES);
+    lib.commit("lib");
+    t.pb(["track", "lib", lib.path], { cwd: t.fork.path });
+    handChange(t, "second", "Ship lib's notes at the root.", ["copy lib/notes.txt -> notes.txt"]);
+    t.pb(["build"], { cwd: t.fork.path });
+    t.fork.commit("copy");
+    t.fork.write("notes.txt", NOTES.replace("five", "FIVE"));
+    sh(["git", "add", "-A"], { cwd: t.fork.path });
+    const commit = sh(["git", "commit", "-qm", "shout five"], { cwd: t.fork.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Shout five." } });
+    expect(commit.stderr).toContain("shout-five: Shout five.\nfile     notes.txt\n");
+    expect(changeText(t, "shout-five")).toBe("# shout-five\n\nintent: Shout five.\n\nedits:\n- file notes.txt\n");
+    expect(read(join(t.fork.path, ".patchbook/changes/shout-five/base/notes.txt.pb"))).toBe(NOTES);
+    upstreamApp(t, "one", "ONE");
+    lib.write("notes.txt", NOTES.replace("one", "ONE"));
+    lib.commit("shout one");
+    const sync = t.pb(["sync"], { cwd: t.fork.path }).stdout;
+    expect(sync).toMatch(/^upstream: pinned \w+\. 1 upstream files changed, 0 of ours merged cleanly, 0 conflicts, 0 gone\.$/m);
+    expect(sync).toMatch(/^lib: pinned \w+\. 1 upstream files changed, 1 of ours merged cleanly, 0 conflicts, 0 gone\.$/m);
+    t.pb(["build"], { cwd: t.fork.path });
+    expect([t.fork.read("lib/notes.txt"), t.fork.read("notes.txt")]).toEqual([NOTES.replace("one", "ONE"), NOTES.replace("one", "ONE").replace("five", "FIVE")]);
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
+  });
 
   forkTest("record refuses a replace into the change whose file edit it would overwrite", (t) => {
     t.fork.write("docs/guide.md", "my guide\n");
@@ -12769,6 +13090,54 @@ describe("VendorTest", () => {
     expect(prompt).not.toContain("added");
     expect(prompt).not.toContain("/dev/null");
     expect(prompt.split("a2/SKILL.md: ")).toHaveLength(2);
+  });
+
+  vendorTest("record of a renamed and edited skill that a copy still builds from writes the edit on the new path and shows the model the edit alone", (t) => {
+    committedSkillA(t);
+    t.repo.write("skills/b/SKILL.md", SKILL_A);
+    t.repo.write("skills/b/notes.md", "Notes on a.\n");
+    expect(t.pb(["record", "twin", "--intent", "Ship a as b too."], { cwd: t.repo.path }).stdout).toBe("copy     skills/a -> skills/b\n");
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+    sh(["git", "commit", "-qm", "twin"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "0" } });
+    sh(["git", "mv", "skills/a", "skills/a2"], { cwd: t.repo.path });
+    t.repo.write("skills/a2/SKILL.md", t.repo.read("skills/a2/SKILL.md").replace("name: a\n", "name: a2\n"));
+    expect(t.pb(["record"], { cwd: t.repo.path }).stdout).toBe("shout: Shout the second line.\nmove     skills/a -> skills/a2\nfile     a2/SKILL.md\n");
+    expect(read(join(t.tmp, "prompt.txt"))).toContain("Changed paths:\nmove skills/a -> skills/a2\na2/SKILL.md: changed, +1 -1 lines\n\n"
+      + "--- built/a2/SKILL.md\n+++ disk/a2/SKILL.md\n@@ -1,5 +1,5 @@\n ---\n-name: a\n+name: a2\n ---\n \n First paragraph of a.\n");
+    expect(read(join(t.repo.path, ".patchbook/changes/shout/CHANGE.md"))).toContain("edits:\n- move skills/a -> skills/a2\n- file skills/a2/SKILL.md\n");
+    t.up.write("plugin/skills/a/SKILL.md", REVISED(SKILL_A));
+    t.up.commit("revise");
+    expect(t.pb(["sync"], { cwd: t.repo.path }).stdout).toContain("1 of ours merged cleanly, 0 conflicts, 0 gone.");
+    t.pb(["build"], { cwd: t.repo.path });
+    expect([t.repo.read("skills/a2/SKILL.md"), t.repo.read("skills/b/SKILL.md")]).toEqual([REVISED(SKILL_A).replace("name: a\n", "name: a2\n"), REVISED(SKILL_A)]);
+    expect(existsSync(join(t.repo.path, "skills/a"))).toBe(false);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
+  });
+
+  vendorTest("hook records an edit to a copy of a skill with block entries as a file edit on the copy, which follows upstream", (t) => {
+    const entries = t.missingScaffoldPatchBuild();
+    const skill = t.repo.read("skills/hello/SKILL.md");
+    t.repo.write("skills/hello2/SKILL.md", skill);
+    expect(t.pb(["record", "twin", "--intent", "Ship hello twice."], { cwd: t.repo.path }).stdout).toBe("copy     skills/hello -> skills/hello2\n");
+    t.pb(["hook", "install"], { cwd: t.repo.path });
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+    sh(["git", "commit", "-qm", "twin"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "0" } });
+    t.repo.write("skills/hello2/SKILL.md", skill.replace("Then wave.", "Then wave twice."));
+    sh(["git", "add", "-A"], { cwd: t.repo.path });
+    const commit = sh(["git", "commit", "-qm", "wave"], { cwd: t.repo.path, env: { ...t.env, PATCHBOOK_HOOK: "1", PATCHBOOK_INTENT: "Wave twice." } });
+    expect(commit.stderr).toContain("wave-twice: Wave twice.\nfile     hello2/SKILL.md\n");
+    const change = join(t.repo.path, ".patchbook/changes/wave-twice");
+    expect(read(join(change, "CHANGE.md"))).toContain("edits:\n- file skills/hello2/SKILL.md\n");
+    expect(read(join(change, "base/skills/hello2/SKILL.md.pb"))).toBe(t.up.read("plugin/skills/hello/SKILL.md"));
+    expect(existsSync(entries)).toBe(true);
+    expect(sh(["git", "status", "--porcelain"], { cwd: t.repo.path }).stdout).toBe("");
+    t.up.write("plugin/skills/hello/SKILL.md", t.up.read("plugin/skills/hello/SKILL.md").replace("# Hello", "# Hello there"));
+    t.up.commit("there");
+    expect(t.pb(["sync"], { cwd: t.repo.path }).stdout).toContain("1 of ours merged cleanly, 0 conflicts, 0 gone.");
+    t.pb(["build"], { cwd: t.repo.path });
+    expect([t.repo.read("skills/hello/SKILL.md"), t.repo.read("skills/hello2/SKILL.md")])
+      .toEqual([skill.replace("# Hello", "# Hello there"), skill.replace("# Hello", "# Hello there").replace("Then wave.", "Then wave twice.")]);
+    expect(t.pb(["status"], { cwd: t.repo.path }).stdout).toContain("no problems");
   });
 
   vendorTest("record of a renamed skill with no edit shows the model the move and no diff", (t) => {
