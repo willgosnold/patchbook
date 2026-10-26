@@ -20,6 +20,7 @@ import { byCodePoint, bytesEqual, concat, decode, decodeReplace, encode } from "
 import { type Source, setting } from "./settings.ts";
 import { readBlobsOf, refuseMergedUpstream, stagedTree } from "./store.ts";
 import { Undo } from "./undo.ts";
+import { type Entry, type Format, LEFTHOOK, PRE_COMMIT, PRESENT } from "./hookconfig.ts";
 
 /** Git runs hooks from the top of the checkout. A linked worktree shares the hooks folder of its repo, and may hold a commit with no patchbook. */
 const HAS_PATCHBOOK = "[ -f .patchbook/config.toml ]";
@@ -56,7 +57,7 @@ const POST_HOOKS = [
   { name: "post-rewrite", when: "after a rebase", skip: "git rebase", test: '[ "$1" = rebase ]', build: POST_BUILD },
 ] as const;
 type PostHook = (typeof POST_HOOKS)[number];
-type PostCommand = Pick<PostHook, "when" | "skip" | "test"> & { build: string };
+type PostCommand = { when: string; skip: string; test: string | null; build: string };
 
 const postScript = ({ when, skip, test, build }: PostCommand) => `#!/bin/sh
 # Installed by patchbook v2. It rebuilds the output from the patchbook ${when}. Skip it once with: PATCHBOOK_HOOK=0 ${skip}
@@ -88,95 +89,21 @@ fi
 const HOOK_LINES = `# patchbook: record hand edits to the build output and rebuild it, before the checks below. Skip it once with PATCHBOOK_HOOK=0 git commit
 ${GUARD}`;
 
-const indent = (text: string, spaces: number) => text.replace(/^(?=.)/gm, " ".repeat(spaces));
-
 const CALLS_PATCHBOOK = /^[^#\n]*\bpatchbook hook run\b/m;
+const PRE_COMMIT_ENTRY: Entry = { event: "pre-commit", run: GUARD };
 const HOOK_CHANGE = "patchbook-hook";
 
-type Snippet = { parts: readonly { text: string; into: (where: string) => string }[]; level: (config: string) => number };
-
-const to = (where: string) => `to ${where}`;
-
-const LEFTHOOK_YAML_COMMAND = `patchbook:
-  priority: 1
-  run: |
-${indent(GUARD, 4)}`;
-
-const LEFTHOOK_YAML: Snippet = {
-  parts: [
-    { text: `pre-commit:\n  commands:\n${indent(LEFTHOOK_YAML_COMMAND, 4)}`, into: to },
-    { text: `  commands:\n${indent(LEFTHOOK_YAML_COMMAND, 4)}`, into: (where) => `under the pre-commit key in ${where}` },
-    { text: indent(LEFTHOOK_YAML_COMMAND, 4), into: (where) => `under commands, in the pre-commit key of ${where}` },
-  ],
-  level(config) {
-    const lines = config.split("\n");
-    const start = lines.findIndex((l) => /^["']?pre-commit["']?[ \t]*:/.test(l));
-    if (start < 0) return 0;
-    const after = lines.slice(start + 1);
-    const end = after.findIndex((l) => /^[^\s#]/.test(l));
-    return (end < 0 ? after : after.slice(0, end)).some((l) => /^[ \t]+["']?commands["']?[ \t]*:/.test(l)) ? 2 : 1;
-  },
-};
-
-const LEFTHOOK_TOML: Snippet = {
-  parts: [{ text: `[pre-commit.commands.patchbook]\npriority = 1\nrun = '''\n${GUARD}'''\n`, into: to }],
-  level: () => 0,
-};
-
-const LEFTHOOK_JSON_COMMAND = `"patchbook": {
-  "priority": 1,
-  "run": ${JSON.stringify(GUARD)}
-}`;
-const LEFTHOOK_JSON_COMMANDS = `"commands": {\n${indent(LEFTHOOK_JSON_COMMAND, 2)}\n}`;
-const LEFTHOOK_JSON_KEY = `"pre-commit": {\n${indent(LEFTHOOK_JSON_COMMANDS, 2)}\n}`;
-
-const AFTER_A_MEMBER = ", with a comma after the member before it if there is one";
-
-const LEFTHOOK_JSON: Snippet = {
-  parts: [
-    { text: `{\n${indent(LEFTHOOK_JSON_KEY, 2)}\n}\n`, into: to },
-    { text: LEFTHOOK_JSON_KEY + "\n", into: (where) => `inside the top-level braces of ${where}${AFTER_A_MEMBER}` },
-    { text: LEFTHOOK_JSON_COMMANDS + "\n", into: (where) => `inside "pre-commit" in ${where}${AFTER_A_MEMBER}` },
-    { text: LEFTHOOK_JSON_COMMAND + "\n", into: (where) => `inside "commands" in "pre-commit" in ${where}${AFTER_A_MEMBER}` },
-  ],
-  level(config) {
-    if (!config.trim()) return 0;
-    const key = config.search(/"pre-commit"\s*:/);
-    return key < 0 ? 1 : /"commands"\s*:/.test(config.slice(key)) ? 3 : 2;
-  },
-};
-
 /** lefthook reads each of its config names in every format. The keys run in the order lefthook looks for them, and it reads the first file it finds. */
-const LEFTHOOK_FORMATS: Readonly<Record<string, Snippet>> = {
-  yml: LEFTHOOK_YAML, yaml: LEFTHOOK_YAML, json: LEFTHOOK_JSON, jsonc: LEFTHOOK_JSON, toml: LEFTHOOK_TOML,
-};
-const LEFTHOOK_FILES = Object.keys(LEFTHOOK_FORMATS).flatMap((ext) => ["lefthook", ".lefthook", ".config/lefthook"].map((name) => `${name}.${ext}`));
-
-/** pre-commit splits `entry` like a shell does and runs the words without one, so the guard goes through `sh -c`. */
-const PRE_COMMIT_REPO = `- repo: local
-  hooks:
-    - id: patchbook
-      name: patchbook
-      entry: |
-${indent(`sh -c '${GUARD.trimEnd().replaceAll("'", "'\\''")}'`, 8)}
-      language: system
-      pass_filenames: false
-      always_run: true
-`;
-
-const PRE_COMMIT: Snippet = {
-  parts: [
-    { text: `repos:\n${indent(PRE_COMMIT_REPO, 2)}`, into: to },
-    { text: indent(PRE_COMMIT_REPO, 2), into: (where) => `as the first item under repos in ${where}` },
-    { text: `repos:\n${indent(PRE_COMMIT_REPO, 2)}`, into: (where) => `to ${where} in place of repos: []` },
-  ],
-  level: (config) => (/^repos[ \t]*:[ \t]*\[[ \t]*\]/m.test(config) ? 2 : /^repos[ \t]*:/m.test(config) ? 1 : 0),
-};
+const LEFTHOOK_FILES = Object.keys(LEFTHOOK).flatMap((ext) => ["lefthook", ".lefthook", ".config/lefthook"].map((name) => `${name}.${ext}`));
 
 /** Git runs `<dir>/_/pre-commit`, which runs `<dir>/pre-commit`. */
 type ScriptManager = { name: string; dir: string; install: string };
 /** `dispatcher` marks the hook the manager installs in `.git/hooks`. `legacy` is what its migration mode appends to the name of the hook it replaced and still runs. */
-type ConfigManager = { name: string; files: readonly string[]; dispatcher: RegExp; legacy?: string; snippets: Readonly<Record<string, Snippet>>; note?: string };
+type ConfigManager = {
+  name: string; files: readonly string[]; dispatcher: RegExp; legacy?: string; formats: Readonly<Record<string, Format>>; note?: string;
+  /** What its config writes in place of a git hook's arguments `$1`, `$2` and `$3`, which its scripts don't get. */
+  args: (event: string) => readonly string[];
+};
 
 const SCRIPT_MANAGERS: readonly ScriptManager[] = [
   { name: "Vite+", dir: ".vite-hooks", install: "vp config" },
@@ -187,14 +114,16 @@ const CONFIG_MANAGERS: readonly ConfigManager[] = [
   {
     name: "the pre-commit framework", files: [".pre-commit-config.yaml"],
     dispatcher: /File generated by pre-commit/, legacy: ".legacy",
-    snippets: { yaml: PRE_COMMIT },
+    formats: PRE_COMMIT,
+    args: (event) => (event === "post-rewrite" ? ["$PRE_COMMIT_REWRITE_COMMAND"] : ["$PRE_COMMIT_FROM_REF", "$PRE_COMMIT_TO_REF", "$PRE_COMMIT_CHECKOUT_TYPE"]),
   },
   {
     name: "lefthook",
     files: LEFTHOOK_FILES,
     dispatcher: /\blefthook\b/,
-    snippets: LEFTHOOK_FORMATS,
+    formats: LEFTHOOK,
     note: "Leave parallel off: patchbook stages files, so it must run alone.",
+    args: () => ["{1}", "{2}", "{3}"],
   },
 ];
 
@@ -298,16 +227,34 @@ const postWire = (post: PostHook): Wire => ({
   put: (m, where) => `patchbook: put \`patchbook hook build\` in ${where}, which ${m.name} runs ${post.when}`,
 });
 
-const ADD_POST = (posts: readonly PostHook[]) =>
-  `patchbook: to rebuild the output after a pull, a branch checkout or a rebase, call \`patchbook hook build\` from ${posts.map((p) => p.name).join(", ")}. Put these lines in each:\n\n`
-  + posts.map((p) => `${p.name}:\n${postLines(p)}`).join("\n");
-
-const ADD_TO_CONFIG = (m: ConfigManager, where: string, config: string) => {
-  const snippet = m.snippets[extname(where).slice(1)]!;
-  const part = snippet.parts[snippet.level(config)]!;
-  return `patchbook: ${m.name} runs this repo's pre-commit hooks. `
-    + `Add this ${part.into(where)}, so ${m.name} runs patchbook first for everyone who commits here, and your checks see the rebuilt output:\n\n${part.text}${m.note ? `\n${m.note}\n` : ""}`;
+/** The lines a hook manager's config runs for a post hook. The manager gives its scripts a git hook's arguments in its own way. */
+const postRun = (m: ConfigManager, post: PostHook) => {
+  const names = m.args(post.name);
+  const named = (script: string) => script.replace(/\$([123])/g, (_, n: string) => names[Number(n) - 1] ?? `$${n}`);
+  return postLines({ ...post, test: post.test && named(post.test), build: named(post.build) });
 };
+
+type ManualPost = { post: PostHook; where: string; exists: boolean };
+
+const ADD_POST = (posts: readonly ManualPost[]) =>
+  `patchbook: to rebuild the output after a pull, a branch checkout or a rebase, call \`patchbook hook build\` from ${posts.map((p) => p.post.name).join(", ")}. Put these lines at the top of each file, below its #! line:\n\n`
+  + posts.map(({ post, where, exists }) => `${where}${exists ? "" : " (it isn't there; create it with #!/bin/sh as the first line, then run chmod +x on it)"}:\n${postLines(post)}`).join("\n");
+
+/** What to tell a user to add to a manager's config for one hook, and the config once they have. A hook the config already has needs no advice. */
+function adviseConfig(m: ConfigManager, where: string, config: string, entry: Entry, post: PostHook | null): { said: string | null; config: string } {
+  const format = m.formats[extname(where).slice(1)]!;
+  const placed = format(config, entry, where);
+  if (placed === PRESENT) return { said: null, config };
+  const intro = `${m.name} runs this repo's ${entry.event} hook${post ? "" : "s"}`;
+  if ("into" in placed) {
+    const note = post ? "\n" : m.note ? `\n${m.note}\n` : "";
+    const why = post ? `so it rebuilds the output ${post.when}` : `so ${m.name} runs patchbook first for everyone who commits here, and your checks see the rebuilt output`;
+    return { said: `patchbook: ${intro}. Add this ${placed.into}, ${why}:\n\n${placed.text}${note}`, config: placed.merged };
+  }
+  const whole = format("", entry, where) as { text: string };
+  const said = `patchbook: ${intro}, but patchbook can't tell where in ${where} to add its lines, because ${placed.why}. Merge this into ${where} by hand, keep your own entries, and keep patchbook's first:\n\n${whole.text}`;
+  return { said, config };
+}
 
 const MANY_CONFIGS = (m: ConfigManager, wheres: string[]) =>
   `patchbook: ${m.name} has more than one config file here: ${wheres.join(", ")}. It reads ${wheres[0]} and ignores the rest, so patchbook can't tell which one to print lines for. `
@@ -516,7 +463,8 @@ function hookFileOf(root: string, name: string): string {
 
 /** Put the post hooks into a manager's scripts, or say what to add when patchbook can't edit the hook git runs. */
 async function installPostHooks(book: Book, hook: Hook, undo?: Undo): Promise<void> {
-  const manual: PostHook[] = [];
+  const manual: ManualPost[] = [];
+  const managed: PostHook[] = [];
   for (const post of POST_HOOKS) {
     if (hook.kind === "script" && hook.gitRunsIt) {
       await putFirst(book, { ...hook, path: join(dirname(hook.path), post.name) }, postWire(post), undo);
@@ -524,7 +472,18 @@ async function installPostHooks(book: Book, hook: Hook, undo?: Undo): Promise<vo
     }
     const file = hookFileOf(book.root, post.name);
     const text = exists(file) ? readTextReplace(file) : null;
-    if (text === null || (text !== postScript(post) && !CALLS_BUILD.test(text))) manual.push(post);
+    if (text !== null && (text === postScript(post) || CALLS_BUILD.test(text))) continue;
+    if (hook.kind === "config" && text !== null && hook.manager.dispatcher.test(text)) managed.push(post);
+    else manual.push({ post, where: shown(book.root, file), exists: text !== null });
+  }
+  if (hook.kind === "config" && managed.length && configFiles(book.root, hook.manager).length === 1) {
+    const where = shown(book.root, hook.path);
+    let config = adviseConfig(hook.manager, where, readTextReplace(hook.path), PRE_COMMIT_ENTRY, null).config;
+    for (const post of managed) {
+      const advice = adviseConfig(hook.manager, where, config, { event: post.name, run: postRun(hook.manager, post) }, post);
+      if (advice.said !== null) warn(advice.said);
+      config = advice.config;
+    }
   }
   if (manual.length) warn(ADD_POST(manual));
 }
@@ -551,7 +510,8 @@ async function installPreCommit(book: Book, hook: Hook, undo?: Undo): Promise<bo
         warn(MANY_CONFIGS(hook.manager, files.map((f) => shown(book.root, f))));
         return false;
       }
-      warn(ADD_TO_CONFIG(hook.manager, shown(book.root, hook.path), readTextReplace(hook.path)));
+      const { said } = adviseConfig(hook.manager, shown(book.root, hook.path), readTextReplace(hook.path), PRE_COMMIT_ENTRY, null);
+      if (said !== null) warn(said);
       break;
     }
     case "foreign":

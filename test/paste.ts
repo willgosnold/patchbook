@@ -39,8 +39,8 @@ function blockEnd(lines: string[], start: number): number {
   return lines.length;
 }
 
-/** The offsets of the `{` or `[` that opens the JSONC value at `path`, and of the bracket that closes it. */
-function locate(src: string, path: string[]): { open: number; close: number } {
+/** The offset of the `{` or `[` that opens the JSONC value at `path`. */
+function locate(src: string, path: string[]): number {
   let i = 0;
   const skip = () => {
     for (;;) {
@@ -51,7 +51,7 @@ function locate(src: string, path: string[]): { open: number; close: number } {
     }
   };
   const str = () => { const s = i; i++; while (src[i] !== '"') i += src[i] === "\\" ? 2 : 1; i++; return src.slice(s, i); };
-  let found: { open: number; close: number } | null = null;
+  let found = -1;
   const value = (at: string[]): void => {
     skip();
     const open = i;
@@ -67,7 +67,7 @@ function locate(src: string, path: string[]): { open: number; close: number } {
         skip();
         if (src[i] === ",") i++;
       }
-      if (at.length === path.length && at.every((k, n) => k === path[n])) found = { open, close: i };
+      if (at.length === path.length && at.every((k, n) => k === path[n])) found = open;
       i++;
       return;
     }
@@ -75,17 +75,15 @@ function locate(src: string, path: string[]): { open: number; close: number } {
     while (i < src.length && !/[,}\]\s]/.test(src[i]!)) i++;
   };
   value([]);
-  if (!found) throw new Error(`the file has no value at ${path.join(" > ")}`);
+  if (found < 0) throw new Error(`the file has no value at ${path.join(" > ")}`);
   return found;
 }
 
 function pasteJson(text: string, header: string, snippet: string): string {
   if (text.trim() === "") return snippet;
   const path = /top-level/.test(header) ? [] : [...header.matchAll(/"([^"]+)"/g)].map((m) => m[1]!).reverse();
-  const { open, close } = locate(text, path);
-  if (!/inside/.test(header)) return text.slice(0, open + 1) + "\n" + snippet.replace(/\n$/, "") + "\n" + text.slice(open + 1);
-  const members = text.slice(open + 1, close).trim() !== "";
-  return text.slice(0, close).replace(/\s*$/, "") + (members ? "," : "") + "\n" + snippet.replace(/\n$/, "") + "\n" + text.slice(close);
+  const open = locate(text, path);
+  return text.slice(0, open + 1) + "\n" + snippet.replace(/\n$/, "") + "\n" + text.slice(open + 1);
 }
 
 /** `config` after every config paste in `advice` is made, in order. Throws when the words name a place the file doesn't have. */
@@ -103,12 +101,6 @@ export function paste(config: string, advice: string): string {
       const parent = parentLine ? findLine(lines, 0, lines.length, parentLine, 0) : -1;
       const at = parentLine ? findLine(lines, parent + 1, parent < 0 ? 0 : blockEnd(lines, parent), line!, null) : findLine(lines, 0, lines.length, line!, 0);
       if (at < 0) throw new Error(`the file has no \`${line}\` line to paste below`);
-      text = insertAfterLine(lines, at, snippet);
-    } else if (/under the pre-commit key in|under commands, in the pre-commit key of|as the first item under repos in/.test(header)) {
-      const first = header.includes("as the first item") ? "repos" : "pre-commit";
-      const top = findLine(lines, 0, lines.length, first, 0);
-      const at = header.includes("under commands") ? findLine(lines, top + 1, blockEnd(lines, top), "commands", null) : top;
-      if (at < 0) throw new Error(`the file has no ${first} line to paste below`);
       text = insertAfterLine(lines, at, snippet);
     } else if (/Add this (?:to|at the end of) \S+/.test(header)) {
       text = text.trim() === "" ? snippet : text.replace(/\n?$/, "\n") + snippet;

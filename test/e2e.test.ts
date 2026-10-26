@@ -3786,6 +3786,7 @@ ${indent(`sh -c '${GUARD.trimEnd().replaceAll("'", "'\\''")}'`, 10)}
         language: system
         pass_filenames: false
         always_run: true
+        stages: [pre-commit]
 `;
 
 const LEFTHOOK_DISPATCHER = `#!/bin/sh\n# lefthook stand-in\nlefthook run pre-commit "$@"\n`;
@@ -3836,7 +3837,7 @@ test("hook install still prints the TOML advice for a lone lefthook TOML", () =>
   try {
     const fork = forkWith(t, { "lefthook.toml": "# lint on commit\n" });
     const install = t.pb(["hook", "install"], { cwd: fork.path });
-    expect(install.stderr).toContain("Add this to lefthook.toml,");
+    expect(install.stderr).toContain("Add this at the end of lefthook.toml,");
     expect(install.stderr).toContain(LEFTHOOK_TOML_SNIPPET.trim());
   } finally {
     t.cleanup();
@@ -3853,7 +3854,7 @@ test("hook install prints the advice when a second lefthook name is a symlink to
     up.commit("start");
     t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
     const install = t.pb(["hook", "install"], { cwd: join(t.tmp, "fork") });
-    expect(install.stderr).toContain("Add this to lefthook.yml,");
+    expect(install.stderr).toContain("Add this at the end of lefthook.yml,");
     expect(install.stderr).not.toContain("more than one config file");
   } finally {
     t.cleanup();
@@ -3943,17 +3944,17 @@ type Paste = {
   check: (merged: any) => void;
 };
 
-const hasPatchbook = (hook: any): void => expect(hook.run).toContain("patchbook hook run");
+const hasPatchbook = (hook: any, call = "patchbook hook run"): void => expect(hook.run).toContain(call);
 
 /** lefthook runs the commands that have a priority from the lowest up, then the rest, and equal priorities in no set order, so patchbook is first only when its priority is below every other. */
-function runsFirst(hook: any): void {
+function runsFirst(hook: any, call?: string): void {
   if (hook.jobs) {
     expect(hook.jobs[0].name).toBe("patchbook");
-    hasPatchbook(hook.jobs[0]);
+    hasPatchbook(hook.jobs[0], call);
     return;
   }
   const mine = hook.commands.patchbook.priority;
-  hasPatchbook(hook.commands.patchbook);
+  hasPatchbook(hook.commands.patchbook, call);
   expect(mine).not.toBe(0);
   for (const [name, command] of Object.entries<any>(hook.commands)) {
     if (name !== "patchbook" && (command.priority ?? 0) !== 0) expect(command.priority).toBeGreaterThan(mine);
@@ -4115,14 +4116,14 @@ function postCalls(t: Case, fork: Repo, script: string, env: Record<string, stri
 type PostScripts = { merge: string; checkout: (before: string, after: string, branch: string) => { script: string; env: Record<string, string> }; rewrite: (command: string) => { script: string; env: Record<string, string> } };
 
 function behavesLikeThePostHooks(t: Case, fork: Repo, scripts: PostScripts): void {
-  expect(postCalls(t, fork, scripts.merge, {})).toEqual(["hook build []"]);
+  expect(postCalls(t, fork, scripts.merge, {})).toEqual(["hook build [>]"]);
   const branch = scripts.checkout("aaa", "bbb", "1");
   expect(postCalls(t, fork, branch.script, branch.env)).toEqual(["hook build [aaa>bbb]"]);
   const file = scripts.checkout("aaa", "bbb", "0");
   expect(postCalls(t, fork, file.script, file.env)).toEqual([]);
   expect(postCalls(t, fork, branch.script, branch.env, true)).toEqual([]);
   const rebase = scripts.rewrite("rebase");
-  expect(postCalls(t, fork, rebase.script, rebase.env)).toEqual(["hook build []"]);
+  expect(postCalls(t, fork, rebase.script, rebase.env)).toEqual(["hook build [>]"]);
   const amend = scripts.rewrite("amend");
   expect(postCalls(t, fork, amend.script, amend.env)).toEqual([]);
 }
@@ -4136,7 +4137,8 @@ test("hook install prints the post hooks as lefthook commands when lefthook runs
     const merged = parsed.yaml(paste(existing, t.pb(["hook", "install"], { cwd: fork.path }).stderr));
     expect(merged["pre-commit"].commands.lint.run).toBe("echo lint");
     expect(merged["post-merge"].commands.hello.run).toBe("echo hello");
-    for (const event of ["pre-commit", ...POST_EVENTS]) runsFirst(merged[event]);
+    runsFirst(merged["pre-commit"]);
+    for (const event of POST_EVENTS) runsFirst(merged[event], "patchbook hook build");
     const run = (event: string) => merged[event].commands.patchbook.run as string;
     const fill = (script: string, args: string[]) => script.replace(/\{([123])\}/g, (_, n) => args[Number(n) - 1] ?? "");
     behavesLikeThePostHooks(t, fork, {
@@ -4192,6 +4194,62 @@ test("hook install names the file each post hook goes into when a hooks folder h
     t.cleanup();
   }
 }, TIMEOUT);
+
+test("hook install prints the whole block to merge by hand when the config can't take a paste", () => {
+  const t = new Case();
+  try {
+    const existing = "pre-commit: { commands: { lint: { run: echo lint } } }\n";
+    const fork = forkWith(t, { "lefthook.yml": existing });
+    const install = t.pb(["hook", "install"], { cwd: fork.path }).stderr;
+    expect(install).toContain("can't tell where in lefthook.yml to add its lines, because its pre-commit key is written inline");
+    expect(install).not.toContain("Add this");
+    const whole = install.split("keep patchbook's first:\n\n")[1]!.split("\nLeave parallel off")[0]!;
+    expect(parsed.yaml(whole)["pre-commit"].commands.patchbook.priority).toBe(1);
+    expect(fork.read("lefthook.yml")).toBe(existing);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+for (const [config, existing] of [
+  ["lefthook.yml", "pre-commit:\n  commands:\n    patchbook:\n      run: patchbook hook run || exit 1\n"],
+  ["lefthook.json", '{ "pre-commit": { "commands": { "patchbook": { "run": "patchbook hook run || exit 1" } } } }'],
+  [".pre-commit-config.yaml", "repos:\n  - repo: local\n    hooks:\n      - id: patchbook\n        name: patchbook\n        entry: patchbook hook run\n        language: system\n"],
+] as const) {
+  test(`hook install adds nothing to ${config} once it holds patchbook's hook`, () => {
+    const t = new Case();
+    try {
+      const fork = forkWith(t, { [config]: existing });
+      const install = t.pb(["hook", "install"], { cwd: fork.path }).stderr;
+      expect(install).not.toContain("Add this");
+      expect(install).not.toContain("can't tell where");
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
+
+for (const [config, existing, dispatcher, parse] of [
+  ["lefthook.json", "{}", LEFTHOOK_DISPATCHER, parsed.json],
+  ["lefthook.yml", "# hooks\n", LEFTHOOK_DISPATCHER, parsed.yaml],
+  [".pre-commit-config.yaml", "repos: []\n", PRE_COMMIT_DISPATCHER, parsed.yaml],
+] as const) {
+  test(`the pre-commit and post hook lines paste one after the other into ${config} that has none of them`, () => {
+    const t = new Case();
+    try {
+      const fork = forkWith(t, { [config]: existing });
+      installDispatchers(fork, ["pre-commit", ...POST_EVENTS], dispatcher);
+      const merged = parse(paste(existing, t.pb(["hook", "install"], { cwd: fork.path }).stderr));
+      if (config === ".pre-commit-config.yaml") {
+        expect(merged.repos.flatMap((r: any) => r.hooks.map((h: any) => h.id)).sort()).toEqual(["patchbook", "patchbook-post-checkout", "patchbook-post-merge", "patchbook-post-rewrite"]);
+      } else {
+        expect(Object.keys(merged).sort()).toEqual(["post-checkout", "post-merge", "post-rewrite", "pre-commit"]);
+      }
+    } finally {
+      t.cleanup();
+    }
+  }, TIMEOUT);
+}
 
 test("hook install in a repo nested in a fork fails instead of installing nothing", () => {
   const t = new Case();
