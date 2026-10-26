@@ -6537,6 +6537,79 @@ describe("ForkTest", () => {
     expect(t.pb(["status"], { cwd: t.fork.path }).stdout).toContain("no problems");
   });
 
+  for (const kind of ["file", "add", "replace"] as const) {
+    forkTest(`the hook refuses markers in a ${kind} copy hidden by a later delete`, (t) => {
+      t.recordFeature();
+      const path = kind === "add" ? "extra.txt" : "app.txt";
+      if (kind === "replace") {
+        t.fork.write(".patchbook/changes/feature/CHANGE.md", t.fork.read(".patchbook/changes/feature/CHANGE.md").replace("- file app.txt", "- replace app.txt"));
+        t.pb(["build"], { cwd: t.fork.path });
+        t.fork.commit("replace app.txt");
+      }
+      t.fork.write(".patchbook/changes/later/CHANGE.md", `# later\n\nintent: Remove the output file.\n\nedits:\n- delete ${path}\n`);
+      appendFileSync(join(t.fork.path, ".patchbook/series"), "later\n");
+      t.pb(["build"], { cwd: t.fork.path });
+      t.fork.commit("later");
+      const copy = `.patchbook/changes/feature/ours/${path}.pb`;
+      t.fork.write(copy, "<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> upstream\n");
+      t.fork.write("unrecorded.txt", "do not record this\n");
+      sh(["git", "add", "-A"], { cwd: t.fork.path });
+      const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+      const index = sh(["git", "write-tree"], { cwd: t.fork.path }).stdout;
+      const before = tree(t.fork.path);
+      const commit = sh(["git", "commit", "-qm", "conflicted"], { cwd: t.fork.path, env: withHook(t), check: false });
+      expect(commit.code).not.toBe(0);
+      expect(commit.stderr).toContain(copy);
+      expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
+      expect(sh(["git", "write-tree"], { cwd: t.fork.path }).stdout).toBe(index);
+      expect(tree(t.fork.path)).toEqual(before);
+    });
+  }
+
+  for (const orphan of [false, true]) {
+    forkTest(`the hook refuses markers in ${orphan ? "an orphaned" : "an applied"} paragraph entry`, (t) => {
+      const hash = orphan ? "000000000000" : createHash("sha256").update("a guide").digest("hex").slice(0, 12);
+      const path = ".patchbook/blocks/docs/guide.md.entries";
+      t.fork.write(path, `=== entry ${hash}\nkind: policy\nrules: \nintent: Adapt the guide.\n--- upstream\na guide\n--- patched\n<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> upstream\n`);
+      sh(["git", "add", "-A"], { cwd: t.fork.path });
+      const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+      const before = tree(t.fork.path);
+      const commit = sh(["git", "commit", "-qm", "conflicted entry"], { cwd: t.fork.path, env: withHook(t), check: false });
+      expect(commit.code).not.toBe(0);
+      expect(commit.stderr).toContain(path);
+      expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
+      expect(tree(t.fork.path)).toEqual(before);
+    });
+  }
+
+  forkTest("the hook restores a new recording that introduces conflict markers", (t) => {
+    t.fork.write("app.txt", "<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> upstream\n");
+    sh(["git", "add", "app.txt"], { cwd: t.fork.path });
+    const head = sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout;
+    const index = sh(["git", "write-tree"], { cwd: t.fork.path }).stdout;
+    const before = tree(t.fork.path);
+    const commit = sh(["git", "commit", "-qm", "conflicted output"], { cwd: t.fork.path, env: { ...withHook(t), PATCHBOOK_INTENT: "Adapt app.txt." }, check: false });
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain("refusing this commit");
+    expect(commit.stderr).toContain(".patchbook/changes/adapt-app-txt/ours/app.txt.pb");
+    expect(sh(["git", "rev-parse", "HEAD"], { cwd: t.fork.path }).stdout).toBe(head);
+    expect(sh(["git", "write-tree"], { cwd: t.fork.path }).stdout).toBe(index);
+    expect(tree(t.fork.path)).toEqual(before);
+  });
+
+  forkTest("a conflicted change copy named series is not the series list", (t) => {
+    t.fork.write("series", "ours\n");
+    t.pb(["record", "feature", "--intent", "Add a series file."], { cwd: t.fork.path });
+    t.fork.commit("record");
+    const path = ".patchbook/changes/feature/ours/series.pb";
+    t.fork.write(path, "<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> upstream\n");
+    sh(["git", "add", path], { cwd: t.fork.path });
+    const commit = sh(["git", "commit", "-qm", "conflicted series file"], { cwd: t.fork.path, env: withHook(t), check: false });
+    expect(commit.code).not.toBe(0);
+    expect(commit.stderr).toContain(path);
+    expect(commit.stderr).not.toContain("keep both sides' change names");
+  });
+
   forkTest("sync reports an edited file upstream deleted as gone, with the file it moved to", (t) => {
     t.recordFeature();
     t.up.rm("app.txt");

@@ -4,6 +4,10 @@ The hand-written part of each release's notes. GitHub's generated notes list the
 
 ## Unreleased
 
+### Resolve change conflicts before committing
+
+After a conflicted `patchbook sync`, the commit hook now refuses the commit and names the change's `ours/<file>.pb` to resolve. Previously it warned and committed the conflict markers. The check covers every change, including a copy hidden by a later edit, and patched paragraph entries. Resolve the markers in the named file, stage it, and commit again. A refused commit leaves HEAD, the index and the working files unchanged. If recording staged output would introduce markers, the hook restores that recording and refuses the commit (#276).
+
 ### A failed model call no longer leaves new paragraph entries without an intent
 
 When the model failed, `record` and the commit hook wrote a new paragraph entry with an empty intent. `status` reported the entry as a problem, and `build` refused until you ran `patchbook intent`. Now patchbook writes the entry's intent from the paragraph edit and labels it `intent (by patchbook):` in the entries file, as it does for a change, so the build goes ahead:

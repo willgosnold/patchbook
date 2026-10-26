@@ -16,7 +16,7 @@ export type Problem =
   | ({ problem: "gone" } & (InEdit | InChange) & Detail)
   | ({ problem: "stale" } & InChange & Detail)
   | ({ problem: "conflict" } & (InFile | InChange) & Detail)
-  | ({ problem: "conflict" } & InFile & Detail & Refuse)
+  | ({ problem: "conflict" } & (InFile | InChange) & Detail & Refuse)
   | ({ problem: "placeholder" } & (InOutput | InBlock) & Detail)
   | ({ problem: "leak" } & ((InOutput & { line: number }) | InBlock) & { terms: string[] })
   | ({ problem: "missing" } & InBlock & { terms: string[]; upstream: string })

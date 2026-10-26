@@ -157,6 +157,16 @@ export function assemble(book: Book): Assembly {
   const changes = readChanges(book, problems);
   const byName = new Map(changes.map((c) => [c.name, c]));
 
+  for (const c of changes) {
+    for (const e of c.edits) {
+      if (e.kind !== "file" && e.kind !== "add" && e.kind !== "replace") continue;
+      const ours = c.file("ours", e.path);
+      if (ours && ours.mode !== LINK && isText(ours.data) && hasConflictMarker(decode(ours.data))) {
+        problems.push({ problem: "conflict", file: e.path, change: c.name, detail: "ours has conflict markers", refuse: true });
+      }
+    }
+  }
+
   // Content edits, keyed by upstream path. One owner per path.
   const content = new Map(upstream);
   const owner = new Map<string, string>();
@@ -184,19 +194,22 @@ export function assemble(book: Book): Assembly {
       if (!bytesEqual(base.data, up.data)) {
         problems.push({ problem: "stale", ...where, detail: "its base differs from upstream at the pin; run sync" });
       }
-      if (isText(ours.data) && hasConflictMarker(decode(ours.data))) problems.push({ problem: "conflict", ...where, detail: "ours has conflict markers" });
       content.set(e.path, { data: ours.data, mode: outputMode(ours, base, up) });
       applied++;
     }
   }
   const blocks = new Map<string, Map<string, Entry>>();
   for (const rel of blockFiles(book)) {
+    const entries = readEntries(entriesPath(book, rel));
+    if (Array.from(entries.values()).some((e) => hasConflictMarker(e.patched))) {
+      problems.push({ problem: "conflict", file: `blocks/${rel}.entries`, detail: "patched paragraph has conflict markers", refuse: true });
+    }
     const owned = owner.get(rel);
     if (owned !== undefined) {
       problems.push({ problem: "invalid", file: rel, detail: `${owned} owns it, so it can't have block entries` });
       continue;
     }
-    blocks.set(rel, readEntries(entriesPath(book, rel)));
+    blocks.set(rel, entries);
   }
 
   const lost = new Set<string>();
