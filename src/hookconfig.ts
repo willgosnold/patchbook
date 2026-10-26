@@ -44,10 +44,10 @@ function items(doc: unknown, event: string): Item[] {
   return [...commands, ...jobs];
 }
 
-/** The call the entry for each event makes. Text that mentions it proves nothing, since `echo "patchbook hook run"`, a longer script or a call under `if` may not run it, so only the lines patchbook prints and the bare call count. Anything else gets patchbook's own lines, which at worst run it twice. */
+/** The call the entry for each event makes. Text that mentions it proves nothing, since `echo "patchbook hook run"`, a longer script or a call under `if` may not run it, so only the lines patchbook prints and the bare call count, which a lefthook run may end in `|| exit 1` or `|| true`. Anything else gets patchbook's own lines, which at worst run it twice. */
 const callOf = (event: string) => `${COMMAND} hook ${event === "pre-commit" ? "run" : "build"}`;
 const sameText = (text: unknown, wanted: string) => typeof text === "string" && text.replace(/\r\n/g, "\n").trim() === wanted.trim();
-/** `shell` is whether the text runs through one, which lets the call end in `|| exit 1`. */
+/** `shell` is whether the text runs through one, which lets the call end in `|| exit 1` or `|| true`. */
 const runsCall = (run: unknown, printed: string, entry: Entry, shell: boolean) =>
   sameText(run, printed) || (typeof run === "string" && new RegExp(`^${escaped(callOf(entry.event))}${shell ? "(?: \\|\\| (?:exit 1|true))?" : ""}$`).test(run.trim()));
 const callsIn = (i: Item, entry: Entry) => i.always && runsCall(i.run, entry.run, entry, true);
@@ -286,7 +286,7 @@ export const LEFTHOOK: Readonly<Record<string, Format>> = { yml: lefthookYaml, y
 
 const hookId = (entry: Entry) => (entry.event === "pre-commit" ? COMMAND : `${COMMAND}-${entry.event}`);
 
-/** What limits a pre-commit hook to some files. A hook that runs on every commit also needs pass_filenames false, since pre-commit appends the staged file names to `entry` and patchbook rejects arguments. */
+/** What limits a pre-commit hook to some files. A hook that runs on every commit also needs pass_filenames false and no `args`, since pre-commit appends the staged file names and `args` to `entry` and patchbook rejects arguments. */
 const PRE_COMMIT_LIMITS = ["files", "exclude", "types", "types_or", "exclude_types"];
 
 /** pre-commit splits `entry` like a shell does and runs the words without one, so the script goes through `sh -c`. */
@@ -320,8 +320,15 @@ function preCommit(config: string, entry: Entry, where: string): Placement {
   const id = hookId(entry);
   const pre = entry.event === "pre-commit";
   const hooks = Array.isArray(repos) ? repos.flatMap((r) => (isRecord(r) && Array.isArray(r["hooks"]) ? r["hooks"] : [])) : [];
-  const atStage = (h: Record<string, unknown>) => !Array.isArray(h["stages"]) || h["stages"].some((st) => st === entry.event || (pre && st === "commit"));
-  const always = (h: Record<string, unknown>) => atStage(h) && h["language"] === "system" && h["always_run"] === true && h["pass_filenames"] === false && PRE_COMMIT_LIMITS.every((k) => !h[k]);
+  const defaults = isRecord(doc) ? doc["default_stages"] : undefined;
+  /** A hook with no stages gets the file's `default_stages`, and every stage when it has none. */
+  const stagesOf = (h: Record<string, unknown>) => (h["stages"] === undefined || (Array.isArray(h["stages"]) && h["stages"].length === 0) ? defaults : h["stages"]);
+  const atStage = (h: Record<string, unknown>) => {
+    const stages = stagesOf(h);
+    return stages === undefined || (Array.isArray(stages) && stages.some((st) => st === entry.event || (pre && st === "commit")));
+  };
+  const noArgs = (h: Record<string, unknown>) => h["args"] === undefined || (Array.isArray(h["args"]) && h["args"].length === 0);
+  const always = (h: Record<string, unknown>) => atStage(h) && noArgs(h) && h["language"] === "system" && h["always_run"] === true && h["pass_filenames"] === false && PRE_COMMIT_LIMITS.every((k) => !h[k]);
   if (hooks.some((h) => isRecord(h) && always(h) && runsCall(h["entry"], preCommitEntry(entry), entry, false))) return PRESENT;
   if (hooks.some((h) => isRecord(h) && h["id"] === id)) return clashWith(`config already has a hook with the id ${id}`, entry);
   const item = preCommitRepo(entry);

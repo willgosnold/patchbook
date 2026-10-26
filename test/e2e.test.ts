@@ -4270,6 +4270,8 @@ const COLLISIONS: [string, string, string, string][] = [
   ["a lefthook TOML command", "lefthook.toml", lefthookTomlCommand("pre-commit", "patchbook", SOMEONE_ELSES), "command"],
   ["a local pre-commit hook", ".pre-commit-config.yaml", preCommitHook("patchbook", SOMEONE_ELSES), "hook"],
   ["a hook from a remote pre-commit repo", ".pre-commit-config.yaml", `repos:\n  - repo: https://example.com/other/hooks\n    rev: v1\n    hooks:\n      - id: patchbook\n`, "hook"],
+  ["a local pre-commit hook given arguments", ".pre-commit-config.yaml", preCommitHook("patchbook", "patchbook hook run", PRE_COMMIT_RUNS_ALWAYS + "        args: [--verbose]\n"), "hook"],
+  ["a local pre-commit hook that default_stages keep from the commit", ".pre-commit-config.yaml", "default_stages: [pre-push]\n" + preCommitHook("patchbook", "patchbook hook run"), "hook"],
 ];
 
 for (const [name, config, existing, kind] of COLLISIONS) {
@@ -4309,6 +4311,11 @@ const OTHER_NAMES: [string, string, string][] = [
   ["a lefthook JSON command", "lefthook.json", lefthookJsonCommand("pre-commit", "record", CALLS["pre-commit"])],
   ["a lefthook TOML command", "lefthook.toml", lefthookTomlCommand("pre-commit", "record", CALLS["pre-commit"])],
   ["a local pre-commit hook", ".pre-commit-config.yaml", preCommitHook("record", "patchbook hook run")],
+  ["a local pre-commit hook with no stages under default_stages that hold the commit", ".pre-commit-config.yaml", "default_stages: [pre-commit]\n" + preCommitHook("record", "patchbook hook run")],
+  ["a local pre-commit hook with no stages under default_stages that hold the old commit name", ".pre-commit-config.yaml", "default_stages: [commit, push]\n" + preCommitHook("record", "patchbook hook run")],
+  ["a local pre-commit hook whose own stages beat default_stages", ".pre-commit-config.yaml", "default_stages: [pre-push]\n" + preCommitHook("record", "patchbook hook run", PRE_COMMIT_RUNS_ALWAYS + "        stages: [pre-commit]\n")],
+  ["a local pre-commit hook with empty args", ".pre-commit-config.yaml", preCommitHook("record", "patchbook hook run", PRE_COMMIT_RUNS_ALWAYS + "        args: []\n")],
+  ["a local pre-commit hook with empty stages that default_stages fill with the commit", ".pre-commit-config.yaml", "default_stages: [pre-commit]\n" + preCommitHook("record", "patchbook hook run", PRE_COMMIT_RUNS_ALWAYS + "        stages: []\n")],
 ];
 
 for (const [name, config, existing] of OTHER_NAMES) {
@@ -4413,6 +4420,10 @@ const PRE_COMMIT_NOT_ALWAYS: [string, string][] = [
   ["a hook limited to some types", preCommitHook("record", "patchbook hook run", PRE_COMMIT_RUNS_ALWAYS + "        types: [python]\n")],
   ["a hook at the manual stage", preCommitHook("record", "patchbook hook run", PRE_COMMIT_RUNS_ALWAYS + "        stages: [manual]\n")],
   ["a hook in another language", preCommitHook("record", "patchbook hook run").replace("language: system", "language: script")],
+  ["a hook with no stages under default_stages that leave out the commit", "default_stages: [pre-push]\n" + preCommitHook("record", "patchbook hook run")],
+  ["a hook with empty stages under default_stages that leave out the commit", "default_stages: [pre-push]\n" + preCommitHook("record", "patchbook hook run", PRE_COMMIT_RUNS_ALWAYS + "        stages: []\n")],
+  ["a hook with no stages under an empty default_stages", "default_stages: []\n" + preCommitHook("record", "patchbook hook run")],
+  ["a hook given arguments", preCommitHook("record", "patchbook hook run", PRE_COMMIT_RUNS_ALWAYS + "        args: [--verbose]\n")],
 ];
 
 for (const [name, existing] of PRE_COMMIT_NOT_ALWAYS) {
@@ -4451,6 +4462,23 @@ test("hook install checks a pre-commit framework post hook's own call, not an ec
     installDispatchers(fork, ["pre-commit", "post-merge"], PRE_COMMIT_DISPATCHER);
     const install = t.pb(["hook", "install"], { cwd: fork.path, timeout: 30_000 }).stderr;
     expect(install).toContain("runs this repo's post-merge hook. Add this");
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
+
+const POST_MERGE_HOOK = "      - id: merged\n        name: merged\n        entry: patchbook hook build\n        language: system\n        pass_filenames: false\n        always_run: true\n";
+const commitHook = preCommitHook("record", "patchbook hook run", PRE_COMMIT_RUNS_ALWAYS + "        stages: [commit]\n");
+
+test("hook install gives a pre-commit post hook with no stages the stages default_stages name", () => {
+  const t = new Case();
+  try {
+    const aimed = (stages: string) => `default_stages: [${stages}]\n${commitHook}${POST_MERGE_HOOK}`;
+    const fork = forkWith(t, { ".pre-commit-config.yaml": aimed("pre-commit") });
+    installDispatchers(fork, ["pre-commit", "post-merge"], PRE_COMMIT_DISPATCHER);
+    expect(t.pb(["hook", "install"], { cwd: fork.path, timeout: 30_000 }).stderr).toContain("runs this repo's post-merge hook. Add this");
+    writeFileSync(join(fork.path, ".pre-commit-config.yaml"), aimed("post-merge"));
+    expect(t.pb(["hook", "install"], { cwd: fork.path, timeout: 30_000 }).stderr).not.toContain("Add this");
   } finally {
     t.cleanup();
   }
