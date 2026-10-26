@@ -9171,6 +9171,76 @@ echo "patchbook isn't installed, so this commit doesn't record hand edits." >&2
     expect(status).toContain("invalid   dup.md:7 [872887e563e7]: it has no intent; fill it with `patchbook intent`\n");
   });
 
+  forkTest("record --intent fills a scaffolded block entry with an empty intent", (t) => {
+    upstreamFile(t, "dup.md", DUP);
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    writeFileSync(config, read(config) + "\n[[check]]\nname = \"example\"\nfiles = [\"dup.md\"]\npattern = 'Example'\n");
+    t.pb(["scaffold"], { cwd: t.fork.path });
+    const file = join(t.fork.path, ".patchbook/blocks/dup.md.entries");
+    writeFileSync(file, read(file).replace("kind: translation", "kind: policy"));
+    t.fork.write("dup.md", t.fork.read("dup.md").replaceAll("Example:", "Sample:"));
+    const recorded = t.pb(["record", "--intent", "Rename the flagged step."], { cwd: t.fork.path }).stdout;
+    expect(recorded).not.toContain("not used");
+    expect(read(file)).toContain("intent: Rename the flagged step.\n");
+    expect(t.pb(["status"], { cwd: t.fork.path }).stdout).not.toContain("no intent");
+    t.pb(["build"], { cwd: t.fork.path });
+  });
+
+  const twoEntries = (t: ForkCase, intents: readonly [string, string]): { file: string; labels: string[] } => {
+    upstreamFile(t, "dup.md", "# Title\n\nExample one:\n\nbody\n\nExample two:\n");
+    const config = join(t.fork.path, ".patchbook/config.toml");
+    writeFileSync(config, read(config) + "\n[[check]]\nname = \"example\"\nfiles = [\"dup.md\"]\npattern = 'Example'\n");
+    t.pb(["scaffold"], { cwd: t.fork.path });
+    const file = join(t.fork.path, ".patchbook/blocks/dup.md.entries");
+    const hashes = Array.from(read(file).matchAll(/^=== entry (\w+)/gm), (m) => m[1]!);
+    let at = 0;
+    writeFileSync(file, read(file).replaceAll("kind: translation", "kind: policy").replaceAll("intent: \n", () => `intent: ${intents[at++]}\n`));
+    t.fork.write("dup.md", t.fork.read("dup.md").replaceAll("Example", "Sample"));
+    return { file, labels: hashes.map((h) => `dup.md [${h}]`) };
+  };
+  const modelReplying = (t: ForkCase, reply: object): void => {
+    writeFileSync(join(t.tmp, "bin/claude"), `#!/bin/sh\ncat > /dev/null\ncat <<'REPLY'\n${JSON.stringify(reply)}\nREPLY\n`, { mode: 0o755 });
+  };
+
+  forkTest("record gives each empty block entry its own model intent", (t) => {
+    const { file, labels } = twoEntries(t, ["", ""]);
+    modelReplying(t, { change: "x", intent: "Shared.", intents: { [labels[0]!]: "First paragraph.", [labels[1]!]: "Second paragraph." } });
+    t.pb(["record"], { cwd: t.fork.path });
+    const entries = read(file);
+    expect(entries).toContain("intent: First paragraph.\n");
+    expect(entries).toContain("intent: Second paragraph.\n");
+    expect(entries).not.toContain("Shared.");
+  });
+
+  forkTest("record keeps the model's entry intents apart from the intent of the change it names", (t) => {
+    const { file, labels } = twoEntries(t, ["", ""]);
+    t.fork.write("newfile.txt", "new\n");
+    modelReplying(t, { change: "mychange", intent: "Change.", intents: { mychange: "Change.", [labels[0]!]: "First paragraph.", [labels[1]!]: "Second paragraph." } });
+    t.pb(["record"], { cwd: t.fork.path });
+    const entries = read(file);
+    expect(entries).toContain("intent: First paragraph.\n");
+    expect(entries).toContain("intent: Second paragraph.\n");
+    expect(read(join(t.fork.path, ".patchbook/changes/mychange/CHANGE.md"))).toContain("intent: Change.\n");
+  });
+
+  forkTest("record --intent fills each empty block entry beside a new file and keeps the others", (t) => {
+    const { file } = twoEntries(t, ["", "Keep this one."]);
+    t.fork.write("newfile.txt", "new\n");
+    const recorded = t.pb(["record", "mychange", "--intent", "Rename and add."], { cwd: t.fork.path }).stdout;
+    expect(recorded).not.toContain("not used");
+    const entries = read(file);
+    expect(entries.match(/intent: Rename and add\.\n/g)).toHaveLength(1);
+    expect(entries).toContain("intent: Keep this one.\n");
+  });
+
+  forkTest("record --intent says it was not used when every block entry already has an intent", (t) => {
+    const { file } = twoEntries(t, ["Keep one.", "Keep two."]);
+    const recorded = t.pb(["record", "--intent", "Rename them."], { cwd: t.fork.path }).stdout;
+    expect(recorded).toContain("intent   not used");
+    expect(read(file)).toContain("intent: Keep one.\n");
+    expect(read(file)).toContain("intent: Keep two.\n");
+  });
+
   forkTest("status does not count a block entry that is invalid", (t) => {
     upstreamFile(t, "dup.md", DUP);
     const config = join(t.fork.path, ".patchbook/config.toml");
