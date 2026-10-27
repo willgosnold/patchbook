@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   test:
-    name: test (${{ matrix.os }}, ${{ matrix.shard.name }})
+    name: test (${{ matrix.os }}, ${{ matrix.user }}, ${{ matrix.shard.name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -24,6 +24,9 @@ jobs:
         # requests test on Ubuntu only. Pushes to main (and manual runs, for
         # checking a branch on macOS before merging) test on both.
         os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
+        # The tests run once as the runner user and once as root. Root runs
+        # on Ubuntu only, for the same reason.
+        user: [runner, root]
         # The end-to-end tests are nearly all the run time, so they are split
         # by top-level describe block across parallel jobs. The three patterns
         # cover every test exactly once; a new top-level describe block lands
@@ -32,6 +35,8 @@ jobs:
           - { name: fork, pattern: "^ForkTest " }
           - { name: vendor, pattern: "^VendorTest " }
           - { name: rest, pattern: "^(?!ForkTest |VendorTest )" }
+        exclude:
+          - { os: macos-latest, user: root }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -41,51 +46,39 @@ jobs:
           bun-version: 1.4.3
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      # Every test file except e2e, which runs below against the compiled
-      # binary that ships. Each file gets a fresh module registry:
-      # units.test.ts needs settings.ts loaded under its own sandbox.
-      - name: Unit tests
-        if: matrix.shard.name == 'rest'
-        run: bun test --isolate $(ls test/*.test.ts | grep -v '/e2e\.test\.ts$')
       - run: bun run build
       - name: The compiled binary carries no crash-injection code
         run: bun test/crash-build.ts check dist/patchbook
-      - name: End-to-end tests against the compiled binary
-        run: bun test test/e2e.test.ts --test-name-pattern "$PATTERN"
+      # Root ignores file permissions, so a test that needs a refused write must be skipped by permissionTest. One that is not fails the root jobs.
+      # The "rest" shard also runs every test file but e2e from source, then
+      # the e2e describes that skip under PATCHBOOK_CMD. Each unit file gets a
+      # fresh module registry: units.test.ts needs settings.ts loaded under
+      # its own sandbox.
+      - name: Tests as ${{ matrix.user }}
+        run: |
+          as=()
+          if [ "$USER_KIND" = root ]; then as=(sudo env "PATH=$PATH" HOME=/root); fi
+          "${as[@]}" bash -euxo pipefail -c '
+            [ "$([ "$(id -u)" = 0 ] && echo root || echo runner)" = "$1" ]
+            if [ "$2" = rest ]; then
+              bun test --isolate $(ls test/*.test.ts | grep -v "/e2e\.test\.ts$")
+              bun test test/e2e.test.ts --test-name-pattern "so only from source"
+            fi
+            PATCHBOOK_CMD="$PWD/dist/patchbook" bun test test/e2e.test.ts --test-name-pattern "$3"
+          ' bash "$USER_KIND" "$SHARD" "$PATTERN"
         env:
-          PATCHBOOK_CMD: ${{ github.workspace }}/dist/patchbook
+          USER_KIND: ${{ matrix.user }}
+          SHARD: ${{ matrix.shard.name }}
           PATTERN: ${{ matrix.shard.pattern }}
 
-  test-root:
-    name: test (root)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.4.3
-      - run: bun install --frozen-lockfile
-      - run: bun run build
-      # Root ignores file permissions, so a test that needs a refused write must be skipped by permissionTest. One that is not fails here.
-      - name: Tests as root, from source and against the compiled binary
-        run: |
-          sudo env "PATH=$PATH" HOME=/root bash -euxo pipefail -c '
-            [ "$(id -u)" = 0 ]
-            bun test --isolate
-            PATCHBOOK_CMD="$PWD/dist/patchbook" bun test test/e2e.test.ts
-          '
-
   # main's ruleset requires a check named "test (ubuntu-latest)". This job
-  # gives that name one result for the whole matrix above and the root job.
+  # gives that name one result for the whole matrix above.
   required:
     name: test (ubuntu-latest)
     if: always()
-    needs: [test, test-root]
+    needs: test
     runs-on: ubuntu-latest
     steps:
-      - run: test "$RESULT" = success && test "$ROOT" = success
+      - run: test "$RESULT" = success
         env:
           RESULT: ${{ needs.test.result }}
-          ROOT: ${{ needs.test-root.result }}
