@@ -15,7 +15,7 @@ process.env["XDG_CONFIG_HOME"] = join(sandbox, "config");
 
 const { applyStructure, describe: describeProblem, parseBuildLock } = await import("../src/assemble.ts");
 const { blockHash, blocksOf, blockSpans, checkEntry, formatEntry, nearest, parsePlaceholders, readEntries, Rules } = await import("../src/blocks.ts");
-const { Book, globRe, lockText, parseLock, refuseNestedGit, unsafeVendor } = await import("../src/book.ts");
+const { Book, globRe, lockText, parseLock, refuseFoldedUpstream, refuseNestedGit, unsafeVendor } = await import("../src/book.ts");
 const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
 const { changeParts, intentFromEdits, intentFromParagraph, intentSettings, listDiffs, nameFromEdits, pendingParts, PROVIDERS, writeIntents } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
@@ -2142,5 +2142,18 @@ describe("an output git reads as .git", () => {
   test.each([".git.", "a/.git ", "GIT~1/x", "a/.g\u200cit", ".GIT/x", "a/.Git", "./.gIt/x"])("refuses a second upstream mounted at %p in either layout", async (mount) => {
     await expect(fork(upstream("m", mount))).rejects.toThrow("inside .git");
     await expect(folder("out", upstream("m", mount))).rejects.toThrow("inside .git");
+  });
+});
+
+describe("refuseFoldedUpstream", () => {
+  test.each([".PATCHBOOK/config.toml", ".Patchbook/x", ".patchbook./z.txt", ".patchbook /w.txt", ".PATCHBOOK. . /y", ".patchbook:x/y", ".patchbook\\x"])(
+    "refuses an upstream that holds %p",
+    (path) => {
+      expect(() => refuseFoldedUpstream(["app.txt", path])).toThrow(`upstream has ${path}, which is .patchbook on macOS and Windows.`);
+    },
+  );
+
+  test.each([".patchbook/config.toml", ".patchbookx/a", ".patchbook.x/a", "x/.PATCHBOOK/a"])("takes an upstream that holds %p", (path) => {
+    expect(() => refuseFoldedUpstream(["app.txt", path])).not.toThrow();
   });
 });

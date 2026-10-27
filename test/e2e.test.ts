@@ -2135,65 +2135,57 @@ test("clone of a patchbook repo starts a patchbook of its own", () => {
   }
 }, TIMEOUT);
 
-const foldedUpstream = [
-  [".PATCHBOOK", ".PATCHBOOK/config.toml"],
-  [".patchbook.", ".patchbook./z.txt"],
-  [".patchbook and a space", ".patchbook /w.txt"],
-] as const;
+const folded = ".PATCHBOOK/config.toml";
 const cantFork = "patchbook can't fork an upstream with a folder that is .patchbook on macOS and Windows";
 
-for (const [what, path] of foldedUpstream) {
-  test(`clone refuses an upstream with a ${what} folder and writes nothing`, () => {
-    const t = new Case();
-    try {
-      const up = new Repo(join(t.tmp, "upstream"));
-      up.write("app.txt", "one\n");
-      up.write(path, "upstream = true\n");
-      up.commit("start");
-      const refused = t.pb(["clone", up.path, "fork"], { cwd: t.tmp, code: 1 });
-      expect(refused.stderr).toContain(path);
-      expect(refused.stderr).toContain(cantFork);
-      expect(existsSync(join(t.tmp, "fork"))).toBe(false);
-    } finally {
-      t.cleanup();
-    }
-  }, TIMEOUT);
+test("clone refuses an upstream with a .PATCHBOOK folder and writes nothing", () => {
+  const t = new Case();
+  try {
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    up.write(folded, "upstream = true\n");
+    up.commit("start");
+    const refused = t.pb(["clone", up.path, "fork"], { cwd: t.tmp, code: 1 });
+    expect(refused.stderr).toContain(folded);
+    expect(refused.stderr).toContain(cantFork);
+    expect(existsSync(join(t.tmp, "fork"))).toBe(false);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
 
-  test(`init refuses an upstream with a ${what} folder and writes nothing`, () => {
-    const t = new Case();
-    try {
-      const leaf = path.replace("config.toml", "notes.md");
-      const up = new Repo(join(t.tmp, "upstream"));
-      up.write("app.txt", "one\n");
-      up.write(leaf, "upstream = true\n");
-      up.commit("start");
-      const mine = forkOf(t, up);
-      const before = tree(mine.path);
-      const refused = t.pb(["init", "--upstream", up.path], { cwd: mine.path, code: 1 });
-      expect(refused.stderr).toContain(leaf);
-      expect(refused.stderr).toContain(cantFork);
-      expect(tree(mine.path)).toEqual(before);
-    } finally {
-      t.cleanup();
-    }
-  }, TIMEOUT);
+test("init refuses an upstream with a .PATCHBOOK folder and writes nothing", () => {
+  const t = new Case();
+  try {
+    const leaf = folded.replace("config.toml", "notes.md");
+    const up = new Repo(join(t.tmp, "upstream"));
+    up.write("app.txt", "one\n");
+    up.write(leaf, "upstream = true\n");
+    up.commit("start");
+    const mine = forkOf(t, up);
+    const before = tree(mine.path);
+    const refused = t.pb(["init", "--upstream", up.path], { cwd: mine.path, code: 1 });
+    expect(refused.stderr).toContain(leaf);
+    expect(refused.stderr).toContain(cantFork);
+    expect(tree(mine.path)).toEqual(before);
+  } finally {
+    t.cleanup();
+  }
+}, TIMEOUT);
 
-  forkTest(`sync and check refuse an upstream that gains a ${what} folder and write nothing`, (t) => {
-    t.up.write(path, "upstream = true\n");
-    t.up.commit("upstream gains a folded folder");
-    const before = tree(t.fork.path);
-    for (const args of [["sync"], ["check"]]) {
-      const refused = t.pb(args, { cwd: t.fork.path, code: 1 });
-      expect(refused.stderr).toContain(path);
-      expect(refused.stderr).toContain(cantFork);
-      expect(tree(t.fork.path)).toEqual(before);
-    }
-  });
-}
+forkTest("sync and check refuse an upstream that gains a .PATCHBOOK folder and write nothing", (t) => {
+  t.up.write(folded, "upstream = true\n");
+  t.up.commit("upstream gains a folded folder");
+  const before = tree(t.fork.path);
+  for (const args of [["sync"], ["check"]]) {
+    const refused = t.pb(args, { cwd: t.fork.path, code: 1 });
+    expect(refused.stderr).toContain(folded);
+    expect(refused.stderr).toContain(cantFork);
+    expect(tree(t.fork.path)).toEqual(before);
+  }
+});
 
 describe("a fork that already holds a folder read as .patchbook", () => {
-  const folded = ".PATCHBOOK/config.toml";
-
   const refusedEverywhere = (t: ForkCase, hand: () => void) => {
     hand();
     const files = tree(t.fork.path);
