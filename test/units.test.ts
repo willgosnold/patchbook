@@ -2114,7 +2114,8 @@ describe("refuseNestedGit", () => {
 
 describe("an output git reads as .git", () => {
   const upstream = (name: string, mount: string) => `[[upstream]]\nname = "${name}"\nremote = "https://example.com/${name}.git"\nmount = ${JSON.stringify(mount)}\n`;
-  const folder = (to: string) => Book.fromText(scratch(), `layout = "folder"\n[output]\nto = ${JSON.stringify(to)}\n${upstream("up", "")}`);
+  const folder = (to: string, more = "") => Book.fromText(scratch(), `layout = "folder"\n[output]\nto = ${JSON.stringify(to)}\n${upstream("up", "")}${more}`);
+  const fork = (more: string) => Book.fromText(scratch(), upstream("up", "") + more);
 
   test.each([
     [".git as a folder", "skills/.git"],
@@ -2136,5 +2137,10 @@ describe("an output git reads as .git", () => {
 
   test.each([".gitx", "git~2", ".git.x", "a.git", ".git\u200c.", ".git\ufffd"])("takes [output] to %p", async (to) => {
     await expect(folder(to)).resolves.toBeInstanceOf(Book);
+  });
+
+  test.each([".git.", "a/.git ", "GIT~1/x", "a/.g\u200cit", ".GIT/x", "a/.Git", "./.gIt/x"])("refuses a second upstream mounted at %p in either layout", async (mount) => {
+    await expect(fork(upstream("m", mount))).rejects.toThrow("inside .git");
+    await expect(folder("out", upstream("m", mount))).rejects.toThrow("inside .git");
   });
 });
