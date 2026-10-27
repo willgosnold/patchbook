@@ -1,13 +1,14 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import type { LastSync, Problem, SyncReport } from "../src/api.ts";
 import type { Assembly } from "../src/assemble.ts";
 import type { Reserved } from "../src/book.ts";
 import type { Edit, Intent } from "../src/changes.ts";
 import type { File, Seen } from "../src/lib/fs.ts";
 import type { Edited, Snapshot } from "../src/record.ts";
+import { CALLS, lefthookCommand, lefthookJob, lefthookJsonCommand, lefthookTomlCommand, PRE_COMMIT_RUNS_ALWAYS, preCommitHook, quoted } from "./helpers";
 
 const sandbox = mkdtempSync(join(tmpdir(), "units"));
 const ambientConfigHome = process.env["XDG_CONFIG_HOME"];
@@ -17,6 +18,7 @@ const { applyStructure, describe: describeProblem, parseBuildLock } = await impo
 const { blockHash, blocksOf, blockSpans, checkEntry, formatEntry, nearest, parsePlaceholders, readEntries, Rules } = await import("../src/blocks.ts");
 const { Book, globRe, lockText, parseLock, refuseFoldedUpstream, refuseNestedGit, unsafeVendor } = await import("../src/book.ts");
 const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
+const { LEFTHOOK, PRE_COMMIT, PRESENT } = await import("../src/hookconfig.ts");
 const { changeParts, intentFromEdits, intentFromParagraph, intentSettings, listDiffs, nameFromEdits, pendingParts, PROVIDERS, writeIntents } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
 const { meantMode, outputMode, recordedModes } = await import("../src/lib/fs.ts");
@@ -2202,5 +2204,68 @@ describe("an edit whose path leaves the tree", () => {
     expect(change.edits).toEqual([]);
     expect(change.held).toEqual([`- ${edit}`]);
     expect(refused).toEqual([[edit, expect.stringContaining("must be a path inside the tree: not absolute, with no empty, . or .. segment")]]);
+  });
+});
+
+describe("a hook manager config's pre-commit entries", () => {
+  const entry = { event: "pre-commit", run: 'if [ "$PATCHBOOK_HOOK" != 0 ]; then\n  patchbook hook run || exit 1\nfi\n' };
+  const decide = (file: string, config: string): string => {
+    const placed = (file === ".pre-commit-config.yaml" ? PRE_COMMIT : LEFTHOOK)[extname(file).slice(1)]!(config, entry, file);
+    return placed === PRESENT ? "present" : "location" in placed ? "add" : placed.why;
+  };
+
+  test.each([
+    ["a lefthook YAML command", "lefthook.yml", lefthookCommand("pre-commit", "record", CALLS["pre-commit"])],
+    ["a lefthook YAML job", "lefthook.yml", lefthookJob("pre-commit", "record", CALLS["pre-commit"])],
+    ["a lefthook JSON command", "lefthook.json", lefthookJsonCommand("pre-commit", "record", CALLS["pre-commit"])],
+    ["a lefthook TOML command", "lefthook.toml", lefthookTomlCommand("pre-commit", "record", CALLS["pre-commit"])],
+    ["a local pre-commit hook", ".pre-commit-config.yaml", preCommitHook("record", "patchbook hook run")],
+    ["a local pre-commit hook with no stages under default_stages that hold the commit", ".pre-commit-config.yaml", "default_stages: [pre-commit]\n" + preCommitHook("record", "patchbook hook run")],
+    ["a local pre-commit hook with no stages under default_stages that hold the old commit name", ".pre-commit-config.yaml", "default_stages: [commit, push]\n" + preCommitHook("record", "patchbook hook run")],
+    ["a local pre-commit hook whose own stages beat default_stages", ".pre-commit-config.yaml", "default_stages: [pre-push]\n" + preCommitHook("record", "patchbook hook run", PRE_COMMIT_RUNS_ALWAYS + "        stages: [pre-commit]\n")],
+    ["a local pre-commit hook with empty args", ".pre-commit-config.yaml", preCommitHook("record", "patchbook hook run", PRE_COMMIT_RUNS_ALWAYS + "        args: []\n")],
+    ["a local pre-commit hook with empty stages that default_stages fill with the commit", ".pre-commit-config.yaml", "default_stages: [pre-commit]\n" + preCommitHook("record", "patchbook hook run", PRE_COMMIT_RUNS_ALWAYS + "        stages: []\n")],
+  ])("%s with another name that runs patchbook counts as patchbook's hook", (_what, file, config) => {
+    expect(decide(file, config)).toBe("present");
+  });
+
+  const mentions = [
+    `echo "patchbook hook run"`,
+    `printf '%s\\n' 'patchbook hook run'`,
+    `echo mine # patchbook hook run`,
+    `echo mine\\n# patchbook hook run`,
+    `my-patchbook hook run`,
+    `patchbook hook run-all`,
+    `if false; then patchbook hook run; fi`,
+    `./node_modules/.bin/patchbook hook run`,
+  ];
+  const unquoted = (run: string) => quoted(run).slice(1, -1);
+  const mentioning: [string, string, (run: string) => string][] = [
+    ["a lefthook YAML command", "lefthook.yml", (run) => lefthookCommand("pre-commit", "diagnostic", quoted(run))],
+    ["a lefthook YAML job", "lefthook.yml", (run) => lefthookJob("pre-commit", "diagnostic", quoted(run))],
+    ["a lefthook JSON command", "lefthook.json", (run) => lefthookJsonCommand("pre-commit", "diagnostic", unquoted(run))],
+    ["a lefthook JSON job", "lefthook.json", (run) => `{ "pre-commit": { "jobs": [{ "name": "diagnostic", "run": "${unquoted(run)}" }] } }\n`],
+    ["a lefthook TOML command", "lefthook.toml", (run) => lefthookTomlCommand("pre-commit", "diagnostic", unquoted(run))],
+    ["a local pre-commit hook", ".pre-commit-config.yaml", (run) => preCommitHook("diagnostic", quoted(run))],
+  ];
+
+  test.each(mentioning.flatMap(([what, file, build]) => mentions.map((run) => [what, run, file, build(run)] as const)))(
+    "%s that only mentions the call in %p still gets patchbook's lines",
+    (_what, _run, file, config) => {
+      expect(decide(file, config)).toBe("add");
+    },
+  );
+
+  const generated = lefthookCommand("pre-commit", "patchbook", CALLS["pre-commit"]);
+  test.each([
+    ["a skipped lefthook command", "command", "lefthook.yml", generated.replace("      run:", "      skip: true\n      run:")],
+    ["a lefthook command limited with only", "command", "lefthook.yml", generated.replace("      run:", "      only: [merge]\n      run:")],
+    ["a lefthook command limited with glob", "command", "lefthook.yml", generated.replace("      run:", "      glob: '*.md'\n      run:")],
+    ["a lefthook command run from a subfolder", "command", "lefthook.yml", generated.replace("      run:", "      root: sub/\n      run:")],
+    ["a skipped lefthook job", "job", "lefthook.yml", lefthookJob("pre-commit", "patchbook", CALLS["pre-commit"]).replace("      run:", "      skip: true\n      run:")],
+    ["a skipped lefthook JSON command", "command", "lefthook.json", '{ "pre-commit": { "commands": { "patchbook": { "skip": true, "run": "patchbook hook run || exit 1" } } } }\n'],
+    ["a lefthook TOML command limited with glob", "command", "lefthook.toml", `[pre-commit.commands.patchbook]\nglob = "*.md"\nrun = "patchbook hook run"\n`],
+  ])("%s is not taken for patchbook's hook", (_what, kind, file, config) => {
+    expect(decide(file, config)).toBe(`its pre-commit already has a ${kind} named patchbook that doesn't always call \`patchbook hook run\``);
   });
 });
