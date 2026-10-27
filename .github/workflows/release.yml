@@ -151,6 +151,16 @@ jobs:
         run: scripts/smoke-npm.sh dist/npm linux-x64 "$VERSION"
         env:
           VERSION: ${{ needs.build.outputs.version }}
+      # Publishing authenticates with this job's OIDC token through npm trusted publishing, so
+      # there is no npm token. Each package trusts this repo's release.yml on npmjs.com.
+      - name: Check npm supports trusted publishing
+        run: |
+          need=11.5.1
+          have=$(npm --version)
+          if [[ "$(printf '%s\n' "$need" "$have" | sort -V | head -1)" != "$need" ]]; then
+            echo "::error::npm $have can't use trusted publishing, which needs npm $need or later"
+            exit 1
+          fi
       - name: Publish the platform packages, then patchbook
         run: |
           tag=latest
@@ -161,7 +171,7 @@ jobs:
               echo "$name@$VERSION is already published"
               return
             fi
-            npm publish "$1" --provenance --access public --tag "$tag"
+            npm publish "$1" --access public --tag "$tag"
           }
           for dir in dist/npm/*/; do
             [[ "$dir" == dist/npm/patchbook/ ]] || publish "${dir%/}"
@@ -169,4 +179,3 @@ jobs:
           publish dist/npm/patchbook
         env:
           VERSION: ${{ needs.build.outputs.version }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
