@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   test:
-    name: test (${{ matrix.os }}, ${{ matrix.user }}, ${{ matrix.shard.name }})
+    name: test (${{ matrix.os }}, ${{ matrix.user }}, ${{ matrix.shard }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -27,14 +27,7 @@ jobs:
         # The tests run once as the runner user and once as root. Root runs
         # on Ubuntu only, for the same reason.
         user: [runner, root]
-        # The end-to-end tests are nearly all the run time, so they are split
-        # by top-level describe block across parallel jobs. The three patterns
-        # cover every test exactly once; a new top-level describe block lands
-        # in "rest".
-        shard:
-          - { name: fork, pattern: "^ForkTest " }
-          - { name: vendor, pattern: "^VendorTest " }
-          - { name: rest, pattern: "^(?!ForkTest |VendorTest )" }
+        shard: [fork, vendor, rest]
         exclude:
           - { os: macos-latest, user: root }
     steps:
@@ -61,15 +54,18 @@ jobs:
           "${as[@]}" bash -euxo pipefail -c '
             [ "$([ "$(id -u)" = 0 ] && echo root || echo runner)" = "$1" ]
             if [ "$2" = rest ]; then
-              bun test --isolate $(ls test/*.test.ts | grep -v "/e2e\.test\.ts$")
-              bun test test/e2e.test.ts --test-name-pattern "so only from source"
+              files=($(ls test/e2e/*.test.ts | grep -Ev "/(fork|vendor)[^/]*$"))
+              bun test --isolate test/*.test.ts
+              bun test test/e2e/*.test.ts --test-name-pattern "so only from source"
+            else
+              files=(test/e2e/"$2"*.test.ts)
             fi
-            PATCHBOOK_CMD="$PWD/dist/patchbook" bun test test/e2e.test.ts --test-name-pattern "$3"
-          ' bash "$USER_KIND" "$SHARD" "$PATTERN"
+            [ -e "${files[0]}" ]
+            PATCHBOOK_CMD="$PWD/dist/patchbook" bun test "${files[@]}"
+          ' bash "$USER_KIND" "$SHARD"
         env:
           USER_KIND: ${{ matrix.user }}
-          SHARD: ${{ matrix.shard.name }}
-          PATTERN: ${{ matrix.shard.pattern }}
+          SHARD: ${{ matrix.shard }}
 
   # main's ruleset requires a check named "test (ubuntu-latest)". This job
   # gives that name one result for the whole matrix above.

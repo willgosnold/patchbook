@@ -43,12 +43,12 @@ CI also builds the binary and runs the end-to-end tests against it. Run the same
 
 ```sh
 bun run build
-PATCHBOOK_CMD="$PWD/dist/patchbook" bun test test/e2e.test.ts
+PATCHBOOK_CMD="$PWD/dist/patchbook" bun test test/e2e/*.test.ts
 ```
 
 ## Tests
 
-Every fix and feature needs a test. CLI behaviour goes in `test/e2e.test.ts`, which builds throwaway repos and runs the real command against them. Pure functions go in `test/units.test.ts`.
+Every fix and feature needs a test. CLI behaviour goes in a file under `test/e2e/` named for its area, which builds throwaway repos and runs the real command against them. Shared setup lives in `test/e2e-fixtures.ts`. CI runs the files whose names start with `fork` and `vendor` as their own jobs and every other file together, so a new file needs no CI change. Pure functions go in `test/units.test.ts`.
 
 For a bug fix, the best PR has two commits. The first adds a test that fails on `main`, and the second makes it pass. That lets a reviewer check the test catches the bug.
 
