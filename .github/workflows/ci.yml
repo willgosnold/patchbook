@@ -24,8 +24,8 @@ jobs:
         # requests test on Ubuntu only. Pushes to main (and manual runs, for
         # checking a branch on macOS before merging) test on both.
         os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
-        # The tests run once as the runner user and once as root. Root stays
-        # on Ubuntu, where sudo needs no password.
+        # The tests run once as the runner user and once as root. Root runs
+        # on Ubuntu only, for the same reason.
         user: [runner, root]
         # The end-to-end tests are nearly all the run time, so they are split
         # by top-level describe block across parallel jobs. The three patterns
@@ -50,10 +50,10 @@ jobs:
       - name: The compiled binary carries no crash-injection code
         run: bun test/crash-build.ts check dist/patchbook
       # Root ignores file permissions, so a test that needs a refused write must be skipped by permissionTest. One that is not fails the root jobs.
-      # The "rest" shard also runs from source what skips under PATCHBOOK_CMD:
-      # every test file but e2e, then the e2e describes that need the source.
-      # Each unit file gets a fresh module registry: units.test.ts needs
-      # settings.ts loaded under its own sandbox.
+      # The "rest" shard also runs every test file but e2e from source, then
+      # the e2e describes that skip under PATCHBOOK_CMD. Each unit file gets a
+      # fresh module registry: units.test.ts needs settings.ts loaded under
+      # its own sandbox.
       - name: Tests as ${{ matrix.user }}
         run: |
           as=()
