@@ -14639,19 +14639,6 @@ exec '${Bun.which("git")}' "$@"
     });
   }
 
-  for (const to of ["skills/.git", "a/b/.git/c"]) {
-    vendorTest(`output folder ${to} has a git segment and is rejected`, (t) => {
-      t.missingScaffoldPatchBuild();
-      setOutputFolder(t, to);
-      const before = tree(t.repo.path);
-      for (const args of [["build", "--force"], ["status"]]) {
-        const out = t.pb(args, { cwd: t.repo.path, code: 1 });
-        expect(out.stderr).toContain("inside .git");
-        expect(tree(t.repo.path)).toEqual(before);
-      }
-    });
-  }
-
   test("track rejects a mount that puts the output under a git folder in the folder layout", () => {
     const t = new Case();
     try {
@@ -14760,19 +14747,6 @@ exec '${Bun.which("git")}' "$@"
     expect(tree(t.repo.path)).toEqual(before);
   });
 
-  for (const to of [".GIT", ".Git/x", "out/.gIT/y"]) {
-    vendorTest(`output folder ${to} has a git segment in another case and is rejected`, (t) => {
-      t.missingScaffoldPatchBuild();
-      setOutputFolder(t, to);
-      const before = tree(t.repo.path);
-      for (const args of [["build", "--force"], ["status"]]) {
-        const out = t.pb(args, { cwd: t.repo.path, code: 1 });
-        expect(out.stderr).toContain("inside .git");
-        expect(tree(t.repo.path)).toEqual(before);
-      }
-    });
-  }
-
   const readsAsDotPatchbook = [
     [".PATCHBOOK", ".PATCHBOOK"],
     [".Patchbook/x", ".Patchbook/x"],
@@ -14807,6 +14781,11 @@ exec '${Bun.which("git")}' "$@"
   });
 
   const gitReadsAsDotGit = [
+    [".git as a folder", "skills/.git"],
+    [".git above a folder", "a/b/.git/c"],
+    [".GIT", ".GIT"],
+    [".Git above a folder", ".Git/x"],
+    [".gIT in a folder", "out/.gIT/y"],
     [".git.", ".git."],
     [".git and a space", ".git "],
     ["GIT~1", "GIT~1"],
