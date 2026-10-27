@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   test:
-    name: test (${{ matrix.os }}, ${{ matrix.user }}, ${{ matrix.shard.name }})
+    name: test (${{ matrix.os }}, ${{ matrix.user }}, ${{ matrix.shard }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -28,13 +28,10 @@ jobs:
         # on Ubuntu only, for the same reason.
         user: [runner, root]
         # The end-to-end tests are nearly all the run time, so they are split
-        # by top-level describe block across parallel jobs. The three patterns
-        # cover every test exactly once; a new top-level describe block lands
-        # in "rest".
-        shard:
-          - { name: fork, pattern: "^ForkTest " }
-          - { name: vendor, pattern: "^VendorTest " }
-          - { name: rest, pattern: "^(?!ForkTest |VendorTest )" }
+        # by file across parallel jobs. "fork" runs test/e2e/fork*.test.ts,
+        # "vendor" runs test/e2e/vendor*.test.ts, and "rest" runs every other
+        # file there, so a new file lands in "rest".
+        shard: [fork, vendor, rest]
         exclude:
           - { os: macos-latest, user: root }
     steps:
@@ -50,10 +47,10 @@ jobs:
       - name: The compiled binary carries no crash-injection code
         run: bun test/crash-build.ts check dist/patchbook
       # Root ignores file permissions, so a test that needs a refused write must be skipped by permissionTest. One that is not fails the root jobs.
-      # The "rest" shard also runs every test file but e2e from source, then
-      # the e2e describes that skip under PATCHBOOK_CMD. Each unit file gets a
-      # fresh module registry: units.test.ts needs settings.ts loaded under
-      # its own sandbox.
+      # The "rest" shard also runs every test file in test/ but the e2e ones
+      # from source, then the e2e describes that skip under PATCHBOOK_CMD. Each
+      # unit file gets a fresh module registry: units.test.ts needs settings.ts
+      # loaded under its own sandbox.
       - name: Tests as ${{ matrix.user }}
         run: |
           as=()
@@ -61,15 +58,18 @@ jobs:
           "${as[@]}" bash -euxo pipefail -c '
             [ "$([ "$(id -u)" = 0 ] && echo root || echo runner)" = "$1" ]
             if [ "$2" = rest ]; then
-              bun test --isolate $(ls test/*.test.ts | grep -v "/e2e\.test\.ts$")
-              bun test test/e2e.test.ts --test-name-pattern "so only from source"
+              files=($(ls test/e2e/*.test.ts | grep -Ev "/(fork|vendor)[^/]*$"))
+              bun test --isolate test/*.test.ts
+              bun test test/e2e/*.test.ts --test-name-pattern "so only from source"
+            else
+              files=(test/e2e/"$2"*.test.ts)
             fi
-            PATCHBOOK_CMD="$PWD/dist/patchbook" bun test test/e2e.test.ts --test-name-pattern "$3"
-          ' bash "$USER_KIND" "$SHARD" "$PATTERN"
+            [ -e "${files[0]}" ]
+            PATCHBOOK_CMD="$PWD/dist/patchbook" bun test "${files[@]}"
+          ' bash "$USER_KIND" "$SHARD"
         env:
           USER_KIND: ${{ matrix.user }}
-          SHARD: ${{ matrix.shard.name }}
-          PATTERN: ${{ matrix.shard.pattern }}
+          SHARD: ${{ matrix.shard }}
 
   # main's ruleset requires a check named "test (ubuntu-latest)". This job
   # gives that name one result for the whole matrix above.
