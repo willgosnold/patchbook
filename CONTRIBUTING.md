@@ -46,7 +46,7 @@ bun run build
 PATCHBOOK_CMD="$PWD/dist/patchbook" bun test --parallel test/e2e/*.test.ts
 ```
 
-`bun test` runs test files in parallel, one worker process per CPU core. Tests inside one file still run in order.
+`--parallel` runs test files side by side, one worker process per CPU core. Tests inside one file still run in order.
 
 ## Tests
 
