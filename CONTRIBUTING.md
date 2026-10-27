@@ -43,8 +43,10 @@ CI also builds the binary and runs the end-to-end tests against it. Run the same
 
 ```sh
 bun run build
-PATCHBOOK_CMD="$PWD/dist/patchbook" bun test test/e2e/*.test.ts
+PATCHBOOK_CMD="$PWD/dist/patchbook" bun test --parallel test/e2e/*.test.ts
 ```
+
+`--parallel` runs test files side by side, one worker process per CPU core. Tests inside one file still run in order.
 
 ## Tests
 
