@@ -15324,19 +15324,6 @@ exec '${Bun.which("git")}' "$@"
       sh(["git", "init", "-q", "-b", "main", join(repo.path, "lib")], { cwd: repo.path });
       writeFileSync(join(repo.path, "lib/wip.txt"), "uncommitted\n");
     }],
-    ["a git file deeper down", "lib", "lib/sub/.git", (repo) => {
-      mkdirSync(join(repo.path, "lib/sub"), { recursive: true });
-      writeFileSync(join(repo.path, "lib/sub/.git"), gitFile);
-      writeFileSync(join(repo.path, "lib/sub/wip.txt"), "uncommitted\n");
-    }],
-    ["a git dir in capitals", "lib", "lib/.GIT", (repo) => {
-      mkdirSync(join(repo.path, "lib/.GIT"), { recursive: true });
-      writeFileSync(join(repo.path, "lib/.GIT/HEAD"), "ref: refs/heads/main\n");
-    }],
-    ["a git dir HFS reads as git", "lib", "lib/.g\u200cit", (repo) => {
-      mkdirSync(join(repo.path, "lib/.g\u200cit"), { recursive: true });
-      writeFileSync(join(repo.path, "lib/.g\u200cit/HEAD"), "ref: refs/heads/main\n");
-    }],
     ["a linked worktree", "wt", "wt/.git", (repo) => {
       sh(["git", "worktree", "add", "-q", "--detach", join(repo.path, "wt"), "HEAD"], { cwd: repo.path });
       writeFileSync(join(repo.path, "wt/wip2.txt"), "uncommitted\n");

@@ -15,7 +15,7 @@ process.env["XDG_CONFIG_HOME"] = join(sandbox, "config");
 
 const { applyStructure, describe: describeProblem, parseBuildLock } = await import("../src/assemble.ts");
 const { blockHash, blocksOf, blockSpans, checkEntry, formatEntry, nearest, parsePlaceholders, readEntries, Rules } = await import("../src/blocks.ts");
-const { Book, globRe, lockText, parseLock, unsafeVendor } = await import("../src/book.ts");
+const { Book, globRe, lockText, parseLock, refuseNestedGit, unsafeVendor } = await import("../src/book.ts");
 const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
 const { changeParts, intentFromEdits, intentFromParagraph, intentSettings, listDiffs, nameFromEdits, pendingParts, PROVIDERS, writeIntents } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
@@ -2087,5 +2087,27 @@ describe("unsafeVendor", () => {
     ["a name that only starts like git", "lib/.gitx", null],
   ] as const)("a vendored copy at %s", (_what, vendor, why) => {
     expect(unsafeVendor(root, resolve(root, vendor))).toBe(why);
+  });
+});
+
+describe("refuseNestedGit", () => {
+  const rows: [string, (lib: string) => void, string | null][] = [
+    ["a git dir", (lib) => mkdirSync(join(lib, ".git")), "lib/.git"],
+    ["a git file deeper down", (lib) => put(join(lib, "sub/.git"), "gitdir: ../elsewhere\n"), "lib/sub/.git"],
+    ["a git dir in capitals", (lib) => put(join(lib, ".GIT/HEAD"), "ref: refs/heads/main\n"), "lib/.GIT"],
+    ["a git dir HFS reads as git", (lib) => put(join(lib, ".g\u200cit/HEAD"), "ref: refs/heads/main\n"), "lib/.g\u200cit"],
+    ["a git dir NTFS reads as git", (lib) => mkdirSync(join(lib, "a/git~1"), { recursive: true }), "lib/a/git~1"],
+    ["a folder that only starts like git", (lib) => put(join(lib, ".gitx/HEAD"), "ref: refs/heads/main\n"), null],
+    ["plain files", (lib) => put(join(lib, "sub/a.md"), "a\n"), null],
+  ];
+
+  test.each(rows)("a vendor folder that holds %s", (_what, make, found) => {
+    const root = scratch();
+    const lib = join(root, "lib");
+    mkdirSync(lib);
+    make(lib);
+    const check = () => refuseNestedGit(root, "extra", lib);
+    if (found === null) expect(check).not.toThrow();
+    else expect(check).toThrow(`the vendored copy of extra (lib) holds ${found}, a git repo of its own.`);
   });
 });
