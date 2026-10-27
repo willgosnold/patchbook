@@ -2176,3 +2176,31 @@ describe("reservedOutput", () => {
     expect((await fork()).reservedOutput(path)).toBeNull();
   });
 });
+
+describe("an edit whose path leaves the tree", () => {
+  test.each([
+    "add ../outside.txt",
+    "add /outside.txt",
+    "copy app.txt -> ../copied.txt",
+    "copy ../app.txt -> copied.txt",
+    "copy app.txt -> ./.patchbook/config.toml",
+    "add ./.patchbook/new.md",
+    "delete docs//guide.md",
+    "add ..\\outside.txt",
+    "add docs\\new.md",
+    "replace docs\\guide.md",
+    "delete docs\\guide.md",
+    "file docs\\guide.md",
+    "copy docs\\guide.md -> copied.md",
+    "copy app.txt -> docs\\copied.md",
+    "copy app.txt -> .patchbook\\config.toml",
+    "move docs/guide.md -> \\guide.md",
+  ])("is held and refused: %p", (edit) => {
+    const path = put(join(scratch(), "esc", "CHANGE.md"), `# esc\n\nintent: Reach outside.\n\nedits:\n- ${edit}\n`);
+    const refused: [string, string][] = [];
+    const change = parseChange(path, (line, detail) => refused.push([line, detail]));
+    expect(change.edits).toEqual([]);
+    expect(change.held).toEqual([`- ${edit}`]);
+    expect(refused).toEqual([[edit, expect.stringContaining("must be a path inside the tree: not absolute, with no empty, . or .. segment")]]);
+  });
+});

@@ -5904,21 +5904,7 @@ describe("ForkTest", () => {
 
   const escaping = [
     ["add climbing out", "add ../outside.txt"],
-    ["add absolute", "add /outside.txt"],
     ["copy dest climbing out", "copy app.txt -> ../copied.txt"],
-    ["copy source climbing out", "copy ../app.txt -> copied.txt"],
-    ["copy dest ./.patchbook/config.toml", "copy app.txt -> ./.patchbook/config.toml"],
-    ["add ./.patchbook/new.md", "add ./.patchbook/new.md"],
-    ["delete docs//guide.md", "delete docs//guide.md"],
-    ["add climbing out with a backslash", "add ..\\outside.txt"],
-    ["add backslash in a name", "add docs\\new.md"],
-    ["replace backslash", "replace docs\\guide.md"],
-    ["delete backslash", "delete docs\\guide.md"],
-    ["file backslash", "file docs\\guide.md"],
-    ["copy source backslash", "copy docs\\guide.md -> copied.md"],
-    ["copy dest backslash", "copy app.txt -> docs\\copied.md"],
-    ["copy dest .patchbook backslash config.toml", "copy app.txt -> .patchbook\\config.toml"],
-    ["move dest with a leading backslash", "move docs/guide.md -> \\guide.md"],
   ] as const;
   for (const [name, edit] of escaping) {
     forkTest(`${name} is invalid and nothing is read or written outside`, (t) => {
