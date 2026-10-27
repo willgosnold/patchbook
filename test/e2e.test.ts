@@ -5771,26 +5771,20 @@ describe("ForkTest", () => {
     }
   }
 
-  for (const [what, path, test] of [
-    [".PATCHBOOK", ".PATCHBOOK/x.md", forkTestOnCaseSensitiveFs],
-    [".patchbook.", ".patchbook./x.md", forkTest],
-    [".patchbook and a space", ".patchbook /x.md", forkTest],
-  ] as const) {
-    test(`hook refuses a staged file under ${what} before recording it`, (t) => {
-      const place = ".patchbook";
-      t.fork.write(path, "ours\n");
-      sh(["git", "add", "--", path], { cwd: t.fork.path });
-      const files = tree(t.fork.path);
-      const state = gitState(t);
-      const refused = intoKeptCommit(t, "--allow-empty");
-      expect(refused.code).toBe(1);
-      expect(refused.stderr).toContain(`patchbook: refusing this commit: ${path} is new, but a change can't write into ${place}.`);
-      expect(refused.stderr).toContain(`Move ${path} out of there, or skip the hook once with PATCHBOOK_HOOK=0.`);
-      expect(tree(t.fork.path)).toEqual(files);
-      expect(gitState(t)).toBe(state);
-      expect(existsSync(join(t.fork.path, ".patchbook/changes"))).toBe(false);
-    });
-  }
+  forkTest("hook refuses a staged file under .patchbook. before recording it", (t) => {
+    const path = ".patchbook./x.md";
+    t.fork.write(path, "ours\n");
+    sh(["git", "add", "--", path], { cwd: t.fork.path });
+    const files = tree(t.fork.path);
+    const state = gitState(t);
+    const refused = intoKeptCommit(t, "--allow-empty");
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain(`patchbook: refusing this commit: ${path} is new, but a change can't write into .patchbook.`);
+    expect(refused.stderr).toContain(`Move ${path} out of there, or skip the hook once with PATCHBOOK_HOOK=0.`);
+    expect(tree(t.fork.path)).toEqual(files);
+    expect(gitState(t)).toBe(state);
+    expect(existsSync(join(t.fork.path, ".patchbook/changes"))).toBe(false);
+  });
 
   forkTestOnCaseSensitiveFs("hook leaves an untracked file under .GIT out of the commit", (t) => {
     t.fork.write("a/.GIT/y", "ours\n");

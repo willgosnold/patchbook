@@ -2157,3 +2157,22 @@ describe("refuseFoldedUpstream", () => {
     expect(() => refuseFoldedUpstream(["app.txt", path])).not.toThrow();
   });
 });
+
+describe("reservedOutput", () => {
+  const fork = () => Book.fromText(scratch(), `[[upstream]]\nremote = "https://example.com/x.git"\nmount = ""\n`);
+
+  test.each([
+    [".PATCHBOOK/x.md", ".patchbook"],
+    [".patchbook./x.md", ".patchbook"],
+    [".patchbook /x.md", ".patchbook"],
+    [".patchbook:x/y.md", ".patchbook"],
+    ["a/.git./x.md", ".git"],
+    ["a/.GIT/x.md", ".git"],
+  ])("refuses a change that writes %p, which is in %p", async (path, place) => {
+    expect((await fork()).reservedOutput(path)).toEqual({ place, refuse: true });
+  });
+
+  test.each(["app.txt", ".patchbookx/x.md", "a/.PATCHBOOK/x.md", "a/.gitx/x.md"])("lets a change write %p", async (path) => {
+    expect((await fork()).reservedOutput(path)).toBeNull();
+  });
+});
