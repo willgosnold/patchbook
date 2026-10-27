@@ -1,13 +1,14 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import type { LastSync, Problem, SyncReport } from "../src/api.ts";
 import type { Assembly } from "../src/assemble.ts";
 import type { Reserved } from "../src/book.ts";
 import type { Edit, Intent } from "../src/changes.ts";
 import type { File, Seen } from "../src/lib/fs.ts";
 import type { Edited, Snapshot } from "../src/record.ts";
+import { CALLS, lefthookCommand, lefthookJob, lefthookJsonCommand, lefthookTomlCommand, PRE_COMMIT_RUNS_ALWAYS, preCommitHook, quoted } from "./helpers";
 
 const sandbox = mkdtempSync(join(tmpdir(), "units"));
 const ambientConfigHome = process.env["XDG_CONFIG_HOME"];
@@ -15,8 +16,9 @@ process.env["XDG_CONFIG_HOME"] = join(sandbox, "config");
 
 const { applyStructure, describe: describeProblem, parseBuildLock } = await import("../src/assemble.ts");
 const { blockHash, blocksOf, blockSpans, checkEntry, formatEntry, nearest, parsePlaceholders, readEntries, Rules } = await import("../src/blocks.ts");
-const { Book, globRe, lockText, parseLock } = await import("../src/book.ts");
+const { Book, globRe, lockText, parseLock, refuseFoldedUpstream, refuseNestedGit, unsafeVendor } = await import("../src/book.ts");
 const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
+const { LEFTHOOK, PRE_COMMIT, PRESENT } = await import("../src/hookconfig.ts");
 const { changeParts, intentFromEdits, intentFromParagraph, intentSettings, listDiffs, nameFromEdits, pendingParts, PROVIDERS, writeIntents } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
 const { meantMode, outputMode, recordedModes } = await import("../src/lib/fs.ts");
@@ -2061,5 +2063,209 @@ describe("classify", () => {
     const w = staging({ "skills/a/SKILL.md": A, "skills/c/SKILL.md": A }, { "a/SKILL.md": null, "c/SKILL.md": null, "b/SKILL.md": A });
     expect(classify(w, ["a/SKILL.md", "b/SKILL.md", "c/SKILL.md"]))
       .toMatchObject([{ kind: "delete-upstream", path: "a/SKILL.md" }, { kind: "add", path: "b/SKILL.md" }, { kind: "delete-upstream", path: "c/SKILL.md" }]);
+  });
+});
+
+describe("unsafeVendor", () => {
+  const root = scratch();
+
+  test.each([
+    ["the repo root", ".", "is the repo root"],
+    ["the folder above the repo", "..", "is outside the repo"],
+    ["a sibling of the repo", "../sibling", "is outside the repo"],
+    ["an absolute path outside the repo", "/elsewhere/vendor", "is outside the repo"],
+    ["the patchbook", ".patchbook", "is inside .patchbook"],
+    ["a folder in the patchbook", ".patchbook/vendor", "is inside .patchbook"],
+    ["the patchbook in title case", ".Patchbook", "is inside .patchbook"],
+    ["the patchbook in capitals", ".PATCHBOOK", "is inside .patchbook"],
+    ["a folder in the patchbook in capitals", ".PATCHBOOK/vendor", "is inside .patchbook"],
+    ["the git dir", ".git", "is inside .git"],
+    ["a folder in the git dir", "lib/.GIT/vendor", "is inside .git"],
+    ["a name HFS reads as git", ".g\u200cit", "is inside .git"],
+    ["the NTFS short name of git", "git~1", "is inside .git"],
+    ["a name NTFS reads as git", ".git.", "is inside .git"],
+    ["a folder in the repo", "vendor/extra", null],
+    ["a name that only starts like the patchbook", ".patchbookx", null],
+    ["a name that only starts like git", "lib/.gitx", null],
+  ] as const)("a vendored copy at %s", (_what, vendor, why) => {
+    expect(unsafeVendor(root, resolve(root, vendor))).toBe(why);
+  });
+});
+
+describe("refuseNestedGit", () => {
+  const rows: [string, (lib: string) => void, string | null][] = [
+    ["a git dir", (lib) => mkdirSync(join(lib, ".git")), "lib/.git"],
+    ["a git file deeper down", (lib) => put(join(lib, "sub/.git"), "gitdir: ../elsewhere\n"), "lib/sub/.git"],
+    ["a git dir in capitals", (lib) => put(join(lib, ".GIT/HEAD"), "ref: refs/heads/main\n"), "lib/.GIT"],
+    ["a git dir HFS reads as git", (lib) => put(join(lib, ".g\u200cit/HEAD"), "ref: refs/heads/main\n"), "lib/.g\u200cit"],
+    ["a git dir NTFS reads as git", (lib) => mkdirSync(join(lib, "a/git~1"), { recursive: true }), "lib/a/git~1"],
+    ["a folder that only starts like git", (lib) => put(join(lib, ".gitx/HEAD"), "ref: refs/heads/main\n"), null],
+    ["plain files", (lib) => put(join(lib, "sub/a.md"), "a\n"), null],
+  ];
+
+  test.each(rows)("a vendor folder that holds %s", (_what, make, found) => {
+    const root = scratch();
+    const lib = join(root, "lib");
+    mkdirSync(lib);
+    make(lib);
+    const check = () => refuseNestedGit(root, "extra", lib);
+    if (found === null) expect(check).not.toThrow();
+    else expect(check).toThrow(`the vendored copy of extra (lib) holds ${found}, a git repo of its own.`);
+  });
+});
+
+describe("an output git reads as .git", () => {
+  const upstream = (name: string, mount: string) => `[[upstream]]\nname = "${name}"\nremote = "https://example.com/${name}.git"\nmount = ${JSON.stringify(mount)}\n`;
+  const folder = (to: string, more = "") => Book.fromText(scratch(), `layout = "folder"\n[output]\nto = ${JSON.stringify(to)}\n${upstream("up", "")}${more}`);
+  const fork = (more: string) => Book.fromText(scratch(), upstream("up", "") + more);
+
+  test.each([
+    [".git as a folder", "skills/.git"],
+    [".git above a folder", "a/b/.git/c"],
+    [".GIT", ".GIT"],
+    [".Git above a folder", ".Git/x"],
+    [".gIT in a folder", "out/.gIT/y"],
+    [".git.", ".git."],
+    [".git and a space", ".git "],
+    ["GIT~1", "GIT~1"],
+    [".git:x", "out/.git:x"],
+    ["a backslash before .git", "out/a\\.git"],
+    ["a byte order mark before .GIT", "out/\ufeff.GIT/y"],
+    [".git then the noncharacter U+FFFE", ".git\ufffe"],
+    [".GIT with a zero-width non-joiner and U+FFFF", "out/.GIT\u200c\uffffx/y"],
+  ])("refuses [output] to %s", async (_what, to) => {
+    await expect(folder(to)).rejects.toThrow("inside .git");
+  });
+
+  test.each([".gitx", "git~2", ".git.x", "a.git", ".git\u200c.", ".git\ufffd"])("takes [output] to %p", async (to) => {
+    await expect(folder(to)).resolves.toBeInstanceOf(Book);
+  });
+
+  test.each([".git.", "a/.git ", "GIT~1/x", "a/.g\u200cit", ".GIT/x", "a/.Git", "./.gIt/x"])("refuses a second upstream mounted at %p in either layout", async (mount) => {
+    await expect(fork(upstream("m", mount))).rejects.toThrow("inside .git");
+    await expect(folder("out", upstream("m", mount))).rejects.toThrow("inside .git");
+  });
+});
+
+describe("refuseFoldedUpstream", () => {
+  test.each([".PATCHBOOK/config.toml", ".Patchbook/x", ".patchbook./z.txt", ".patchbook /w.txt", ".PATCHBOOK. . /y", ".patchbook:x/y", ".patchbook\\x"])(
+    "refuses an upstream that holds %p",
+    (path) => {
+      expect(() => refuseFoldedUpstream(["app.txt", path])).toThrow(`upstream has ${path}, which is .patchbook on macOS and Windows.`);
+    },
+  );
+
+  test.each([".patchbook/config.toml", ".patchbookx/a", ".patchbook.x/a", "x/.PATCHBOOK/a"])("takes an upstream that holds %p", (path) => {
+    expect(() => refuseFoldedUpstream(["app.txt", path])).not.toThrow();
+  });
+});
+
+describe("reservedOutput", () => {
+  const fork = () => Book.fromText(scratch(), `[[upstream]]\nremote = "https://example.com/x.git"\nmount = ""\n`);
+
+  test.each([
+    [".PATCHBOOK/x.md", ".patchbook"],
+    [".patchbook./x.md", ".patchbook"],
+    [".patchbook /x.md", ".patchbook"],
+    [".patchbook:x/y.md", ".patchbook"],
+    ["a/.git./x.md", ".git"],
+    ["a/.GIT/x.md", ".git"],
+  ])("refuses a change that writes %p, which is in %p", async (path, place) => {
+    expect((await fork()).reservedOutput(path)).toEqual({ place, refuse: true });
+  });
+
+  test.each(["app.txt", ".patchbookx/x.md", "a/.PATCHBOOK/x.md", "a/.gitx/x.md"])("lets a change write %p", async (path) => {
+    expect((await fork()).reservedOutput(path)).toBeNull();
+  });
+});
+
+describe("an edit whose path leaves the tree", () => {
+  test.each([
+    "add ../outside.txt",
+    "add /outside.txt",
+    "copy app.txt -> ../copied.txt",
+    "copy ../app.txt -> copied.txt",
+    "copy app.txt -> ./.patchbook/config.toml",
+    "add ./.patchbook/new.md",
+    "delete docs//guide.md",
+    "add ..\\outside.txt",
+    "add docs\\new.md",
+    "replace docs\\guide.md",
+    "delete docs\\guide.md",
+    "file docs\\guide.md",
+    "copy docs\\guide.md -> copied.md",
+    "copy app.txt -> docs\\copied.md",
+    "copy app.txt -> .patchbook\\config.toml",
+    "move docs/guide.md -> \\guide.md",
+  ])("is held and refused: %p", (edit) => {
+    const path = put(join(scratch(), "esc", "CHANGE.md"), `# esc\n\nintent: Reach outside.\n\nedits:\n- ${edit}\n`);
+    const refused: [string, string][] = [];
+    const change = parseChange(path, (line, detail) => refused.push([line, detail]));
+    expect(change.edits).toEqual([]);
+    expect(change.held).toEqual([`- ${edit}`]);
+    expect(refused).toEqual([[edit, expect.stringContaining("must be a path inside the tree: not absolute, with no empty, . or .. segment")]]);
+  });
+});
+
+describe("a hook manager config's pre-commit entries", () => {
+  const entry = { event: "pre-commit", run: 'if [ "$PATCHBOOK_HOOK" != 0 ]; then\n  patchbook hook run || exit 1\nfi\n' };
+  const decide = (file: string, config: string): string => {
+    const placed = (file === ".pre-commit-config.yaml" ? PRE_COMMIT : LEFTHOOK)[extname(file).slice(1)]!(config, entry, file);
+    return placed === PRESENT ? "present" : "location" in placed ? "add" : placed.why;
+  };
+
+  test.each([
+    ["a lefthook YAML command", "lefthook.yml", lefthookCommand("pre-commit", "record", CALLS["pre-commit"])],
+    ["a lefthook YAML job", "lefthook.yml", lefthookJob("pre-commit", "record", CALLS["pre-commit"])],
+    ["a lefthook JSON command", "lefthook.json", lefthookJsonCommand("pre-commit", "record", CALLS["pre-commit"])],
+    ["a lefthook TOML command", "lefthook.toml", lefthookTomlCommand("pre-commit", "record", CALLS["pre-commit"])],
+    ["a local pre-commit hook", ".pre-commit-config.yaml", preCommitHook("record", "patchbook hook run")],
+    ["a local pre-commit hook with no stages under default_stages that hold the commit", ".pre-commit-config.yaml", "default_stages: [pre-commit]\n" + preCommitHook("record", "patchbook hook run")],
+    ["a local pre-commit hook with no stages under default_stages that hold the old commit name", ".pre-commit-config.yaml", "default_stages: [commit, push]\n" + preCommitHook("record", "patchbook hook run")],
+    ["a local pre-commit hook whose own stages beat default_stages", ".pre-commit-config.yaml", "default_stages: [pre-push]\n" + preCommitHook("record", "patchbook hook run", PRE_COMMIT_RUNS_ALWAYS + "        stages: [pre-commit]\n")],
+    ["a local pre-commit hook with empty args", ".pre-commit-config.yaml", preCommitHook("record", "patchbook hook run", PRE_COMMIT_RUNS_ALWAYS + "        args: []\n")],
+    ["a local pre-commit hook with empty stages that default_stages fill with the commit", ".pre-commit-config.yaml", "default_stages: [pre-commit]\n" + preCommitHook("record", "patchbook hook run", PRE_COMMIT_RUNS_ALWAYS + "        stages: []\n")],
+  ])("%s with another name that runs patchbook counts as patchbook's hook", (_what, file, config) => {
+    expect(decide(file, config)).toBe("present");
+  });
+
+  const mentions = [
+    `echo "patchbook hook run"`,
+    `printf '%s\\n' 'patchbook hook run'`,
+    `echo mine # patchbook hook run`,
+    `echo mine\\n# patchbook hook run`,
+    `my-patchbook hook run`,
+    `patchbook hook run-all`,
+    `if false; then patchbook hook run; fi`,
+    `./node_modules/.bin/patchbook hook run`,
+  ];
+  const unquoted = (run: string) => quoted(run).slice(1, -1);
+  const mentioning: [string, string, (run: string) => string][] = [
+    ["a lefthook YAML command", "lefthook.yml", (run) => lefthookCommand("pre-commit", "diagnostic", quoted(run))],
+    ["a lefthook YAML job", "lefthook.yml", (run) => lefthookJob("pre-commit", "diagnostic", quoted(run))],
+    ["a lefthook JSON command", "lefthook.json", (run) => lefthookJsonCommand("pre-commit", "diagnostic", unquoted(run))],
+    ["a lefthook JSON job", "lefthook.json", (run) => `{ "pre-commit": { "jobs": [{ "name": "diagnostic", "run": "${unquoted(run)}" }] } }\n`],
+    ["a lefthook TOML command", "lefthook.toml", (run) => lefthookTomlCommand("pre-commit", "diagnostic", unquoted(run))],
+    ["a local pre-commit hook", ".pre-commit-config.yaml", (run) => preCommitHook("diagnostic", quoted(run))],
+  ];
+
+  test.each(mentioning.flatMap(([what, file, build]) => mentions.map((run) => [what, run, file, build(run)] as const)))(
+    "%s that only mentions the call in %p still gets patchbook's lines",
+    (_what, _run, file, config) => {
+      expect(decide(file, config)).toBe("add");
+    },
+  );
+
+  const generated = lefthookCommand("pre-commit", "patchbook", CALLS["pre-commit"]);
+  test.each([
+    ["a skipped lefthook command", "command", "lefthook.yml", generated.replace("      run:", "      skip: true\n      run:")],
+    ["a lefthook command limited with only", "command", "lefthook.yml", generated.replace("      run:", "      only: [merge]\n      run:")],
+    ["a lefthook command limited with glob", "command", "lefthook.yml", generated.replace("      run:", "      glob: '*.md'\n      run:")],
+    ["a lefthook command run from a subfolder", "command", "lefthook.yml", generated.replace("      run:", "      root: sub/\n      run:")],
+    ["a skipped lefthook job", "job", "lefthook.yml", lefthookJob("pre-commit", "patchbook", CALLS["pre-commit"]).replace("      run:", "      skip: true\n      run:")],
+    ["a skipped lefthook JSON command", "command", "lefthook.json", '{ "pre-commit": { "commands": { "patchbook": { "skip": true, "run": "patchbook hook run || exit 1" } } } }\n'],
+    ["a lefthook TOML command limited with glob", "command", "lefthook.toml", `[pre-commit.commands.patchbook]\nglob = "*.md"\nrun = "patchbook hook run"\n`],
+  ])("%s is not taken for patchbook's hook", (_what, kind, file, config) => {
+    expect(decide(file, config)).toBe(`its pre-commit already has a ${kind} named patchbook that doesn't always call \`patchbook hook run\``);
   });
 });

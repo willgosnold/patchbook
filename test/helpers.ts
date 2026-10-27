@@ -211,3 +211,12 @@ export function permissionTest<C extends Case>(name: string, body: (t: C) => voi
     }
   }, TIMEOUT);
 }
+
+export const CALLS = { "pre-commit": "patchbook hook run || exit 1", "post-merge": "patchbook hook build" } as const;
+export const quoted = (run: string) => JSON.stringify(run);
+export const lefthookCommand = (event: string, name: string, run: string) => `${event}:\n  commands:\n    ${name}:\n      run: ${run}\n`;
+export const lefthookJob = (event: string, name: string, run: string) => `${event}:\n  jobs:\n    - name: ${name}\n      run: ${run}\n`;
+export const lefthookJsonCommand = (event: string, name: string, run: string) => `{ "${event}": { "commands": { "${name}": { "run": "${run}" } } } }\n`;
+export const lefthookTomlCommand = (event: string, name: string, run: string) => `[${event}.commands.${name}]\nrun = "${run}"\n`;
+export const PRE_COMMIT_RUNS_ALWAYS = "        pass_filenames: false\n        always_run: true\n";
+export const preCommitHook = (id: string, entry: string, extra = PRE_COMMIT_RUNS_ALWAYS, repo = "local") => `repos:\n  - repo: ${repo}\n    hooks:\n      - id: ${id}\n        name: ${id}\n        entry: ${entry}\n        language: system\n${extra}`;
