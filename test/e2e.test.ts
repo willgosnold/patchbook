@@ -14830,7 +14830,7 @@ exec '${Bun.which("git")}' "$@"
       for (const cwd of [folder.path, join(t.tmp, "fork")]) {
         const config = join(cwd, ".patchbook/config.toml");
         const before = { config: read(config), tree: tree(cwd) };
-        for (const mount of [".git.", "a/.git ", "GIT~1/x", "a/.g\u200cit"]) {
+        for (const mount of [".git.", "a/.git ", "GIT~1/x", "a/.g\u200cit", ".GIT/x", "a/.Git", "./.gIt/x"]) {
           const tracked = t.pb(["track", "m", more.path, "--mount", mount], { cwd, code: 1 });
           expect(tracked.stderr).toContain("inside .git");
           expect(read(config)).toBe(before.config);
@@ -14868,35 +14868,6 @@ exec '${Bun.which("git")}' "$@"
         expect(tracked.stderr).toContain("inside .patchbook");
         expect(read(config)).toBe(before.config);
         expect(tree(fork)).toEqual(before.tree);
-      }
-    } finally {
-      t.cleanup();
-    }
-  }, TIMEOUT);
-
-  test("track rejects a mount with a git segment in another case in both layouts", () => {
-    const t = new Case();
-    try {
-      const up = new Repo(join(t.tmp, "upstream"));
-      up.write("a.md", "a\n");
-      up.commit("start");
-      const more = new Repo(join(t.tmp, "more"));
-      more.write("d/m.md", "m\n");
-      more.commit("start");
-      const folder = new Repo(join(t.tmp, "adapted"));
-      folder.write("README.md", "mine\n");
-      folder.commit("start");
-      t.pb(["init", "--upstream", up.path, "--output-to", "out"], { cwd: folder.path });
-      t.pb(["clone", up.path, "fork"], { cwd: t.tmp });
-      for (const cwd of [folder.path, join(t.tmp, "fork")]) {
-        const config = join(cwd, ".patchbook/config.toml");
-        const before = { config: read(config), tree: tree(cwd) };
-        for (const mount of [".GIT/x", "a/.Git", "./.gIt/x"]) {
-          const tracked = t.pb(["track", "m", more.path, "--mount", mount], { cwd, code: 1 });
-          expect(tracked.stderr).toContain("inside .git");
-          expect(read(config)).toBe(before.config);
-          expect(tree(cwd)).toEqual(before.tree);
-        }
       }
     } finally {
       t.cleanup();
