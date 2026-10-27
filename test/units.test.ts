@@ -2111,3 +2111,30 @@ describe("refuseNestedGit", () => {
     else expect(check).toThrow(`the vendored copy of extra (lib) holds ${found}, a git repo of its own.`);
   });
 });
+
+describe("an output git reads as .git", () => {
+  const upstream = (name: string, mount: string) => `[[upstream]]\nname = "${name}"\nremote = "https://example.com/${name}.git"\nmount = ${JSON.stringify(mount)}\n`;
+  const folder = (to: string) => Book.fromText(scratch(), `layout = "folder"\n[output]\nto = ${JSON.stringify(to)}\n${upstream("up", "")}`);
+
+  test.each([
+    [".git as a folder", "skills/.git"],
+    [".git above a folder", "a/b/.git/c"],
+    [".GIT", ".GIT"],
+    [".Git above a folder", ".Git/x"],
+    [".gIT in a folder", "out/.gIT/y"],
+    [".git.", ".git."],
+    [".git and a space", ".git "],
+    ["GIT~1", "GIT~1"],
+    [".git:x", "out/.git:x"],
+    ["a backslash before .git", "out/a\\.git"],
+    ["a byte order mark before .GIT", "out/\ufeff.GIT/y"],
+    [".git then the noncharacter U+FFFE", ".git\ufffe"],
+    [".GIT with a zero-width non-joiner and U+FFFF", "out/.GIT\u200c\uffffx/y"],
+  ])("refuses [output] to %s", async (_what, to) => {
+    await expect(folder(to)).rejects.toThrow("inside .git");
+  });
+
+  test.each([".gitx", "git~2", ".git.x", "a.git", ".git\u200c.", ".git\ufffd"])("takes [output] to %p", async (to) => {
+    await expect(folder(to)).resolves.toBeInstanceOf(Book);
+  });
+});

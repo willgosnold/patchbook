@@ -14782,18 +14782,7 @@ exec '${Bun.which("git")}' "$@"
 
   const gitReadsAsDotGit = [
     [".git as a folder", "skills/.git"],
-    [".git above a folder", "a/b/.git/c"],
-    [".GIT", ".GIT"],
-    [".Git above a folder", ".Git/x"],
-    [".gIT in a folder", "out/.gIT/y"],
     [".git.", ".git."],
-    [".git and a space", ".git "],
-    ["GIT~1", "GIT~1"],
-    [".git:x", "out/.git:x"],
-    ["a backslash before .git", "out/a\\.git"],
-    ["a byte order mark before .GIT", "out/\ufeff.GIT/y"],
-    [".git then the noncharacter U+FFFE", ".git\ufffe"],
-    [".GIT with a zero-width non-joiner and U+FFFF", "out/.GIT\u200c\uffffx/y"],
   ] as const;
 
   for (const [what, to] of gitReadsAsDotGit) {
