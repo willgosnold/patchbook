@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { LastSync, Problem, SyncReport } from "../src/api.ts";
 import type { Assembly } from "../src/assemble.ts";
 import type { Reserved } from "../src/book.ts";
@@ -15,7 +15,7 @@ process.env["XDG_CONFIG_HOME"] = join(sandbox, "config");
 
 const { applyStructure, describe: describeProblem, parseBuildLock } = await import("../src/assemble.ts");
 const { blockHash, blocksOf, blockSpans, checkEntry, formatEntry, nearest, parsePlaceholders, readEntries, Rules } = await import("../src/blocks.ts");
-const { Book, globRe, lockText, parseLock } = await import("../src/book.ts");
+const { Book, globRe, lockText, parseLock, unsafeVendor } = await import("../src/book.ts");
 const { Change, editText, formatChange, parseChange } = await import("../src/changes.ts");
 const { changeParts, intentFromEdits, intentFromParagraph, intentSettings, listDiffs, nameFromEdits, pendingParts, PROVIDERS, writeIntents } = await import("../src/intent.ts");
 const { Fail } = await import("../src/lib/fail.ts");
@@ -2061,5 +2061,31 @@ describe("classify", () => {
     const w = staging({ "skills/a/SKILL.md": A, "skills/c/SKILL.md": A }, { "a/SKILL.md": null, "c/SKILL.md": null, "b/SKILL.md": A });
     expect(classify(w, ["a/SKILL.md", "b/SKILL.md", "c/SKILL.md"]))
       .toMatchObject([{ kind: "delete-upstream", path: "a/SKILL.md" }, { kind: "add", path: "b/SKILL.md" }, { kind: "delete-upstream", path: "c/SKILL.md" }]);
+  });
+});
+
+describe("unsafeVendor", () => {
+  const root = scratch();
+
+  test.each([
+    ["the repo root", ".", "is the repo root"],
+    ["the folder above the repo", "..", "is outside the repo"],
+    ["a sibling of the repo", "../sibling", "is outside the repo"],
+    ["an absolute path outside the repo", "/elsewhere/vendor", "is outside the repo"],
+    ["the patchbook", ".patchbook", "is inside .patchbook"],
+    ["a folder in the patchbook", ".patchbook/vendor", "is inside .patchbook"],
+    ["the patchbook in title case", ".Patchbook", "is inside .patchbook"],
+    ["the patchbook in capitals", ".PATCHBOOK", "is inside .patchbook"],
+    ["a folder in the patchbook in capitals", ".PATCHBOOK/vendor", "is inside .patchbook"],
+    ["the git dir", ".git", "is inside .git"],
+    ["a folder in the git dir", "lib/.GIT/vendor", "is inside .git"],
+    ["a name HFS reads as git", ".g\u200cit", "is inside .git"],
+    ["the NTFS short name of git", "git~1", "is inside .git"],
+    ["a name NTFS reads as git", ".git.", "is inside .git"],
+    ["a folder in the repo", "vendor/extra", null],
+    ["a name that only starts like the patchbook", ".patchbookx", null],
+    ["a name that only starts like git", "lib/.gitx", null],
+  ] as const)("a vendored copy at %s", (_what, vendor, why) => {
+    expect(unsafeVendor(root, resolve(root, vendor))).toBe(why);
   });
 });
