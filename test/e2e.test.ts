@@ -2747,26 +2747,6 @@ for (const [how, repoName, remote, given] of [
   }, TIMEOUT);
 }
 
-test("a fork init refuses an upstream remote that serves a different tip than the given URL", () => {
-  const t = new Case();
-  try {
-    const up = new Repo(join(t.tmp, "upstream"));
-    up.write("app.txt", "one\n");
-    const base = up.commit("start");
-    const fork = forkOf(t, up);
-    sh(["git", "remote", "add", "upstream", up.path], { cwd: fork.path });
-    sh(["git", "clone", "-q", up.path, "moved"], { cwd: t.tmp });
-    const moved = new Repo(join(t.tmp, "moved"));
-    moved.write("app.txt", "two\n");
-    const head = moved.commit("two");
-    const refused = t.pb(["init", "--upstream", moved.path], { cwd: fork.path, code: 1 });
-    expect(refused.stderr).toContain("the upstream remote and --upstream serve different commits for main");
-    expect(refused.stderr).toContain(`main is ${base.slice(0, 7)} on the remote and ${head.slice(0, 7)} on --upstream`);
-  } finally {
-    t.cleanup();
-  }
-}, TIMEOUT);
-
 for (const [which, how] of [["remote", "the upstream remote"], ["given", "the given url"]] as const) {
   test(`a fork init names ${how} when git cannot read it`, () => {
     const t = new Case();
@@ -2923,21 +2903,22 @@ test("a fork init names the repo it follows without the password of its upstream
   }
 }, TIMEOUT);
 
-for (const [how, branch] of [["a stale mirror", "main"], ["a branch only the given url has", "feature"]] as const) {
-  test(`a fork init says the remote serves different commits for ${how}`, () => {
+for (const [how, branch, onRemote] of [["a stale mirror", "main", true], ["a branch only the given url has", "feature", false]] as const) {
+  test(`a fork init says the remote serves different commits for ${how} and names the tip on each side`, () => {
     const t = new Case();
     try {
       const up = new Repo(join(t.tmp, "upstream"));
       up.write("app.txt", "one\n");
-      up.commit("start");
+      const base = up.commit("start");
       const fork = forkOf(t, up);
       sh(["git", "clone", "-q", up.path, "mirror"], { cwd: t.tmp });
       sh(["git", "remote", "add", "upstream", join(t.tmp, "mirror")], { cwd: fork.path });
       up.write("app.txt", "two\n");
-      up.commit("two");
+      const head = up.commit("two");
       sh(["git", "branch", "feature"], { cwd: up.path });
       const refused = t.pb(["init", "--upstream", up.path, "--branch", branch], { cwd: fork.path, code: 1 });
       expect(refused.stderr).toContain(`the upstream remote and --upstream serve different commits for ${branch}`);
+      expect(refused.stderr).toContain(`${branch} is ${onRemote ? base.slice(0, 7) : "missing"} on the remote and ${head.slice(0, 7)} on --upstream`);
       expect(refused.stderr).not.toContain("different repos");
       expect(refused.stderr).toContain(`git config --replace-all remote.upstream.url ${up.path}`);
     } finally {
@@ -8854,7 +8835,7 @@ describe("ForkTest", () => {
     expect(porcelain(t)).toBe(" M app.txt\n");
   });
 
-  forkTest("commit takes a mode change to a file the fork added", (t) => {
+  forkTest("commit takes a mode change to a file the fork added and records the mode the index already has", (t) => {
     t.fork.write("mine.sh", "echo mine\n", 0o755);
     sh(["git", "add", "mine.sh"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "add mine.sh"]);
@@ -8862,15 +8843,6 @@ describe("ForkTest", () => {
     sh(["git", "add", "mine.sh"], { cwd: t.fork.path });
     hookCommit(t, ["-m", "mine.sh is not a program"]);
     expect(headMode(t, "mine.sh")).toBe("100644");
-  });
-
-  forkTest("commit records a mode the index already has", (t) => {
-    t.fork.write("mine.sh", "echo mine\n", 0o755);
-    sh(["git", "add", "mine.sh"], { cwd: t.fork.path });
-    hookCommit(t, ["-m", "add mine.sh"]);
-    chmodSync(join(t.fork.path, "mine.sh"), 0o644);
-    sh(["git", "add", "mine.sh"], { cwd: t.fork.path });
-    hookCommit(t, ["-m", "mine.sh is not a program"]);
     expect(isExecutable(join(t.fork.path, ".patchbook/changes/shout/ours/mine.sh.pb"))).toBe(false);
     expect(isExecutable(join(t.fork.path, "mine.sh"))).toBe(false);
     expect(porcelain(t)).toBe("");
@@ -12042,7 +12014,7 @@ describe("VendorTest", () => {
     });
   }
 
-  folderTest("a commit never records a tracked ignored file inside the vendored copy", (t) => {
+  folderTest("a commit never records a tracked ignored file inside the vendored copy and says it replaced it", (t) => {
     t.repo.write(".gitignore", "*.log\n");
     trackExtra(t, "vendor/extra");
     t.repo.write("vendor/extra/x.log", "log\n");
@@ -12052,7 +12024,9 @@ describe("VendorTest", () => {
     t.repo.write("vendor/extra/x.log", "log, edited\n");
     t.repo.write("note.txt", "a note\n");
     gitIn(t, ["add", "note.txt"]);
-    expect(hookedCommit(t, ["-qm", "note"]).code).toBe(0);
+    const commit = hookedCommit(t, ["-qm", "note"]);
+    expect(commit.code).toBe(0);
+    expect(commit.stderr).toContain(replacedLine);
     expect(inHead(t, "vendor/extra")).toEqual(pinnedFiles("vendor/extra"));
     expect(gitIn(t, ["status", "--short", "vendor"]).trim()).toBe("");
   });
@@ -12190,21 +12164,6 @@ describe("VendorTest", () => {
     expect(commit.stderr).toContain("nothing would be left to commit");
     expect(gitIn(t, ["rev-parse", "HEAD"])).toBe(head);
     expect(gitIn(t, ["diff", "--cached", "--name-only"]).trim()).toBe("vendor/extra/a.md");
-  });
-
-  folderTest("a commit that replaces staged changes in the copy says so", (t) => {
-    t.repo.write(".gitignore", "*.log\n");
-    trackExtra(t, "vendor/extra");
-    t.repo.write("vendor/extra/x.log", "log\n");
-    gitIn(t, ["add", "-A"]);
-    gitIn(t, ["add", "-f", "vendor/extra/x.log"]);
-    gitIn(t, ["commit", "-qm", "setup"]);
-    t.repo.write("vendor/extra/x.log", "log, edited\n");
-    t.repo.write("note.txt", "a note\n");
-    gitIn(t, ["add", "note.txt"]);
-    const commit = hookedCommit(t, ["-qm", "note"]);
-    expect(commit.code).toBe(0);
-    expect(commit.stderr).toContain(replacedLine);
   });
 
   const stageLock = (t: FolderCase, edit: (text: string) => string): void => {
