@@ -27,10 +27,6 @@ jobs:
         # The tests run once as the runner user and once as root. Root runs
         # on Ubuntu only, for the same reason.
         user: [runner, root]
-        # The end-to-end tests are nearly all the run time, so they are split
-        # by file across parallel jobs. "fork" runs test/e2e/fork*.test.ts,
-        # "vendor" runs test/e2e/vendor*.test.ts, and "rest" runs every other
-        # file there, so a new file lands in "rest".
         shard: [fork, vendor, rest]
         exclude:
           - { os: macos-latest, user: root }
@@ -47,10 +43,10 @@ jobs:
       - name: The compiled binary carries no crash-injection code
         run: bun test/crash-build.ts check dist/patchbook
       # Root ignores file permissions, so a test that needs a refused write must be skipped by permissionTest. One that is not fails the root jobs.
-      # The "rest" shard also runs every test file in test/ but the e2e ones
-      # from source, then the e2e describes that skip under PATCHBOOK_CMD. Each
-      # unit file gets a fresh module registry: units.test.ts needs settings.ts
-      # loaded under its own sandbox.
+      # The "rest" shard also runs every test file but e2e from source, then
+      # the e2e describes that skip under PATCHBOOK_CMD. Each unit file gets a
+      # fresh module registry: units.test.ts needs settings.ts loaded under
+      # its own sandbox.
       - name: Tests as ${{ matrix.user }}
         run: |
           as=()
