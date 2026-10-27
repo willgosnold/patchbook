@@ -55,13 +55,13 @@ jobs:
             [ "$([ "$(id -u)" = 0 ] && echo root || echo runner)" = "$1" ]
             if [ "$2" = rest ]; then
               files=($(ls test/e2e/*.test.ts | grep -Ev "/(fork|vendor)[^/]*$"))
-              bun test --isolate test/*.test.ts
-              bun test test/e2e/*.test.ts --test-name-pattern "so only from source"
+              bun test --parallel test/*.test.ts
+              bun test --parallel test/e2e/*.test.ts --test-name-pattern "so only from source"
             else
               files=(test/e2e/"$2"*.test.ts)
             fi
             [ -e "${files[0]}" ]
-            PATCHBOOK_CMD="$PWD/dist/patchbook" bun test "${files[@]}"
+            PATCHBOOK_CMD="$PWD/dist/patchbook" bun test --parallel "${files[@]}"
           ' bash "$USER_KIND" "$SHARD"
         env:
           USER_KIND: ${{ matrix.user }}
