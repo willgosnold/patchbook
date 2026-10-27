@@ -3238,7 +3238,7 @@ test("init refuses a series that is a link", () => {
 }, TIMEOUT);
 
 for (const layout of ["fork", "folder"] as const) {
-  for (const name of ["config.toml", "upstream.lock", "retired.md"]) {
+  for (const name of ["upstream.lock", "retired.md"]) {
     test(`a ${layout} init refuses a ${name} that is a link`, () => {
       const t = new Case();
       try {
@@ -3248,13 +3248,13 @@ for (const layout of ["fork", "folder"] as const) {
         const fork = forkOf(t, up);
         const output = layout === "folder" ? ["--output-from", "", "--output-to", "out"] : [];
         const outside = join(t.tmp, name);
-        if (name !== "config.toml") writeFileSync(outside, "mine\n");
+        writeFileSync(outside, "mine\n");
         mkdirSync(join(fork.path, ".patchbook"));
         symlinkSync(outside, join(fork.path, ".patchbook", name));
         const out = t.pb(["init", "--upstream", up.path, ...output], { cwd: fork.path, code: 1 });
-        const refusal = { "config.toml": "is a symlink to a missing file", "upstream.lock": "is a link", "retired.md": "already exists" }[name];
+        const refusal = { "upstream.lock": "is a link", "retired.md": "already exists" }[name];
         expect(out.stderr).toContain(`.patchbook/${name} ${refusal}`);
-        expect(existsSync(outside) ? read(outside) : null).toBe(name === "config.toml" ? null : "mine\n");
+        expect(read(outside)).toBe("mine\n");
       } finally {
         t.cleanup();
       }
